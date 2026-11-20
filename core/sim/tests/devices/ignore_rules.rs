@@ -1068,14 +1068,100 @@ fn settle_claim(world: &mut World) {
 }
 
 #[test]
+fn a_claimant_keeps_its_name_after_the_excluded_holder_leaves() {
+    let phases = beside_a_folder_moved_into_an_excluded_folder(vec![(1, file("b"))], vec![]);
+    for trash in [false, true] {
+        let mut world = converge_excluding(&[vec![], vec!["*.txt"]], &phases[..2]).unwrap();
+        let id = live_node_at(&world, &["c.txt", "a"]).unwrap().into();
+        let holder = target(&world, 0, &["c.txt", "a"]);
+        let leaves = if trash {
+            delete(holder)
+        } else {
+            rename(holder, 0, "ss")
+        };
+        world.phase(2, &[(0, leaves)]).unwrap();
+        let synced = world.devices[1].engine.trees.synced().live(&id);
+        assert_eq!(
+            synced.map(|node| node.name.as_str()),
+            (!trash).then_some("ss")
+        );
+        let file = target(&world, 1, &["b"]);
+        world.phase(3, &[(1, rename(file, 0, "A"))]).unwrap();
+        for device in 0..2 {
+            assert_eq!(
+                spelled_like(&world, device, "A"),
+                ["A"],
+                "{trash}: {device}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_newer_rename_or_delete_beats_the_move_off_a_frozen_name() {
+    for trash in [false, true] {
+        for steps in [4, 5] {
+            let mut world = claimed_a_kept_name(vec![(1, file("b"))], steps);
+            let id = live_node_at(&world, &["A"]).unwrap();
+            assert!(live_node_at(&world, &[CLAIMED]).is_none());
+            world.run(2, &[(0, Step::Work(0)); 8]).unwrap();
+            let claim = target(&world, 0, &["A"]);
+            let change = if trash {
+                delete(claim)
+            } else {
+                rename(claim, 0, "ss")
+            };
+            world.run(2, &[(0, change)]).unwrap();
+            world.run(2, &commit(0)).unwrap();
+            let expected = (!trash).then_some(&id);
+            assert!(live_node_at(&world, &["A"]).is_none());
+            assert_eq!(live_node_at(&world, &["ss"]).as_ref(), expected);
+            (2..5)
+                .try_for_each(|phase| world.phase(phase, &[]))
+                .unwrap();
+            assert!(live_node_at(&world, &["A"]).is_none());
+            assert!(live_node_at(&world, &[CLAIMED]).is_none());
+            assert_eq!(live_node_at(&world, &["ss"]).as_ref(), expected);
+            if trash {
+                assert!(world.space().nodes().iter().any(|node| {
+                    node.node_id == id && node.status == NodeStatus::Trashed as i32
+                }));
+            }
+            assert_eq!(
+                world.seen.get("move with from superseded").copied(),
+                (steps == 5).then_some(1)
+            );
+        }
+    }
+}
+
+#[test]
 fn a_node_whose_conflict_rename_is_in_flight_when_the_rules_let_the_kept_name_in_follows_that_rename()
  {
     let folder_with_a_file = vec![(1, folder("b")), (1, user(1, 0, 1, "a"))];
     let steps: Vec<(usize, Step)> = (0..3).flat_map(|_| commit(1)).collect();
     for made in [vec![(1, file("b"))], folder_with_a_file] {
+        let mut saw_unanswered = false;
         for lift in 0..=steps.len() {
             let mut world = claimed_a_kept_name(made.clone(), 0);
             world.run(2, &steps[..lift]).unwrap();
+            let sent = live_node_at(&world, &[CLAIMED]);
+            let trees = &world.devices[1].engine.trees;
+            if let Some(id) = sent.as_ref().map(NodeId::from)
+                && world.devices[1]
+                    .link
+                    .as_ref()
+                    .is_some_and(|link| link.awaiting.is_some())
+                && (trees.local().get(&id)).is_some_and(|node| node.shape.name == "A")
+            {
+                assert!(
+                    trees
+                        .synced()
+                        .live(&id)
+                        .is_none_or(|node| node.name != CLAIMED)
+                );
+                saw_unanswered = true;
+            }
             world.rule(1, &Ruling::Exclude(vec![])).unwrap();
             world.run(2, &steps[lift..]).unwrap();
             (2..5)
@@ -1083,11 +1169,18 @@ fn a_node_whose_conflict_rename_is_in_flight_when_the_rules_let_the_kept_name_in
                 .unwrap();
             assert_eq!(paths_on(&world, 0), paths_on(&world, 1), "{lift}");
             let renamed = spelled_like(&world, 1, "A");
-            assert!(
-                renamed == ["A"] || renamed == [CLAIMED],
-                "{lift}: {renamed:?}"
-            );
+            if sent.is_some() {
+                assert_eq!(renamed, [CLAIMED], "{lift}");
+            } else if lift == 0 {
+                assert_eq!(renamed, ["A"]);
+            } else {
+                assert!(
+                    renamed == ["A"] || renamed == [CLAIMED],
+                    "{lift}: {renamed:?}"
+                );
+            }
         }
+        assert!(saw_unanswered, "{made:?}");
     }
 }
 

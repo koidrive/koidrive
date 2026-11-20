@@ -89,6 +89,15 @@ proptest! {
             None,
         )?;
     }
+
+    #[test]
+    fn an_included_node_at_a_frozen_synced_name_sends_a_conflict_rename(
+        (held, claim) in prop::sample::select(vec![(0, 1), (1, 0), (5, 6), (6, 5)]),
+        folder in any::<bool>(),
+        text in any::<u8>(),
+    ) {
+        frozen_name_send(held, claim, folder, text)?;
+    }
 }
 
 proptest! {

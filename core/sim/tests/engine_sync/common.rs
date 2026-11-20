@@ -1789,6 +1789,23 @@ fn position(shape: &koidrive_engine::tree::Shape) -> Position {
     (shape.parent.clone(), shape.name.clone())
 }
 
+fn sent_move_refusal(before: &Trees, trees: &Trees, id: &NodeId) -> Option<RenamedOver> {
+    if trees.name_left_out(id) {
+        return trees.state().names_left_out.remove(id).flatten();
+    }
+    let at = before.remote().live(id)?;
+    let local = before.local().get(id)?;
+    if local.parked || !local.shape.same_position(at) || before.ignored(id) {
+        return None;
+    }
+    (before.synced_holders(&at.parent, &at.name))
+        .any(|holder| holder != id && before.ignored(holder))
+        .then(|| RenamedOver {
+            parent: at.parent.clone(),
+            name: at.name.clone(),
+        })
+}
+
 fn sent_move_check(
     moved: &Move,
     local: &Shape,
@@ -2599,11 +2616,7 @@ fn run_ignoring_answering_after(
             {
                 let synced = device.trees.synced().get(id);
                 let remote = device.trees.remote().get(id);
-                let refused_at = if device.trees.name_left_out(id) {
-                    device.trees.state().names_left_out.remove(id).flatten()
-                } else {
-                    None
-                };
+                let refused_at = sent_move_refusal(&before.0, &device.trees, id);
                 sent_move_check(
                     moved,
                     &local.shape,
