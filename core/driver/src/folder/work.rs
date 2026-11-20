@@ -20,11 +20,19 @@ pub(super) type Slot<'a, T> = Option<Pin<Box<dyn Future<Output = T> + Send + 'a>
 
 /// Tokio does not let another worker take a task from a busy worker's LIFO slot
 /// (<https://docs.rs/tokio/latest/tokio/runtime/struct.Builder.html#method.disable_lifo_slot>).
+#[track_caller]
 pub(super) fn in_place<T>(work: impl FnOnce() -> T) -> T {
-    match tokio::runtime::Handle::try_current().map(|runtime| runtime.runtime_flavor()) {
+    let at = std::panic::Location::caller();
+    let begun = std::time::Instant::now();
+    let out = match tokio::runtime::Handle::try_current().map(|runtime| runtime.runtime_flavor()) {
         Ok(tokio::runtime::RuntimeFlavor::MultiThread) => tokio::task::block_in_place(work),
         _ => work(),
+    };
+    let took = begun.elapsed().as_millis();
+    if took >= 300 {
+        eprintln!("SLOW in_place {at} {took}");
     }
+    out
 }
 
 pub(super) fn spawned<T: Send + 'static>(
