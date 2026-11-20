@@ -4381,7 +4381,7 @@ fn a_file_in_a_folder_deleted_offline_across_a_rewind_follows_another_devices_re
 
 #[test]
 fn a_file_deleted_offline_across_a_rewind_comes_back_at_the_place_another_device_moved_it_to() {
-    for (parent, name) in [(1, "a"), (2, "c.txt")] {
+    for (parent, folder, name) in [(1, "b", "a"), (2, "ss", "c.txt")] {
         let mut world = synced(
             2,
             &[
@@ -4413,6 +4413,8 @@ fn a_file_deleted_offline_across_a_rewind_comes_back_at_the_place_another_device
         let returned = world.space().node(&id).unwrap();
         assert_eq!(returned.status, NodeStatus::Live as i32, "{parent}/{name}");
         assert_eq!(returned.name, name);
+        let place = world.space().node(&returned.parent_id).unwrap();
+        assert_eq!(place.name, folder);
     }
 }
 
