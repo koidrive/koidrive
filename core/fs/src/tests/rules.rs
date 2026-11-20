@@ -693,3 +693,68 @@ fn a_search_starts_over_when_a_folder_is_replaced_between_its_stat_and_its_open(
         }
     }
 }
+
+#[test]
+fn a_search_leaves_a_miss_unproven_when_a_folder_queued_in_the_last_round_is_lost_before_its_walk()
+{
+    for file_in_its_place in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("space");
+        for (path, text) in [
+            ("ig/a/keep", "k"),
+            ("ig/m/keep", "k"),
+            ("ig/z/keep", "k"),
+            (".koiignore", "ig\n"),
+            ("f.txt", "f"),
+        ] {
+            let path = root.join(path);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(&path, text).unwrap();
+        }
+        let mut rules = Rules::new(Box::new(Lines::default())).with_search_budget(usize::MAX);
+        let mut snapshot = Snapshot::scan_with_rules(&root, &mut rules).unwrap();
+        let away = dir.path().join("f.txt");
+        fs::rename(root.join("f.txt"), &away).unwrap();
+        let (mut writes, mut checks, mut lost) = (0, 0, false);
+        let scan = snapshot
+            .rescan_under(
+                &root,
+                [PathBuf::new()],
+                &BTreeSet::new(),
+                None,
+                Some(&mut rules),
+                &|| false,
+                &|_| {},
+                Keep::Unplaced,
+                &mut |cut| match cut {
+                    Cut::Confirming(path) if path == Path::new("ig/m") && writes < 3 => {
+                        writes += 1;
+                        fs::write(root.join(format!("ig/m/w{writes}")), "w").unwrap();
+                    }
+                    Cut::Confirming(path) if path == Path::new("ig/z") => {
+                        checks += 1;
+                        if checks == 4 {
+                            fs::rename(&away, root.join("ig/z/f.txt")).unwrap();
+                        }
+                    }
+                    Cut::Searching(path) if checks == 4 && !lost && path == Path::new("ig/z") => {
+                        lost = true;
+                        fs::rename(root.join("ig/z"), root.join("ig/a/z")).unwrap();
+                        if file_in_its_place {
+                            fs::write(root.join("ig/z"), "x").unwrap();
+                        }
+                    }
+                    _ => {}
+                },
+                &MarkLog::default(),
+            )
+            .unwrap();
+        assert!(lost && root.join("ig/a/z/f.txt").exists());
+        assert!(
+            matches!(scan.changes.as_slice(), [Change::Missing { path, .. }] if path == Path::new("f.txt")),
+            "a file in its place: {file_in_its_place}: {:?}",
+            scan.changes
+        );
+        assert!(rules.coverage().replaced.contains(Path::new("ig/z")));
+    }
+}

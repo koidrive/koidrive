@@ -97,9 +97,8 @@ pub struct Coverage {
     pub unopened: BTreeSet<PathBuf>,
     /// The left-out folders and entries that kept being replaced or moved while the search walked them, after it
     /// had started over as often as it allows in one search. The search went on without them and did not walk them
-    /// to the end later. Also the folders the last round of checks found replaced or gone, which the search had no
-    /// round left to walk again and could not list again in place, because the old folder may still exist or a
-    /// folder the round had checked changed.
+    /// to the end later. Also each folder queued by a last-round check that no walk finished, since such a folder
+    /// owes coverage until a walk finishes it.
     pub replaced: BTreeSet<PathBuf>,
 }
 
@@ -315,12 +314,13 @@ impl Walk {
             return;
         };
         self.replaced.remove(&done.dir);
+        self.owed.remove(&done.dir);
         if let Some(seen) = self.passed.get_mut(&done.dir) {
             seen.done = true;
         }
     }
 
-    fn quiet(&mut self, root: BorrowedFd<'_>, at: usize, cost: &mut usize) -> bool {
+    fn quiet(&mut self, root: BorrowedFd<'_>, at: usize, cost: &mut usize, limit: usize) -> bool {
         let replaced = self.folders[at].dir.clone();
         let old = u64::try_from(self.folders[at].id.ino).unwrap_or_default();
         let (Some(up), Some(child)) = (replaced.parent(), replaced.file_name()) else {
@@ -333,6 +333,9 @@ impl Walk {
             .collect();
         let mut above = Ancestors::default();
         for dir in checked {
+            if *cost >= limit {
+                return false;
+            }
             let (Some(parent), Some(name)) = (dir.parent(), dir.file_name()) else {
                 return false;
             };
@@ -360,9 +363,13 @@ impl Walk {
             let Ok(fd) = open_dir_at(above.top(root), name) else {
                 return false;
             };
-            let Some((now, _)) = Seen::of(fd.as_fd(), &dir, &mut BTreeSet::new()) else {
+            let mut failed = BTreeSet::new();
+            let Some((now, _)) = Seen::of(fd.as_fd(), &dir, &mut failed) else {
                 return false;
             };
+            if !failed.is_empty() {
+                return false;
+            }
             let mut expected = seen.listing;
             if dir.as_path() == up {
                 expected = expected.wrapping_sub(digest([(child, old)]));
@@ -497,6 +504,9 @@ impl Walk {
             }
         }
         seen.needs_walk = true;
+        if seen.id.is_some() {
+            self.owed.insert(dir.clone());
+        }
         self.changed = true;
         self.listings.push(Listing {
             dir: parent.to_path_buf(),
@@ -1127,8 +1137,8 @@ impl<'r> Pending<'r> {
                         if !still {
                             let fired = walk.restarts < RESTARTS && gone(root, folder);
                             let mut cost = 0;
-                            let fresh =
-                                fired && (walk.rounds < CHECKS || walk.quiet(root, at, &mut cost));
+                            let fresh = fired
+                                && (walk.rounds < CHECKS || walk.quiet(root, at, &mut cost, left));
                             left = left.saturating_sub(cost);
                             if !fresh {
                                 break 'step Replaced::Folder(at, None);
