@@ -1,0 +1,2 @@
+-- requires: names_left_out, unobserved
+CREATE TABLE left_out_by_server (node_id TEXT PRIMARY KEY) STRICT, WITHOUT ROWID;

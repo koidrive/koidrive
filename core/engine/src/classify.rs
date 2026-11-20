@@ -627,6 +627,7 @@ pub struct Trees {
     cycle_reverted: TrackedSet<NodeId>,
     unobserved: TrackedSet<NodeId>,
     discard_members: TrackedMap<NodeId, NodeId>,
+    left_out_by_server: TrackedSet<NodeId>,
     rules_changed: BTreeSet<Vec<String>>,
     relist: BTreeSet<NodeId>,
     left_folders: BTreeSet<NodeId>,
@@ -767,6 +768,7 @@ impl Trees {
             cycle_reverted: TrackedSet::default(),
             unobserved: TrackedSet::default(),
             discard_members: TrackedMap::default(),
+            left_out_by_server: TrackedSet::default(),
             rules_changed: BTreeSet::new(),
             relist: BTreeSet::new(),
             left_folders: BTreeSet::new(),
@@ -3779,6 +3781,7 @@ impl Trees {
 
     fn clear_unobserved(&mut self, id: &NodeId) {
         self.copy_back(id);
+        self.left_out_by_server.remove(id);
         self.unobserved.remove(id);
     }
 
@@ -4174,6 +4177,8 @@ impl Trees {
         let mut seen = HashSet::new();
         let mut below: Vec<&NodeId> = tops.iter().collect();
         let mut marked = Vec::new();
+        let mut observed = Vec::new();
+        let mut hidden = Vec::new();
         while let Some(node) = below.pop() {
             if !seen.insert(node) {
                 continue;
@@ -4184,11 +4189,20 @@ impl Trees {
             for names in [&self.l_names, &self.l_parked, &self.s_names, &self.r_names] {
                 below.extend(names.children(node));
             }
-            if self.l.get(node).is_some()
-                && !self.unobserved.contains(node)
-                && self.left_out(node, &self.ignore, &mut scopes)
-            {
-                marked.push(node.to_owned());
+            if self.l.get(node).is_none() {
+                continue;
+            }
+            let unobserved = self.unobserved.contains(node);
+            if !unobserved && self.left_out(node, &self.ignore, &mut scopes) {
+                marked.push((node.to_owned(), self.copy_watched(node, &mut scopes)));
+            } else if unobserved && self.rules_known && self.left_out_by_server.contains(node) {
+                match self.copy_watched(node, &mut scopes) {
+                    false => hidden.push(node.to_owned()),
+                    true if self.observed_again(node, &mut scopes) => {
+                        observed.push(node.to_owned())
+                    }
+                    true => {}
+                }
             }
         }
         let mut above = BTreeSet::new();
@@ -4211,14 +4225,43 @@ impl Trees {
                 && !self.unobserved.contains(folder)
                 && self.left_out(folder, &self.ignore, &mut scopes)
             {
-                marked.push(folder.to_owned());
+                marked.push((folder.to_owned(), self.copy_watched(folder, &mut scopes)));
             }
         }
         self.left_folders.clear();
-        for node in marked {
+        for node in observed {
+            self.clear_unobserved(&node);
+        }
+        for node in hidden {
+            self.left_out_by_server.remove(&node);
+        }
+        for (node, watched) in marked {
+            if watched {
+                self.left_out_by_server.insert(node.clone());
+            }
             self.set_unobserved(node);
         }
         Some(())
+    }
+
+    fn copy_watched<'m>(
+        &'m self,
+        id: &NodeId,
+        scopes: &mut HashMap<NodeId, Option<Scope<'m, Key>>>,
+    ) -> bool {
+        !self.recorded_local(id) && self.placed_included(id, scopes)
+    }
+
+    fn observed_again<'m>(
+        &'m self,
+        id: &NodeId,
+        scopes: &mut HashMap<NodeId, Option<Scope<'m, Key>>>,
+    ) -> bool {
+        !self.below_unknown_rules(id)
+            && !self.awaits_scan(id)
+            && !self.pending.holds(path(&self.l, id))
+            && (self.l.get(id)).is_some_and(|node| !self.awaits_relisting(&node.shape.parent))
+            && !self.left_out(id, &self.ignore, scopes)
     }
 
     fn below_rules(&self, dir: &[String]) -> BTreeSet<NodeId> {
@@ -7677,6 +7720,12 @@ impl Trees {
             None,
             "an unobserved node that neither L nor S holds and no commit creates"
         );
+        debug_assert!(
+            self.left_out_by_server
+                .iter()
+                .all(|id| self.unobserved.contains(id)),
+            "a node left out by the server that is not unobserved"
+        );
         self.r.check(Names::ByKey).map_err(|e| ('R', e))?;
         self.s.check(Names::ByKey).map_err(|e| ('S', e))?;
         self.l.check(Names::Exact).map_err(|e| ('L', e))
@@ -7691,6 +7740,7 @@ impl Trees {
             cycle_reverted: self.cycle_reverted.to_set(),
             unobserved: self.unobserved.to_set(),
             discard_members: self.discard_members.to_map(),
+            left_out_by_server: self.left_out_by_server.to_set(),
             parked_as: self.parked_as.to_map(),
             waiting: self.waiting.to_map(),
             watched: self.watched.to_map(),
@@ -7747,6 +7797,7 @@ impl Trees {
             cycle_reverted,
             unobserved,
             discard_members,
+            left_out_by_server,
             rules_changed: _,
             relist: _,
             left_folders: _,
@@ -7832,6 +7883,7 @@ impl Trees {
             cycle_reverted: cycle_reverted.take_changes(),
             unobserved: unobserved.take_changes(),
             discard_members: discard_members.take_changes(),
+            left_out_by_server: left_out_by_server.take_changes(),
             parked_as: parked_as.take_changes(),
             waiting: waiting.take_changes(),
             watched: watched.take_changes(),
@@ -8076,6 +8128,7 @@ impl Trees {
             cycle_reverted,
             unobserved,
             discard_members,
+            left_out_by_server,
             parked_as,
             waiting,
             watched,
@@ -8126,6 +8179,7 @@ impl Trees {
         self.cycle_reverted = cycle_reverted.into();
         self.unobserved = unobserved.into();
         self.discard_members = discard_members.into();
+        self.left_out_by_server = left_out_by_server.into();
         self.copies_gone = (self.unobserved.iter())
             .filter(|id| self.l.get(id).is_none())
             .cloned()

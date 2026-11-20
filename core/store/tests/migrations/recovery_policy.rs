@@ -9,6 +9,7 @@ fn a_recovery_stored_before_it_kept_a_policy_halt_opens_without_one() {
     let cause = RecoveryCause::rewind(4, 1_700_000_000_000);
     let mut state = engine_state();
     state.trees.names_left_out.clear();
+    state.trees.left_out_by_server.clear();
     state.commits.halted = Some(Halt::Recovery {
         cause,
         policy: None,
