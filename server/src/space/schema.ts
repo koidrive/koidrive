@@ -150,4 +150,4 @@ export function migrate(sql: Sql): void {
 export const NodeKindValue = { DIR: 1, FILE: 2 } as const;
 export const NodeStatusValue = { LIVE: 1, TRASHED: 2 } as const;
 export const ChunkState = { PENDING: 1, LIVE: 2, DELETING: 3 } as const;
-export const PackState = { LIVE: 2 } as const;
+export const PackState = { WRITING: 1, LIVE: 2, DRAINED: 3, DELETING: 4 } as const;

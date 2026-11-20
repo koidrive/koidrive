@@ -8,9 +8,9 @@ import { type UploadReceipt, UploadReceiptSchema } from "../src/gen/koidrive/v1/
 import type { RpcResponse } from "../src/gen/koidrive/v1/messages_pb";
 import { ChunkPlan_Action, Error_Code } from "../src/gen/koidrive/v1/rpc_pb";
 import { toHex, uuidv7 } from "../src/ids";
-import { HOLD_MS, type SpaceDO } from "../src/space-do";
-import { ChunkState } from "../src/space/schema";
-import { getMeta } from "../src/space/store";
+import { HOLD_MS, SpaceDO } from "../src/space-do";
+import { ChunkState, PackState } from "../src/space/schema";
+import { chunkKey, getMeta, packKey, setMeta } from "../src/space/store";
 import { content, op, packFixture, spaceKeyOf, targetIncarnation, TestClient } from "./helpers";
 import { account, BASE, createSpace, getOwner, put } from "./session";
 
@@ -249,21 +249,7 @@ describe("chunk packs: reading (RFC 0032 section 5)", () => {
   });
 });
 
-describe("chunk packs: what stays unchanged until pack GC (RFC 0032 section 11 item 3)", () => {
-  it("never marks a packed row for deletion, however long it waits unreferenced", async () => {
-    const space = await packedSpace();
-    const file = await space.prepare("packed-orphan", "never-sent");
-    const [chunk] = file.chunks as [Planned];
-    const pack = await storedPack(space, [chunk]);
-    expect(outcome(await space.commit(file, pack.receipts))).toBe(Error_Code.MISSING_CHUNKS);
-    await runInDurableObject(space.stub, (instance: SpaceDO) => instance.collectGarbage(Date.now() + 40 * DAY));
-    expect(await rowsOf(space, [chunk])).toMatchObject([{ state: ChunkState.PENDING, packId: pack.packId }]);
-    const retired = await runInDurableObject(account(), (_instance, state) =>
-      state.storage.sql.exec("SELECT hash_hex FROM chunk_retirements WHERE space_id = ?", space.spaceId).toArray().map((row) => row.hash_hex),
-    );
-    expect(retired).not.toContain(toHex(chunk.hash));
-  });
-
+describe("chunk packs: packed rows across GC and rewinds", () => {
   it("keeps a packed row's location and incarnation when a rewind retires that incarnation", async () => {
     const space = await packedSpace();
     const file = await space.prepare("packed-rewound", "never-sent");
@@ -272,7 +258,7 @@ describe("chunk packs: what stays unchanged until pack GC (RFC 0032 section 11 i
     expect(outcome(await space.commit(file, pack.receipts))).toBe(Error_Code.MISSING_CHUNKS);
     const nowMs = Date.now();
     const retired = [{ hashHex: toHex(chunk.hash), incarnation: chunk.incarnation }];
-    await space.stub.rewindComplete({ rewindId: uuidv7(), attempt: 1, historyId: uuidv7(), rewindNumber: 1, restorePointMs: nowMs - 60_000, completedAtMs: nowMs, revokedDevices: [], retired });
+    await space.stub.rewindComplete({ rewindId: uuidv7(), attempt: 1, historyId: uuidv7(), rewindNumber: 1, restorePointMs: nowMs - 60_000, completedAtMs: nowMs, revokedDevices: [], retired, retiredPacks: [] });
     expect(await rowsOf(space, [chunk])).toMatchObject([{ state: ChunkState.PENDING, incarnation: chunk.incarnation, packId: pack.packId }]);
   });
 
@@ -292,6 +278,182 @@ describe("chunk packs: what stays unchanged until pack GC (RFC 0032 section 11 i
       return JSON.parse(String(getMeta(state.storage.sql, "r2_stored"))) as { objects: number; bytes: number };
     });
     expect({ objects: noted.objects, bytes: noted.bytes }).toEqual({ objects: 4, bytes: pack.bytes.length + singles.reduce((sum, chunk) => sum + chunk.bytes.length, 0) });
+  });
+});
+
+function gc(space: Space, atMs: number) {
+  return runInDurableObject(space.stub, (instance: SpaceDO) => instance.collectGarbage(atMs));
+}
+
+function retirements(spaceId: string) {
+  return runInDurableObject(account(), (_instance, state) => ({
+    chunks: state.storage.sql.exec("SELECT hash_hex FROM chunk_retirements WHERE space_id = ?", spaceId).toArray().map((row) => String(row.hash_hex)),
+    packs: state.storage.sql.exec("SELECT pack_id FROM pack_retirements WHERE space_id = ?", spaceId).toArray().map((row) => String(row.pack_id)),
+  }));
+}
+
+function chunkRow(space: Space, chunk: Planned) {
+  return runInDurableObject(space.stub, (_instance, state) => state.storage.sql.exec("SELECT state, refcount, incarnation, pack_id FROM chunks WHERE hash = ?", chunk.hash).toArray()[0]);
+}
+
+async function refusedPack(space: Space, texts: string[]) {
+  const file = await space.prepare(...texts, "never-sent");
+  const packed = file.chunks.slice(0, texts.length);
+  const pack = await storedPack(space, packed);
+  expect(outcome(await space.commit(file, pack.receipts))).toBe(Error_Code.MISSING_CHUNKS);
+  return { packed, pack };
+}
+
+function failRetirePacks(answer: () => Promise<unknown>) {
+  const prototype = SpaceDO.prototype as unknown as { account(...args: unknown[]): object };
+  const directory = prototype.account;
+  vi.spyOn(prototype, "account").mockImplementation(function (this: unknown, ...args: unknown[]) {
+    const target = directory.apply(this, args);
+    return new Proxy(target, {
+      get(object, property) {
+        if (property === "retirePacks") return answer;
+        const value = Reflect.get(object, property);
+        return typeof value === "function" ? value.bind(object) : value;
+      },
+    });
+  });
+}
+
+function completeRewind(space: Space, retiredPacks: string[] | undefined, completedAtMs = Date.now()) {
+  return runInDurableObject(space.stub, (instance: SpaceDO) => instance.rewindComplete({
+    rewindId: uuidv7(),
+    attempt: 1,
+    historyId: uuidv7(),
+    rewindNumber: 1,
+    restorePointMs: completedAtMs - 60_000,
+    completedAtMs,
+    revokedDevices: [],
+    retired: [],
+    ...(retiredPacks === undefined ? {} : { retiredPacks }),
+  } as never));
+}
+
+describe("chunk packs: pack GC (RFC 0032 section 6)", () => {
+  it("deletes an unreferenced packed row, then retires and deletes its pack once nothing points at it", async () => {
+    const space = await packedSpace();
+    const { packed, pack } = await refusedPack(space, ["gc-free-one"]);
+    const report = await gc(space, Date.now() + 40 * DAY);
+    expect({ deletedPacks: report.deletedPacks, row: await chunkRow(space, packed[0]!), packs: await packsOf(space) }).toEqual({ deletedPacks: 1, row: undefined, packs: [] });
+    expect(await env.BUCKET.head(pack.key)).toBeNull();
+    const retired = await retirements(space.spaceId);
+    expect({ packedChunkRetired: retired.chunks.includes(toHex(packed[0]!.hash)), packs: retired.packs }).toEqual({ packedChunkRetired: false, packs: [pack.packId] });
+  });
+
+  it("lowers a pack's counts in the same pass that deletes one of its rows", async () => {
+    const space = await packedSpace();
+    const file = await space.prepare("gc-counts-kept", "gc-counts-dropped");
+    const [kept, dropped] = file.chunks as [Planned, Planned];
+    const pack = await storedPack(space, [kept, dropped]);
+    const keep = await space.prepare("gc-counts-kept");
+    expect(outcome(await space.commit(keep, pack.receipts))).toBe("commit");
+    await gc(space, Date.now() + 40 * DAY);
+    expect(await chunkRow(space, dropped)).toBeUndefined();
+    expect(await packsOf(space)).toMatchObject([{ pack_id: pack.packId, state: PackState.LIVE, live_count: 1, live_bytes: kept.bytes.length }]);
+  });
+
+  it("keeps a pack with no rows while it is 7 days old or younger, or while its hold lasts", async () => {
+    const space = await packedSpace();
+    const packMs = Date.now();
+    const { pack } = await refusedPack(space, ["gc-young"]);
+    await gc(space, packMs + 7 * DAY - 1);
+    expect(await packsOf(space)).toMatchObject([{ pack_id: pack.packId, state: PackState.LIVE, live_count: 0 }]);
+    await runInDurableObject(space.stub, (_instance, state) => state.storage.sql.exec("UPDATE packs SET hold_until_ms = ?", packMs + 20 * DAY));
+    await gc(space, packMs + 20 * DAY);
+    expect(await packsOf(space)).toMatchObject([{ pack_id: pack.packId, state: PackState.LIVE }]);
+    expect(await env.BUCKET.head(pack.key)).not.toBeNull();
+    expect((await gc(space, packMs + 20 * DAY + 1)).deletedPacks).toBe(1);
+  });
+
+  it.each([
+    ["refuses", async () => ({ ok: false, code: Error_Code.RETRY_LATER, message: "refused" })],
+    ["does not answer", async () => Promise.reject(new Error("lost"))],
+    ["runs code without retirePacks", async () => Promise.reject(new TypeError("retirePacks is not a function"))],
+  ])("issues no pack delete while the Account DO %s, and finishes on the next pass", async (_, answer) => {
+    const space = await packedSpace();
+    const { pack } = await refusedPack(space, ["gc-retire"]);
+    const deletes = vi.spyOn(env.BUCKET, "delete");
+    failRetirePacks(answer);
+    await expect(gc(space, Date.now() + 40 * DAY)).rejects.toThrow();
+    expect(deletes.mock.calls.flat(2)).not.toContain(pack.key);
+    expect(await packsOf(space)).toMatchObject([{ pack_id: pack.packId, state: PackState.DELETING }]);
+    vi.restoreAllMocks();
+    expect((await gc(space, Date.now() + 40 * DAY)).deletedPacks).toBe(1);
+    expect(await env.BUCKET.head(pack.key)).toBeNull();
+  });
+
+  it("sweeps a pack key with no packs row only after the grace period and with no rewind in it", async () => {
+    const space = await packedSpace();
+    const packId = uuidv7();
+    const key = packKey(space.spaceId, packId);
+    await env.BUCKET.put(key, "never confirmed");
+    const uploadedMs = Date.now();
+    expect((await gc(space, uploadedMs + 29 * DAY)).sweptPacks).toBe(0);
+    await runInDurableObject(space.stub, (_instance, state) => {
+      state.storage.sql.exec("DELETE FROM meta WHERE key = 'pack_sweep_due_ms'");
+      setMeta(state.storage.sql, "rewind_completed_ms", uploadedMs + 2 * DAY);
+    });
+    expect((await gc(space, uploadedMs + 31 * DAY)).sweptPacks).toBe(0);
+    await runInDurableObject(space.stub, (_instance, state) => state.storage.sql.exec("DELETE FROM meta WHERE key = 'pack_sweep_due_ms'"));
+    expect(await gc(space, uploadedMs + 33 * DAY)).toMatchObject({ sweptPacks: 1, deletedPacks: 1 });
+    expect(await env.BUCKET.head(key)).toBeNull();
+    expect((await retirements(space.spaceId)).packs).toEqual([packId]);
+  });
+
+  it("sweeps a single-object copy of a chunk whose row took a pack location", async () => {
+    const space = await packedSpace();
+    const file = await space.prepare("gc-both-copies");
+    const [chunk] = file.chunks as [Planned];
+    const pack = await storedPack(space, [chunk]);
+    await putSingle(chunk);
+    expect(outcome(await space.commit(file, pack.receipts))).toBe("commit");
+    const single = chunkKey(space.spaceId, toHex(chunk.hash), chunk.incarnation);
+    expect(await gc(space, Date.now() + 31 * DAY)).toMatchObject({ sweptChunks: 1, deletedPacks: 0 });
+    expect(await env.BUCKET.head(single)).toBeNull();
+    expect(await env.BUCKET.head(pack.key)).not.toBeNull();
+  });
+
+  it("frees a writing pack that no running compaction owns, at any age, and keeps an owned one", async () => {
+    const space = await packedSpace();
+    const [owned, unowned] = [uuidv7(), uuidv7()];
+    await runInDurableObject(space.stub, (instance, state) => {
+      for (const packId of [owned, unowned]) state.storage.sql.exec("INSERT INTO packs (pack_id, size, state, live_count, live_bytes, hold_until_ms) VALUES (?, 1, ?, 0, 0, 0)", packId, PackState.WRITING);
+      (instance as unknown as { compacting: Set<string> }).compacting.add(owned);
+    });
+    expect((await gc(space, Date.now())).deletedPacks).toBe(1);
+    expect(await packsOf(space)).toMatchObject([{ pack_id: owned, state: PackState.WRITING }]);
+  });
+});
+
+describe("chunk packs: rewind completion (RFC 0032 section 6 rule 5)", () => {
+  it("takes the location off every row on a retired pack and makes the pack deleting", async () => {
+    const space = await packedSpace();
+    const { packed, pack } = await refusedPack(space, ["rewind-retired"]);
+    await completeRewind(space, [pack.packId]);
+    expect(await chunkRow(space, packed[0]!)).toEqual({ state: ChunkState.PENDING, refcount: 0, incarnation: null, pack_id: null });
+    expect(await packsOf(space)).toMatchObject([{ pack_id: pack.packId, state: PackState.DELETING, live_count: 0, live_bytes: 0 }]);
+  });
+
+  it.each([PackState.DELETING, PackState.WRITING])("makes an unretired restored pack in state %i live, with its counts recounted and the completion hold", async (restored) => {
+    const space = await packedSpace();
+    const { packed, pack } = await refusedPack(space, ["rewind-unretired"]);
+    await runInDurableObject(space.stub, (_instance, state) => state.storage.sql.exec("UPDATE packs SET state = ?, live_count = 0, live_bytes = 0", restored));
+    const completedAtMs = Date.now();
+    await completeRewind(space, [], completedAtMs);
+    expect(await packsOf(space)).toMatchObject([{ pack_id: pack.packId, state: PackState.LIVE, live_count: 1, live_bytes: packed[0]!.bytes.length, hold_until_ms: completedAtMs + 30 * DAY }]);
+  });
+
+  it("refuses a completion that lists no retired packs and changes nothing", async () => {
+    const space = await packedSpace();
+    const { pack } = await refusedPack(space, ["rewind-old-account"]);
+    const before = await packsOf(space);
+    await expect(completeRewind(space, undefined)).rejects.toThrow("retired packs");
+    expect(await packsOf(space)).toEqual(before);
+    expect(before).toMatchObject([{ pack_id: pack.packId, hold_until_ms: 0 }]);
   });
 });
 

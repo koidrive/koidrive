@@ -8,10 +8,11 @@ import { beforeAll, expect, inject, it, vi } from "vitest";
 import { ClaimRequestSchema, type DeviceCredentials, DeviceCredentialsSchema } from "../src/gen/koidrive/v1/auth_pb";
 import { type UploadReceipt, UploadReceiptSchema } from "../src/gen/koidrive/v1/commit_pb";
 import { ChunkBundleResultSchema, ChunkBundleSchema, ChunkPlan_Action, Error_Code } from "../src/gen/koidrive/v1/rpc_pb";
+import { encodePack } from "../src/chunk-pack";
 import { sha256 } from "../src/crypto";
 import { fromHex, toHex, uuidv7 } from "../src/ids";
 import { HOLD_MS, type Session, SpaceDO } from "../src/space-do";
-import { ChunkState } from "../src/space/schema";
+import { ChunkState, PackState } from "../src/space/schema";
 import { chunkKey, packKey, versionChunks, type VersionRow } from "../src/space/store";
 import saved from "./gc-model.cases.json";
 import { content, op, packFixture, spaceKeyOf, TestClient } from "./helpers";
@@ -37,9 +38,9 @@ const LIST_PAGE = 2;
 const SYNC_ROUNDS = 3;
 
 type Outcome = "ok" | "lostApplied" | "lostInflight";
-type Retirement = "ok" | "refused" | "lostBefore" | "lostAfter";
+type Retirement = "ok" | "refused" | "lostBefore" | "lostAfter" | "oldCode";
 
-type Pause = "head" | "put" | "retire" | "delete";
+type Pause = "head" | "put" | "list" | "retire" | "retirePacks" | "delete";
 
 type Simple =
   | { t: "prepare"; chunks: number[] }
@@ -58,7 +59,8 @@ type Simple =
   | { t: "targets"; chunk: number }
   | { t: "download"; target: number }
   | { t: "clock"; ms: number }
-  | { t: "until"; mark: "grace" | "hold"; chunk: number; offsetMs: number };
+  | { t: "until"; mark: "grace" | "hold"; chunk: number; offsetMs: number }
+  | { t: "compact"; phase: "start" | "swap"; pack: number };
 
 type Step = Simple | { t: "race"; outer: Simple; at: Pause; inner: Simple[]; innerAt?: Pause };
 
@@ -106,6 +108,7 @@ interface World {
   drops: number[];
   history: { atMs: number; keys: string[]; lastUsedMs: Map<string, number> }[];
   lastUsedMs: Map<string, number>;
+  compaction?: { source: string; output: string; moves: { hex: string; from: number; to: number }[] };
 }
 
 let owner: DeviceCredentials;
@@ -141,10 +144,14 @@ function described(key: string) {
 }
 
 async function retiredKeys(spaceId: string): Promise<Set<string>> {
-  const rows = await runInDurableObject(account(), (_instance, state) =>
-    state.storage.sql.exec("SELECT hash_hex, incarnation FROM chunk_retirements WHERE space_id = ?", spaceId).toArray(),
-  );
-  return new Set(rows.map((row) => chunkKey(spaceId, String(row.hash_hex), String(row.incarnation))));
+  const { objects, packs } = await runInDurableObject(account(), (_instance, state) => ({
+    objects: state.storage.sql.exec("SELECT hash_hex, incarnation FROM chunk_retirements WHERE space_id = ?", spaceId).toArray(),
+    packs: state.storage.sql.exec("SELECT pack_id FROM pack_retirements WHERE space_id = ?", spaceId).toArray(),
+  }));
+  return new Set([
+    ...objects.map((row) => chunkKey(spaceId, String(row.hash_hex), String(row.incarnation))),
+    ...packs.map((row) => packKey(spaceId, String(row.pack_id))),
+  ]);
 }
 
 function installModelR2(): void {
@@ -191,6 +198,7 @@ function installModelR2(): void {
   vi.spyOn(bucket, "list").mockImplementation((async (options?: R2ListOptions) => {
     const prefix = options?.prefix ?? "";
     if (!MODELLED_KEY.test(prefix)) return real.list(options);
+    await pause("list");
     const keys = [...r2.objects.keys()].filter((key) => key.startsWith(prefix) && key > (options?.cursor ?? "")).sort();
     const page = keys.slice(0, Math.min(options?.limit ?? 1000, LIST_PAGE));
     const truncated = page.length < keys.length;
@@ -204,29 +212,38 @@ function installRetirementOutcomes(): void {
   vi.spyOn(prototype, "account").mockImplementation(function (this: unknown, ...args: unknown[]) {
     const target = directory.apply(this, args) as Record<string | symbol, unknown> & {
       retireChunks(spaceId: string, objects: { hashHex: string; incarnation: string }[]): Promise<unknown>;
+      retirePacks(spaceId: string, packIds: string[]): Promise<unknown>;
     };
-    const retire = async (spaceId: string, objects: { hashHex: string; incarnation: string }[]) => {
-      const outcome = (await target.retireChunks(spaceId, objects)) as { ok: boolean };
-      if (outcome.ok) for (const { hashHex, incarnation } of objects) r2.retired.add(chunkKey(spaceId, hashHex, incarnation));
-      return outcome;
-    };
-    const retireChunks = async (spaceId: string, objects: { hashHex: string; incarnation: string }[]) => {
-      await pause("retire");
+    const settle = async (at: Pause, call: () => Promise<unknown>, keys: string[], added: boolean) => {
+      await pause(at);
+      const retire = async () => {
+        const outcome = (await call()) as { ok: boolean };
+        if (outcome.ok) for (const key of keys) r2.retired.add(key);
+        return outcome;
+      };
       switch (r2.retire) {
         case "ok":
-          return retire(spaceId, objects);
+          return retire();
+        case "oldCode":
+          if (added) throw new TypeError("the model Account DO runs code without this method");
+          return retire();
         case "refused":
           return { ok: false, code: Error_Code.RETRY_LATER, message: "the model Account DO refused" };
         case "lostBefore":
           throw new Error("the Account DO did not answer");
         case "lostAfter":
-          await retire(spaceId, objects);
+          await retire();
           throw new Error("the Account DO did not answer");
       }
     };
+    const retireChunks = (spaceId: string, objects: { hashHex: string; incarnation: string }[]) =>
+      settle("retire", () => target.retireChunks(spaceId, objects), objects.map(({ hashHex, incarnation }) => chunkKey(spaceId, hashHex, incarnation)), false);
+    const retirePacks = (spaceId: string, packIds: string[]) =>
+      settle("retirePacks", () => target.retirePacks(spaceId, packIds), packIds.map((packId) => packKey(spaceId, packId)), true);
     return new Proxy(target, {
       get(object, property) {
         if (property === "retireChunks") return retireChunks;
+        if (property === "retirePacks") return retirePacks;
         const value = Reflect.get(object, property);
         return typeof value === "function" ? value.bind(object) : value;
       },
@@ -459,6 +476,8 @@ async function act(world: World, step: Step): Promise<boolean> {
       vi.setSystemTime(markMs + step.offsetMs);
       return true;
     }
+    case "compact":
+      return step.phase === "start" ? startCompaction(world, step.pack) : swapCompaction(world);
     case "race": {
       const outerGate: Gate = { reached: false, released: false };
       pauses.set(step.at, outerGate);
@@ -485,6 +504,93 @@ async function act(world: World, step: Step): Promise<boolean> {
       return outerGate.reached && (step.innerAt === undefined || innerGate.reached);
     }
   }
+}
+
+type Owner = { compacting: Set<string>; settings(): { chunk_grace_days: number } };
+
+async function startCompaction(world: World, index: number): Promise<boolean> {
+  if (world.compaction) return false;
+  const planned = await runInDurableObject(space(world.spaceId), (_instance, state) => {
+    const sql = state.storage.sql;
+    const sources = sql.exec("SELECT pack_id FROM packs WHERE state = ? AND live_count > 0 ORDER BY pack_id", PackState.LIVE).toArray().map((row) => String(row.pack_id));
+    const source = pick(sources, index);
+    if (!source) return undefined;
+    const rows = sql
+      .exec("SELECT hash, pack_offset FROM chunks WHERE pack_id = ? AND state IN (?, ?) ORDER BY pack_offset", source, ChunkState.PENDING, ChunkState.LIVE)
+      .toArray()
+      .map((row) => ({ hex: toHex(new Uint8Array(row.hash as ArrayBuffer)), from: Number(row.pack_offset) }));
+    return { source, rows };
+  });
+  if (!planned) return false;
+  const members = planned.rows.map(({ hex }) => chunks.find((chunk) => chunk.hex === hex)!);
+  const bytes = encodePack(members.map((member) => ({ hash: fromHex(member.hex)!, data: member.bytes })));
+  const output = uuidv7();
+  let to = 0;
+  const moves = planned.rows.map(({ hex, from }, i) => {
+    const move = { hex, from, to };
+    to += members[i]!.bytes.length;
+    return move;
+  });
+  await runInDurableObject(space(world.spaceId), (instance, state) => {
+    state.storage.sql.exec("INSERT INTO packs (pack_id, size, state, live_count, live_bytes, hold_until_ms) VALUES (?, ?, ?, 0, 0, 0)", output, bytes.length, PackState.WRITING);
+    (instance as unknown as Owner).compacting.add(output);
+  });
+  world.compaction = { source: planned.source, output, moves };
+  return env.BUCKET.put(packKey(world.spaceId, output), bytes, { onlyIf: { etagDoesNotMatch: "*" } }).then(
+    () => true,
+    () => false,
+  );
+}
+
+async function swapCompaction(world: World): Promise<boolean> {
+  const planned = world.compaction;
+  if (!planned) return false;
+  world.compaction = undefined;
+  return runInDurableObject(space(world.spaceId), (instance, state) => {
+    const owner = instance as unknown as Owner;
+    if (!owner.compacting.delete(planned.output)) return false;
+    const sql = state.storage.sql;
+    return state.storage.transactionSync(() => {
+      const output = sql.exec("SELECT state FROM packs WHERE pack_id = ?", planned.output).toArray()[0];
+      const onSource = sql.exec("SELECT hash, pack_offset FROM chunks WHERE pack_id = ? AND state IN (?, ?)", planned.source, ChunkState.PENDING, ChunkState.LIVE).toArray();
+      const inPlan = onSource.every((row) => planned.moves.some((move) => move.hex === toHex(new Uint8Array(row.hash as ArrayBuffer)) && move.from === Number(row.pack_offset)));
+      if (output?.state !== PackState.WRITING || !inPlan) {
+        sql.exec("UPDATE packs SET state = ? WHERE pack_id = ? AND state = ?", PackState.DELETING, planned.output, PackState.WRITING);
+        return false;
+      }
+      for (const { hex, from, to } of planned.moves) {
+        sql.exec(
+          "UPDATE chunks SET pack_id = ?, pack_offset = ? WHERE hash = ? AND pack_id = ? AND pack_offset = ? AND state IN (?, ?)",
+          planned.output,
+          to,
+          fromHex(hex)!,
+          planned.source,
+          from,
+          ChunkState.PENDING,
+          ChunkState.LIVE,
+        );
+      }
+      sql.exec(
+        `UPDATE packs SET state = ?,
+           live_count = (SELECT COUNT(*) FROM chunks WHERE chunks.pack_id = packs.pack_id AND chunks.state IN (?, ?)),
+           live_bytes = (SELECT COALESCE(SUM(size), 0) FROM chunks WHERE chunks.pack_id = packs.pack_id AND chunks.state IN (?, ?))
+         WHERE pack_id = ?`,
+        PackState.LIVE,
+        ChunkState.PENDING,
+        ChunkState.LIVE,
+        ChunkState.PENDING,
+        ChunkState.LIVE,
+        planned.output,
+      );
+      sql.exec(
+        "UPDATE packs SET state = ?, live_count = 0, live_bytes = 0, hold_until_ms = ? WHERE pack_id = ?",
+        PackState.DRAINED,
+        Date.now() + owner.settings().chunk_grace_days * DAY,
+        planned.source,
+      );
+      return true;
+    });
+  });
 }
 
 async function commitFile(world: World, file: number, used: number[], receipts: UploadReceipt[], dup = false) {
@@ -617,8 +723,6 @@ async function check(world: World): Promise<void> {
   if (violations.length > 0) throw new Error(violations.join("\n"));
 }
 
-const leftForPackGc = { row: (row: ChunkRow) => row.packId !== null, key: (key: string) => key.split("/")[2] === "packs" };
-
 async function quiesce(world: World): Promise<void> {
   for (const flight of r2.flights.splice(0)) land(flight);
   for (let pass = 0; pass < 3; pass++) {
@@ -630,11 +734,12 @@ async function quiesce(world: World): Promise<void> {
       if (!report.more) break;
     }
   }
-  const { rows } = await chunkRows(world);
-  const left = rows.filter((row) => !leftForPackGc.row(row) && (row.state !== ChunkState.LIVE || row.refcount === 0)).map((row) => `${row.hex} in state ${row.state}`);
-  const keys = new Set(rows.flatMap((row) => (row.incarnation === null ? [] : [chunkKey(world.spaceId, row.hex, row.incarnation)])));
-  const garbage = [...r2.objects.keys()].filter((key) => key.startsWith(`spaces/${world.spaceId}/`) && !keys.has(key) && !leftForPackGc.key(key));
-  expect({ left, garbage }).toEqual({ left: [], garbage: [] });
+  const { rows, packs } = await chunkRows(world);
+  const left = rows.filter((row) => row.state !== ChunkState.LIVE || row.refcount === 0).map((row) => `${row.hex} in state ${row.state}`);
+  const rowless = packs.filter((pack) => !rows.some((row) => row.packId === pack.packId)).map((pack) => `${pack.packId} in state ${pack.state}`);
+  const keys = new Set(rows.map((row) => (row.packId !== null ? packKey(world.spaceId, row.packId) : row.incarnation === null ? "" : chunkKey(world.spaceId, row.hex, row.incarnation))));
+  const garbage = [...r2.objects.keys()].filter((key) => key.startsWith(`spaces/${world.spaceId}/`) && !keys.has(key));
+  expect({ left, rowless, garbage }).toEqual({ left: [], rowless: [], garbage: [] });
 }
 
 const index = fc.oneof({ weight: 3, arbitrary: fc.constant(0) }, fc.nat({ max: 15 }));
@@ -650,10 +755,11 @@ const commit = fc.record({
   extra: fc.uniqueArray(fc.nat({ max: TEXTS.length - 1 }), { maxLength: 1 }),
   dup: fc.oneof({ weight: 3, arbitrary: fc.constant(false) }, fc.constant(true)),
 });
-const collect = fc.record({ t: fc.constant("gc" as const), retire: fc.constantFrom<Retirement>("ok", "ok", "refused", "lostBefore", "lostAfter"), del: outcome });
+const collect = fc.record({ t: fc.constant("gc" as const), retire: fc.constantFrom<Retirement>("ok", "ok", "refused", "lostBefore", "lostAfter", "oldCode"), del: outcome });
+const compact = fc.record({ t: fc.constant("compact" as const), phase: fc.constantFrom("start" as const, "swap" as const), pack: index });
 const drop = fc.record({ t: fc.constant("drop" as const), version: index });
 const clock = fc.record({ t: fc.constant("clock" as const), ms: fc.constantFrom(MINUTE, MINUTE, MINUTE, 30 * MINUTE, 2 * HOUR, DAY, 7 * DAY, 31 * DAY) });
-const pausePoint = fc.constantFrom<Pause>("head", "put", "retire", "delete");
+const pausePoint = fc.constantFrom<Pause>("head", "put", "list", "retire", "retirePacks", "delete");
 const simple: fc.Arbitrary<Simple> = fc.oneof(
   { weight: 3, arbitrary: prepare },
   { weight: 6, arbitrary: put },
@@ -671,6 +777,7 @@ const simple: fc.Arbitrary<Simple> = fc.oneof(
   { weight: 2, arbitrary: fc.record({ t: fc.constant("targets" as const), chunk: fc.nat({ max: TEXTS.length - 1 }) }) },
   { weight: 2, arbitrary: fc.record({ t: fc.constant("download" as const), target: index }) },
   { weight: 4, arbitrary: clock },
+  { weight: 2, arbitrary: compact },
   {
     weight: 2,
     arbitrary: fc.record({
@@ -690,7 +797,7 @@ const step: fc.Arbitrary<Step> = fc.oneof(
         t: fc.constant("race" as const),
         outer: fc.oneof(commit, collect, put),
         at: pausePoint,
-        inner: fc.array(fc.oneof(prepare, put, pack, commit, collect, drop, clock), { minLength: 1, maxLength: 2 }),
+        inner: fc.array(fc.oneof(prepare, put, pack, commit, collect, drop, clock, compact), { minLength: 1, maxLength: 2 }),
         innerAt: pausePoint,
       },
       { requiredKeys: ["t", "outer", "at", "inner"] },
@@ -923,6 +1030,77 @@ const scenarios: Step[][] = [
     { t: "put", plan: 1, outcome: "ok" },
     { t: "pack", plans: [1], outcome: "ok" },
     { t: "race", outer: { t: "commit", file: 0, receipts: [], extra: [0] }, at: "head", inner: [{ t: "commit", file: 1, receipts: [0], extra: [1], refused: true }] },
+  ],
+  [
+    minute,
+    { t: "prepare", chunks: [0] },
+    { t: "pack", plans: [0], outcome: "ok" },
+    { t: "commit", file: 0, receipts: [0], extra: [] },
+    { t: "compact", phase: "start", pack: 0 },
+    minute,
+    { t: "commit", file: 1, receipts: [], extra: [0] },
+    { t: "clock", ms: 30 * MINUTE },
+    { t: "compact", phase: "swap", pack: 0 },
+    { t: "clock", ms: HOUR },
+    { t: "rewind", point: 2 },
+    gc,
+    { t: "clock", ms: HOUR },
+    { t: "rewind", point: 3 },
+    gc,
+  ],
+  [
+    minute,
+    { t: "prepare", chunks: [0, 1] },
+    { t: "pack", plans: [0, 1], outcome: "ok" },
+    { t: "commit", file: 0, receipts: [1], extra: [2], refused: true },
+    { t: "clock", ms: 12 * HOUR },
+    { t: "prepare", chunks: [0] },
+    { t: "clock", ms: 12 * HOUR + MINUTE },
+    gc,
+    minute,
+    { t: "commit", file: 0, receipts: [0], extra: [] },
+    minute,
+    { t: "rewind", point: 2 },
+    week,
+    minute,
+    gc,
+    minute,
+    { t: "rewind", point: 4 },
+  ],
+  [
+    minute,
+    { t: "prepare", chunks: [0, 1] },
+    { t: "pack", plans: [0, 1], outcome: "ok" },
+    { t: "commit", file: 0, receipts: [1], extra: [2], refused: true },
+    { t: "clock", ms: 12 * HOUR },
+    { t: "prepare", chunks: [0] },
+    { t: "clock", ms: 12 * HOUR + MINUTE },
+    { t: "race", outer: { t: "commit", file: 0, receipts: [0], extra: [] }, at: "head", inner: [gc] },
+  ],
+  [
+    minute,
+    { t: "prepare", chunks: [0] },
+    { t: "pack", plans: [0], outcome: "ok" },
+    { t: "commit", file: 0, receipts: [0], extra: [1], refused: true },
+    { t: "clock", ms: 8 * DAY },
+    { t: "gc", retire: "oldCode", del: "ok" },
+    gc,
+  ],
+  [
+    minute,
+    { t: "prepare", chunks: [0] },
+    { t: "pack", plans: [0], outcome: "ok" },
+    day,
+    minute,
+    { t: "clock", ms: 2 * DAY },
+    { t: "commit", file: 0, receipts: [0], extra: [] },
+    minute,
+    { t: "clock", ms: 17 * DAY },
+    { t: "rewind", point: 4 },
+    { t: "clock", ms: 11 * DAY },
+    gc,
+    minute,
+    { t: "rewind", point: 3 },
   ],
 ];
 

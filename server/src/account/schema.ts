@@ -92,6 +92,9 @@ export const MIGRATIONS: readonly Migration[] = [
   `
   CREATE TABLE IF NOT EXISTS object_usage (object TEXT PRIMARY KEY, sql_bytes INTEGER NOT NULL, r2_bytes INTEGER NOT NULL, r2_objects INTEGER NOT NULL);
   `,
+  `
+  CREATE TABLE IF NOT EXISTS pack_retirements (space_id TEXT NOT NULL, pack_id TEXT NOT NULL, retired_at_ms INTEGER NOT NULL, PRIMARY KEY (space_id, pack_id));
+  `,
 ];
 
 export function migrate(sql: Sql): void {

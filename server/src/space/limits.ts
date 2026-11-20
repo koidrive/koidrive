@@ -8,6 +8,7 @@ export const BOOKMARK_SAFETY_MS = HOUR_MS;
 export const HOLD_MS = DAY_MS;
 export const GRANT_MS = HOUR_MS;
 export const PACK_RECEIPT_AGE_MS = 6 * DAY_MS;
+export const PACK_FREE_AGE_MS = 7 * DAY_MS;
 export const MAX_OPS = 1000;
 export const MAX_CHUNKS_PER_CALL = 1000;
 /** A call stays well inside a Worker invocation's subrequest limit. */
