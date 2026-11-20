@@ -489,8 +489,18 @@ pub struct JournalState {
     pub seen: BTreeMap<NodeId, Vec<Seen>>,
     /// R's intents came from a listing of a server that announced `field_intents`, so no id R holds was computed.
     pub listed: bool,
-    /// The journal time of the first listing or record that showed R without each node.
-    pub absent: BTreeMap<NodeId, i64>,
+    /// The nodes R lacks.
+    pub absent: BTreeMap<NodeId, Absent>,
+}
+
+/// A node R lacks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Absent {
+    /// The journal time of the first listing, record or result that showed R without the node.
+    pub since_ms: i64,
+    /// The server answered a create of the node `SUPERSEDED` because it purged it, so no create of it is sent again
+    /// (RFC 0029 section 5.2).
+    pub purged: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -499,7 +509,7 @@ pub struct JournalChanges {
     pub history: MapChanges<RowKey, Vec<HistoryEntry>>,
     pub seen: MapChanges<NodeId, Vec<Seen>>,
     pub listed: Option<bool>,
-    pub absent: MapChanges<NodeId, i64>,
+    pub absent: MapChanges<NodeId, Absent>,
 }
 
 impl JournalChanges {
@@ -535,7 +545,7 @@ pub struct Journal {
     listed: bool,
     listed_before: bool,
     ids: IdGen,
-    absent: TrackedMap<NodeId, i64>,
+    absent: TrackedMap<NodeId, Absent>,
     now_ms: u64,
 }
 
@@ -627,7 +637,7 @@ impl Journal {
     pub fn set_clock(&mut self, now_ms: u64) {
         self.now_ms = now_ms;
         let lapsed: Vec<NodeId> = (self.absent.iter())
-            .filter(|(_, since)| now_ms as i64 - **since >= ABSENT_FOR_MS)
+            .filter(|(_, absent)| now_ms as i64 - absent.since_ms >= ABSENT_FOR_MS)
             .map(|(node, _)| node.clone())
             .collect();
         for node in lapsed {
@@ -663,8 +673,31 @@ impl Journal {
 
     pub fn r_lacks(&mut self, node: &NodeId) {
         if self.absent.get(node).is_none() {
-            self.absent.insert(node.to_owned(), self.now_ms as i64);
+            let since_ms = self.now_ms as i64;
+            (self.absent).insert(
+                node.to_owned(),
+                Absent {
+                    since_ms,
+                    purged: false,
+                },
+            );
         }
+    }
+
+    pub fn superseded_as_purged(&mut self, node: &NodeId) {
+        let since_ms = (self.absent.get(node)).map_or(self.now_ms as i64, |absent| absent.since_ms);
+        (self.absent).insert(
+            node.to_owned(),
+            Absent {
+                since_ms,
+                purged: true,
+            },
+        );
+    }
+
+    /// Whether the server answered a create of `node` `SUPERSEDED` because it purged it, and R has not held the node since.
+    pub fn purged(&self, node: &NodeId) -> bool {
+        self.absent.get(node).is_some_and(|absent| absent.purged)
     }
 
     pub fn r_holds(&mut self, node: &NodeId) {

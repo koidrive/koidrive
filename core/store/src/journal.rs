@@ -3,8 +3,8 @@
 use std::collections::BTreeMap;
 
 use koidrive_engine::journal::{
-    Author, Field, Flight, HistoryEntry, IntentId, JournalChanges, JournalState, Row, RowState,
-    Seen,
+    Absent, Author, Field, Flight, HistoryEntry, IntentId, JournalChanges, JournalState, Row,
+    RowState, Seen,
 };
 use koidrive_engine::tree::NodeId;
 use koidrive_proto::v1::FieldIntents;
@@ -117,12 +117,16 @@ impl Tx<'_> {
         }
         let mut stmt = self
             .0
-            .prepare_cached("SELECT node_id, since_ms FROM journal_absent")?;
+            .prepare_cached("SELECT node_id, since_ms, purged FROM journal_absent")?;
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
+            let absent = Absent {
+                since_ms: row.get(1)?,
+                purged: row.get(2)?,
+            };
             state
                 .absent
-                .insert(NodeId::from(row.get::<_, String>(0)?), row.get(1)?);
+                .insert(NodeId::from(row.get::<_, String>(0)?), absent);
         }
         if let Some(listed) = self
             .0
@@ -238,13 +242,13 @@ impl Tx<'_> {
             .0
             .prepare_cached("DELETE FROM journal_absent WHERE node_id = ?1")?;
         let mut put = self.0.prepare_cached(
-            "INSERT INTO journal_absent (node_id, since_ms) VALUES (?1, ?2)
-             ON CONFLICT (node_id) DO UPDATE SET since_ms = excluded.since_ms",
+            "INSERT INTO journal_absent (node_id, since_ms, purged) VALUES (?1, ?2, ?3)
+             ON CONFLICT (node_id) DO UPDATE SET since_ms = excluded.since_ms, purged = excluded.purged",
         )?;
-        for (node, since) in absent {
+        for (node, absent) in absent {
             let node = node.to_string();
-            match since {
-                Some(since) => put.execute(params![node, since])?,
+            match absent {
+                Some(absent) => put.execute(params![node, absent.since_ms, absent.purged])?,
                 None => remove.execute([node])?,
             };
         }

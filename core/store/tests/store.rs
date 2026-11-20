@@ -10,8 +10,8 @@ use koidrive_engine::first_link::PriorSync;
 use koidrive_engine::guard::{Counted, GuardState, RemoteDeletion, Trash};
 use koidrive_engine::ids::{IdGen, uuid_v7};
 use koidrive_engine::journal::{
-    Author, Field, Flight, HistoryEntry, IntentId, JournalState, Place, Row, RowState, Seen, Value,
-    WireBase,
+    Absent, Author, Field, Flight, HistoryEntry, IntentId, JournalState, Place, Row, RowState,
+    Seen, Value, WireBase,
 };
 use koidrive_engine::question::{
     Answer, Frozen, Held, Limit, Question, QuestionKind, RecoveryCause, RecoveryGroup,
@@ -1500,7 +1500,23 @@ fn journal_state() -> JournalState {
         )]
         .into(),
         listed: true,
-        absent: [("b".into(), 1_700)].into(),
+        absent: [
+            (
+                "b".into(),
+                Absent {
+                    since_ms: 1_700,
+                    purged: false,
+                },
+            ),
+            (
+                "c".into(),
+                Absent {
+                    since_ms: 1_800,
+                    purged: true,
+                },
+            ),
+        ]
+        .into(),
     }
 }
 

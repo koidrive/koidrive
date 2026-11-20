@@ -675,18 +675,8 @@ cases = ["{1:064}"]
         takes_along = "a_first_link_discard_takes_along_only_the_server_entries_the_user_leaves_alone"
         w78f3 = "78f33ddc3d91d9ca24ee8db9ad24f0ca0437d7aef0592e880d853f42fbc7443a"
         l14fe = "14fe391f4d7b8011cbf4479f6c7a329d79742ba2970f9a9dba0de41bb92f4f40"
-        n4442 = "4442bdb158309f76600a81d7351a9267b3cf826d08d5887c8a992146087eab7d"
-        n69c1 = "69c129782cc57fcf8e82f0e9d767c210d81c11f90290138f140339676ee9d6c5"
-        n70b2 = "70b286b9f8d5640ad27eba6104638268031be0aa9268b713eca2239fbff6034c"
-        n7457 = "745723bff6b3c4eb450295c6ae6237487575d221aab0543f9bf94bfbeddaacf1"
-        n7439 = "7439bd1d1523c62636a3a089099476a79739135fb3c8a10d1114c9917d0b90a8"
         onto = "a_node_another_device_moves_onto_a_folder_the_rules_leave_out_here_settles"
         pe254 = "e254728256babff00e24d42a4a15af9993384fc9a3cc718e665f4c52f90c306b"
-        nb0b1 = "b0b1511ba1319de5532de7a67f9e833dec12e4312af382f9c0d2443766f64a67"
-        nefe8 = "efe8f140b960f31ea64e19769e48e736228ff9268ce57cde320df60f45e583e3"
-        nb1ca = "b1cab36581e3d2b85bc51e30179603e0b333705a676224504b8ab251445c581d"
-        looped = "no convergence within 400 steps at core/sim/tests/engine_sync/common.rs:2028."
-        superseded = ["4442bdb15830", "70b286b9f8d5", "745723bff6b3", "7439bd1d1523"]
         t1437 = "143726c8b8801b7144fea65b7f6befcad226e9320027197f360eb3e51ee4b6f4"
         w570e = "570e17d678be8db7ebb4f77ea1126ef4fb3f78e9e54a571548f9a65426b4a44e"
         l6e1e = "6e1e45a64034f0df942d9c9029a9dba041aeff0631a6fa348d5702b89187059f"
@@ -853,18 +843,6 @@ cases = ["{1:064}"]
             (onto, parked, pe254, [("P", "GUN-1450", ["e254728256ba"])]),
             (onto, parked, other, []),
             (takes_along, parked, pe254, []),
-            (takes_along, looped, n4442, [("N", "GUN-1012", superseded)]),
-            (takes_along, looped, n70b2, [("N", "GUN-1012", superseded)]),
-            (takes_along, looped, n7457, [("N", "GUN-1012", superseded)]),
-            (takes_along, looped, n7439, [("N", "GUN-1012", superseded)]),
-            (takes_along, looped, n69c1, []),
-            (takes_along, looped, nb0b1, []),
-            (takes_along, looped, nefe8, []),
-            (takes_along, looped, nb1ca, []),
-            (takes_along, looped, other, []),
-            (takes_along, looped.replace("400 steps", "400 steps, then 2 more"), n4442, []),
-            (local_changes, looped, n4442, []),
-            (server_restores, looped, n4442, []),
             (rules_change, excluded_left, v0d10, []),
             (rules_leave_out, excluded_left, vad76, []),
         ]:
