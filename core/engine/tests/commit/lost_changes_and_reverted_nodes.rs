@@ -31,9 +31,6 @@ fn a_delete_the_server_lost_is_sent_again() {
     assert_eq!(ops(&commit), [delete("d")]);
 }
 
-/// This device deleted f at seq 5 after another device renamed it from a to b. The server lost the
-/// rename and the delete, and a bootstrap lists f at a, as it was before the rename, at seq 1. The
-/// delete is sent again, so the rename that the other device may send again does not bring f back.
 #[test]
 fn a_delete_the_server_lost_is_sent_again_where_a_lost_rename_left_the_node() {
     let rows = [synced("f", file(ROOT, "b", 1))];
