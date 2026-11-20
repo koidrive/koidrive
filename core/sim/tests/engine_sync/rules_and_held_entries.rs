@@ -1630,3 +1630,33 @@ fn a_rename_of_an_arrival_another_device_then_moves_out_changes_that_entry_alone
         "the user's outstanding rename was to an arrival, even after R moved the entry away"
     );
 }
+
+#[test]
+fn a_rename_of_an_entry_that_came_with_an_arrival_changes_that_entry_alone_after_another_device_moves_it_out()
+ {
+    let (mut device, kept, discarded) = a_file_in_a_taken_along_server_folder();
+    place_dir(&mut device, "arrival", None, Some(("root", "arrival")));
+    place_dir(&mut device, "child", None, Some(("arrival", "child")));
+    device.note_taken_along([&"s".into()]);
+    an_arrival(&mut device, "s");
+    place_dir(&mut device, "arrival", Some(("s", "arrival")), None);
+    let synced = device.trees.remote().live(&"child".into()).cloned();
+    device.trees.set_synced("child".into(), synced);
+    place_dir(&mut device, "child", Some(("arrival", "renamed")), None);
+    device.acted_on("child".into());
+    assert!(!acted_below(&device, &"s".into(), &kept, &discarded));
+    device.receive(
+        &[ChangeRecord {
+            change: Some(change_record::Change::Node(NodeState {
+                node_id: "child".into(),
+                parent_id: "root".into(),
+                name: "child".into(),
+                kind: 1,
+                status: 1,
+                ..Default::default()
+            })),
+        }],
+        false,
+    );
+    assert!(!revive(&device, &discarded, &kept, &BTreeSet::new()).contains(&"h".into()));
+}

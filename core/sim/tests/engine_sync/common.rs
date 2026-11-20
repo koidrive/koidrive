@@ -615,34 +615,45 @@ impl Device {
     }
 
     fn note_arrival(&mut self, node: &NodeId) {
-        let inside = |parent: &dyn Fn(&NodeId) -> Option<NodeId>, folder: &NodeId| {
-            let mut seen = BTreeSet::new();
-            let mut current = Some(node.clone());
-            while let Some(at) = current.filter(|at| seen.insert(at.clone())) {
-                if at == *folder {
-                    return true;
+        let inside =
+            |from: &NodeId, parent: &dyn Fn(&NodeId) -> Option<NodeId>, folder: &NodeId| {
+                let mut seen = BTreeSet::new();
+                let mut current = Some(from.clone());
+                while let Some(at) = current.filter(|at| seen.insert(at.clone())) {
+                    if at == *folder {
+                        return true;
+                    }
+                    current = parent(&at);
                 }
-                current = parent(&at);
-            }
-            false
-        };
+                false
+            };
         let remote = |at: &NodeId| {
             self.trees
                 .remote()
                 .live(at)
                 .map(|shape| shape.parent.clone())
         };
-        let folders: BTreeSet<NodeId> = (self.on_server_when_taken_along.iter())
-            .filter(|(folder, baseline)| {
-                inside(&remote, folder) && !inside(&|at| baseline.get(at).cloned(), folder)
-            })
-            .map(|(folder, _)| folder.clone())
-            .collect();
-        if !folders.is_empty() {
-            self.arrivals
-                .entry(node.clone())
-                .or_default()
-                .extend(folders);
+        let mut came = vec![node.clone()];
+        let mut at = 0;
+        while let Some(parent) = came.get(at).cloned() {
+            came.extend(
+                (self.trees.remote().iter())
+                    .filter(|(_, child)| !child.trashed && child.shape.parent == parent)
+                    .map(|(id, _)| id.clone()),
+            );
+            at += 1;
+        }
+        let mut arrived = Vec::new();
+        for (folder, baseline) in &self.on_server_when_taken_along {
+            for entry in came.iter().filter(|entry| {
+                inside(entry, &remote, folder)
+                    && !inside(entry, &|at| baseline.get(at).cloned(), folder)
+            }) {
+                arrived.push((entry.clone(), folder.clone()));
+            }
+        }
+        for (entry, folder) in arrived {
+            self.arrivals.entry(entry).or_default().insert(folder);
         }
     }
 
@@ -2055,22 +2066,8 @@ fn acted_below(
             })
     };
     let belongs_here = |entry: &NodeId| !kept_with.contains_key(id) || reaches(entry, &at_discard);
-    let in_remote = |at: &NodeId| trees.remote().live(at).map(|remote| remote.parent.clone());
-    let arrived = |entry: &NodeId| {
-        let mut seen = BTreeSet::new();
-        let mut current = Some(entry.to_owned());
-        while let Some(at) = current.filter(|at| at != id && seen.insert(at.clone())) {
-            if device
-                .arrivals
-                .get(&at)
-                .is_some_and(|folders| folders.contains(id))
-            {
-                return true;
-            }
-            current = in_remote(&at);
-        }
-        false
-    };
+    let arrived =
+        |entry: &NodeId| (device.arrivals.get(entry)).is_some_and(|folders| folders.contains(id));
     let as_agreed = |entry: &NodeId| {
         let Some(local) = trees.local().get(entry) else {
             return trees.remote().live(entry).is_none();
