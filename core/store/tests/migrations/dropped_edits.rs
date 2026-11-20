@@ -104,7 +104,10 @@ fn an_edit_in_flight_in_a_store_from_before_dropped_edits_were_recorded_is_sent_
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("state.db");
     let saved = EngineState {
-        trees: trees.state(),
+        trees: TreesState {
+            journal: JournalState::default(),
+            ..trees.state()
+        },
         commits: commits.state(),
         ..Default::default()
     };
