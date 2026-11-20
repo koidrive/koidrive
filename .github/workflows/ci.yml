@@ -798,6 +798,12 @@ jobs:
           KOIDRIVE_DRIVER_RELEASE: "1"
           KOIDRIVE_SCALE_DIR: /mnt/koidrive-scale
         run: core/driver/scripts/integration-test.sh a_first_sync_of_two_million_entries_keeps_moving --nocapture
+      - name: Test that a first sync holds at most its heap ceilings per entry
+        env:
+          KOIDRIVE_DRIVER_TEST: first_sync_bench
+          KOIDRIVE_DRIVER_RELEASE: "1"
+          KOIDRIVE_SCALE_DIR: /mnt/koidrive-scale
+        run: core/driver/scripts/integration-test.sh a_first_sync_holds_at_most_its_heap_ceilings_per_entry --nocapture
 
   cli-integration:
     name: cli integration (ubuntu-latest)

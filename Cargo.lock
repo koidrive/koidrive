@@ -1409,6 +1409,7 @@ dependencies = [
  "koidrive-store",
  "koidrive-telemetry",
  "koidrive-test-support",
+ "libc",
  "proptest",
  "prost",
  "reqwest",
