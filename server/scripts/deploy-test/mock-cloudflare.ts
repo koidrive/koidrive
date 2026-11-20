@@ -38,6 +38,8 @@ export class MockCloudflare {
   readonly namespaces: { id: string; class: string; script?: string | null }[] = [];
   readonly runAttempts = new Map<string, MockRunAttempt>();
   githubStatus = 200;
+  githubDelayMs = 0;
+  readonly hiddenWorkers = new Set<string>();
   readonly claimCode = "ZQ7K-M2XR-9WPD";
   readonly logs: { script: string; timestamp: number; message?: string; path?: string; visibleFrom?: number }[] = [];
   readonly queryDryFlags: unknown[] = [];
@@ -140,9 +142,13 @@ export class MockCloudflare {
         return answer ? send(answer.status, answer.body) : missing();
       }
       if ((match = /^\/github\/repos\/koidrive\/koidrive\/actions\/runs\/(\d+)\/attempts\/(\d+)$/.exec(path)) && method === "GET") {
-        if (this.githubStatus !== 200) return send(this.githubStatus, { message: "Server Error" });
         const attempt = this.runAttempts.get(Number(match[1]) + "/" + Number(match[2]));
-        return attempt ? send(200, attempt) : send(404, { message: "Not Found" });
+        setTimeout(() => {
+          if (this.githubStatus !== 200) send(this.githubStatus, { message: "Server Error" });
+          else if (attempt) send(200, attempt);
+          else send(404, { message: "Not Found" });
+        }, this.githubDelayMs);
+        return;
       }
       const api = /^\/client\/v4\/accounts\/[^/]+(\/.*)$/.exec(path)?.[1];
       if (!api) return missing();
@@ -154,7 +160,7 @@ export class MockCloudflare {
         return worker ? ok({ id: worker.id, name: match[1], created_on: new Date().toISOString() }) : missing();
       }
       if (api === "/workers/scripts" && method === "GET") {
-        return ok([...this.unnamedListings, ...[...this.workers].map(([name, worker]) => ({ id: name, created_on: worker.createdOn }))]);
+        return ok([...this.unnamedListings, ...[...this.workers].filter(([name]) => !this.hiddenWorkers.has(name)).map(([name, worker]) => ({ id: name, created_on: worker.createdOn }))]);
       }
       if ((match = /^\/workers\/scripts\/([^/]+)$/.exec(api)) && method === "DELETE") {
         if (!this.workers.delete(match[1]!)) return missing();

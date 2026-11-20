@@ -269,6 +269,31 @@ describe("sweep", () => {
     expect(mock.namespaces).toEqual([]);
   });
 
+  it("leaves a namespace alone while its Worker exists, even when the Worker list leaves the Worker out", async () => {
+    mock.runAttempts.set("7/3", attempt(Date.now() - HOUR, Date.now() + HOUR));
+    mock.addWorker("koidrive-test-7-3");
+    mock.hiddenWorkers.add("koidrive-test-7-3");
+    const { status, output } = await runTs("sweep");
+    expect(status).toBe(0);
+    expect(mock.namespaces).toHaveLength(2);
+    expect(mock.deletes()).toEqual([]);
+    expect(output).toContain("because its Worker koidrive-test-7-3 still exists");
+  });
+
+  it("stops at its time budget, succeeds, and leaves the rest for the next run", async () => {
+    for (const run of [11, 12, 13, 14, 15]) {
+      mock.runAttempts.set(run + "/1", attempt(Date.now() - HOUR, Date.now() + HOUR));
+      mock.addBucket("koidrive-test-" + run + "-1");
+    }
+    mock.githubDelayMs = 800;
+    const started = Date.now();
+    const { status, output } = await runTsWith({ KOIDRIVE_SWEEP_BUDGET_MS: "2000" }, "sweep");
+    expect({ status, errors: output.includes("::error::") }).toEqual({ status: 0, errors: false });
+    expect(Date.now() - started).toBeLessThan(10_000);
+    expect(output).toContain("::notice::The sweep stopped because the sweep used its 2 s budget");
+    expect(mock.buckets.size).toBeGreaterThan(0);
+  });
+
   it("leaves alone a bucket the API lists without a creation time", async () => {
     mock.runAttempts.set("7/1", attempt(Date.now() - HOUR, Date.now() + HOUR));
     const bucket = mock.addBucket("koidrive-test-7-1", "");

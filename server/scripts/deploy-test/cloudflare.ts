@@ -146,13 +146,13 @@ export interface Bucket {
   creationDate?: string;
 }
 
-export async function listBuckets(account: Account, prefix: string): Promise<Bucket[]> {
+export async function listBuckets(account: Account, prefix: string, deadline?: Deadline): Promise<Bucket[]> {
   const buckets = new Map<string, Bucket>();
   const seen = new Set<string>();
   let cursor = "";
   for (;;) {
     const query = new URLSearchParams({ name_contains: prefix, per_page: "1000", ...(cursor ? { cursor } : {}) });
-    const page = await call<{ buckets?: { name?: unknown; creation_date?: unknown }[] }>(account, "GET", `/accounts/${account.id}/r2/buckets?${query}`);
+    const page = await call<{ buckets?: { name?: unknown; creation_date?: unknown }[] }>(account, "GET", `/accounts/${account.id}/r2/buckets?${query}`, undefined, deadline);
     for (const bucket of page.result?.buckets ?? []) {
       if (typeof bucket.name === "string" && bucket.name.startsWith(prefix)) buckets.set(bucket.name, { name: bucket.name, creationDate: typeof bucket.creation_date === "string" ? bucket.creation_date : undefined });
     }
@@ -165,10 +165,10 @@ export async function listBuckets(account: Account, prefix: string): Promise<Buc
 
 export const EXPIRY_SECONDS = 24 * 60 * 60;
 
-export async function expireAllObjects(account: Account, bucket: string): Promise<void> {
+export async function expireAllObjects(account: Account, bucket: string, deadline?: Deadline): Promise<void> {
   const condition = { type: "Age", maxAge: EXPIRY_SECONDS };
   const rule = { id: "koidrive-test-expiry", enabled: true, conditions: { prefix: "" }, deleteObjectsTransition: { condition }, abortMultipartUploadsTransition: { condition } };
-  await call(account, "PUT", `/accounts/${account.id}/r2/buckets/${bucket}/lifecycle`, { rules: [rule] });
+  await call(account, "PUT", `/accounts/${account.id}/r2/buckets/${bucket}/lifecycle`, { rules: [rule] }, deadline);
 }
 
 export async function getBucket(account: Account, name: string): Promise<{ creationDate: string } | undefined> {
@@ -179,8 +179,8 @@ export async function getBucket(account: Account, name: string): Promise<{ creat
   return { creationDate: bucket.creation_date };
 }
 
-export async function getWorker(account: Account, name: string): Promise<{ id: string } | undefined> {
-  const response = await send(account, "GET", `/accounts/${account.id}/workers/workers/${name}`, { allowMissing: true });
+export async function getWorker(account: Account, name: string, deadline?: Deadline): Promise<{ id: string } | undefined> {
+  const response = await send(account, "GET", `/accounts/${account.id}/workers/workers/${name}`, { allowMissing: true, deadline });
   if (!response) return undefined;
   const worker = ((await response.json()) as Envelope<{ id?: string }>).result;
   if (!worker?.id) throw new ApiError("GET /accounts/{id}/workers/workers/" + name + " returned no id", 200);
@@ -237,19 +237,19 @@ export async function deleteObject(account: Account, bucket: string, key: string
   await send(account, "DELETE", `/accounts/${account.id}/r2/buckets/${bucket}/objects/${keyPath(key)}`, { allowMissing: true });
 }
 
-export async function deleteBucket(account: Account, bucket: string): Promise<boolean> {
-  return (await send(account, "DELETE", `/accounts/${account.id}/r2/buckets/${bucket}`, { allowMissing: true })) !== undefined;
+export async function deleteBucket(account: Account, bucket: string, deadline?: Deadline): Promise<boolean> {
+  return (await send(account, "DELETE", `/accounts/${account.id}/r2/buckets/${bucket}`, { allowMissing: true, deadline })) !== undefined;
 }
 
 /** With force, Cloudflare also deletes the Durable Object namespaces it implements. */
-export async function deleteWorker(account: Account, name: string): Promise<boolean> {
-  return (await send(account, "DELETE", `/accounts/${account.id}/workers/scripts/${name}?force=true`, { allowMissing: true })) !== undefined;
+export async function deleteWorker(account: Account, name: string, deadline?: Deadline): Promise<boolean> {
+  return (await send(account, "DELETE", `/accounts/${account.id}/workers/scripts/${name}?force=true`, { allowMissing: true, deadline })) !== undefined;
 }
 
-export async function listNamespaces(account: Account): Promise<Namespace[]> {
+export async function listNamespaces(account: Account, deadline?: Deadline): Promise<Namespace[]> {
   const found: Namespace[] = [];
   for (let page = 1; ; page++) {
-    const listed = await call<{ id?: unknown; class?: unknown; script?: unknown }[]>(account, "GET", `/accounts/${account.id}/workers/durable_objects/namespaces?per_page=1000&page=${page}`);
+    const listed = await call<{ id?: unknown; class?: unknown; script?: unknown }[]>(account, "GET", `/accounts/${account.id}/workers/durable_objects/namespaces?per_page=1000&page=${page}`, undefined, deadline);
     for (const namespace of listed.result ?? []) {
       if (typeof namespace.id !== "string" || typeof namespace.class !== "string") continue;
       found.push({ id: namespace.id, class: namespace.class, ...(typeof namespace.script === "string" ? { script: namespace.script } : {}) });
@@ -262,12 +262,12 @@ export async function namespacesOf(account: Account, script: string): Promise<Na
   return (await listNamespaces(account)).filter((namespace) => namespace.script === script);
 }
 
-export async function deleteNamespace(account: Account, id: string): Promise<boolean> {
-  return (await send(account, "DELETE", `/accounts/${account.id}/workers/durable_objects/namespaces/${id}`, { allowMissing: true })) !== undefined;
+export async function deleteNamespace(account: Account, id: string, deadline?: Deadline): Promise<boolean> {
+  return (await send(account, "DELETE", `/accounts/${account.id}/workers/durable_objects/namespaces/${id}`, { allowMissing: true, deadline })) !== undefined;
 }
 
-export async function listWorkers(account: Account): Promise<{ name: string; createdOn?: string }[]> {
-  const scripts = await call<{ id?: unknown; created_on?: unknown }[]>(account, "GET", `/accounts/${account.id}/workers/scripts`);
+export async function listWorkers(account: Account, deadline?: Deadline): Promise<{ name: string; createdOn?: string }[]> {
+  const scripts = await call<{ id?: unknown; created_on?: unknown }[]>(account, "GET", `/accounts/${account.id}/workers/scripts`, undefined, deadline);
   return (scripts.result ?? []).flatMap((script) => (typeof script.id === "string" ? [{ name: script.id, createdOn: typeof script.created_on === "string" ? script.created_on : undefined }] : []));
 }
 

@@ -564,6 +564,7 @@ async function teardown(account: Account): Promise<void> {
 }
 
 const RUN_NAME = /^koidrive-test-([1-9]\d*)-([1-9]\d*)$/;
+const SWEEP_MS = 3 * 60_000;
 const TEST_WORKFLOWS = [".github/workflows/deploy-test.yml", ".github/workflows/load-test.yml"];
 
 interface RunAttempt {
@@ -573,13 +574,21 @@ interface RunAttempt {
   updated_at: string;
 }
 
-async function runAttempt(repository: string, id: string, attempt: string): Promise<RunAttempt | undefined> {
+async function runAttempt(repository: string, id: string, attempt: string, deadline: Deadline): Promise<RunAttempt | undefined> {
   const api = process.env.GITHUB_API_URL || "https://api.github.com";
   const token = process.env.GH_TOKEN ?? "";
-  const response = await fetch(api + "/repos/" + repository + "/actions/runs/" + id + "/attempts/" + attempt, {
-    headers: { Accept: "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28", ...(token ? { Authorization: "Bearer " + token } : {}) },
-    signal: AbortSignal.timeout(30_000),
-  });
+  const remaining = deadline.atMs - Date.now();
+  if (remaining <= 0) throw new DeadlineError(deadline.what);
+  let response: Response;
+  try {
+    response = await fetch(api + "/repos/" + repository + "/actions/runs/" + id + "/attempts/" + attempt, {
+      headers: { Accept: "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28", ...(token ? { Authorization: "Bearer " + token } : {}) },
+      signal: AbortSignal.timeout(Math.min(30_000, remaining)),
+    });
+  } catch (error) {
+    if (Date.now() >= deadline.atMs) throw new DeadlineError(deadline.what);
+    throw error;
+  }
   if (response.status === 404) {
     await response.body?.cancel();
     return undefined;
@@ -593,12 +602,15 @@ type Verdict = "sweep" | "running" | { leftAlone: string };
 async function sweep(account: Account): Promise<void> {
   const current = testName();
   const repository = process.env.GITHUB_REPOSITORY || fail("GITHUB_REPOSITORY must name the repository whose runs the sweep checks");
+  const budgetMs = Number(process.env.KOIDRIVE_SWEEP_BUDGET_MS || SWEEP_MS);
+  const deadline = { atMs: Date.now() + budgetMs, what: "the sweep used its " + budgetMs / 1000 + " s budget" };
+  let unfinished = false;
   const attempts = new Map<string, RunAttempt | undefined>();
   const finishedRun = async (name: string): Promise<RunAttempt | Exclude<Verdict, "sweep">> => {
     if (name === current) return "running";
     const [, id, attempt] = RUN_NAME.exec(name) ?? [];
     if (!id || !attempt) return { leftAlone: "its name is not koidrive-test-<run id>-<attempt>" };
-    if (!attempts.has(name)) attempts.set(name, await runAttempt(repository, id, attempt));
+    if (!attempts.has(name)) attempts.set(name, await runAttempt(repository, id, attempt, deadline));
     const run = attempts.get(name);
     if (!run || !TEST_WORKFLOWS.includes(run.path.replace(/@.*$/, ""))) return { leftAlone: "no deploy-test or load-test run of " + repository + " has id " + id + " and attempt " + attempt };
     return run.status === "completed" ? run : "running";
@@ -615,9 +627,18 @@ async function sweep(account: Account): Promise<void> {
     const run = await finishedRun(script);
     return run === "running" || "leftAlone" in run ? run : "sweep";
   };
+  const orphaned = async (script: string): Promise<Verdict> => {
+    const found = await ofFinishedRun(script);
+    if (found !== "sweep") return found;
+    return (await getWorker(account, script, deadline)) ? { leftAlone: "its Worker " + script + " still exists" } : "sweep";
+  };
   const problems: string[] = [];
   const leftAlone: string[] = [];
   const visit = async (what: string, decide: () => Promise<Verdict>, remove: () => Promise<void>) => {
+    if (Date.now() >= deadline.atMs) {
+      unfinished = true;
+      return;
+    }
     try {
       const found = await decide();
       if (found === "running") console.log("Skipped the " + what + ": its run is still going");
@@ -628,40 +649,44 @@ async function sweep(account: Account): Promise<void> {
     }
   };
 
-  const failed = (what: string, error: unknown) => problems.push(what + ": " + (error instanceof Error ? error.message : String(error)));
+  const failed = (what: string, error: unknown) => {
+    if (error instanceof DeadlineError) unfinished = true;
+    else problems.push(what + ": " + (error instanceof Error ? error.message : String(error)));
+  };
 
-  const workers = await listWorkers(account).catch((error: unknown) => void failed("listing the Workers", error));
+  const workers = await listWorkers(account, deadline).catch((error: unknown) => void failed("listing the Workers", error));
   const live = new Set(workers?.map((worker) => worker.name));
   for (const worker of workers?.filter((candidate) => candidate.name.startsWith(NAME_PREFIX)) ?? []) {
     await visit("Worker " + worker.name, () => createdDuring(worker.name, worker.createdOn), async () => {
-      await deleteWorker(account, worker.name);
+      await deleteWorker(account, worker.name, deadline);
       console.log("Deleted the Worker " + worker.name + " and its Durable Objects, which its finished run left behind");
       live.delete(worker.name);
     });
   }
-  for (const bucket of (await listBuckets(account, NAME_PREFIX).catch((error: unknown) => void failed("listing the R2 buckets", error))) ?? []) {
+  for (const bucket of (await listBuckets(account, NAME_PREFIX, deadline).catch((error: unknown) => void failed("listing the R2 buckets", error))) ?? []) {
     await visit("R2 bucket " + bucket.name, () => createdDuring(bucket.name, bucket.creationDate), async () => {
       try {
-        await deleteBucket(account, bucket.name);
+        await deleteBucket(account, bucket.name, deadline);
         console.log("Deleted the empty R2 bucket " + bucket.name + ", which its finished run left behind");
       } catch (error) {
         if (!(error instanceof ApiError && error.status === 409)) throw error;
-        await expireAllObjects(account, bucket.name);
+        await expireAllObjects(account, bucket.name, deadline);
         console.log("The R2 bucket " + bucket.name + " still holds objects. Its lifecycle rule deletes them within a day, and a later run's sweep deletes the bucket");
       }
     });
   }
-  const namespaces = workers ? await listNamespaces(account).catch((error: unknown) => void failed("listing the Durable Object namespaces", error)) : undefined;
+  const namespaces = workers ? await listNamespaces(account, deadline).catch((error: unknown) => void failed("listing the Durable Object namespaces", error)) : undefined;
   for (const namespace of namespaces ?? []) {
     const script = namespace.script;
     if (script === undefined || !script.startsWith(NAME_PREFIX) || live.has(script)) continue;
-    await visit("Durable Object namespace " + described([namespace]) + " of the deleted Worker " + script, () => ofFinishedRun(script), async () => {
-      await deleteNamespace(account, namespace.id);
+    await visit("Durable Object namespace " + described([namespace]) + " of the deleted Worker " + script, () => orphaned(script), async () => {
+      await deleteNamespace(account, namespace.id, deadline);
       console.log("Deleted the Durable Object namespace " + described([namespace]) + ", which outlived the Worker " + script + " of a finished run");
     });
   }
 
   for (const item of leftAlone) console.log("::warning::The sweep left alone " + item);
+  if (unfinished) console.log("::notice::The sweep stopped because " + deadline.what + ". The next run's sweep checks what is left");
   if (problems.length > 0) {
     for (const problem of problems) console.error("::error::sweep: " + problem);
     fail("the sweep could not check or delete everything earlier runs left behind");
