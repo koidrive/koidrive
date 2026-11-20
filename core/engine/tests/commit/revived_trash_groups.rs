@@ -1112,10 +1112,19 @@ fn a_parked_folder_another_device_trashed_comes_back_only_with_what_the_rules_ke
         name: "c.txt".into(),
         ..Default::default()
     });
-    for (child, sent) in [(None, vec![]), (Some("c.tmp"), vec![]), (Some("c.txt"), vec![create])] {
+    for (child, sent) in [
+        (None, vec![]),
+        (Some("c.tmp"), vec![]),
+        (Some("c.txt"), vec![create]),
+    ] {
         let mut rows = vec![
             synced("s", dir(ROOT, "ss")),
-            ("p", Some(dir(ROOT, "ß")), None, Some(trashed(dir(ROOT, "ß")))),
+            (
+                "p",
+                Some(dir(ROOT, "ß")),
+                None,
+                Some(trashed(dir(ROOT, "ß"))),
+            ),
         ];
         rows.extend(child.map(|name| ("c", Some(dir("p", name)), None, None)));
         let mut trees = trees(&rows);
@@ -1134,7 +1143,10 @@ fn a_parked_folder_another_device_trashed_comes_back_only_with_what_the_rules_ke
         trees.settle(&Default::default());
         let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
         let commit = build(&mut commits, &mut trees, &mut ids);
-        assert_eq!(commit.as_ref().map(ops).unwrap_or_default(), sent, "{child:?}");
+        assert_eq!(
+            commit.as_ref().map(ops).unwrap_or_default(),
+            sent,
+            "{child:?}"
+        );
     }
 }
-
