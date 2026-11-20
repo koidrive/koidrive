@@ -103,7 +103,12 @@ impl Engine {
     /// changed in the engine state, and the ID generator. A row of a node the tree no longer holds is removed. A
     /// transaction that fails ends the task, which loads the engine again from the store.
     pub fn checkpoint(&mut self, tx: &Tx<'_>) -> Result<(), Error> {
+        let t = std::time::Instant::now();
         self.trees.settle(self.commits.aliases());
+        let settled = t.elapsed().as_millis();
+        if settled >= 200 {
+            eprintln!("SLOW settle {settled}");
+        }
         let changed = self.trees.take_changed();
         self.local_written_since_load |= !changed.local.is_empty();
         for id in &changed.local {
