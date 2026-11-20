@@ -1617,14 +1617,15 @@ fn still_discarded_in(
 
 fn removed_by_user_from(device: &Device, id: &NodeId) -> bool {
     let trees = &device.trees;
+    let remote = trees.remote();
     let held_by_r = |child: &NodeId| {
         let mut seen = BTreeSet::new();
-        let mut at = trees.remote().live(child).map(|shape| shape.parent.clone());
+        let mut at = remote.live(child).map(|shape| shape.parent.clone());
         while let Some(parent) = at.filter(|parent| seen.insert(parent.clone())) {
             if parent == *id {
                 return true;
             }
-            at = trees.remote().get(&parent).map(|node| node.shape.parent.clone());
+            at = remote.get(&parent).map(|node| node.shape.parent.clone());
         }
         false
     };
