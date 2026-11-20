@@ -433,10 +433,10 @@ impl Tx<'_> {
         }
         let mut stmt = self
             .0
-            .prepare_cached("SELECT node_id FROM names_left_out")?;
+            .prepare_cached("SELECT node_id, sending FROM names_left_out")?;
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
-            state.trees.names_left_out.insert(row.get(0)?);
+            state.trees.names_left_out.insert(row.get(0)?, row.get(1)?);
         }
         let mut stmt = self.0.prepare_cached("SELECT node_id FROM kept_folders")?;
         let mut rows = stmt.query([])?;
@@ -997,10 +997,11 @@ impl Tx<'_> {
             "DELETE FROM unsent_moves WHERE node_id = ?1",
             "INSERT OR IGNORE INTO unsent_moves (node_id) VALUES (?1)",
         )?;
-        self.write_set(
+        self.write_map(
             names_left_out,
             "DELETE FROM names_left_out WHERE node_id = ?1",
-            "INSERT OR IGNORE INTO names_left_out (node_id) VALUES (?1)",
+            "INSERT OR REPLACE INTO names_left_out (node_id, sending) VALUES (?1, ?2)",
+            |put, node, sending| put.execute(params![node, sending]),
         )?;
         self.write_set(
             unsent_creates,

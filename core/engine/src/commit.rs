@@ -1530,6 +1530,7 @@ impl Commits {
             trees.resend_folders_of_changes();
         }
         trees.unsend_finishes(None);
+        trees.unsend_left_out_renames();
         trees.applied_head(base.seq);
         trees.check_finishes();
         self.retry_waiting(trees, BTreeSet::new(), Vec::new());
@@ -1856,7 +1857,16 @@ impl Commits {
             }
         }
         if ops.is_empty() && released.is_empty() {
-            ops.extend(displaced_renames(trees, &skip, &self.device_name.0, now_ms).take(cap));
+            let renames: Vec<proto::Op> =
+                displaced_renames(trees, &skip, &self.device_name.0, now_ms)
+                    .take(cap)
+                    .collect();
+            for op in &renames {
+                if let Some(op::Op::Move(moved)) = &op.op {
+                    trees.send_left_out_rename(&moved.node_id);
+                }
+            }
+            ops.extend(renames);
         }
         if ops.is_empty() {
             self.keep_unsent(trees, released);
@@ -2578,7 +2588,7 @@ impl Commits {
                         && applied
                         && target != *id
                         && !finished
-                        && !renamed_ahead_of_the_disk(trees, moved)
+                        && !(moved.from.is_some() && trees.left_out_rename_sent(id))
                     {
                         let shape = Shape {
                             parent: target.clone(),
@@ -2595,6 +2605,7 @@ impl Commits {
                     if applied || cycle || superseded {
                         trees.sent_move(id);
                     }
+                    trees.answer_left_out_rename(id);
                     if cycle {
                         trees.revert(id.clone());
                     }
@@ -3147,6 +3158,7 @@ impl Commits {
         }
         if self.in_flight.is_none() {
             trees.unsend_finishes(head_moved);
+            trees.unsend_left_out_renames();
         }
         self.reject_unsent_when_read_only();
         Ok(failure)
@@ -3848,18 +3860,6 @@ fn displaced_renames<'a>(
                 ..Default::default()
             })
         })
-}
-
-fn renamed_ahead_of_the_disk(trees: &Trees, moved: &proto::Move) -> bool {
-    let Some(from) = &moved.from else {
-        return false;
-    };
-    trees.local().get(&moved.node_id).is_some_and(|local| {
-        let at = |parent: &str, name: &str| {
-            !local.parked && local.shape.parent == parent && nfc(&local.shape.name) == nfc(name)
-        };
-        !at(&moved.new_parent_id, &moved.new_name) && !at(&from.parent_id, &from.name)
-    })
 }
 
 fn conflict_rename(trees: &Trees, id: &NodeId, device_name: &str, now_ms: u64) -> Option<String> {

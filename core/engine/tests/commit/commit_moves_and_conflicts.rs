@@ -1813,3 +1813,46 @@ fn creates_inside_a_new_folder_in_a_trashed_folder_wait_for_the_trashed_folders_
         "{first:?}"
     );
 }
+
+#[test]
+fn a_sent_conflict_rename_keeps_its_record_until_the_answer_even_if_r_or_l_changes() {
+    for trashed_remotely in [true, false] {
+        let mut trees = trees(&[("n", None, None, Some(remote(file(ROOT, "ss", 1))))]);
+        trees.set_rules::<&str>(
+            &[],
+            koidrive_engine::ignore::Source::Koiignore,
+            Some(RuleFile::parse(b"ss/\n")),
+        );
+        trees.rules_scanned();
+        let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+        trees.settle(commits.aliases());
+        let mut effects = Effects::default();
+        let refused = effects
+            .plan(&trees, None, &mut ids, NOW, BatchLimit::ONE)[0]
+            .effect_id
+            .clone();
+        effects.taken(&mut trees, &refused, Some(Kind::Dir)).unwrap();
+        trees.settle(commits.aliases());
+        let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
+        let sent = ops(&commit);
+        let [op::Op::Move(sent)] = sent.as_slice() else {
+            panic!("{sent:?}");
+        };
+        assert_eq!(sent.from.as_ref().unwrap().name, "ss");
+        let code = if trashed_remotely {
+            trees.set_remote("n".into(), trashed(file(ROOT, "ss", 1)));
+            op_result::Code::Superseded
+        } else {
+            trees.set_local("n".into(), local(file(ROOT, "ss", 1), 1));
+            op_result::Code::Applied
+        };
+        trees.settle(commits.aliases());
+        assert!(trees.name_left_out("n"), "{trashed_remotely}");
+        if !trashed_remotely {
+            trees.set_remote("n".into(), remote_at(file(ROOT, &sent.new_name, 1), 6));
+        }
+        commits.received(result(6, vec![outcome(code)])).unwrap();
+        assert!(commits.acknowledge(&mut trees, 6));
+        assert!(!trees.name_left_out("n"), "{trashed_remotely}");
+    }
+}

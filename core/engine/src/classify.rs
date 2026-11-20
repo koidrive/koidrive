@@ -659,7 +659,7 @@ pub struct Trees {
     /// See [`TreesState::dropped_edits`].
     dropped_edits: TrackedSet<NodeId>,
     unsent_moves: TrackedSet<NodeId>,
-    names_left_out: TrackedSet<NodeId>,
+    names_left_out: TrackedMap<NodeId, bool>,
     unsent_creates: TrackedSet<NodeId>,
     kept_folders: TrackedSet<NodeId>,
     kept_entries: TrackedMap<NodeId, KeptEntries>,
@@ -786,7 +786,7 @@ impl Trees {
             unsent_edits: TrackedSet::default(),
             dropped_edits: TrackedSet::default(),
             unsent_moves: TrackedSet::default(),
-            names_left_out: TrackedSet::default(),
+            names_left_out: TrackedMap::default(),
             unsent_creates: TrackedSet::default(),
             kept_folders: TrackedSet::default(),
             kept_entries: TrackedMap::default(),
@@ -1359,7 +1359,7 @@ impl Trees {
         let moved = !(self.r.live(&id)).is_some_and(|old| old.same_position(&node.shape));
         let home = (self.l.get(&id))
             .is_some_and(|local| !local.parked && local.shape.same_position(&node.shape));
-        if node.trashed || moved || home {
+        if (node.trashed || moved || home) && !self.left_out_rename_sent(&id) {
             self.names_left_out.remove(&id);
         }
         let sent_again = self.resends.contains(&id) || self.lost_creates.contains(&id);
@@ -1788,7 +1788,9 @@ impl Trees {
     }
 
     pub fn remove_remote(&mut self, id: &NodeId) {
-        self.names_left_out.remove(id);
+        if !self.left_out_rename_sent(id) {
+            self.names_left_out.remove(id);
+        }
         self.cycles_may_end = true;
         self.place_ids.remove(id);
         self.remote_rules_files.remove(id);
@@ -2154,7 +2156,9 @@ impl Trees {
         self.lost.remove(&id);
         self.removed_from.remove(&id);
         self.found.remove(&id);
-        if (self.r.live(&id)).is_some_and(|remote| node.shape.same_position(remote)) {
+        if (self.r.live(&id)).is_some_and(|remote| node.shape.same_position(remote))
+            && !self.left_out_rename_sent(&id)
+        {
             self.names_left_out.remove(&id);
         }
         if self.outside.remove(&id) {
@@ -2627,6 +2631,7 @@ impl Trees {
 
     pub(crate) fn rewound(&mut self) {
         self.recoveries += 1;
+        self.unsend_left_out_renames();
         for finish in self.pending_finishes.values_mut() {
             finish.sending = false;
             finish.base = None;
@@ -3473,11 +3478,32 @@ impl Trees {
     }
 
     pub(crate) fn leave_name_out(&mut self, id: &str) {
-        self.names_left_out.insert(id.to_owned());
+        self.names_left_out
+            .get_or_insert_with(id.to_owned(), || false);
     }
 
     pub fn name_left_out(&self, id: &str) -> bool {
-        self.names_left_out.contains(id)
+        self.names_left_out.contains_key(id)
+    }
+
+    pub(crate) fn send_left_out_rename(&mut self, id: &str) {
+        if let Some(sending) = self.names_left_out.get_mut(id) {
+            *sending = true;
+        }
+    }
+
+    pub(crate) fn left_out_rename_sent(&self, id: &str) -> bool {
+        self.names_left_out.get(id) == Some(&true)
+    }
+
+    pub(crate) fn answer_left_out_rename(&mut self, id: &str) {
+        if self.left_out_rename_sent(id) {
+            self.names_left_out.remove(id);
+        }
+    }
+
+    pub(crate) fn unsend_left_out_renames(&mut self) {
+        self.names_left_out.retain(|_, sending| !sending);
     }
 
     /// The nodes [`Trees::displace_local`] took out of L, each with the identity L held for it.
@@ -3852,9 +3878,10 @@ impl Trees {
         if !self.rules_known {
             return;
         }
-        let lifted: Vec<NodeId> = (self.names_left_out.iter())
+        let lifted: Vec<NodeId> = (self.names_left_out.keys())
             .filter(|id| {
-                !path(&self.r, id).is_some_and(|(names, _)| self.ignores(&names, Kind::Dir))
+                !self.left_out_rename_sent(id)
+                    && !path(&self.r, id).is_some_and(|(names, _)| self.ignores(&names, Kind::Dir))
             })
             .cloned()
             .collect();
@@ -7079,7 +7106,8 @@ impl Trees {
             "an unsent move of a node L does not hold or that L, S and R all hold"
         );
         debug_assert_eq!(
-            (self.names_left_out.iter())
+            (self.names_left_out.keys())
+                .filter(|id| !self.left_out_rename_sent(id))
                 .find(|id| match self.r.live(id) {
                     None => true,
                     Some(remote) => {
@@ -7188,7 +7216,7 @@ impl Trees {
             unsent_edits: self.unsent_edits.to_set(),
             dropped_edits: self.dropped_edits.to_set(),
             unsent_moves: self.unsent_moves.to_set(),
-            names_left_out: self.names_left_out.to_set(),
+            names_left_out: self.names_left_out.to_map(),
             unsent_creates: self.unsent_creates.to_set(),
             kept_folders: self.kept_folders.to_set(),
             kept_entries: self.kept_entries.to_map(),

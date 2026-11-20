@@ -1435,7 +1435,7 @@ fn engine_state() -> EngineState {
             unsent_edits: nodes(["u"]),
             dropped_edits: nodes(["d"]),
             unsent_moves: nodes(["m"]),
-            names_left_out: nodes(["n"]),
+            names_left_out: [("n".into(), true)].into(),
             unsent_creates: nodes(["c"]),
             kept_folders: nodes(["k"]),
             kept_entries: BTreeMap::from([
