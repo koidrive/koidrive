@@ -1341,7 +1341,7 @@ fn engine_state() -> EngineState {
             reverted: nodes(["r"]),
             cycle_reverted: nodes(["r"]),
             unobserved: nodes(["u"]),
-            moved_in_after_discard: nodes(["m"]),
+            discard_members: BTreeMap::from([("m".into(), "f".into())]),
             parked_as: BTreeMap::from([("p".into(), "p-before".into())]),
             waiting: BTreeMap::from([
                 (

@@ -4475,20 +4475,18 @@ fn a_server_file_deleted_while_unobserved_in_a_taken_along_folder_leaves_the_fol
 }
 
 #[test]
-fn a_file_the_user_deletes_after_it_arrived_in_a_server_folder_in_a_discarded_folder_makes_the_folder_the_users()
+fn a_file_the_user_deletes_after_it_arrived_in_a_server_folder_in_a_discarded_folder_is_deleted_alone()
  {
     let (sent, trees) =
         a_file_that_arrived_in_a_server_folder_in_a_discarded_folder_after(|trees| {
             trees.remove_local(&"c".into());
         });
-    assert_eq!(
-        sent,
-        [("create dir", "f".to_owned()), ("move", "x".to_owned())]
-    );
+    assert_eq!(sent, [("delete", "c".to_owned())]);
     assert_eq!(
         trees.local().get(&"x".into()).unwrap().shape,
-        dir("f", "ignored")
+        dir("p", "server")
     );
+    assert!(trees.local().get(&"f".into()).is_none());
     assert!(trees.local().get(&"c".into()).is_none());
 }
 
@@ -5484,6 +5482,7 @@ fn a_server_folder_goes_back_from_a_folder_discarded_twice_once_the_rules_let_it
             "{restart}"
         );
         assert!(trees.local().get(&"nn".into()).is_none(), "{restart}");
+        assert!(trees.state().discard_members.is_empty(), "{restart}");
     }
 }
 
@@ -7507,24 +7506,11 @@ fn deleting_a_server_file_another_device_moves_into_the_taken_along_folder_chang
             answered_discard_of_a_server_folder_moved_in(&[], &[], Some(&[]), false, false);
         assert_eq!(sent, []);
         let sf: NodeId = "sf".into();
-        let into_s = file("s", "moved.txt", 5);
-        let mut moved = trees.remote().get(&sf).unwrap().clone();
-        (moved.shape, moved.meta_rev, moved.meta_edit_rev) = (into_s.clone(), 2, 2);
-        trees.set_remote(sf.clone(), moved);
-        let downloaded = trees.local().get(&sf).unwrap().clone();
-        trees.set_local(
-            sf.clone(),
-            LocalNode {
-                shape: into_s.clone(),
-                ..downloaded
-            },
-        );
-        trees.set_synced(sf.clone(), Some(into_s));
-        trees.settle(commits.aliases());
+        another_device_moves(&mut trees, &commits, &sf, file("s", "moved.txt", 5));
         if restart {
             let mut state = trees.state();
             if before_the_upgrade {
-                state.moved_in_after_discard.clear();
+                state.discard_members.clear();
             }
             trees = restarted_from(&trees, &[], state);
             commits = Commits::from_state(commits.state()).unwrap();
@@ -7554,5 +7540,131 @@ fn deleting_a_server_file_another_device_moves_into_the_taken_along_folder_chang
                 local(&trees)
             );
         }
+    }
+}
+
+fn another_device_moves(trees: &mut Trees, commits: &Commits, id: &NodeId, shape: Shape) {
+    let mut moved = trees.remote().get(id).unwrap().clone();
+    (moved.shape, moved.meta_rev, moved.meta_edit_rev) = (shape.clone(), 2, 2);
+    trees.set_remote(id.clone(), moved);
+    let downloaded = trees.local().get(id).unwrap().clone();
+    trees.set_local(
+        id.clone(),
+        LocalNode {
+            shape: shape.clone(),
+            ..downloaded
+        },
+    );
+    trees.set_synced(id.clone(), Some(shape));
+    trees.settle(commits.aliases());
+}
+
+#[test]
+fn deleting_an_entry_another_device_restores_into_the_taken_along_folder_changes_that_entry_alone()
+{
+    let (sent, mut trees, mut commits, mut ids) =
+        answered_discard_of_a_server_folder_moved_in(&[], &[], Some(&[]), false, false);
+    assert_eq!(sent, []);
+    let sf: NodeId = "sf".into();
+    let mut node = trees.remote().get(&sf).unwrap().clone();
+    (node.trashed, node.meta_rev) = (true, 2);
+    trees.set_remote(sf.clone(), node.clone());
+    trees.settle(commits.aliases());
+    let restored = file("s", "c.txt", 5);
+    (node.trashed, node.meta_rev, node.shape) = (false, 3, restored.clone());
+    trees.set_remote(sf.clone(), node);
+    trees.set_local(sf.clone(), local_node(restored.clone(), 77));
+    trees.set_synced(sf.clone(), Some(restored));
+    trees.settle(commits.aliases());
+    trees.remove_local(&sf);
+    let sent = quiet(&mut trees, &mut commits, &mut ids);
+    assert_eq!(sent, [("delete", "sf".into())], "{:?}", local(&trees));
+    assert!(trees.local().get(&"h".into()).is_none());
+}
+
+#[test]
+fn deleting_an_entry_another_device_moves_within_the_taken_along_folder_makes_its_discarded_folder_the_users()
+ {
+    let (sent, mut trees, mut commits, mut ids) =
+        answered_discard_of_a_server_folder_moved_in(&[], &[], Some(&[]), false, false);
+    assert_eq!(sent, []);
+    let sx: NodeId = "sx".into();
+    another_device_moves(&mut trees, &commits, &sx, file("sd", "moved.txt", 4));
+    trees.remove_local(&sx);
+    let sent = quiet(&mut trees, &mut commits, &mut ids);
+    assert!(sent.contains(&("create dir", "h".into())), "{sent:?}");
+    assert!(sent.contains(&("delete", "sx".into())), "{sent:?}");
+}
+
+#[test]
+fn deleting_an_entry_inside_a_folder_another_device_moves_into_the_taken_along_folder_changes_that_entry_alone()
+ {
+    for restart in [false, true] {
+        let (sent, mut trees, mut commits, mut ids) =
+            answered_discard_of_a_server_folder_moved_in(&[], &[], Some(&[]), false, false);
+        assert_eq!(sent, []);
+        let (incoming, inside): (NodeId, NodeId) = ("incoming".into(), "inside".into());
+        for (id, shape, like, ino) in [
+            (&incoming, dir(ROOT, "incoming"), "sd", 181),
+            (&inside, file("incoming", "file", 5), "sf", 182),
+        ] {
+            let mut remote = trees.remote().get(&like.into()).unwrap().clone();
+            remote.shape = shape.clone();
+            trees.set_remote(id.clone(), remote);
+            trees.set_local(id.clone(), local_node(shape.clone(), ino));
+            trees.set_synced(id.clone(), Some(shape));
+        }
+        trees.settle(commits.aliases());
+        another_device_moves(&mut trees, &commits, &incoming, dir("s", "incoming"));
+        if restart {
+            trees = restarted(&trees);
+            commits = Commits::from_state(commits.state()).unwrap();
+        }
+        trees.remove_local(&inside);
+        let sent = quiet(&mut trees, &mut commits, &mut ids);
+        assert_eq!(
+            sent,
+            [("delete", "inside".into())],
+            "{restart}: {:?}",
+            local(&trees)
+        );
+        assert!(trees.local().get(&"h".into()).is_none(), "{restart}");
+    }
+}
+
+#[test]
+fn an_entry_the_user_adds_to_the_taken_along_folder_makes_its_discarded_folder_the_users() {
+    for moved_in in [true, false] {
+        let (sent, mut trees, mut commits, mut ids) =
+            answered_discard_of_a_server_folder_moved_in(&[], &[], Some(&[]), false, false);
+        assert_eq!(sent, []);
+        let (added, sends) = match moved_in {
+            true => ("sf", "move"),
+            false => ("new", "create file"),
+        };
+        let shape = file("s", "added.txt", 5);
+        let node = (trees.local().get(&added.into()).cloned())
+            .unwrap_or_else(|| local_node(shape.clone(), 183));
+        trees.set_local_changed(
+            added.into(),
+            LocalNode {
+                shape: shape.clone(),
+                ..node
+            },
+        );
+        let sent = quiet(&mut trees, &mut commits, &mut ids);
+        assert_eq!(
+            sent,
+            [
+                ("create dir", "h".into()),
+                ("move", "s".into()),
+                (sends, added.into())
+            ]
+        );
+        assert_eq!(
+            trees.local().get(&"s".into()).unwrap().shape,
+            dir("h", "c.txt")
+        );
+        assert_eq!(trees.local().get(&added.into()).unwrap().shape, shape);
     }
 }

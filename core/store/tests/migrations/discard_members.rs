@@ -3,7 +3,7 @@
 use super::*;
 
 #[test]
-fn a_store_from_before_moves_into_taken_along_folders_were_recorded_opens_with_none_recorded() {
+fn a_store_from_before_discard_members_were_recorded_opens_with_none_recorded() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("state.db");
     let mut before = engine_state();
@@ -11,13 +11,13 @@ fn a_store_from_before_moves_into_taken_along_folders_were_recorded_opens_with_n
         .unwrap()
         .transaction(|tx| tx.set_engine_state(&before))
         .unwrap();
-    store_before(&path, "moved_in_after_discard");
+    store_before(&path, "discard_members");
 
     let mut store = Store::open(&path).unwrap();
     assert_eq!(applied(&path), all_migrations());
     let after = before.clone();
-    before.trees.moved_in_after_discard.clear();
-    assert!(!after.trees.moved_in_after_discard.is_empty());
+    before.trees.discard_members.clear();
+    assert!(!after.trees.discard_members.is_empty());
     assert_eq!(store.transaction(|tx| tx.engine_state()).unwrap(), before);
     store
         .transaction(|tx| tx.update_engine_state(&before, &after))
