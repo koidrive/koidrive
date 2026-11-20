@@ -196,12 +196,11 @@ impl Seen {
             return None;
         };
         let stamp = (stat.mtime_ns, stat.ctime_ns);
-        let second = |ns: i128| ns.div_euclid(1_000_000_000);
         let names = listed(fd, dir, unopened)?;
         let seen = Self {
             id: Some(stat.id),
             stamp,
-            racy: second(stamp.0.max(stamp.1)) >= second(at),
+            racy: stamp.0.max(stamp.1) > at - 1_000_000_000,
             listing: digest(names.iter().map(|(name, ino)| (name.as_os_str(), *ino))),
             needs_walk: false,
             done: false,
