@@ -63,6 +63,7 @@ fn nothing(root: &Path) -> Rescan {
         root: root_id(root),
         rules: vec![],
         read: vec![],
+        tracked: vec![],
         settled: vec![],
     }
 }
@@ -528,6 +529,7 @@ fn folder_replaced_by_a_symlink_is_removed_not_followed() {
             root: root_id(&root),
             rules: vec![],
             read: vec![],
+            tracked: vec![],
             settled: vec![],
         }
     );
@@ -578,6 +580,7 @@ fn unreadable_folder_is_kept_and_reported() {
                 root: root_id(root),
                 rules: vec![],
                 read: vec![],
+                tracked: vec![],
                 settled: vec![],
             },
             "{mode:o}"
@@ -942,6 +945,7 @@ fn rescans_and_polls_report_the_root_they_scanned() {
             root: second,
             rules: vec![],
             read: vec![],
+            tracked: vec![],
             settled: vec![],
         }
     );

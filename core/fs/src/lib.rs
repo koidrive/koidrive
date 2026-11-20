@@ -97,6 +97,9 @@
 //! §5.10 holds for a question to the user. The search does not look in
 //! [`PRIVATE_DIR`] or in the built-in platform files.
 //!
+//! [`GitIndex`] reads which files the git index of a work tree lists (RFC
+//! 0033 §3).
+//!
 //! The engine's private folder [`PRIVATE_DIR`] at the root is never scanned.
 //! The [`check_root`] of design §6.2, the root [`Marker`] and the rename that
 //! never replaces its target ([`rename_no_replace`], [`probe_no_replace`])
@@ -1014,6 +1017,10 @@ impl Scan<'_> {
         (self.rules.as_mut()).map_or(RulesRead::Same, |rules| rules.read(dir, rel, names))
     }
 
+    fn key(&self, name: &OsStr) -> OsString {
+        (self.rules.as_ref()).map_or_else(|| name.to_os_string(), |rules| rules.key(name))
+    }
+
     /// Records `rel` as unreadable and succeeds when `result` failed because
     /// the scan may not read in that folder.
     fn unless_denied(&mut self, rel: &Path, result: Result<()>) -> Result<()> {
@@ -1134,6 +1141,9 @@ pub struct Rescan {
     /// before has known rules again once it is here, whatever its rules files
     /// did meanwhile. Empty for a scan without [`Rules`].
     pub read: Vec<PathBuf>,
+    /// The work trees whose git index this scan read with other files listed (RFC 0033 §3), each with every file it
+    /// lists now, relative to the work tree, or none for a work tree that is gone. Empty for a scan without [`Rules`].
+    pub tracked: Vec<(PathBuf, Vec<String>)>,
     pub settled: Vec<PathBuf>,
 }
 
@@ -1299,7 +1309,7 @@ impl Snapshot {
         let Some(rules) = rules else {
             return Ok(Vec::new());
         };
-        let mut rules = Pending::new(rules);
+        let mut rules = Pending::new(rules, root);
         rules.seek(
             wanted
                 .values()
@@ -1427,7 +1437,7 @@ impl Snapshot {
                     .collect(),
                 plain_ids: BTreeMap::new(),
                 detached: Vec::new(),
-                rules: rules.as_deref_mut().map(Pending::new),
+                rules: (rules.as_deref_mut()).map(|rules| Pending::new(rules, root)),
                 cut: &mut *cut,
                 stopped,
                 files: 0,
@@ -2334,14 +2344,22 @@ impl Snapshot {
                 _ => None,
             }
         }));
-        let (rules, read) = match scan.rules.take() {
-            Some(rules) => rules.finish(|dir| {
-                self.entries
+        let finished = (scan.rules.take()).map(|rules| {
+            let folder = |entries: &BTreeMap<PathBuf, Entry>, dir: &Path| {
+                entries
                     .get(dir)
                     .is_some_and(|entry| entry.kind == EntryKind::Dir)
-            }),
-            None => (Vec::new(), Vec::new()),
-        };
+            };
+            rules.finish(
+                |dir| folder(&self.entries, dir),
+                |dir| folder(&self.left_out, dir),
+            )
+        });
+        unsettled.extend(
+            finished
+                .iter()
+                .flat_map(|done| done.unsettled.iter().cloned()),
+        );
         let reported: HashSet<&Path> = (changes.iter())
             .filter_map(|change| match change {
                 Change::Created { path, .. } | Change::Modified { path } => Some(path.as_path()),
@@ -2354,8 +2372,15 @@ impl Snapshot {
             unsettled,
             unreadable,
             root: root_stat.id,
-            rules,
-            read,
+            rules: finished
+                .as_ref()
+                .map(|done| done.rules.clone())
+                .unwrap_or_default(),
+            read: finished
+                .as_ref()
+                .map(|done| done.read.clone())
+                .unwrap_or_default(),
+            tracked: finished.map(|done| done.tracked).unwrap_or_default(),
             settled,
         })
     }
@@ -2394,9 +2419,13 @@ impl Snapshot {
             read => read == RulesRead::Changed,
         };
         names.retain(|name| !private(parent, name));
+        let missing: BTreeSet<OsString> = (focus.difference(&names))
+            .map(|name| scan.key(name))
+            .collect();
         for name in &names {
             let child = parent.join(name);
-            if widen || focus.contains(name) || !self.entries.contains_key(&child) {
+            let respelled = !missing.is_empty() && missing.contains(&scan.key(name));
+            if widen || focus.contains(name) || respelled || !self.entries.contains_key(&child) {
                 scan.replaced.push(child.clone());
                 scan.entry(dir, dev, name, child)?;
             }
@@ -3545,6 +3574,9 @@ pub struct Poll {
     /// The folders whose rules the scans of this poll established and that no
     /// later scan of the poll found unreadable; see [`Rescan::read`].
     pub read: Vec<PathBuf>,
+    /// The work trees whose git index the scans or index events of this poll read with other files listed, in the
+    /// order it read them; see [`Rescan::tracked`].
+    pub tracked: Vec<(PathBuf, Vec<String>)>,
     /// The files the scans of this poll found unchanged in content but whose change time moved, by any cause, to a new
     /// settled value or bound.
     pub settled: Vec<PathBuf>,
@@ -3634,6 +3666,11 @@ pub struct NativeWatcher {
     rules: Option<Rules>,
     /// The rules changes of the scans since the last poll returned.
     changed_rules: Vec<(PathBuf, Source, Option<Vec<u8>>)>,
+    changed_tracked: Vec<(PathBuf, Vec<String>)>,
+    /// The git directories of the work trees the rules know and, on Linux, the folders of those the rules leave out, which
+    /// no other watch covers, each with the identity a watch covers, if one does, and its work trees.
+    git_dirs: GitDirs,
+    git_watcher: Option<RecommendedWatcher>,
     /// The folders whose rules the scans since the last poll established.
     read: BTreeSet<PathBuf>,
     /// Folders whose subfolders may be unwatched, which are registered once a
@@ -3658,6 +3695,8 @@ pub struct NativeWatcher {
     #[cfg(test)]
     cut: Box<dyn FnMut(Cut<'_>) + Send>,
 }
+
+type GitDirs = BTreeMap<PathBuf, (Option<(u64, FileId)>, Vec<PathBuf>)>;
 
 impl NativeWatcher {
     /// Starts watching `root` recursively. The first poll compares the whole
@@ -3703,6 +3742,9 @@ impl NativeWatcher {
             uncovered: None,
             rules,
             changed_rules: Vec::new(),
+            changed_tracked: Vec::new(),
+            git_dirs: BTreeMap::new(),
+            git_watcher: None,
             read: BTreeSet::new(),
             rewatch: false,
             remount_checked: Instant::now(),
@@ -3801,7 +3843,23 @@ impl NativeWatcher {
             _ => false,
         };
         for path in event.paths {
-            let rel = path.strip_prefix(&self.root).unwrap_or(Path::new(""));
+            if let Some((_, trees)) = path
+                .parent()
+                .and_then(|dir| self.git_dirs.get(dir))
+                .cloned()
+            {
+                let name = path.file_name().unwrap_or_default().to_string_lossy();
+                if matches!(&*name, "index" | "index.lock") || name.starts_with("sharedindex.") {
+                    trees.into_iter().for_each(|tree| self.read_index(tree));
+                }
+                if !path.starts_with(&self.root) {
+                    continue;
+                }
+            }
+            let Ok(rel) = path.strip_prefix(&self.root) else {
+                self.watch_git_dirs();
+                continue;
+            };
             if listing_only && self.folder_as_scanned(&path, rel) {
                 self.listed.insert(rel.to_path_buf());
                 continue;
@@ -3814,9 +3872,84 @@ impl NativeWatcher {
             });
             if !below_left_out {
                 self.dirty.insert(rel.to_path_buf());
+            } else if rel.ends_with(".git") {
+                self.dirty.extend(rel.parent().map(Path::to_path_buf));
             }
         }
         Ok(())
+    }
+
+    fn read_index(&mut self, tree: PathBuf) {
+        let Some(rules) = self.rules.as_mut() else {
+            return;
+        };
+        for (tree, before) in rules.read_index(&self.root, &tree) {
+            let entries = &self.snapshot.entries;
+            (self.dirty)
+                .extend(rules.rescope(&tree, &before, |folder| entries.contains_key(folder)));
+            let now = rules.tracked(&tree).to_vec();
+            self.changed_tracked.push((tree, now));
+        }
+    }
+
+    fn watch_git_dirs(&mut self) {
+        let Some(rules) = &self.rules else {
+            return;
+        };
+        let mut now = GitDirs::new();
+        for (tree, git_dir) in rules.work_trees() {
+            let left_out = cfg!(target_os = "linux")
+                && (tree.ancestors())
+                    .any(|folder| rules.status(folder, EntryKind::Dir) != Ignored::No);
+            let folder = left_out.then(|| self.root.join(tree));
+            for dir in git_dir.map(Path::to_path_buf).into_iter().chain(folder) {
+                let (dir, id) = match std::fs::canonicalize(&dir)
+                    .and_then(|found| Ok((stat_path(&found)?, found)))
+                {
+                    Ok((stat, found)) => (found, Some((stat.dev, stat.id))),
+                    Err(_) => (dir, None),
+                };
+                now.entry(dir)
+                    .or_insert((id, Vec::new()))
+                    .1
+                    .push(tree.clone());
+            }
+        }
+        let root = self.root.clone();
+        let uncovered = |dir: &Path| cfg!(target_os = "linux") || !dir.starts_with(&root);
+        let mut fresh = Vec::new();
+        for (dir, (id, trees)) in &mut now {
+            let watched = self.git_dirs.get(dir).and_then(|(watched, _)| *watched);
+            if watched == *id {
+                continue;
+            }
+            if uncovered(dir) {
+                if self.git_watcher.is_none() {
+                    self.git_watcher = notify::recommended_watcher(self.sender.clone()).ok();
+                }
+                let registered = self.git_watcher.as_mut().is_some_and(|watcher| {
+                    if watched.is_some() {
+                        let _ = notify::Watcher::unwatch(watcher, dir);
+                    }
+                    notify::Watcher::watch(watcher, dir, RecursiveMode::NonRecursive).is_ok()
+                });
+                if !registered {
+                    *id = None;
+                }
+            }
+            fresh.extend(trees.iter().cloned());
+        }
+        for (dir, (watched, _)) in &self.git_dirs {
+            if let Some(watcher) = self.git_watcher.as_mut()
+                && watched.is_some()
+                && uncovered(dir)
+                && !now.contains_key(dir)
+            {
+                let _ = notify::Watcher::unwatch(watcher, dir);
+            }
+        }
+        self.git_dirs = now;
+        fresh.into_iter().for_each(|tree| self.read_index(tree));
     }
 
     fn folder_as_scanned(&self, path: &Path, rel: &Path) -> bool {
@@ -3999,6 +4132,7 @@ impl NativeWatcher {
             root,
             rules: std::mem::take(&mut self.changed_rules),
             read: std::mem::take(&mut self.read).into_iter().collect(),
+            tracked: std::mem::take(&mut self.changed_tracked),
             settled: std::mem::take(&mut self.settled).into_iter().collect(),
         }
     }
@@ -4148,6 +4282,9 @@ impl Watcher for NativeWatcher {
         self.view.take();
         let deadline = Instant::now() + timeout;
         let mut root = None;
+        if self.git_dirs.values().any(|(watched, _)| watched.is_none()) {
+            self.watch_git_dirs();
+        }
         loop {
             if let Some(err) = self.failed.take() {
                 return Err(err);
@@ -4201,6 +4338,8 @@ impl Watcher for NativeWatcher {
             if self.rewatch {
                 let deferred = cfg!(target_os = "linux") && self.rules.is_some();
                 self.watcher = watch_root(&self.root, &self.sender, deferred)?;
+                self.git_watcher = None;
+                self.git_dirs.clear();
                 #[cfg(target_os = "linux")]
                 self.blocked.extend(deferred.then(PathBuf::new));
                 self.rewatch = false;
@@ -4242,6 +4381,7 @@ impl Watcher for NativeWatcher {
             self.listed.clear();
             root = Some(rescan.root);
             self.changed_rules.extend(rescan.rules);
+            self.changed_tracked.extend(rescan.tracked);
             self.settled.extend(rescan.settled);
             self.waiting
                 .retain(|path| self.snapshot.unplaced.contains(path));
@@ -4262,6 +4402,7 @@ impl Watcher for NativeWatcher {
             self.dirty = (rescan.unsettled.into_iter())
                 .filter(|path| !self.waiting.contains(path))
                 .collect();
+            self.watch_git_dirs();
             self.raise_barrier();
             #[cfg(target_os = "linux")]
             let readable = self.unblock(&scopes, &rescan.unreadable);
@@ -4271,6 +4412,7 @@ impl Watcher for NativeWatcher {
             self.cover(&changes, readable, rescan.root);
             if !changes.is_empty()
                 || !self.changed_rules.is_empty()
+                || !self.changed_tracked.is_empty()
                 || !self.settled.is_empty()
                 || Instant::now() >= deadline
                 || !self.snapshot.unplaced.is_subset(&held)
@@ -4403,6 +4545,7 @@ impl Watcher for RescanWatcher {
                     root: Some(rescan.root),
                     rules: rescan.rules,
                     read: rescan.read,
+                    tracked: rescan.tracked,
                     settled: rescan.settled,
                 },
                 Err(Error::Changed) => Poll {
@@ -4414,6 +4557,7 @@ impl Watcher for RescanWatcher {
             let left = deadline.saturating_duration_since(Instant::now());
             if !poll.changes.is_empty()
                 || !poll.rules.is_empty()
+                || !poll.tracked.is_empty()
                 || !poll.settled.is_empty()
                 || left.is_zero()
             {
@@ -4541,6 +4685,7 @@ impl From<ItemPath> for String {
 }
 
 mod effect;
+mod git;
 mod ignore;
 mod mark;
 mod recovered;
@@ -4554,6 +4699,7 @@ pub use effect::{
     Action, BroughtBack, Contents, Displaced, Effect, Outcome, QUARANTINE_DIR, Reason, Refusal,
     STAGING_DIR, Section, Step,
 };
+pub use git::GitIndex;
 pub use ignore::{Coverage, Ignore, Ignored, Rules};
 use ignore::{Key, Pending, RulesRead, Seeded, Wanted};
 pub use koidrive_ignore::Source;

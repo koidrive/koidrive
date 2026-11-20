@@ -812,3 +812,44 @@ fn a_koiignore_pattern_includes_git_directories_again_and_a_gitignore_pattern_do
     assert_eq!(status(&m, "app/.git/"), rule(1, 1));
     assert_eq!(status(&m, "lib/.git/"), Status::Included);
 }
+
+#[test]
+fn a_file_the_index_lists_is_included_below_a_folder_a_gitignore_excludes() {
+    let local = LocalRules::new(&[] as &[&str], &["dist/local.js"]).unwrap();
+    let mut matcher = sourced(
+        local,
+        &[
+            ("", Source::Gitignore, "dist/\n*.log\n"),
+            ("", Source::Koiignore, "dist/koi.js\n"),
+            ("repo/dist", Source::Gitignore, "!*\n"),
+        ],
+    );
+    let listed = "dist/sub/app.js dist/koi.js dist/local.js dist/.DS_Store a.log";
+    matcher.set_tracked(&[] as &[&str], listed.split(' '));
+    matcher.set_tracked(&["repo"], ["dist/x.js"]);
+    for path in "dist/ DIST/Sub/ dist/sub/app.js Dist/SUB/App.js a.log repo/dist/x.js".split(' ') {
+        assert_eq!(status(&matcher, path), Status::Included, "{path}");
+    }
+    let left_out =
+        "dist/other.js dist/sub/other.js dist/sub dist/other/ dist/.gitignore repo/dist/y.js";
+    for path in left_out.split(' ') {
+        assert_eq!(status(&matcher, path), git_rule(0, 1), "{path}");
+    }
+    assert_eq!(status(&matcher, "b.log"), git_rule(0, 2));
+    assert_eq!(status(&matcher, "dist/koi.js"), rule(0, 1));
+    assert_eq!(
+        status(&matcher, "dist/local.js"),
+        Status::Excluded(Reason::Local)
+    );
+    assert_eq!(
+        status(&matcher, "dist/.DS_Store"),
+        Status::Excluded(Reason::BuiltIn)
+    );
+    matcher.set_tracked(&[] as &[&str], [] as [&str; 0]);
+    assert_eq!(status(&matcher, "dist/sub/app.js"), git_rule(0, 1));
+    assert_eq!(status(&matcher, "repo/dist/x.js"), Status::Included);
+    let ignoring = LocalRules::default().with_gitignore(false);
+    let mut matcher = sourced(ignoring, &[("", Source::Gitignore, "dist/\n")]);
+    matcher.set_tracked(&[] as &[&str], ["dist/a.js"]);
+    assert_eq!(status(&matcher, "dist/b.js"), Status::Included);
+}

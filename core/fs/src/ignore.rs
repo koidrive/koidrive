@@ -11,8 +11,10 @@ use rustix::fs::{Dir, FileType, Mode, OFlags};
 
 use koidrive_ignore::Source;
 
+use crate::git::Spelled;
 use crate::{
-    Cut, Entry, EntryKind, FileId, Stat, is_gone, open_attached, open_dir_at, stat_at, stat_fd,
+    Cut, Entry, EntryKind, FileId, GitIndex, Stat, is_gone, open_attached, open_dir_at, stat_at,
+    stat_fd,
 };
 
 const MAX_RULES: u64 = 1 << 20;
@@ -48,6 +50,10 @@ pub trait Ignore {
     fn follows(&self, _source: Source) -> bool {
         true
     }
+
+    /// The git index of the work tree at `tree` (relative to the root, empty for the root) lists the files at
+    /// `paths`, each relative to the work tree with names joined by `/` (RFC 0033 §4).
+    fn set_tracked(&mut self, _tree: &Path, _paths: &[String]) {}
 }
 
 type Held = (PathBuf, Vec<u8>);
@@ -61,6 +67,8 @@ pub struct Rules {
     rules_files: Vec<(Source, OsString)>,
     files: BTreeMap<(PathBuf, Source), Held>,
     ignored: BTreeMap<PathBuf, BTreeSet<OsString>>,
+    indexes: BTreeMap<PathBuf, GitIndex<Spelled>>,
+    tracked: BTreeMap<PathBuf, Vec<String>>,
     budget: usize,
     search: Search,
 }
@@ -201,6 +209,8 @@ impl Rules {
             ignore,
             files: BTreeMap::new(),
             ignored: BTreeMap::new(),
+            indexes: BTreeMap::new(),
+            tracked: BTreeMap::new(),
             budget: SEARCH_BUDGET,
             search: Search::default(),
         }
@@ -260,6 +270,106 @@ impl Rules {
         self.ignore.status(path, kind)
     }
 
+    pub(crate) fn work_trees(&self) -> impl Iterator<Item = (&PathBuf, Option<&Path>)> {
+        (self.indexes.iter()).map(|(tree, index)| (tree, index.git_dir()))
+    }
+
+    pub(crate) fn read_index(&mut self, root: &Path, tree: &Path) -> Vec<(PathBuf, Vec<String>)> {
+        if let Some(index) = self.indexes.get_mut(tree) {
+            if !index.refresh() && self.tracked.contains_key(tree) {
+                return Vec::new();
+            }
+            return self.publish(tree).into_iter().collect();
+        }
+        let Some(mut index) = GitIndex::find(&root.join(tree)) else {
+            return Vec::new();
+        };
+        index.refresh();
+        self.indexes.insert(tree.to_path_buf(), index);
+        self.publish_above(tree)
+    }
+
+    pub(crate) fn tracked(&self, tree: &Path) -> &[String] {
+        self.tracked.get(tree).map_or(&[], Vec::as_slice)
+    }
+
+    /// The scopes to scan again once the list of the work tree at `tree` changed from `before`: each file one of the
+    /// lists holds, or the outermost folder above it that `known` holds and the rules leave out.
+    pub(crate) fn rescope(
+        &self,
+        tree: &Path,
+        before: &[String],
+        known: impl Fn(&Path) -> bool,
+    ) -> Vec<PathBuf> {
+        let before: BTreeSet<&String> = before.iter().collect();
+        let after: BTreeSet<&String> = self.tracked(tree).iter().collect();
+        (before.symmetric_difference(&after))
+            .map(|path| {
+                let path = tree.join(path);
+                let left_out = (path.ancestors().skip(1))
+                    .filter(|folder| known(folder))
+                    .filter(|folder| self.status(folder, EntryKind::Dir) != Ignored::No)
+                    .last()
+                    .map(Path::to_path_buf);
+                left_out.unwrap_or(path)
+            })
+            .collect()
+    }
+
+    pub(crate) fn forget_index(&mut self, tree: &Path) -> Vec<(PathBuf, Vec<String>)> {
+        let mut changed: Vec<_> = (self.set_tracked(tree, Vec::new()).into_iter())
+            .map(|before| (tree.to_path_buf(), before))
+            .collect();
+        if self.indexes.remove(tree).is_some() {
+            changed.extend(self.publish_above(tree));
+        }
+        changed
+    }
+
+    fn publish_above(&mut self, tree: &Path) -> Vec<(PathBuf, Vec<String>)> {
+        let above: Vec<PathBuf> = (tree.ancestors())
+            .filter(|folder| self.indexes.contains_key(*folder))
+            .map(Path::to_path_buf)
+            .collect();
+        above.iter().filter_map(|tree| self.publish(tree)).collect()
+    }
+
+    fn publish(&mut self, tree: &Path) -> Option<(PathBuf, Vec<String>)> {
+        let inner: Vec<PathBuf> = (self.indexes.keys())
+            .filter_map(|folder| folder.strip_prefix(tree).ok())
+            .filter(|folder| !folder.as_os_str().is_empty())
+            .map(|folder| self.key(folder))
+            .collect();
+        let owned = |path: &&str| {
+            inner.is_empty() || {
+                let path = self.key(Path::new(path));
+                !inner.iter().any(|folder| path.starts_with(folder))
+            }
+        };
+        let index = self.indexes.get(tree)?;
+        let mut listed: Vec<String> = index.listed().filter(owned).map(str::to_owned).collect();
+        listed.sort_unstable();
+        Some((tree.to_path_buf(), self.set_tracked(tree, listed)?))
+    }
+
+    fn set_tracked(&mut self, tree: &Path, listed: Vec<String>) -> Option<Vec<String>> {
+        let before = self.tracked.get(tree).cloned().unwrap_or_default();
+        if before == listed {
+            return None;
+        }
+        let respelled = listed.is_empty()
+            && (self.tracked.keys()).any(|live| live != tree && self.key(live) == self.key(tree));
+        if !respelled {
+            self.ignore.set_tracked(tree, &listed);
+        }
+        if listed.is_empty() {
+            self.tracked.remove(tree);
+        } else {
+            self.tracked.insert(tree.to_path_buf(), listed);
+        }
+        Some(before)
+    }
+
     fn set(&mut self, dir: &Path, source: Source, rules: Option<Vec<u8>>) -> Option<Held> {
         self.ignore.set_rules(dir, source, rules.as_deref());
         let key = (self.key(dir), source);
@@ -284,16 +394,20 @@ fn keys_of(entry: &Entry) -> impl Iterator<Item = Key> {
 
 pub(crate) struct Pending<'r> {
     rules: &'r mut Rules,
+    root: &'r Path,
     before: BTreeMap<(PathBuf, Source), Option<Held>>,
+    tracked: BTreeMap<PathBuf, Vec<String>>,
     listed: BTreeMap<PathBuf, BTreeSet<OsString>>,
     read: BTreeSet<PathBuf>,
 }
 
 impl<'r> Pending<'r> {
-    pub(crate) fn new(rules: &'r mut Rules) -> Self {
+    pub(crate) fn new(rules: &'r mut Rules, root: &'r Path) -> Self {
         Self {
             rules,
+            root,
             before: BTreeMap::new(),
+            tracked: BTreeMap::new(),
             listed: BTreeMap::new(),
             read: BTreeSet::new(),
         }
@@ -301,6 +415,10 @@ impl<'r> Pending<'r> {
 
     pub(crate) fn status(&self, path: &Path, kind: EntryKind) -> Ignored {
         self.rules.status(path, kind)
+    }
+
+    pub(crate) fn key(&self, name: &OsStr) -> OsString {
+        self.rules.ignore.key(name)
     }
 
     pub(crate) fn read(
@@ -331,7 +449,15 @@ impl<'r> Pending<'r> {
         }
         self.listed.entry(rel.to_path_buf()).or_default();
         self.read.insert(rel.to_path_buf());
-        let mut changed = false;
+        let tracked = if names.contains(OsStr::new(".git")) {
+            self.rules.read_index(self.root, rel)
+        } else {
+            self.rules.forget_index(rel)
+        };
+        let mut changed = !tracked.is_empty();
+        for (tree, before) in tracked {
+            self.tracked.entry(tree).or_insert(before);
+        }
         for (key, read) in reads {
             let found = match read {
                 Some(Ok(found)) => found,
@@ -371,6 +497,10 @@ impl<'r> Pending<'r> {
     }
 
     pub(crate) fn undo(self) {
+        for (tree, before) in self.tracked {
+            self.rules.indexes.remove(&tree);
+            self.rules.set_tracked(&tree, before);
+        }
         for (key, before) in self.before {
             let now = self.rules.files.get(&key).map(|(dir, _)| dir.clone());
             let source = key.1;
@@ -860,14 +990,43 @@ impl<'r> Pending<'r> {
     pub(crate) fn finish(
         self,
         is_folder: impl Fn(&Path) -> bool,
-    ) -> (Vec<RulesFile>, Vec<PathBuf>) {
+        is_left_out_folder: impl Fn(&Path) -> bool,
+    ) -> Finished {
         let Self {
             rules,
+            root,
             mut before,
+            mut tracked,
             read,
             ..
         } = self;
         let held = |dir: &Path| dir.as_os_str().is_empty() || is_folder(dir);
+        let marked = |tree: &Path| {
+            is_left_out_folder(tree)
+                && std::fs::symlink_metadata(root.join(tree).join(".git")).is_ok()
+        };
+        let gone: Vec<PathBuf> = (rules.indexes.keys().chain(rules.tracked.keys()))
+            .filter(|tree| !held(tree) && !marked(tree))
+            .cloned()
+            .collect();
+        let forgotten: Vec<_> = gone
+            .iter()
+            .flat_map(|tree| rules.forget_index(tree))
+            .collect();
+        let unsettled = (forgotten.iter())
+            .flat_map(|(tree, before)| rules.rescope(tree, before, &is_folder))
+            .collect();
+        for (tree, before) in forgotten {
+            tracked.entry(tree).or_insert(before);
+        }
+        let tracked = (tracked.into_iter())
+            .filter_map(|(tree, before)| {
+                let now = rules.tracked.get(&tree).cloned().unwrap_or_default();
+                let respelled = now.is_empty()
+                    && (rules.tracked.keys()).any(|live| rules.key(live) == rules.key(&tree));
+                (now != before && !respelled).then_some((tree, now))
+            })
+            .collect();
         let stale: Vec<(PathBuf, Source)> = (rules.files.iter())
             .filter(|(_, (dir, _))| !held(dir))
             .map(|((_, source), (dir, _))| (dir.clone(), *source))
@@ -886,11 +1045,24 @@ impl<'r> Pending<'r> {
                 (None, None) => None,
             })
             .collect();
-        (changed, read.into_iter().filter(|dir| held(dir)).collect())
+        Finished {
+            rules: changed,
+            read: read.into_iter().filter(|dir| held(dir)).collect(),
+            tracked,
+            unsettled,
+        }
     }
 }
 
 pub(crate) type RulesFile = (PathBuf, Source, Option<Vec<u8>>);
+
+pub(crate) struct Finished {
+    pub(crate) rules: Vec<RulesFile>,
+    pub(crate) read: Vec<PathBuf>,
+    pub(crate) tracked: Vec<(PathBuf, Vec<String>)>,
+    /// The scopes whose answer changed after the traversal, which it judged by the lists before.
+    pub(crate) unsettled: Vec<PathBuf>,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum RulesRead {

@@ -828,7 +828,11 @@ impl Disk {
             return Err(Stop::Withdrawn(self.path.clone()));
         }
         observation.root.map_err(Stop::Root)?;
-        engine.rules(observation.rules, observation.all_rules);
+        engine.rules(
+            observation.rules,
+            observation.tracked,
+            observation.all_rules,
+        );
         self.rescan_after
             .retain(|requested| !answered.covers(*requested));
         answered.narrow(&mut self.unscanned.effects);

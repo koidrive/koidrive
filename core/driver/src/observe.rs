@@ -84,6 +84,9 @@ pub struct Observation {
     /// platform watcher failed and a rescanning one took over. Rules known from before are stale then, since the new
     /// scans compare with no earlier rules and report no rules file as gone.
     pub all_rules: bool,
+    /// The work trees whose git index the scans of this batch read with other files listed, each with every file it
+    /// lists now, relative to the work tree (RFC 0033 §3). The engine takes them with `rules`.
+    pub tracked: Vec<(PathBuf, Vec<String>)>,
     pub mounts: BTreeMap<PathBuf, Mount>,
     pub detached: BTreeMap<PathBuf, Detached>,
     pub ctimes: BTreeMap<PathBuf, i64>,
@@ -944,6 +947,7 @@ impl Observer for FsObserver {
             && poll.read.is_empty()
             && poll.settled.is_empty()
             && rules.is_empty()
+            && poll.tracked.is_empty()
             && self.unread.waiting.is_empty()
             && poll.pending == self.delivered
         {
@@ -987,6 +991,7 @@ impl Observer for FsObserver {
             waiting: std::mem::take(&mut self.unread.waiting),
             rules,
             all_rules: first,
+            tracked: poll.tracked,
             mounts: (self.watcher.snapshot().entries.iter())
                 .filter_map(|(path, entry)| Some((path.clone(), entry.mount?)))
                 .collect(),

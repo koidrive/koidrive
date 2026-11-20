@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 
 use crate::pattern::{LineError, RuleFile, key};
@@ -237,11 +237,29 @@ impl<K: NameKey> LocalRules<K> {
 
 type Folder<K> = [Option<RuleFile<K>>; Source::ALL.len()];
 
+#[derive(Clone, Debug, Default, PartialEq)]
+struct Tracked {
+    file: bool,
+    children: HashMap<String, Tracked>,
+}
+
+impl Tracked {
+    fn lists(&self, kind: Kind) -> bool {
+        match kind {
+            Kind::File => self.file,
+            Kind::Dir => !self.children.is_empty(),
+        }
+    }
+}
+
 /// The rules in force on this device: the built-in exclusions, the device-local list, the rules
-/// files known so far, by directory, and the default that leaves `.git` directories out.
+/// files known so far, by directory, the default that leaves `.git` directories out, and the files
+/// git indexes list (RFC 0033 §4).
 pub struct Matcher<K> {
     local: LocalRules<K>,
     files: HashMap<Vec<String>, Folder<K>>,
+    listed: BTreeMap<Vec<String>, Vec<Vec<String>>>,
+    tracked: Tracked,
     platform_files: Vec<String>,
     state_dir: String,
     git_dir: String,
@@ -253,6 +271,8 @@ impl<K> Clone for Matcher<K> {
         Self {
             local: self.local.clone(),
             files: self.files.clone(),
+            listed: self.listed.clone(),
+            tracked: self.tracked.clone(),
             platform_files: self.platform_files.clone(),
             state_dir: self.state_dir.clone(),
             git_dir: self.git_dir.clone(),
@@ -261,10 +281,10 @@ impl<K> Clone for Matcher<K> {
     }
 }
 
-/// Two matchers are equal when they hold the same device-local list and the same rules files.
+/// Two matchers are equal when they hold the same device-local list, rules files and listed files.
 impl<K> PartialEq for Matcher<K> {
     fn eq(&self, other: &Self) -> bool {
-        self.local == other.local && self.files == other.files
+        self.local == other.local && self.files == other.files && self.listed == other.listed
     }
 }
 
@@ -282,6 +302,8 @@ impl<K: NameKey> Matcher<K> {
         Self {
             local,
             files: HashMap::new(),
+            listed: BTreeMap::new(),
+            tracked: Tracked::default(),
             platform_files: PLATFORM_FILES.iter().map(|name| key::<K>(name)).collect(),
             state_dir: key::<K>(STATE_DIR),
             git_dir: key::<K>(GIT_DIR),
@@ -306,6 +328,8 @@ impl<K: NameKey> Matcher<K> {
             text: Vec::new(),
             files: self.folder_files(&[], 0).collect(),
             include,
+            tracked: Some(&self.tracked),
+            only_tracked: None,
         }
     }
 
@@ -357,9 +381,40 @@ impl<K: NameKey> Matcher<K> {
         self.files.get(&keys::<K, S>(dir))?[source as usize].as_ref()
     }
 
-    /// Removes every rules file.
+    /// Sets the files the git index of the work tree at `tree`, the names from the root to it, lists:
+    /// each path relative to the work tree, its names joined by `/`. Such a file is included where a
+    /// `.gitignore` file excludes it or a folder above it, and so are the folders on the way to it.
+    pub fn set_tracked<S: AsRef<str>, P: AsRef<str>>(
+        &mut self,
+        tree: &[S],
+        paths: impl IntoIterator<Item = P>,
+    ) {
+        let tree = keys::<K, S>(tree);
+        let paths: Vec<Vec<String>> = (paths.into_iter())
+            .map(|path| {
+                let names = path.as_ref().split('/').map(key::<K>);
+                tree.iter().cloned().chain(names).collect()
+            })
+            .collect();
+        if paths.is_empty() {
+            self.listed.remove(&tree);
+        } else {
+            self.listed.insert(tree, paths);
+        }
+        self.tracked = Tracked::default();
+        for path in self.listed.values().flatten() {
+            let node = (path.iter()).fold(&mut self.tracked, |node, name| {
+                node.children.entry(name.clone()).or_default()
+            });
+            node.file = true;
+        }
+    }
+
+    /// Removes every rules file and every work tree's listed files.
     pub fn clear_rules(&mut self) {
         self.files.clear();
+        self.listed.clear();
+        self.tracked = Tracked::default();
     }
 
     /// Replaces the device-local list and returns the entries whose status changed. `entries` are
@@ -427,6 +482,8 @@ pub struct Scope<'a, K> {
     text: Vec<char>,
     files: Vec<(usize, Source, &'a RuleFile<K>)>,
     include: Include,
+    tracked: Option<&'a Tracked>,
+    only_tracked: Option<Reason>,
 }
 
 impl<K> fmt::Debug for Scope<'_, K> {
@@ -444,7 +501,7 @@ impl<'a, K: NameKey> Scope<'a, K> {
 
     pub fn enter(&self, name: &str) -> Result<Scope<'a, K>, Reason> {
         let name = key::<K>(name);
-        let (status, include) = self.evaluate(&name, Kind::Dir);
+        let (status, include, only_tracked) = self.evaluate(&name, Kind::Dir);
         if let Status::Excluded(reason) = status {
             return Err(reason);
         }
@@ -459,10 +516,12 @@ impl<'a, K: NameKey> Scope<'a, K> {
         files.extend(self.matcher.folder_files(&dir, dir.len()));
         Ok(Scope {
             matcher: self.matcher,
+            tracked: self.tracked.and_then(|node| node.children.get(dir.last()?)),
             dir,
             text,
             files,
             include: include.unwrap_or(Include::All),
+            only_tracked,
         })
     }
 
@@ -480,19 +539,27 @@ impl<'a, K: NameKey> Scope<'a, K> {
         owned.as_ref().unwrap_or(self).status(last.as_ref(), kind)
     }
 
-    fn evaluate(&self, name: &str, kind: Kind) -> (Status, Option<Include>) {
+    fn evaluate(&self, name: &str, kind: Kind) -> (Status, Option<Include>, Option<Reason>) {
         let matcher = self.matcher;
         let depth = self.dir.len();
         if matcher.platform_files.iter().any(|f| f == name)
             || (depth == 0 && name == matcher.state_dir)
         {
-            return (Status::Excluded(Reason::BuiltIn), None);
+            return (Status::Excluded(Reason::BuiltIn), None, None);
+        }
+        let tracked = (self.tracked)
+            .and_then(|node| node.children.get(name))
+            .is_some_and(|node| node.lists(kind));
+        if let Some(reason) = self.only_tracked
+            && !tracked
+        {
+            return (Status::Excluded(reason), None, None);
         }
         if kind == Kind::File && matcher.rules_files.iter().any(|f| f == name) {
-            return (Status::Included, None);
+            return (Status::Included, None, None);
         }
         let Some(include) = self.include_step(name, kind) else {
-            return (Status::Excluded(Reason::Local), None);
+            return (Status::Excluded(Reason::Local), None, None);
         };
 
         let mut text = self.text.clone();
@@ -516,7 +583,7 @@ impl<'a, K: NameKey> Scope<'a, K> {
             .last_match(&text, basename, is_dir)
             .is_some_and(|rule| !rule.negated)
         {
-            return (Status::Excluded(Reason::Local), None);
+            return (Status::Excluded(Reason::Local), None, None);
         }
         let decide = |source: Source| {
             (self.files.iter().rev())
@@ -534,8 +601,18 @@ impl<'a, K: NameKey> Scope<'a, K> {
         let gitignore = || (matcher.local.gitignore).then(|| decide(Source::Gitignore))?;
         let decided = (decide(Source::Koiignore).or_else(git_dir)).or_else(gitignore);
         match decided.flatten() {
-            Some(reason) => (Status::Excluded(reason), None),
-            None => (Status::Included, Some(include)),
+            Some(
+                reason @ Reason::Rule {
+                    source: Source::Gitignore,
+                    ..
+                },
+            ) if tracked => (
+                Status::Included,
+                Some(include),
+                self.only_tracked.or(Some(reason)),
+            ),
+            Some(reason) => (Status::Excluded(reason), None, None),
+            None => (Status::Included, Some(include), self.only_tracked),
         }
     }
 
