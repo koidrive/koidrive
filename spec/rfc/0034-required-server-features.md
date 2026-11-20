@@ -25,7 +25,7 @@ A **required feature** is a feature (RFC 0022 §2) that a client needs before it
 
 | Name | RFC | What the client needs |
 |---|---|---|
-| `commit_tokens` | RFC 0013 | `committed_at_ms` in each `CommitResult` and in `Welcome`, and the token checks of RFC 0013 §3 |
+| `commit_tokens` | RFC 0013 | The token fields of RFC 0013 §2 in `CaughtUp`, `TreePage` and `CommitResult`, and the token checks of RFC 0013 §3 |
 
 To add a required feature, an RFC registers its name here and in RFC 0022 §2, and the server and the client each add the name to their list of required features.
 
