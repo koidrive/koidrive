@@ -9,12 +9,13 @@ use crate::tree::{NodeId, RemoteNode, Tree, read_entries};
 
 const IMPLIED: &str = "R holds every node whose provenance it implies";
 
-static CHECKED: AtomicBool = AtomicBool::new(cfg!(test));
+static CHECKED: AtomicBool = AtomicBool::new(cfg!(debug_assertions));
 
-/// Makes the trees created or restored from here on keep every content provenance record in full beside the ones R
-/// implies, and panic when the two answer a read, a write, a state or a change set differently. For tests.
-pub fn check_content_provenance() {
-    CHECKED.store(true, Ordering::Relaxed);
+/// Sets whether the trees created from here on keep every content provenance record in full beside the ones R
+/// implies, and panic when the two answer a read, a write, a state or a change set differently. A restore keeps
+/// checked trees checked. On from the start in builds with debug assertions.
+pub fn check_content_provenance(on: bool) {
+    CHECKED.store(on, Ordering::Relaxed);
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -3,7 +3,7 @@
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 
-use koidrive_engine::classify::Trees;
+use koidrive_engine::classify::{Trees, check_content_provenance};
 use koidrive_engine::commit::Commits;
 use koidrive_engine::ids::IdGen;
 use koidrive_engine::state::CommitsState;
@@ -131,6 +131,7 @@ fn shape(entry: &Entry, n: usize) -> (Shape, Box<[ChunkRef]>) {
 }
 
 fn first_upload() -> (Trees, usize) {
+    check_content_provenance(false);
     let mut ids = IdGen::new(1);
     let entries = node_modules(&mut ids);
     let mut trees = Trees::new(ROOT);
@@ -225,6 +226,7 @@ fn first_upload() -> (Trees, usize) {
 }
 
 fn restarted() -> (Trees, usize) {
+    check_content_provenance(false);
     let (synced, entries) = first_upload();
     let mut trees = Trees::new(ROOT);
     for (id, node) in synced.remote().iter() {

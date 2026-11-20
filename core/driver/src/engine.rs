@@ -13,7 +13,7 @@ use std::hash::BuildHasher;
 use std::ops::ControlFlow;
 use std::path::{Component, Path, PathBuf};
 
-use koidrive_engine::classify::{CHECK_EVERY, Pending, Trees};
+use koidrive_engine::classify::{CHECK_EVERY, Pending, Trees, check_content_provenance};
 use koidrive_engine::commit::{Base, Commits, Halt};
 use koidrive_engine::effects::Effects;
 use koidrive_engine::first_link::Log;
@@ -1819,6 +1819,7 @@ pub(crate) struct Stored {
 
 impl Stored {
     pub fn new(root: &str) -> Self {
+        check_content_provenance(false);
         Stored {
             trees: Trees::new(root),
             state: EngineState::default(),

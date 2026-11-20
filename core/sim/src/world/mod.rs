@@ -680,7 +680,6 @@ impl World {
 
     /// Devices with empty disks that keep file times as finely as `volumes` says, one disk each.
     pub fn on(volumes: &[Precision]) -> Self {
-        koidrive_engine::classify::check_content_provenance();
         let space = SpaceDo::new(5, NOW);
         let devices = (volumes.iter().enumerate())
             .map(|(d, precision)| {
