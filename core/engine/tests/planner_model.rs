@@ -2724,9 +2724,9 @@ impl Tally {
     fn count(&mut self, report: Report) {
         self.runs += report.runs;
         self.hard += usize::from(report.hard);
-        if report.hard && true {
+        if !report.text.is_empty() {
             use std::io::Write;
-            let line = format!("HARDSTORY\t{}\t{}\n", report.classes.join("|"), report.text.lines().next().unwrap_or(""));
+            let line = format!("{}\t{}\t{}\n", if report.hard { "HARDSTORY" } else { "SOFTSTORY" }, report.classes.join("|"), report.text.lines().next().unwrap_or(""));
             let _ = std::io::stderr().lock().write_all(line.as_bytes());
         }
         for class in report.classes {
