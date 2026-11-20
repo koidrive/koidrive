@@ -1398,6 +1398,12 @@ impl World {
         let device = &mut self.devices[d];
         device.recovery = Some(why);
         device.recovery_from = from;
+        if trigger == RecoveryTrigger::StoreOlderThanDisk {
+            device
+                .engine
+                .commits
+                .enter_recovery(RecoveryCause::of(trigger));
+        }
         device.engine.commits.enter_recovery(cause);
         device.engine.history = history;
         device.engine.behind = true;

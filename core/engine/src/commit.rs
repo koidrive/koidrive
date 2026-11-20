@@ -135,10 +135,13 @@ pub enum Halt {
     ReadOnly,
     /// The store cannot account for the server's state (sections 2.8 and 6.4). The commit in flight
     /// is kept as evidence and nothing is planned from this store. `policy` is the code of the
-    /// policy halt the recovery interrupted, which holds again once it ends.
+    /// policy halt the recovery interrupted, which holds again once it ends. `store_behind_disk`
+    /// is set once any cause of this recovery found the store older than the disk, so an entry
+    /// missing from the disk may be an effect the store forgot rather than a delete of the user.
     Recovery {
         cause: RecoveryCause,
         policy: Option<i32>,
+        store_behind_disk: bool,
     },
     /// A policy halt (RFC 0006 section 1): the server refused the commit with `code`, which only
     /// the user or a client update can resolve. The commit in flight is kept with its slot and
@@ -842,14 +845,22 @@ impl Commits {
 
     /// Stops committing for a recovery (section 6.4). The commit in flight is never sent again, and
     /// nothing is planned until [`Commits::recover`]. A policy halt it interrupts holds again once
-    /// the recovery ends.
+    /// the recovery ends, and a later cause keeps that the store was older than the disk.
     pub fn enter_recovery(&mut self, cause: RecoveryCause) {
-        let policy = match *self.halted {
-            Some(Halt::Policy { code }) => Some(code),
-            Some(Halt::Recovery { policy, .. }) => policy,
-            Some(Halt::ReadOnly) | None => None,
+        let (policy, behind) = match *self.halted {
+            Some(Halt::Policy { code }) => (Some(code), false),
+            Some(Halt::Recovery {
+                policy,
+                store_behind_disk,
+                ..
+            }) => (policy, store_behind_disk),
+            Some(Halt::ReadOnly) | None => (None, false),
         };
-        self.halted.set(Some(Halt::Recovery { cause, policy }));
+        self.halted.set(Some(Halt::Recovery {
+            cause,
+            policy,
+            store_behind_disk: behind || cause.trigger == RecoveryTrigger::StoreOlderThanDisk,
+        }));
     }
 
     /// Recovers once R holds the server's tree in the history the device recovers into, and L a
@@ -879,6 +890,13 @@ impl Commits {
         for question in self.questions.get_mut().iter_mut() {
             question.frozen = None;
         }
+        let store_behind_disk = matches!(
+            *self.halted,
+            Some(Halt::Recovery {
+                store_behind_disk: true,
+                ..
+            })
+        );
         self.halted.set(match *self.halted {
             Some(Halt::Recovery {
                 policy: Some(code), ..
@@ -940,7 +958,7 @@ impl Commits {
             })
             .collect();
         let unsent: Vec<(NodeId, Shape)> = (agreed.iter())
-            .filter(|(_, shape)| shape.is_none())
+            .filter(|(_, shape)| shape.is_none() && !store_behind_disk)
             .filter_map(|(id, _)| trees.unsent_delete(id).map(|seen| (id.clone(), seen)))
             .collect();
         for (id, shape) in update_synced(trees, agreed) {
@@ -3241,10 +3259,12 @@ impl Commits {
             Ok(Code::HistoryMismatch) => Failure::Halted(Halt::Recovery {
                 cause: RecoveryCause::of(RecoveryTrigger::SpaceRewound),
                 policy: None,
+                store_behind_disk: false,
             }),
             Ok(Code::StaleDeviceState) => Failure::Halted(Halt::Recovery {
                 cause: RecoveryCause::of(RecoveryTrigger::StoreRolledBack),
                 policy: None,
+                store_behind_disk: false,
             }),
             Ok(Code::ReadOnly) => Failure::Halted(Halt::ReadOnly),
             Ok(Code::AheadOfServer) => Failure::Resync,
@@ -3257,9 +3277,8 @@ impl Commits {
             _ => Failure::Halted(Halt::Policy { code: error.code }),
         };
         match failure {
-            Failure::Halted(halt @ (Halt::Recovery { .. } | Halt::Policy { .. })) => {
-                self.halted.set(Some(halt))
-            }
+            Failure::Halted(Halt::Recovery { cause, .. }) => self.enter_recovery(cause),
+            Failure::Halted(halt @ Halt::Policy { .. }) => self.halted.set(Some(halt)),
             Failure::Resend => {}
             Failure::Halted(halt) => {
                 self.halted.set(Some(halt));

@@ -12,6 +12,7 @@ fn a_recovery_stored_before_it_kept_a_policy_halt_opens_without_one() {
     state.commits.halted = Some(Halt::Recovery {
         cause,
         policy: None,
+        store_behind_disk: false,
     });
     Store::open(&path)
         .unwrap()
@@ -26,6 +27,7 @@ fn a_recovery_stored_before_it_kept_a_policy_halt_opens_without_one() {
     state.commits.halted = Some(Halt::Recovery {
         cause,
         policy: Some(7),
+        store_behind_disk: false,
     });
     store
         .transaction(|tx| tx.update_engine_state(&before, &state))

@@ -2284,14 +2284,17 @@ fn a_halt_survives_a_reopen_with_its_commit() {
         Some(Halt::Recovery {
             cause: RecoveryCause::rewind(4, 1_700_000_000_000),
             policy: None,
+            store_behind_disk: false,
         }),
         Some(Halt::Recovery {
             cause: RecoveryCause::of(RecoveryTrigger::StoreOlderThanDisk),
             policy: None,
+            store_behind_disk: true,
         }),
         Some(Halt::Recovery {
             cause: RecoveryCause::rewind(4, 1_700_000_000_000),
             policy: Some(7),
+            store_behind_disk: true,
         }),
         Some(Halt::Policy { code: 7 }),
     ] {
