@@ -139,7 +139,7 @@ impl Deletion {
             return Vec::new();
         }
         let deleted: Vec<&NodeId> = (subtree.iter())
-            .flat_map(|ino| intents.nodes_of(author, *ino, delete.made))
+            .flat_map(|ino| intents.deleted_at(i, *ino))
             .collect();
         let kept_for_left_out = |node: &NodeId| {
             (self.left_out.iter()).any(|out| {
