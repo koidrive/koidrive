@@ -188,6 +188,7 @@ pub(super) struct Intent {
     discarded: bool,
     pub(super) answer: Option<Answered>,
     pub(super) carried: Option<Carried>,
+    answered_for: Option<NodeId>,
 }
 
 impl Intent {
@@ -313,8 +314,26 @@ impl Intents {
             discarded: false,
             answer: None,
             carried: None,
+            answered_for: None,
         });
         self.list.len() - 1
+    }
+
+    pub(super) fn answered_delete(
+        &mut self,
+        author: usize,
+        made: u64,
+        ino: u128,
+        node: &NodeId,
+    ) -> usize {
+        let value = Value::Trashed {
+            subtree: vec![ino],
+            under: BTreeMap::new(),
+            replaced_by: None,
+        };
+        let i = self.record(author, made, ino, "delete", value);
+        self.list[i].answered_for = Some(node.clone());
+        i
     }
 
     pub(super) fn intent(&self, i: usize) -> &Intent {
@@ -423,7 +442,10 @@ impl Intents {
 
     fn intent_nodes(&self, i: usize, ino: u128, held: bool) -> impl Iterator<Item = &NodeId> {
         let intent = &self.list[i];
-        self.linked_at(intent.author, ino, intent.made, held)
+        let answered_for = intent.answered_for.as_ref();
+        (self.linked_at(intent.author, ino, intent.made, held)).filter(move |id| {
+            answered_for.is_none_or(|node| *id == node || self.merged.get(node) == Some(*id))
+        })
     }
 
     fn linked_at(
@@ -1099,6 +1121,20 @@ impl Intents {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_delete_answer_covers_only_the_node_it_answered_for() {
+        let mut intents = Intents::new(1);
+        let disk = Disk::new(super::super::disk::Precision::Fine);
+        let root = NodeId::from("root");
+        let (old, new) = (NodeId::from("o"), NodeId::from("n"));
+        intents.observe(0, 1, &disk, &BTreeMap::from([(2, old.clone())]), &root);
+        intents.observe(0, 3, &disk, &BTreeMap::from([(2, new.clone())]), &root);
+        let ino = intents.ino_of(0, &old).expect("o was at ino 2");
+        intents.answered_delete(0, 4, ino, &old);
+        assert!(intents.deleted(0, &old));
+        assert!(!intents.deleted(0, &new));
+    }
 
     #[test]
     fn a_node_linked_to_an_ino_after_a_delete_of_it_was_made_is_not_that_deletes_node() {
