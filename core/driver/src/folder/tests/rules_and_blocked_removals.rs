@@ -3084,6 +3084,54 @@ fn a_copy_a_rule_added_here_excludes_stays_when_the_server_trashes_it_before_its
 }
 
 #[test]
+fn a_folder_removed_while_a_server_rename_leaves_it_out_downloads_again() {
+    let mut remote = Remote::new();
+    let (site_a, mut a) = linked(&mut remote, "a");
+    fs::create_dir(site_a.root.join("d")).unwrap();
+    a.create(&mut remote, &site_a.root.join("d/g.txt"), b"synced");
+    fs::create_dir(site_a.root.join("other")).unwrap();
+    a.create(&mut remote, &site_a.root.join("other/h.txt"), b"other");
+    let folder = NodeId::from(live_id(&server_nodes(&remote), "d"));
+    let (site, b) = linked(&mut remote, "b");
+    drop(b);
+    let sync = SyncRules {
+        include: Vec::new(),
+        exclude: vec!["blocked/".into()],
+        ..SyncRules::default()
+    };
+    let mut b = site.start_with(&sync);
+    b.connect(&remote);
+    b.scan_until(|b| b.folder.scanned);
+    b.run(&mut remote);
+    b.settle();
+    for (from, to) in [("d", "blocked"), ("blocked", "d")] {
+        fs::rename(site_a.root.join(from), site_a.root.join(to)).unwrap();
+        a.scan_until(|a| !a.work.is_empty());
+        a.run(&mut remote);
+        b.pull(&remote);
+        b.run(&mut remote);
+        assert!(b.folder.engine.trees.unobserved(&folder), "{to}");
+        if to == "blocked" {
+            fs::remove_dir_all(site.root.join("d")).unwrap();
+        }
+    }
+    let sections = b.folder.disk.sections();
+    let (requests, _) = sections.take_resets();
+    let resets: Vec<_> = requests
+        .into_iter()
+        .flat_map(|(_, resets)| resets)
+        .collect();
+    let scopes: Vec<_> = resets.iter().map(|reset| reset.scope.clone()).collect();
+    assert_eq!(scopes, [PathBuf::from("d")]);
+    sections.request(resets);
+    b.scan_until(|b| !b.folder.engine.trees.unobserved(&folder));
+    b.run(&mut remote);
+    b.settle();
+    assert_eq!(fs::read(site.root.join("d/g.txt")).unwrap(), b"synced");
+    assert_eq!(remote.names(), ["d", "g.txt", "h.txt", "other"]);
+}
+
+#[test]
 fn a_delete_after_another_device_renames_a_folder_back_out_of_a_path_the_rules_exclude_is_sent() {
     let mut remote = Remote::new();
     let (site_a, mut a) = linked(&mut remote, "a");
