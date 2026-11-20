@@ -1205,7 +1205,7 @@ impl Folder {
         }
         let now_ms = crate::clock::unix_ms();
         let engine = &mut self.engine;
-        if (engine.commits).free_merge_residue(
+        if (engine.commits).settle_merge_residue(
             &mut engine.trees,
             &mut engine.ids,
             now_ms,

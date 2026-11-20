@@ -187,7 +187,7 @@ fn problems(status: &Status, seen: &mut Seen) -> Vec<Problem> {
         }
         for path in &folder.merged_folders {
             found.push((
-                format!("merged-{space}-{}", path.unquoted()),
+                format!("merged-{space}-{}", koidrive_fs::quoted(path)),
                 String::new(),
                 Problem {
                     id: String::new(),

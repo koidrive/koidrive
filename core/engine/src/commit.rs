@@ -668,31 +668,65 @@ impl Commits {
         &self.aliases
     }
 
-    /// Gives each folder of `residue` whose name key no live folder of the server holds a new ID, so it uploads as a new folder with the entries this device syncs.
-    pub fn free_merge_residue(
+    /// Settles each folder of `residue` against the live folder of the server that holds its name key now (filesystem §5.10). With none, or one this device's user moved away, the folder gets a new ID and uploads as a new folder. With one this device never synced, the folder takes its ID. Otherwise, and while its parent is still merged, the folder stays merged.
+    pub fn settle_merge_residue(
         &mut self,
         trees: &mut Trees,
         ids: &mut IdGen,
         now_ms: u64,
         residue: &effects::MergeResidue,
     ) -> bool {
-        let freed: Vec<NodeId> = (residue.0.keys())
-            .filter(|id| self.aliases.contains_key(*id))
-            .filter(|id| {
-                trees.local().get(id).is_some_and(|local| {
-                    let parent =
-                        (self.aliases.get(&local.shape.parent)).unwrap_or(&local.shape.parent);
-                    (trees.remote_holders_of_key(parent, &name_key(&local.shape.name)))
-                        .all(|holder| trees.remote().live(holder).is_none())
-                })
-            })
-            .cloned()
-            .collect();
-        for id in &freed {
-            self.aliases.remove(id);
-            rekey(trees, id, &NodeId::from(ids.uuid_v7(now_ms)));
+        let mut settled = false;
+        loop {
+            let next = (residue.0.keys())
+                .filter(|id| self.aliases.contains_key(*id))
+                .find_map(|id| {
+                    let local = trees.local().get(id)?;
+                    if self.aliases.contains_key(&local.shape.parent) {
+                        return None;
+                    }
+                    let holder = (trees
+                        .remote_holders_of_key(&local.shape.parent, &name_key(&local.shape.name)))
+                    .find(|holder| {
+                        (trees.remote().live(holder)).is_some_and(|shape| shape.kind == Kind::Dir)
+                    });
+                    let to = match holder {
+                        None => None,
+                        Some(holder) => {
+                            let synced = trees.synced().get(holder);
+                            match trees.local().get(holder) {
+                                None if synced.is_none() => Some(holder.clone()),
+                                Some(node)
+                                    if !node.parked
+                                        && synced.is_some_and(|synced| {
+                                            synced.parent != node.shape.parent
+                                                || synced.name != node.shape.name
+                                        })
+                                        && (node.shape.parent != local.shape.parent
+                                            || name_key(&node.shape.name)
+                                                != name_key(&local.shape.name)) =>
+                                {
+                                    None
+                                }
+                                _ => return None,
+                            }
+                        }
+                    };
+                    Some((id.clone(), local.shape.clone(), to))
+                });
+            let Some((id, shape, to)) = next else {
+                return settled;
+            };
+            self.aliases.remove(&id);
+            match to {
+                Some(holder) => {
+                    rekey(trees, &id, &holder);
+                    trees.set_synced_if_valid(holder, Some(shape));
+                }
+                None => rekey(trees, &id, &NodeId::from(ids.uuid_v7(now_ms))),
+            }
+            settled = true;
         }
-        !freed.is_empty()
     }
 
     pub fn in_flight(&self) -> Option<&InFlight> {

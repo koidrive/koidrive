@@ -269,20 +269,18 @@ impl MergeResidue {
         let Some((mut path, _)) = crate::classify::path(trees.local(), source) else {
             return false;
         };
-        let mut entries = entries.into_iter().peekable();
-        entries.peek().is_some()
-            && entries.all(|(name, kind)| {
-                let Some((name, kind)) = name.zip(kind) else {
-                    return true;
-                };
-                path.push(name);
-                let ignored = trees.ignores(&path, kind);
-                path.pop();
-                ignored
-                    || trees
-                        .local_holders(source, name)
-                        .any(|id| trees.under_kept_entry(id))
-            })
+        entries.into_iter().any(|(name, kind)| {
+            let Some((name, kind)) = name.zip(kind) else {
+                return true;
+            };
+            path.push(name);
+            let ignored = trees.ignores(&path, kind);
+            path.pop();
+            ignored
+                || trees
+                    .local_holders(source, name)
+                    .any(|id| trees.under_kept_entry(id) || trees.holds_merge(id))
+        })
     }
 
     pub fn permits(&self, trees: &Trees, record: &EffectRecord) -> bool {

@@ -2602,7 +2602,7 @@ fn run_ignoring_answering_after(
             continue;
         }
         let residue = observed_merge_residue(&device, &commits);
-        commits.free_merge_residue(&mut device.trees, &mut device.ids, NOW as u64, &residue);
+        commits.settle_merge_residue(&mut device.trees, &mut device.ids, NOW as u64, &residue);
         let mut before = (device.trees.clone(), commits.questions().to_vec());
         let built = commits.build(
             &mut device.trees,

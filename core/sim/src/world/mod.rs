@@ -2696,7 +2696,7 @@ impl World {
             } = engine;
             let device_id = &device.session.device_id;
             let residue = merge_residue(&device.disk, trees, commits);
-            commits.free_merge_residue(trees, ids, NOW as u64, &residue);
+            commits.settle_merge_residue(trees, ids, NOW as u64, &residue);
             if commits.due(trees, device_id) {
                 let inos: BTreeMap<u128, NodeId> = (trees.local().iter())
                     .map(|(id, node)| (node.identity.ino, id.clone()))
