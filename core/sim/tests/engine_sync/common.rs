@@ -2289,9 +2289,6 @@ fn run_ignoring_answering_after(
                     reload(&device.trees, &commits, &effects, &device.rules)?;
                 prop_assert_eq!(effects.in_flight().first(), Some(&record));
             }
-            if matches!(record.effect, Effect::WriteFile { .. }) {
-                from_server.insert(record.node.clone());
-            }
             if let Effect::RemoveDir { along, .. } = &record.effect {
                 let held = held_on_disk(&device, &record.node, along);
                 if !held.is_empty() {
@@ -2325,6 +2322,9 @@ fn run_ignoring_answering_after(
             }
             if fail_on_ignored_name(&mut device, &mut effects, &record, &mut failed_on_ignored) {
                 continue;
+            }
+            if matches!(record.effect, Effect::WriteFile { .. }) {
+                from_server.insert(record.node.clone());
             }
             let identity = device.identity();
             effects
