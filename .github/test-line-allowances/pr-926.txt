@@ -1,3 +1,4 @@
-15
+30
 # The carried-move fix in Scratch::compensation and plan() is pinned by eight recovery tests that each cover a different ordering: a carried move into a live folder waits for that folder's own move, through a set-aside answer, through a trashed parent, into a folder that moves into a new folder, after an earlier carry takes its node out of the trashed folder, before a new file takes a name the folder leaves, behind a destination that moves into a new folder, into its own child or into a child whose name a leaving node holds, and with two answers where only the first may skip its wait.
 # Each test failed on an earlier head of this pull request or on main for the ordering it names, and no recovery test from main plans a carried move against the pending move of the folder it goes into.
+# The carried-move tests also check that the answer's own move and the retrash come in order around each carried move, that every move and new folder in a commit goes into a folder that exists when it runs, and that the answer and its carries go before the new file that takes the freed name.

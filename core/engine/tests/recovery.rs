@@ -6013,7 +6013,9 @@ fn a_move_the_answer_carries_into_a_live_folder_waits_for_that_folders_own_move(
         (sent.iter().position(|sent| *sent == (op.0, op.1.into())))
             .unwrap_or_else(|| panic!("{op:?} not in {sent:?}"))
     };
+    assert!(at(("move", "a")) < at(("move", "d")), "{sent:?}");
     assert!(at(("move", "d")) < at(("move", "b")), "{sent:?}");
+    assert!(at(("move", "b")) < at(("delete", "c")), "{sent:?}");
 }
 #[test]
 fn carried_moves_follow_the_moves_of_the_folders_they_go_into_when_the_answer_is_set_aside() {
@@ -6167,9 +6169,16 @@ fn an_answer_commits_when_an_earlier_carried_move_takes_another_moved_node_out_o
             break;
         }
         let sent = commits.in_flight().unwrap().commit.ops.clone();
+        let mut live: BTreeSet<String> = (trees.remote().iter())
+            .filter(|(_, node)| !node.trashed)
+            .map(|(id, _)| id.to_string())
+            .chain([ROOT.to_owned()])
+            .collect();
         let nodes: Vec<(String, Shape, bool)> = (sent.iter())
             .map(|op| match &op.op {
                 Some(op::Op::Move(moved)) => {
+                    assert!(live.contains(&moved.new_parent_id), "{sent:?}");
+                    live.insert(moved.node_id.clone());
                     let id = NodeId::from(moved.node_id.as_str());
                     let shape = Shape {
                         parent: moved.new_parent_id.as_str().into(),
@@ -6178,12 +6187,17 @@ fn an_answer_commits_when_an_earlier_carried_move_takes_another_moved_node_out_o
                     };
                     (moved.node_id.clone(), shape, false)
                 }
-                Some(op::Op::CreateDir(create)) => (
-                    create.node_id.clone(),
-                    dir(&create.parent_id, &create.name),
-                    false,
-                ),
+                Some(op::Op::CreateDir(create)) => {
+                    assert!(live.contains(&create.parent_id), "{sent:?}");
+                    live.insert(create.node_id.clone());
+                    (
+                        create.node_id.clone(),
+                        dir(&create.parent_id, &create.name),
+                        false,
+                    )
+                }
                 Some(op::Op::Delete(delete)) => {
+                    live.remove(&delete.node_id);
                     let id = NodeId::from(delete.node_id.as_str());
                     let shape = trees.remote().get(&id).unwrap().shape.clone();
                     (delete.node_id.clone(), shape, true)
@@ -6262,7 +6276,9 @@ fn a_carried_move_waits_for_its_folders_move_into_a_new_folder_or_its_own_child(
             (sent.iter().position(|sent| *sent == (op.0, op.1.into())))
                 .unwrap_or_else(|| panic!("{op:?} not in {sent:?}"))
         };
+        assert!(at(("move", "a")) < at(("move", "d")), "{sent:?}");
         assert!(at(("move", "d")) < at(("move", "b")), "{sent:?}");
+        assert!(at(("move", "b")) < at(("delete", "c")), "{sent:?}");
     }
 }
 
@@ -6323,13 +6339,12 @@ fn an_answer_and_its_carried_moves_go_before_a_new_file_takes_the_name_their_fol
             "{place:?} in {sent:?}"
         );
     }
-    for op in [
-        ("move", "a"),
-        ("move", "d"),
-        ("move", "b"),
-        ("create file", "f"),
-    ] {
-        assert!(sent.contains(&(op.0, op.1.into())), "{sent:?}");
+    let at = |op: (&str, &str)| {
+        (sent.iter().position(|sent| *sent == (op.0, op.1.into())))
+            .unwrap_or_else(|| panic!("{op:?} not in {sent:?}"))
+    };
+    for op in [("move", "a"), ("move", "d"), ("move", "b")] {
+        assert!(at(op) < at(("create file", "f")), "{sent:?}");
     }
 }
 
