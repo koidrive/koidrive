@@ -3,7 +3,7 @@
 //! Matching a first link's local entries against the server's tree (docs/design/sync-engine.md
 //! section 6.4).
 
-use koidrive_engine::classify::{Origin, Trees, Waiting};
+use koidrive_engine::classify::{Origin, Pending, Trees, Waiting};
 use koidrive_engine::commit::{Commits, Failure, Halt, Reconnect};
 use koidrive_engine::effects::{BatchLimit, Effect, Effects, Stuck, stuck};
 use koidrive_engine::first_link::{History, PriorSync, adopt};
@@ -4217,6 +4217,68 @@ fn a_file_that_arrived_in_a_server_folder_in_a_discarded_folder_after(
             .unwrap();
     }
     (sent, trees)
+}
+
+#[test]
+fn a_server_folder_taken_along_by_a_discard_is_the_users_once_the_user_moves_a_server_file_into_it_and_deletes_it_there()
+ {
+    for lift_before_move in [true, false] {
+        let mut trees = trees(
+            &[
+                ("f", dir(ROOT, "new")),
+                ("x", dir(ROOT, "server")),
+                ("e", file(ROOT, "elsewhere", 5)),
+            ],
+            &[
+                ("x", dir(ROOT, "server")),
+                ("e", file(ROOT, "elsewhere", 5)),
+            ],
+        );
+        let (mut commits, mut ids) = (Commits::default(), IdGen::new(7));
+        commits.first_link(&mut trees, &mut ids, NOW, PriorSync::Shown);
+        let asked = question(&commits);
+        trees.set_rules(
+            &[] as &[&str],
+            Source::Koiignore,
+            Some(RuleFile::parse(b"ignored\n")),
+        );
+        let mut moved = trees.local().get(&"x".into()).unwrap().clone();
+        moved.shape.parent = "f".into();
+        moved.shape.name = "ignored".into();
+        trees.set_local_changed("x".into(), moved);
+        trees.settle(commits.aliases());
+        assert!(commits.decide(&mut trees, &asked.id, Answer::Discard));
+        assert!(ops(&mut commits, &mut trees, &mut ids).is_empty());
+        if lift_before_move {
+            trees.set_rules(&[] as &[&str], Source::Koiignore, None);
+        }
+        let mut into = trees.local().get(&"e".into()).unwrap().clone();
+        into.shape.parent = "x".into();
+        trees.set_local_changed("e".into(), into);
+        trees.settle(commits.aliases());
+        trees.set_rules(&[] as &[&str], Source::Koiignore, None);
+        trees.listed(&[ROOT.into(), "f".into(), "x".into()], Pending::default());
+        trees.settle(commits.aliases());
+        trees.remove_local(&"e".into());
+        let sent = drive_until_quiet(&mut commits, &mut trees, &mut ids);
+        assert_eq!(
+            sent,
+            [
+                ("create dir", "f".to_owned()),
+                ("move", "x".to_owned()),
+                ("delete", "e".to_owned())
+            ],
+            "{lift_before_move}"
+        );
+        assert_eq!(
+            local(&trees),
+            [
+                ("f".into(), ROOT.into(), "new".into()),
+                ("x".into(), "f".into(), "ignored".into())
+            ],
+            "{lift_before_move}"
+        );
+    }
 }
 
 #[test]
