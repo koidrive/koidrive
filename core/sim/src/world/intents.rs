@@ -914,7 +914,7 @@ impl Intents {
                         || saw_the_value
                         || merged
                         || field != Field::Content && intent.lost && other.made > intent.made
-                        || other.made > intent.made
+                        || (other.made > intent.made || intent.answer.is_some())
                             && (0..self.list.len()).any(|k| held_as(k) && self.saw(j, k))
                         || intent.restore_answer()
                             && other.author != intent.author
@@ -1162,6 +1162,29 @@ mod tests {
         intents.record(0, 1, 1, "write", content(1));
         intents.answered(0, 2, 1, content(2), Answered::Settles, false);
         assert!(intents.check(&holding(2), |_| false, |_, _| false).is_err());
+    }
+
+    #[test]
+    fn a_delete_settles_an_answer_that_republishes_the_write_it_saw_whichever_came_first() {
+        let settles = |republished: i64| {
+            let mut intents = Intents::new(2);
+            for nodes in &mut intents.nodes {
+                nodes.insert(1, [NodeId::from("n")].into());
+            }
+            let write = intents.record(0, 1, 1, "write", content(1));
+            intents.seen[0].insert(write, 1);
+            intents.seen[1].insert(write, 1);
+            let deleted = Value::Trashed {
+                subtree: vec![1],
+                replaced_by: None,
+            };
+            intents.record(0, 2, 1, "delete", deleted);
+            intents.answered(1, 3, 1, content(republished), Answered::Owed, true);
+            intents.check(&Server::of("root", Vec::new()), |_| false, |_, _| false)
+        };
+        assert_eq!(settles(1), Ok(()));
+        let unseen = settles(2).expect_err("the deleting user never saw write 2");
+        assert!(unseen.0.contains("write 2 of the publish"), "{}", unseen.0);
     }
 
     #[test]
