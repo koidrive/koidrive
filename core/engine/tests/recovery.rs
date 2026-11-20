@@ -6260,3 +6260,70 @@ fn a_carried_move_waits_for_its_folders_move_into_a_new_folder_or_its_own_child(
         assert!(at(("move", "d")) < at(("move", "b")), "{sent:?}");
     }
 }
+
+#[test]
+fn an_answer_and_its_carried_moves_go_before_a_new_file_takes_the_name_their_folder_leaves() {
+    let mut trees = trees(
+        &[
+            ("a", dir(ROOT, "a1")),
+            ("n", dir("a", "n")),
+            ("b", dir("n", "b")),
+            ("c", dir("a", "c")),
+            ("d", dir("c", "d")),
+            ("f", file(ROOT, "b", 1)),
+        ],
+        &[
+            ("a", dir(ROOT, "a")),
+            ("b", dir(ROOT, "b")),
+            ("c", dir("a", "c")),
+            ("d", dir("c", "d")),
+        ],
+        &[
+            Remote("a", dir(ROOT, "a"), true, 1),
+            Remote("b", dir(ROOT, "b"), false, 1),
+            Remote("c", dir("a", "c"), true, 1),
+            Remote("d", dir("c", "d"), true, 1),
+        ],
+    );
+    let (mut commits, mut ids) = recovered(&mut trees, 0);
+    for question in commits.questions().to_vec() {
+        assert!(commits.decide(&question.id, Answer::Publish));
+    }
+    let mut moved = trees.local().get(&"d".into()).unwrap().clone();
+    moved.shape = dir("b", "d");
+    trees.set_local("d".into(), moved);
+    trees.settle(&Default::default());
+    let sent = ops(&mut commits, &mut trees, &mut ids);
+    let mut held: BTreeMap<(String, String), String> = (trees.remote().iter())
+        .filter(|(_, node)| !node.trashed)
+        .map(|(id, node)| {
+            let place = (node.shape.parent.to_string(), node.shape.name.clone());
+            (place, id.to_string())
+        })
+        .collect();
+    for op in &commits.in_flight().unwrap().commit.ops {
+        let (id, place) = match &op.op {
+            Some(op::Op::Move(moved)) => (&moved.node_id, (&moved.new_parent_id, &moved.new_name)),
+            Some(op::Op::CreateFile(create)) => {
+                (&create.node_id, (&create.parent_id, &create.name))
+            }
+            Some(op::Op::CreateDir(create)) => (&create.node_id, (&create.parent_id, &create.name)),
+            _ => continue,
+        };
+        held.retain(|_, holder| holder != id);
+        let place = (place.0.clone(), place.1.clone());
+        assert_eq!(
+            held.insert(place.clone(), id.clone()),
+            None,
+            "{place:?} in {sent:?}"
+        );
+    }
+    for op in [
+        ("move", "a"),
+        ("move", "d"),
+        ("move", "b"),
+        ("create file", "f"),
+    ] {
+        assert!(sent.contains(&(op.0, op.1.into())), "{sent:?}");
+    }
+}

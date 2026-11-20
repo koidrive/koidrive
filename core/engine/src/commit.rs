@@ -5125,10 +5125,10 @@ fn plan(
     };
     let ordered = !(wants.iter().flatten())
         .any(|want| matches!(want, Want::Delete { .. } | Want::Restore { .. }));
-    let (mut pass, mut stalled) = (1, false);
+    let (mut pass, mut stalled, mut lifting) = (1, false, false);
     let mut filled_at = None;
     let capped = loop {
-        let (mut progress, mut full) = (false, false);
+        let (mut progress, mut full, mut refused) = (false, false, false);
         for at in 0..wants.len() {
             let Some(want) =
                 (wants[at].as_ref()).filter(|want| scratch.fit(want, &moving) == Fit::Valid)
@@ -5136,8 +5136,9 @@ fn plan(
                 continue;
             };
             let Some((carried, bundle)) =
-                scratch.compensation(want, answers, trees, &wants, &moving, scratch.stalled)
+                scratch.compensation(want, answers, trees, &wants, &moving, lifting)
             else {
+                refused = true;
                 continue;
             };
             let order = match want {
@@ -5222,6 +5223,11 @@ fn plan(
         }
         pass += 1;
         if progress {
+            lifting = false;
+            continue;
+        }
+        if refused && !lifting {
+            lifting = true;
             continue;
         }
         stalled = true;
