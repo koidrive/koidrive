@@ -644,7 +644,7 @@ fn edit_keeping_the_size_and_mtime(path: &Path) {
 }
 
 #[test]
-fn an_upgraded_store_reports_only_files_changed_after_its_last_write_before_the_upgrade() {
+fn an_upgraded_store_rechecks_legacy_files_and_sends_only_the_offline_edit() {
     let mut remote = Remote::new();
     let (site, mut a) = linked(&mut remote, "a");
     a.create(&mut remote, &site.root.join("kept.txt"), b"kept on a");
@@ -657,24 +657,42 @@ fn an_upgraded_store_reports_only_files_changed_after_its_last_write_before_the_
              DELETE FROM migrations WHERE name = 'local_nodes_ctime';",
         )
         .unwrap();
-    std::thread::sleep(std::time::Duration::from_millis(50));
-
     let path = site.root.join("notes.txt");
     edit_keeping_the_size_and_mtime(&path);
+    fs::OpenOptions::new()
+        .write(true)
+        .open(&site.db)
+        .unwrap()
+        .set_modified(std::time::SystemTime::now() + Duration::from_secs(60))
+        .unwrap();
 
     let mut a = site.start();
     let mut snapshot = a.folder.engine.snapshot();
     let found = snapshot.rescan(&site.root, [PathBuf::new()]).unwrap();
     assert_eq!(
         found.changes,
-        [koidrive_fs::Change::Modified {
-            path: "notes.txt".into()
-        }]
+        [
+            koidrive_fs::Change::Modified {
+                path: "kept.txt".into()
+            },
+            koidrive_fs::Change::Modified {
+                path: "notes.txt".into()
+            },
+        ]
     );
     a.connect(&remote);
     a.settle();
     assert_eq!(a.run(&mut remote), ["subscribe", "upload", "send"]);
     assert_eq!(kinds(&a.sent[0]), ["update content"]);
+    drop(a);
+    let mut snapshot = site.start().folder.engine.snapshot();
+    assert!(
+        snapshot
+            .rescan(&site.root, [PathBuf::new()])
+            .unwrap()
+            .changes
+            .is_empty()
+    );
 }
 
 #[test]
