@@ -2657,7 +2657,7 @@ impl World {
                     .collect();
                 commits.build(trees, ids, NOW as u64, &history, device_id, cursor.clone());
                 let ops = commits.in_flight().map(|flight| &flight.commit.ops);
-                if let Some(placed) = ops.and_then(|ops| excluded_op(trees, ops)) {
+                for placed in ops.map_or_else(Vec::new, |ops| excluded_op(trees, ops)) {
                     let why = format!(
                         "a commit of device {d} places {placed}, which the rules of device {d} leave out"
                     );

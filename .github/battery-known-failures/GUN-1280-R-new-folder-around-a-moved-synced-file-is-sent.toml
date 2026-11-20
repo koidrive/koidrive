@@ -1,5 +1,8 @@
 class = "R"
 issue = "GUN-1280"
 tests = ["ignore_rules::a_new_folder_holding_a_synced_file_moved_into_a_folder_another_device_renamed_to_a_name_its_rules_exclude_is_sent"]
-message = '''called `Result::unwrap\(\)` on an `Err` value: Broken\("after phase <n>: after the faults stopped, on device <n>: a commit of device <n> places node <id> at \[\\"c\.txt\\", \\"ss\\"\], which the rules of device <n> leave out"\)'''
-examples = ['called `Result::unwrap()` on an `Err` value: Broken("after phase 2: after the faults stopped, on device 1: a commit of device 1 places node 01a1c2c0-39a0-7504-af4d-4d6a531020af at [\"c.txt\", \"ss\"], which the rules of device 1 leave out")']
+message = '''called `Result::unwrap\(\)` on an `Err` value: Broken\("after phase <n>: after the faults stopped, on device <n>: a commit of device <n> places node <id> at \[\\"c\.txt\\", \\"ss\\"(?:, \\"b\\")?\], which the rules of device <n> leave out"\)'''
+examples = [
+  'called `Result::unwrap()` on an `Err` value: Broken("after phase 2: after the faults stopped, on device 1: a commit of device 1 places node 01a1c2c0-39a0-7504-af4d-4d6a531020af at [\"c.txt\", \"ss\"], which the rules of device 1 leave out")',
+  'called `Result::unwrap()` on an `Err` value: Broken("after phase 2: after the faults stopped, on device 1: a commit of device 1 places node 01a1c2c0-39a0-7735-80db-d7e668859a70 at [\"c.txt\", \"ss\", \"b\"], which the rules of device 1 leave out")',
+]

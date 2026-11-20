@@ -923,19 +923,33 @@ fn synced_entries_of_a_folder_held_by_its_server_path_follow_another_devices_del
     }
 }
 
-#[test]
-fn a_new_folder_holding_a_synced_file_moved_into_a_folder_another_device_renamed_to_a_name_its_rules_exclude_is_sent()
- {
-    let _red = expect_red(
-        Check::SentLeftOut,
-        "a commit of device 1 places node 01a1c2c0-39a0-7504-af4d-4d6a531020af at [\"c.txt\", \"ss\"], which the rules of device 1 leave out",
-    );
+const NEW_FOLDER_SENT: &str = "a commit of device 1 places node 01a1c2c0-39a0-7504-af4d-4d6a531020af at [\"c.txt\", \"ss\"], which the rules of device 1 leave out";
+const MOVED_FILE_SENT: &str = "a commit of device 1 places node 01a1c2c0-39a0-7735-80db-d7e668859a70 at [\"c.txt\", \"ss\", \"b\"], which the rules of device 1 leave out";
+
+fn synced_file_moved_into_a_new_folder_where_the_server_renamed_its_folder()
+-> Result<World, Failure> {
     let phases = [
         vec![(0, folder("a")), (0, user(1, 0, 1, "b"))],
         vec![(0, rename(0, 0, "c.txt"))],
         vec![(1, user(0, 0, 1, "ss")), (1, rename(1, 2, "b"))],
     ];
-    converge_excluding(&[vec![], vec!["*.txt"]], &phases).unwrap();
+    converge_excluding(&[vec![], vec!["*.txt"]], &phases)
+}
+
+#[test]
+fn a_new_folder_holding_a_synced_file_moved_into_a_folder_another_device_renamed_to_a_name_its_rules_exclude_is_sent()
+ {
+    let _folder = expect_red(Check::SentLeftOut, NEW_FOLDER_SENT);
+    let _file = expect_red(Check::SentLeftOut, MOVED_FILE_SENT);
+    synced_file_moved_into_a_new_folder_where_the_server_renamed_its_folder().unwrap();
+}
+
+#[test]
+fn a_commit_that_places_two_entries_where_its_rules_exclude_fails_on_the_one_no_guard_expects() {
+    let _folder = expect_red(Check::SentLeftOut, NEW_FOLDER_SENT);
+    let failure = synced_file_moved_into_a_new_folder_where_the_server_renamed_its_folder();
+    let why = format!("after phase 2: after the faults stopped, on device 1: {MOVED_FILE_SENT}");
+    assert_eq!(failure.err(), Some(Failure::Broken(why)));
 }
 
 #[test]

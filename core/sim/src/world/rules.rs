@@ -41,12 +41,11 @@ fn path_in<'a>(
     Some(names)
 }
 
-pub(super) fn excluded_op(trees: &Trees, ops: &[Op]) -> Option<String> {
+pub(super) fn excluded_op(trees: &Trees, ops: &[Op]) -> Vec<String> {
     let mut sent = BTreeMap::new();
+    let mut placements = Vec::new();
     for op in ops {
-        if let Some(placed) = excluded_at(trees, &sent, op) {
-            return Some(placed);
-        }
+        placements.extend(excluded_at(trees, &sent, op));
         let server = |id: &NodeId| {
             sent.get(id)
                 .or_else(|| trees.remote().get(id).map(|node| &node.shape))
@@ -84,7 +83,7 @@ pub(super) fn excluded_op(trees: &Trees, ops: &[Op]) -> Option<String> {
             sent.insert(NodeId::from(id), shape);
         }
     }
-    None
+    placements
 }
 
 fn named<'a>(name: &'a str, pending_for: &'a str) -> &'a str {
