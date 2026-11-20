@@ -57,7 +57,8 @@ import {
 import type { SessionCheck } from "../account/account";
 import type { AccountDO } from "../account-do";
 import { verifyAccessToken } from "../auth";
-import { type ChunkObject, type PackLocation, type PackedRead, signChunkGrant, signPackedGet, verifyChunkGrant, verifyPackedReceipt } from "../crypto";
+import { encodePack, MAX_PACK_BODY_BYTES } from "../chunk-pack";
+import { type ChunkObject, type PackLocation, type PackedRead, sha256, signChunkGrant, signPackedGet, verifyChunkGrant, verifyPackedReceipt } from "../crypto";
 import { errorText } from "../errors";
 import type { Database, ObjectState, ObjectStore, Socket, Sql, SqlRow } from "../host";
 import { fromHex, isUuidV7, toHex, uuidv7, uuidv7Ms, uuidv7Prefix } from "../ids";
@@ -121,6 +122,8 @@ import {
   GC_RETRY_MS,
   R2_DELETE_BATCH,
   R2_DELETE_ROUNDS,
+  COMPACTION_SOURCES,
+  COMPACTION_OUTPUTS,
   ORPHAN_SWEEP_MS,
   CLOSED_RECHECK_MS,
   EXPORT_RETRY_MS,
@@ -1614,6 +1617,7 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
         deletedChunks += rows.length + orphans.length;
         deletedPacks += packs.length;
       }
+      const compactionLeft = await this.compactPacks(nowMs);
       const { expiredVersions, purgedNodes, full } = purge;
       return {
         expiredVersions,
@@ -1622,8 +1626,128 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
         sweptChunks,
         deletedPacks,
         sweptPacks,
-        more: expiredVersions === GC_BATCH || purgedNodes === GC_BATCH || full || marked === GC_BATCH || sweeping || deferred,
+        more: expiredVersions === GC_BATCH || purgedNodes === GC_BATCH || full || marked === GC_BATCH || sweeping || deferred || compactionLeft,
       };
+    }
+
+    private async compactPacks(nowMs: number): Promise<boolean> {
+      if (this.compacting.size > 0) return false;
+      const spaceId = this.spaceId;
+      const selected = this.sql
+        .exec(
+          `SELECT pack_id FROM packs WHERE state = 2 AND size > (live_bytes + live_count * 36 + 16) * 2
+             AND live_count > 0 AND pack_id < ? ORDER BY live_bytes LIMIT ?`,
+          uuidv7Prefix(nowMs - PACK_FREE_AGE_MS),
+          COMPACTION_SOURCES,
+        )
+        .toArray()
+        .map(({ pack_id }) => ({
+          packId: String(pack_id),
+          rows: this.sql
+            .exec("SELECT hash, size, pack_offset FROM chunks WHERE pack_id = ? AND state IN (?, ?) ORDER BY pack_offset", pack_id, ChunkState.PENDING, ChunkState.LIVE)
+            .toArray()
+            .map((row) => ({ hash: new Uint8Array(row.hash as ArrayBuffer), size: Number(row.size), offset: Number(row.pack_offset) })),
+        }));
+      const outputs: (typeof selected)[] = [];
+      let bodyBytes = MAX_PACK_BODY_BYTES;
+      let planned = 0;
+      for (const source of selected) {
+        const liveBytes = source.rows.reduce((sum, row) => sum + row.size, 0);
+        if (bodyBytes + liveBytes > MAX_PACK_BODY_BYTES) {
+          if (outputs.length === COMPACTION_OUTPUTS) break;
+          outputs.push([]);
+          bodyBytes = 0;
+        }
+        outputs.at(-1)!.push(source);
+        bodyBytes += liveBytes;
+        planned++;
+      }
+
+      for (const sources of outputs) {
+        const outputId = uuidv7(this.clock());
+        const plannedRows = sources.flatMap((source) => source.rows);
+        this.sql.exec(
+          "INSERT INTO packs (pack_id, size, state, live_count, live_bytes, hold_until_ms) VALUES (?, ?, ?, 0, 0, 0)",
+          outputId,
+          plannedRows.reduce((sum, row) => sum + row.size + 36, 16),
+          PackState.WRITING,
+        );
+        this.compacting.add(outputId);
+        let swapped = false;
+        try {
+          const kept: { source: (typeof sources)[number]; chunks: Uint8Array[] }[] = [];
+          for (const source of sources) {
+            const stored = await this.objects.get(packKey(spaceId, source.packId));
+            if (!stored) {
+              console.error("pack compaction left out a missing source", spaceId, source.packId);
+              continue;
+            }
+            const bytes = new Uint8Array(await new Response(stored.body).arrayBuffer());
+            const chunks: Uint8Array[] = [];
+            for (const row of source.rows) {
+              const data = bytes.slice(row.offset, row.offset + row.size);
+              if (data.length !== row.size || !sameBytes(await sha256(data), row.hash)) {
+                console.error("pack compaction left out a source whose bytes do not match", spaceId, source.packId, toHex(row.hash));
+                break;
+              }
+              chunks.push(data);
+            }
+            if (chunks.length === source.rows.length) kept.push({ source, chunks });
+          }
+          if (kept.length === 0) continue;
+          const output = encodePack(kept.flatMap(({ source, chunks }) => source.rows.map((row, i) => ({ hash: row.hash, data: chunks[i]! }))));
+          if ((await this.objects.put(packKey(spaceId, outputId), output, { onlyIf: { etagDoesNotMatch: "*" } })) === null) continue;
+          swapped = this.db.transactionSync(() => {
+            if (this.sql.exec("SELECT state FROM packs WHERE pack_id = ?", outputId).toArray()[0]?.state !== PackState.WRITING) return false;
+            for (const { source } of kept) {
+              if (this.sql.exec("SELECT state FROM packs WHERE pack_id = ?", source.packId).toArray()[0]?.state !== PackState.LIVE) return false;
+              const inPlan = new Set(source.rows.map((row) => `${toHex(row.hash)}@${row.offset}`));
+              const onSource = this.sql.exec("SELECT hash, pack_offset FROM chunks WHERE pack_id = ? AND state IN (?, ?)", source.packId, ChunkState.PENDING, ChunkState.LIVE).toArray();
+              if (!onSource.every((row) => inPlan.has(`${toHex(new Uint8Array(row.hash as ArrayBuffer))}@${Number(row.pack_offset)}`))) return false;
+            }
+            let offset = 0;
+            for (const { source } of kept) {
+              for (const row of source.rows) {
+                this.sql.exec(
+                  "UPDATE chunks SET pack_id = ?, pack_offset = ? WHERE hash = ? AND pack_id = ? AND pack_offset = ? AND state IN (?, ?)",
+                  outputId,
+                  offset,
+                  row.hash,
+                  source.packId,
+                  row.offset,
+                  ChunkState.PENDING,
+                  ChunkState.LIVE,
+                );
+                offset += row.size;
+              }
+              this.sql.exec(
+                "UPDATE packs SET state = ?, live_count = 0, live_bytes = 0, hold_until_ms = ? WHERE pack_id = ?",
+                PackState.DRAINED,
+                this.clock() + this.settings().chunk_grace_days * DAY_MS,
+                source.packId,
+              );
+            }
+            this.sql.exec(
+              `UPDATE packs SET state = ?, size = ?,
+                 live_count = (SELECT COUNT(*) FROM chunks WHERE chunks.pack_id = packs.pack_id AND chunks.state IN (?, ?)),
+                 live_bytes = (SELECT COALESCE(SUM(size), 0) FROM chunks WHERE chunks.pack_id = packs.pack_id AND chunks.state IN (?, ?))
+               WHERE pack_id = ?`,
+              PackState.LIVE,
+              output.length,
+              ChunkState.PENDING,
+              ChunkState.LIVE,
+              ChunkState.PENDING,
+              ChunkState.LIVE,
+              outputId,
+            );
+            return true;
+          });
+        } finally {
+          this.compacting.delete(outputId);
+          if (!swapped) this.sql.exec("UPDATE packs SET state = ? WHERE pack_id = ? AND state = ?", PackState.DELETING, outputId, PackState.WRITING);
+        }
+      }
+      return selected.length === COMPACTION_SOURCES || planned < selected.length;
     }
 
     async rewindInfo(restorePointMs: number): Promise<{ historyId: string; headSeq: number; descriptorDurable: boolean; bookmark: string | undefined }> {

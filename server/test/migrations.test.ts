@@ -410,7 +410,8 @@ describe("upgraded objects keep working", () => {
 it("plans sparse pack selection using the migrated index", async () => {
   const details = await inObject(SPACE.stub("sparse-index-review"), (sql) =>
     sql.exec(`EXPLAIN QUERY PLAN SELECT pack_id FROM packs
-      WHERE state = 2 AND size > (live_bytes + live_count * 36 + 16) * 2 ORDER BY live_bytes LIMIT 16`)
+      WHERE state = 2 AND size > (live_bytes + live_count * 36 + 16) * 2
+        AND live_count > 0 AND pack_id < '' ORDER BY live_bytes LIMIT 16`)
       .toArray().map((row) => row.detail).join(" / "),
   );
   expect(details).toContain("USING INDEX packs_sparse");
