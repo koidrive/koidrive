@@ -628,6 +628,7 @@ pub struct Trees {
     unobserved: TrackedSet<NodeId>,
     rules_changed: BTreeSet<Vec<String>>,
     relist: BTreeSet<NodeId>,
+    left_folders: BTreeSet<NodeId>,
     released: Vec<NodeId>,
     cycles_may_end: bool,
     moved: bool,
@@ -766,6 +767,7 @@ impl Trees {
             unobserved: TrackedSet::default(),
             rules_changed: BTreeSet::new(),
             relist: BTreeSet::new(),
+            left_folders: BTreeSet::new(),
             released: Vec::new(),
             cycles_may_end: false,
             moved: false,
@@ -2197,7 +2199,7 @@ impl Trees {
         .or_insert_with(|| Holders::One(id.clone()));
         self.mark(&id);
         if let Some(folder) = left_folder {
-            self.mark_left_folder(&folder);
+            self.left_folders.insert(folder);
         }
         self.count_held_trash(&id, false);
         self.moved |= match self.l.get(&id) {
@@ -2435,7 +2437,7 @@ impl Trees {
             }
             self.forget_identity(id, &old.identity);
             self.mark(id);
-            self.mark_left_folder(&old.shape.parent);
+            self.left_folders.insert(old.shape.parent);
         }
         if self.s.get(id).is_none() {
             let released = (self.waiting.get(id)).is_some_and(|w| w.origin == Origin::Released);
@@ -4018,9 +4020,15 @@ impl Trees {
             }
         }
         let mut above = BTreeSet::new();
-        for top in tops {
-            for folder in self.local_chain(top).skip(1) {
-                if *folder == self.l.root || self.known_to_server(folder) || !above.insert(folder) {
+        let chains = (tops.iter().map(|top| self.local_chain(top).skip(1)))
+            .chain((self.left_folders.iter()).map(|folder| self.local_chain(folder).skip(0)));
+        for chain in chains {
+            for folder in chain {
+                if *folder == self.l.root
+                    || self.l.get(folder).is_none()
+                    || self.known_to_server(folder)
+                    || !above.insert(folder)
+                {
                     break;
                 }
             }
@@ -4033,6 +4041,7 @@ impl Trees {
                 marked.push(folder.to_owned());
             }
         }
+        self.left_folders.clear();
         for node in marked {
             self.set_unobserved(node);
         }
@@ -5022,12 +5031,6 @@ impl Trees {
             || self.s.get(id).is_some()
             || self.waiting.contains_key(id)
             || self.watched_positions.contains_key(id)
-    }
-
-    fn mark_left_folder(&mut self, folder: &NodeId) {
-        if *folder != self.l.root && self.l.get(folder).is_some() && !self.known_to_server(folder) {
-            self.mark(folder);
-        }
     }
 
     fn held_apart_from_l(&self, id: &NodeId) -> Option<bool> {
@@ -7495,6 +7498,7 @@ impl Trees {
             unobserved,
             rules_changed: _,
             relist: _,
+            left_folders: _,
             released: _,
             cycles_may_end: _,
             moved: _,
