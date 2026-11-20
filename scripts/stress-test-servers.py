@@ -112,9 +112,12 @@ def capture_tests(args, environment):
     entries = {}
     for path in reversed(configs):
         for name, value in tomllib.loads(path.read_text()).get("env", {}).items():
-            entries.setdefault(name, {}).update(value if isinstance(value, dict) else {"value": value})
+            entry = value if isinstance(value, dict) else {"value": value}
+            entries.setdefault(name, {}).update(entry, **({"base": path.parent.parent} if "value" in entry else {}))
     forced = {name: bool(entry.get("force")) for name, entry in entries.items()}
-    allowed = {*CARGO_SETS, *(name for name in forced if forced[name] or name not in environment)}
+    allowed = {*CARGO_SETS, *(name for name in entries if name not in environment)}
+    configured_over = {name: str(entry["base"] / entry["value"]) if entry.get("relative") else entry["value"]
+                       for name, entry in entries.items() if forced[name] and name in environment and "value" in entry}
     with tempfile.TemporaryDirectory(prefix="heavy-capture-") as scratch:
         recorder = Path(scratch) / "record-test"
         recorder.write_text("#!" + sys.executable + "\n" + RECORDER)
@@ -134,8 +137,9 @@ def capture_tests(args, environment):
         tests.append(dict(name=re.sub(r"-[0-9a-f]{16}$", "", Path(record["executable"]).name),
                           executable=record["executable"], directory=record["directory"],
                           default={name: value for name, value in given.items() if name in forced and not forced[name]},
-                          override={name: value for name, value in given.items()
-                                    if forced.get(name) or (name not in forced and environment.get(name) != value)}))
+                          override={**{name: value for name, value in given.items()
+                                       if forced.get(name) or (name not in forced and environment.get(name) != value)},
+                                    **configured_over}))
     return tests
 
 

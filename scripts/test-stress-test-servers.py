@@ -60,7 +60,8 @@ for test in filter(None, os.environ['FAKE_TESTS'].split(os.pathsep)):
                                                        "KOIDRIVE_TEST_SERVER = 'from-config'\n"
                                                        "KOIDRIVE_TEST_SERVER_LOG = { value = 'from-config' }\n")
         (self.root / "cargo-home").mkdir()
-        (self.root / "cargo-home/config.toml").write_text("[env]\nKOIDRIVE_TEST_SERVER_LOG = { value = 'home', force = true }\n")
+        (self.root / "cargo-home/config.toml").write_text("[env]\nKOIDRIVE_TEST_SERVER_LOG = { value = 'home', force = true }\n"
+                                                           "CARGO_REGISTRY_TOKEN = { value = 'home', force = true }\n")
         self.package = self.root / "crate"
         self.package.mkdir()
         self.probe = r'''
