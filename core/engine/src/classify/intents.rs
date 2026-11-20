@@ -71,7 +71,7 @@ pub(super) fn full_held(r: &Tree<RemoteNode>, (node, field): &RowKey, held: &Hel
 
 fn named_place(parent: &str, name: &str, mark: &str) -> Value {
     Value::Place(Place {
-        parent: parent.to_owned(),
+        parent: NodeId::from(parent),
         name: name.to_owned(),
         mark: Some(mark.to_owned()).filter(|mark| !mark.is_empty()),
     })
@@ -170,7 +170,7 @@ impl Trees {
         &mut self.journal
     }
 
-    pub fn journal_row(&self, node: &str, field: Field) -> Option<Cow<'_, Row>> {
+    pub fn journal_row(&self, node: &NodeId, field: Field) -> Option<Cow<'_, Row>> {
         if let Some(row) = self.journal.row(node, field) {
             return Some(Cow::Borrowed(row));
         }
@@ -193,7 +193,7 @@ impl Trees {
             .chain(compact)
     }
 
-    pub(super) fn compact_journal(&mut self, node: &str, when: Compact) {
+    pub(super) fn compact_journal(&mut self, node: &NodeId, when: Compact) {
         let Some(remote) = self.r.get(node) else {
             return;
         };
@@ -219,7 +219,7 @@ impl Trees {
         }
     }
 
-    pub(super) fn write_out_journal(&mut self, node: &str) {
+    pub(super) fn write_out_journal(&mut self, node: &NodeId) {
         for field in Field::ALL {
             let key = (node.to_owned(), field);
             if let Some(held) = self.journal.compact_row(node, field) {
@@ -277,6 +277,7 @@ impl Trees {
                 continue;
             };
             let (node, fields, carried) = op_fields(kind);
+            let node = &NodeId::from(node);
             let own = !carried
                 && (self.local_changes.contains(node)
                     || self.edited_here.contains_key(node)
@@ -336,13 +337,20 @@ impl Trees {
             .map(|id| {
                 let base = (self.replaced_versions.get(id))
                     .and_then(|versions| versions.last())
-                    .map(|version| IntentId::legacy_content(id, version));
+                    .map(|version| IntentId::legacy_content(&id.to_string(), version));
                 (id.clone(), Field::Content, base)
             })
             .chain(self.moved_here.keys().map(|id| {
                 let base = (self.past_positions.get(id))
                     .and_then(|positions| positions.last())
-                    .map(|at| IntentId::legacy_place(id, at.rev, &at.parent, &at.name));
+                    .map(|at| {
+                        IntentId::legacy_place(
+                            &id.to_string(),
+                            at.rev,
+                            &at.parent.to_string(),
+                            &at.name,
+                        )
+                    });
                 (id.clone(), Field::Place, base)
             }))
             .chain(self.trashed_here.keys().map(|id| {
@@ -350,7 +358,7 @@ impl Trees {
                 (
                     id.clone(),
                     Field::Status,
-                    Some(IntentId::legacy_live(id, rev)),
+                    Some(IntentId::legacy_live(&id.to_string(), rev)),
                 )
             }))
             .collect();
@@ -379,7 +387,7 @@ impl Trees {
                     (
                         id.clone(),
                         Field::Content,
-                        IntentId::legacy_content(id, version),
+                        IntentId::legacy_content(&id.to_string(), version),
                     )
                 })
             })
@@ -388,7 +396,12 @@ impl Trees {
                     (
                         id.clone(),
                         Field::Place,
-                        IntentId::legacy_place(id, at.rev, &at.parent, &at.name),
+                        IntentId::legacy_place(
+                            &id.to_string(),
+                            at.rev,
+                            &at.parent.to_string(),
+                            &at.name,
+                        ),
                     )
                 })
             }))
@@ -413,7 +426,7 @@ impl Trees {
         }
     }
 
-    fn local_values(&self, id: &str) -> Vec<(Field, Value)> {
+    fn local_values(&self, id: &NodeId) -> Vec<(Field, Value)> {
         let Some(local) = self.l.get(id) else {
             return Vec::new();
         };
@@ -422,7 +435,7 @@ impl Trees {
             .collect()
     }
 
-    fn acknowledged_value(&self, id: &str, field: Field) -> Option<Value> {
+    fn acknowledged_value(&self, id: &NodeId, field: Field) -> Option<Value> {
         let shape = self.acknowledged(id)?;
         match field {
             Field::Place => Some(place(shape, self.synced_mark(id))),
@@ -431,12 +444,12 @@ impl Trees {
         }
     }
 
-    fn acknowledged_intent(&self, id: &str, field: Field) -> Option<IntentId> {
+    fn acknowledged_intent(&self, id: &NodeId, field: Field) -> Option<IntentId> {
         let value = self.acknowledged_value(id, field)?;
         Some(self.legacy_intent(id, field, &value))
     }
 
-    fn acknowledged_seen_list(&self, id: &str) -> Vec<Seen> {
+    fn acknowledged_seen_list(&self, id: &NodeId) -> Vec<Seen> {
         let mut nodes: Vec<NodeId> = vec![id.to_owned()];
         let mut next = 0;
         while let Some(node) = nodes.get(next).cloned() {
@@ -461,14 +474,16 @@ impl Trees {
         seen
     }
 
-    fn legacy_intent(&self, id: &str, field: Field, value: &Value) -> IntentId {
+    fn legacy_intent(&self, id: &NodeId, field: Field, value: &Value) -> IntentId {
         if let Some(intent) = self.remote_intent(id, field, value) {
             return intent;
         }
         let remote = self.r.get(id);
         let rev = remote.map_or(0, |remote| remote.meta_rev);
         match value {
-            Value::Place(place) => IntentId::legacy_place(id, rev, &place.parent, &place.name),
+            Value::Place(place) => {
+                IntentId::legacy_place(&id.to_string(), rev, &place.parent.to_string(), &place.name)
+            }
             Value::Content { version_id, .. } => {
                 let version = (version_id.clone())
                     .or_else(|| {
@@ -482,11 +497,11 @@ impl Trees {
                         )
                     })
                     .unwrap_or_default();
-                IntentId::legacy_content(id, &version)
+                IntentId::legacy_content(&id.to_string(), &version)
             }
-            Value::Status { live: true } => IntentId::legacy_live(id, rev),
+            Value::Status { live: true } => IntentId::legacy_live(&id.to_string(), rev),
             Value::Status { live: false } => IntentId::legacy_trashed(
-                id,
+                &id.to_string(),
                 remote.map_or("", |remote| remote.trash_group.as_str()),
             ),
         }
@@ -546,7 +561,7 @@ impl Trees {
         self.journal.set_listed(true);
     }
 
-    pub(super) fn end_carrier(&mut self, carrier: Carrier, id: &str) -> bool {
+    pub(super) fn end_carrier(&mut self, carrier: Carrier, id: &NodeId) -> bool {
         let ended = match carrier {
             Carrier::LostCreate => self.lost_creates.remove(id),
             Carrier::UnsentCreate => self.unsent_creates.remove(id),
@@ -570,7 +585,7 @@ impl Trees {
     }
 
     /// The intents S holds for the node: for each field, the intent of the value S took.
-    pub fn synced_intents(&self, id: &str) -> Option<NodeIntents> {
+    pub fn synced_intents(&self, id: &NodeId) -> Option<NodeIntents> {
         self.s.get(id)?;
         Some(match self.synced_intents.get(id) {
             Some(intents) => intents.clone(),
@@ -580,18 +595,18 @@ impl Trees {
 
     /// The intents S holds for the node where they differ from the intents of the values R holds, which the store
     /// keeps; elsewhere S follows R.
-    pub fn synced_intents_apart_from_remote(&self, id: &str) -> Option<&NodeIntents> {
+    pub fn synced_intents_apart_from_remote(&self, id: &NodeId) -> Option<&NodeIntents> {
         self.synced_intents.get(id)
     }
 
     /// Sets the intents S holds for a node S holds, as the store kept them.
-    pub fn set_synced_intents(&mut self, id: &str, intents: NodeIntents) {
+    pub fn set_synced_intents(&mut self, id: &NodeId, intents: NodeIntents) {
         if self.s.get(id).is_some() {
             self.keep_synced_intents(id, intents);
         }
     }
 
-    fn synced_from_remote(&self, id: &str) -> NodeIntents {
+    fn synced_from_remote(&self, id: &NodeId) -> NodeIntents {
         let mut intents = NodeIntents::default();
         let Some(remote) = self.r.get(id) else {
             return intents;
@@ -607,12 +622,12 @@ impl Trees {
         intents
     }
 
-    fn keep_synced_intents(&mut self, id: &str, intents: NodeIntents) {
+    fn keep_synced_intents(&mut self, id: &NodeId, intents: NodeIntents) {
         let kept = (intents != self.synced_from_remote(id)).then_some(intents);
         self.put_synced_intents(id, kept);
     }
 
-    fn put_synced_intents(&mut self, id: &str, intents: Option<NodeIntents>) {
+    fn put_synced_intents(&mut self, id: &NodeId, intents: Option<NodeIntents>) {
         let before = match intents {
             Some(intents) => self.synced_intents.insert(id.to_owned(), intents),
             None => self.synced_intents.remove(id),
@@ -622,13 +637,13 @@ impl Trees {
         }
     }
 
-    pub(super) fn settle_synced_intents(&mut self, id: &str) {
+    pub(super) fn settle_synced_intents(&mut self, id: &NodeId) {
         if let Some(intents) = self.synced_intents.get(id).cloned() {
             self.keep_synced_intents(id, intents);
         }
     }
 
-    pub fn remote_history(&self, id: &str, field: Field) -> Vec<HistoryEntry> {
+    pub fn remote_history(&self, id: &NodeId, field: Field) -> Vec<HistoryEntry> {
         let mut entries = self.journal.history(id, field).to_vec();
         let Some(remote) = self.r.get(id) else {
             return entries;
@@ -645,7 +660,7 @@ impl Trees {
         entries
     }
 
-    fn local_holds_remote(&self, id: &str, remote: &RemoteNode, field: Field) -> bool {
+    fn local_holds_remote(&self, id: &NodeId, remote: &RemoteNode, field: Field) -> bool {
         (self.l.get(id)).is_some_and(|local| {
             same(
                 remote_value(remote, field).as_ref(),
@@ -654,7 +669,7 @@ impl Trees {
         })
     }
 
-    fn local_value(&self, id: &str, shape: &Shape, field: Field) -> Option<Value> {
+    fn local_value(&self, id: &NodeId, shape: &Shape, field: Field) -> Option<Value> {
         match field {
             Field::Place => {
                 let mark = (self.unsent_marks.get(id).map(String::as_str)).or_else(|| {
@@ -669,7 +684,7 @@ impl Trees {
         }
     }
 
-    fn synced_value(&self, id: &str, field: Field) -> Option<Value> {
+    fn synced_value(&self, id: &NodeId, field: Field) -> Option<Value> {
         let shape = self.s.get(id)?;
         match field {
             Field::Place => Some(place(shape, self.synced_mark(id))),
@@ -678,20 +693,20 @@ impl Trees {
         }
     }
 
-    fn remote_intent(&self, id: &str, field: Field, value: &Value) -> Option<IntentId> {
+    fn remote_intent(&self, id: &NodeId, field: Field, value: &Value) -> Option<IntentId> {
         let remote = self.r.get(id)?;
         same(remote_value(remote, field).as_ref(), Some(value))
             .then(|| remote_intent_of(remote, field).map(|intent| intent.id))
             .flatten()
     }
 
-    fn synced_intent(&self, id: &str, field: Field, value: &Value) -> Option<IntentId> {
+    fn synced_intent(&self, id: &NodeId, field: Field, value: &Value) -> Option<IntentId> {
         same(self.synced_value(id, field).as_ref(), Some(value))
             .then(|| self.synced_intents(id)?.get(field).map(|intent| intent.id))
             .flatten()
     }
 
-    fn intent_of(&self, id: &str, field: Field, value: &Value) -> Option<IntentId> {
+    fn intent_of(&self, id: &NodeId, field: Field, value: &Value) -> Option<IntentId> {
         (self.journal_row(id, field))
             .filter(|row| row.value.same(value))
             .map(|row| row.intent)
@@ -699,23 +714,24 @@ impl Trees {
             .or_else(|| self.synced_intent(id, field, value))
     }
 
-    fn legacy_intents(&self, id: &str, node: &RemoteNode) -> NodeIntents {
+    fn legacy_intents(&self, id: &NodeId, node: &RemoteNode) -> NodeIntents {
         let kept_live = (self.r.get(id))
             .filter(|old| !old.trashed && !node.trashed)
             .and_then(|old| old.intents.as_ref()?.status.clone());
         NodeIntents {
             place: Some(FieldIntent::legacy(IntentId::legacy_place(
-                id,
+                &id.to_string(),
                 node.meta_rev,
-                &node.shape.parent,
+                &node.shape.parent.to_string(),
                 &nfc(&node.shape.name),
             ))),
-            content: (node.shape.kind == Kind::File && !node.version_id.is_empty())
-                .then(|| FieldIntent::legacy(IntentId::legacy_content(id, &node.version_id))),
+            content: (node.shape.kind == Kind::File && !node.version_id.is_empty()).then(|| {
+                FieldIntent::legacy(IntentId::legacy_content(&id.to_string(), &node.version_id))
+            }),
             status: Some(kept_live.unwrap_or_else(|| {
                 FieldIntent::legacy(match node.trashed {
-                    true => IntentId::legacy_trashed(id, &node.trash_group),
-                    false => IntentId::legacy_live(id, node.meta_rev),
+                    true => IntentId::legacy_trashed(&id.to_string(), &node.trash_group),
+                    false => IntentId::legacy_live(&id.to_string(), node.meta_rev),
                 })
             })),
             trash_over: None,
@@ -723,7 +739,7 @@ impl Trees {
         }
     }
 
-    pub(super) fn write_out_synced_intents(&mut self, id: &str) {
+    pub(super) fn write_out_synced_intents(&mut self, id: &NodeId) {
         if self.r.get(id).is_some()
             && self.s.get(id).is_some()
             && !self.synced_intents.contains_key(id)
@@ -733,7 +749,7 @@ impl Trees {
         }
     }
 
-    pub(super) fn take_remote_intents(&mut self, id: &str, node: &mut RemoteNode) {
+    pub(super) fn take_remote_intents(&mut self, id: &NodeId, node: &mut RemoteNode) {
         let mut intents = (node.intents.take()).unwrap_or_else(|| self.legacy_intents(id, node));
         for intent in [
             &mut intents.place,
@@ -774,7 +790,7 @@ impl Trees {
         node.intents = Some(intents);
     }
 
-    pub(super) fn note_local_holds(&mut self, id: &str) {
+    pub(super) fn note_local_holds(&mut self, id: &NodeId) {
         let Some(remote) = self.r.get(id) else {
             return;
         };
@@ -787,7 +803,7 @@ impl Trees {
         }
     }
 
-    pub(super) fn note_local_leaves(&mut self, id: &str, shape: &Shape) {
+    pub(super) fn note_local_leaves(&mut self, id: &NodeId, shape: &Shape) {
         let Some(remote) = self.r.get(id) else {
             return;
         };
@@ -806,7 +822,7 @@ impl Trees {
         }
     }
 
-    pub(super) fn record_user_change(&mut self, id: &str, node: &LocalNode) {
+    pub(super) fn record_user_change(&mut self, id: &NodeId, node: &LocalNode) {
         let old = self.l.get(id).map(|old| old.shape.clone());
         let fields: &[Field] = match node.shape.kind {
             Kind::File => &[Field::Place, Field::Content],
@@ -863,7 +879,7 @@ impl Trees {
     /// Takes a node its user deleted out of L. A node R or S holds, or one a sent or held row may have put on the
     /// server, gets a status row with the seen list of what L held for it and the nodes below it (RFC 0029 §5.1);
     /// the rows of any other node end, since no server ever held it.
-    pub fn remove_local_by_user(&mut self, id: &str) {
+    pub fn remove_local_by_user(&mut self, id: &NodeId) {
         if self.l.get(id).is_some() {
             let sent = Field::ALL.into_iter().any(|field| {
                 (self.journal_row(id, field))
@@ -885,7 +901,7 @@ impl Trees {
         self.remove_local(id);
     }
 
-    fn seen_list(&self, id: &str) -> Vec<Seen> {
+    fn seen_list(&self, id: &NodeId) -> Vec<Seen> {
         let mut nodes: Vec<NodeId> = vec![id.to_owned()];
         let mut next = 0;
         while let Some(node) = nodes.get(next).cloned() {
@@ -947,7 +963,7 @@ impl Trees {
         seen
     }
 
-    pub(super) fn note_synced_intents(&mut self, id: &str) {
+    pub(super) fn note_synced_intents(&mut self, id: &NodeId) {
         if self.s.get(id).is_none() {
             self.put_synced_intents(id, None);
             return;
@@ -992,7 +1008,7 @@ impl Trees {
                 continue;
             };
             let (node, fields, carried) = op_fields(kind);
-            let node = node.to_owned();
+            let node = NodeId::from(node);
             if op.intent.is_some() {
                 match (wire, &mut op.op) {
                     (Wire::WithoutIntents, _) => op.intent = None,
@@ -1096,14 +1112,16 @@ impl Trees {
     ) -> BTreeSet<NodeId> {
         use op_result::Code;
         let mut sent_again = BTreeSet::new();
-        let states: BTreeMap<&str, &proto::NodeState> = (result.changes.iter())
+        let states: BTreeMap<NodeId, &proto::NodeState> = (result.changes.iter())
             .filter_map(|change| match &change.change {
-                Some(change_record::Change::Node(state)) => Some((state.node_id.as_str(), state)),
+                Some(change_record::Change::Node(state)) => {
+                    Some((NodeId::from(&state.node_id), state))
+                }
                 _ => None,
             })
             .collect();
         let reported = |trees: &Trees,
-                        id: &str,
+                        id: &NodeId,
                         field: Field|
          -> Option<(FieldIntent, Option<String>, bool)> {
             let node = match states.get(id) {
@@ -1129,10 +1147,10 @@ impl Trees {
                 continue;
             };
             let (node, fields, _) = op_fields(kind);
-            let node = node.to_owned();
+            let node = NodeId::from(node);
             let code = Code::try_from(outcome.code).unwrap_or(Code::Unspecified);
             if code == Code::MergedInto {
-                let into = &outcome.node_id;
+                let into = &NodeId::from(&outcome.node_id);
                 self.journal
                     .merged_into(&node, into, self.l.get(into).is_none());
                 continue;
@@ -1148,27 +1166,28 @@ impl Trees {
                         }
                     }
                     Code::ConflictCopy if field == Field::Content => {
-                        let version_id = reported(self, &outcome.node_id, field)
+                        let version_id = reported(self, &NodeId::from(&outcome.node_id), field)
                             .and_then(|(_, version, _)| version);
                         let at_ms = result.committed_at_ms;
                         (self.journal).held_elsewhere(
                             &node,
                             field,
                             sent,
-                            &outcome.node_id,
+                            &NodeId::from(&outcome.node_id),
                             version_id,
                             at_ms,
                         );
                     }
                     Code::Superseded => {
-                        let elsewhere = (std::iter::once(outcome.node_id.as_str()))
+                        let elsewhere = (std::iter::once(&outcome.node_id))
                             .filter(|id| !id.is_empty())
-                            .chain(states.keys().copied())
+                            .map(NodeId::from)
+                            .chain(states.keys().cloned())
                             .filter(|id| *id != node)
                             .find_map(|id| {
-                                (reported(self, id, field))
+                                (reported(self, &id, field))
                                     .filter(|(held, _, _)| held.id == sent)
-                                    .map(|reported| (id.to_owned(), reported))
+                                    .map(|reported| (id, reported))
                             });
                         if let Some((target, (held, version_id, _))) = elsewhere {
                             (self.journal).held_elsewhere(
@@ -1221,6 +1240,7 @@ impl Trees {
             })
             .flatten()
             .filter(|node| !node.is_empty())
+            .map(NodeId::from)
             .collect();
         for node in touched {
             self.compact_journal(&node, Compact::AfterChange);
@@ -1228,7 +1248,7 @@ impl Trees {
         sent_again
     }
 
-    fn trash_seen(&self, id: &str) -> Vec<Seen> {
+    fn trash_seen(&self, id: &NodeId) -> Vec<Seen> {
         let mut nodes: Vec<NodeId> = vec![id.to_owned()];
         let mut next = 0;
         while let Some(node) = nodes.get(next).cloned() {
@@ -1268,7 +1288,7 @@ impl Trees {
         seen
     }
 
-    fn remote_fields_below(&self, id: &str) -> Vec<RemoteField> {
+    fn remote_fields_below(&self, id: &NodeId) -> Vec<RemoteField> {
         let mut nodes: Vec<NodeId> = vec![id.to_owned()];
         let mut next = 0;
         while let Some(node) = nodes.get(next).cloned() {

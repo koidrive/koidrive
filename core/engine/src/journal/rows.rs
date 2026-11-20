@@ -89,7 +89,7 @@ fn index(
 }
 
 fn keys_of<T: Ord + Clone>(index: &BTreeSet<(T, RowKey)>, of: T) -> Vec<RowKey> {
-    let first = (of.clone(), (NodeId::new(), Field::Place));
+    let first = (of.clone(), (NodeId::from(""), Field::Place));
     (index.range((Bound::Included(&first), Bound::Unbounded)))
         .take_while(|(at, _)| *at == of)
         .map(|(_, key)| key.clone())
@@ -143,7 +143,7 @@ impl Rows {
         keys_of(&self.compact_over, from)
     }
 
-    pub(super) fn under(&self, parent: &str) -> Vec<RowKey> {
+    pub(super) fn under(&self, parent: &NodeId) -> Vec<RowKey> {
         keys_of(&self.under, parent.to_owned())
     }
 

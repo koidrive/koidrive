@@ -1223,7 +1223,7 @@ fn intents_of_r_and_s_and_the_backfill_marker_survive_a_reopen() {
             assert_eq!(tx.remote_nodes()?, [plain, trashed.clone()]);
             assert_eq!(
                 tx.synced_intents()?,
-                BTreeMap::from([("d".to_owned(), synced.clone())])
+                BTreeMap::from([("d".into(), synced.clone())])
             );
             assert!(!tx.journal_backfill_owed()?);
             Ok::<_, Error>(())
@@ -1410,7 +1410,7 @@ fn journal_state() -> JournalState {
     };
     let rows = [
         (
-            ("a".to_owned(), Field::Content),
+            ("a".into(), Field::Content),
             Row {
                 wire_base: WireBase::Content {
                     made_over: vec!["v0".into()],
@@ -1432,7 +1432,7 @@ fn journal_state() -> JournalState {
             },
         ),
         (
-            ("a".to_owned(), Field::Place),
+            ("a".into(), Field::Place),
             Row {
                 author: Author::Carried(Some("other-device".into())),
                 wire_base: WireBase::Place(Place {
@@ -1444,7 +1444,7 @@ fn journal_state() -> JournalState {
             },
         ),
         (
-            ("b".to_owned(), Field::Status),
+            ("b".into(), Field::Status),
             Row {
                 author: Author::Carried(None),
                 base: None,
@@ -1459,7 +1459,7 @@ fn journal_state() -> JournalState {
             },
         ),
         (
-            ("c".to_owned(), Field::Status),
+            ("c".into(), Field::Status),
             row(
                 5,
                 Value::Status { live: true },
@@ -1476,14 +1476,14 @@ fn journal_state() -> JournalState {
         rows: rows.into(),
         history: [
             (
-                ("a".to_owned(), Field::Content),
+                ("a".into(), Field::Content),
                 vec![history(10), history(11), history(12)],
             ),
-            (("b".to_owned(), Field::Place), vec![history(13)]),
+            (("b".into(), Field::Place), vec![history(13)]),
         ]
         .into(),
         seen: [(
-            "b".to_owned(),
+            "b".into(),
             vec![
                 Seen {
                     node: "b".into(),
@@ -1501,7 +1501,7 @@ fn journal_state() -> JournalState {
         )]
         .into(),
         listed: true,
-        absent: [("b".to_owned(), 1_700)].into(),
+        absent: [("b".into(), 1_700)].into(),
     }
 }
 

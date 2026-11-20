@@ -188,7 +188,7 @@ fn first_upload() -> (Trees, usize) {
             };
             let mut intents = NodeIntents::default();
             for field in Field::ALL {
-                let row = trees.journal_row(&id, field);
+                let row = trees.journal_row(&NodeId::from(&id), field);
                 intents.set(
                     field,
                     row.map(|row| FieldIntent {

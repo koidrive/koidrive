@@ -1044,7 +1044,7 @@ fn an_op_superseded_on_a_trashed_node_ends_and_the_trash_reaches_the_disk() {
             vec![outcome(op_result::Code::Superseded)],
         );
         assert!(commits.problems().is_empty(), "{sent:?}");
-        assert_eq!(trees.class("f"), Class::Remote, "{sent:?}");
+        assert_eq!(trees.class(&"f".into()), Class::Remote, "{sent:?}");
     }
 }
 
@@ -1061,8 +1061,11 @@ fn a_create_superseded_on_a_trashed_node_keeps_the_edit_made_after_it_was_sent()
         vec![outcome(op_result::Code::Superseded)],
     );
     assert!(commits.problems().is_empty());
-    assert_eq!(trees.synced().get("f"), Some(&file(ROOT, "c.txt", 1)));
-    assert_ne!(trees.class("f"), Class::Remote);
+    assert_eq!(
+        trees.synced().get(&"f".into()),
+        Some(&file(ROOT, "c.txt", 1))
+    );
+    assert_ne!(trees.class(&"f".into()), Class::Remote);
 }
 
 #[test]
@@ -1081,8 +1084,8 @@ fn a_create_superseded_on_a_purged_node_gives_way_to_the_purge_and_is_not_create
             vec![outcome(op_result::Code::Superseded)],
         );
         assert!(commits.problems().is_empty(), "{sent:?}");
-        assert_eq!(trees.synced().get("f"), Some(&renamed));
-        assert_eq!(trees.class("f"), Class::Remote, "{sent:?}");
+        assert_eq!(trees.synced().get(&"f".into()), Some(&renamed));
+        assert_eq!(trees.class(&"f".into()), Class::Remote, "{sent:?}");
         let again = build(&mut commits, &mut trees, &mut ids);
         assert_eq!(again.as_ref().map(ops), None, "{sent:?}");
     }
