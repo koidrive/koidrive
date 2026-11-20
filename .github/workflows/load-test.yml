@@ -104,6 +104,7 @@ jobs:
     timeout-minutes: 300
     permissions:
       contents: read
+      actions: read
     env:
       KOIDRIVE_TEST_NAME: koidrive-test-${{ github.run_id }}-${{ github.run_attempt }}
       WRANGLER_SEND_METRICS: "false"
@@ -189,3 +190,11 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: node scripts/deploy-test/run.ts teardown
+      - name: Delete what earlier runs left behind
+        if: always() && steps.secrets.outcome == 'success'
+        timeout-minutes: 10
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/deploy-test/run.ts sweep

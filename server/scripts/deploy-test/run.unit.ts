@@ -6,13 +6,15 @@ import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { emptyBucket, LISTING_MS, newestDeployment, serves, workerTag } from "./cloudflare.ts";
+import { LISTING_MS, newestDeployment, serves, workerTag } from "./cloudflare.ts";
 import { MockCloudflare } from "./mock-cloudflare.ts";
 import type { State } from "./state.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const server = join(here, "..", "..");
 const NAME = "koidrive-test-1-1";
+const DAY = { type: "Age", maxAge: 86400 };
+const EXPIRY = { rules: [{ id: "koidrive-test-expiry", enabled: true, conditions: { prefix: "" }, deleteObjectsTransition: { condition: DAY }, abortMultipartUploadsTransition: { condition: DAY } }] };
 
 let mock: MockCloudflare;
 let work: string;
@@ -72,6 +74,9 @@ function runTsWith(env: NodeJS.ProcessEnv, ...args: string[]): Promise<{ status:
       CLOUDFLARE_ACCOUNT_ID: "0123456789abcdef0123456789abcdef",
       KOIDRIVE_TEST_NAME: NAME,
       KOIDRIVE_DEPLOY_TEST_STATE: join(work, "state.json"),
+      GITHUB_API_URL: mock.url + "/github",
+      GITHUB_REPOSITORY: "koidrive/koidrive",
+      GH_TOKEN: "dummy-github-token",
       WRANGLER_SEND_METRICS: "false",
   });
 }
@@ -125,93 +130,34 @@ function filesContaining(root: string, text: string): string[] {
 }
 
 describe("teardown", () => {
-  it("empties 3072 chunk objects across four listing pages with one prefix-delete job and one status poll", async () => {
-    const bucket = mock.addBucket(NAME, undefined, Array.from({ length: 3072 }, (_, i) => "spaces/bench/chunks/aa/bb/" + i));
-    for (const key of bucket.objects.keys()) bucket.objects.set(key, 4 * 1024 * 1024);
+  it("leaves a bucket of more than one listing page to its lifecycle rule, with one listing and no object deletes", async () => {
+    const bucket = mock.addBucket(NAME, undefined, Array.from({ length: 1001 }, (_, i) => "spaces/a/chunks/" + i));
     writeState({ owned: { bucketCreationDate: bucket.creationDate } });
-    mock.bucketJobStatuses = ["RUNNING", "COMPLETED"];
-    const started = performance.now();
     const { status, output } = await runTs("teardown");
     expect({ status, errors: output.includes("::error::") }).toEqual({ status: 0, errors: false });
-    expect(mock.buckets.has(NAME)).toBe(false);
-    expect(mock.requests.filter((request) => request.startsWith("GET ") && request.endsWith("/objects"))).toHaveLength(5);
-    expect(mock.deletes().filter((request) => request.includes("/objects/"))).toEqual([]);
-    expect(mock.bucketJobBodies).toEqual([{ jobType: "prefixDelete", prefix: "" }]);
-    expect(mock.requests.filter((request) => request.includes("/jobs/"))).toHaveLength(1);
-    expect(mock.requests).toHaveLength(10);
-    expect(output).toContain("3072 objects");
-    console.info("3072-object teardown mock: " + (performance.now() - started).toFixed(0) + " ms, " + mock.requests.length + " API requests, four initial listing pages, one fresh listing, one job and one poll, no network retries or analytics wait");
+    expect(bucket.lifecycle).toEqual(EXPIRY);
+    expect(bucket.objects.size).toBe(1001);
+    expect(mock.requests.filter((request) => request.endsWith("/objects"))).toHaveLength(1);
+    expect(mock.deletes()).toEqual([]);
+    expect(output).toContain("left to the bucket's lifecycle rule");
   });
 
-  it("accepts a prefix-delete job that completes synchronously", async () => {
-    const bucket = mock.addBucket(NAME, undefined, Array.from({ length: 1001 }, (_, i) => "chunk-" + i));
-    writeState({ owned: { bucketCreationDate: bucket.creationDate } });
-    expect((await runTs("teardown")).status).toBe(0);
-    expect(mock.bucketJobBodies).toHaveLength(1);
-    expect(mock.requests.filter((request) => request.includes("/jobs/"))).toEqual([]);
-    expect(mock.buckets.has(NAME)).toBe(false);
-  });
-
-  it("retries deleting the bucket when it still appears nonempty after the emptying job", async () => {
-    const bucket = mock.addBucket(NAME, undefined, Array.from({ length: 1001 }, (_, i) => "chunk-" + i));
+  it("sets the lifecycle rule when the bucket still refuses deletion after its listed objects are deleted", async () => {
+    const bucket = mock.addBucket(NAME, undefined, ["spaces/a/chunks/aa/aa/1"]);
     writeState({ owned: { bucketCreationDate: bucket.creationDate } });
     mock.bucketDeleteFailures = 1;
-    const leftover = "chunk-0";
-    mock.bucketJobLeftovers = [leftover];
     const { status, output } = await runTs("teardown");
     expect({ status, errors: output.includes("::error::") }).toEqual({ status: 0, errors: false });
-    expect(mock.bucketJobBodies).toEqual([{ jobType: "prefixDelete", prefix: "" }]);
-    expect(mock.deletes()).toHaveLength(3);
-    expect(mock.deletes()[0]).toContain("/objects/" + leftover);
-    expect(mock.deletes().slice(1).every((request) => request.endsWith("/r2/buckets/" + NAME))).toBe(true);
-    expect(mock.bucketDeleteFailures).toBe(0);
-    expect(mock.buckets.has(NAME)).toBe(false);
+    expect(mock.buckets.get(NAME)?.lifecycle).toEqual(EXPIRY);
   });
 
-  it.each(["FAILED", "CANCELLED", "unexpected"])("leaves the bucket and reports a prefix-delete job with status %s", async (jobStatus) => {
-    const bucket = mock.addBucket(NAME, undefined, Array.from({ length: 1001 }, (_, i) => "chunk-" + i));
-    writeState({ owned: { bucketCreationDate: bucket.creationDate } });
-    mock.bucketJobStatuses = ["RUNNING", jobStatus];
-    const { status, output } = await runTs("teardown");
-    expect(status).toBe(1);
-    expect(output).toContain("bucket-emptying job");
-    expect(mock.bucketJobBodies).toHaveLength(1);
-    expect(mock.buckets.get(NAME)?.objects.size).toBe(1001);
-    expect(mock.deletes()).toEqual([]);
-  });
-
-  it("does not retry an ambiguous prefix-delete creation failure", async () => {
-    const bucket = mock.addBucket(NAME, undefined, Array.from({ length: 1001 }, (_, i) => "chunk-" + i));
-    writeState({ owned: { bucketCreationDate: bucket.creationDate } });
-    mock.bucketJobCreateStatus = 503;
-    expect((await runTs("teardown")).status).toBe(1);
-    expect(mock.bucketJobBodies).toHaveLength(1);
-    expect(mock.buckets.get(NAME)?.objects.size).toBe(1001);
-    expect(mock.deletes()).toEqual([]);
-  });
-
-  it.each([undefined, "2020-01-01T00:00:00.000Z"])("does not start a bulk job for a large bucket with unproven ownership %s", async (recordedDate) => {
-    mock.addBucket(NAME, "2026-01-01T00:00:00.000Z", Array.from({ length: 1001 }, (_, i) => "chunk-" + i));
+  it.each([undefined, "2020-01-01T00:00:00.000Z"])("sets no lifecycle rule on a large bucket with unproven ownership %s", async (recordedDate) => {
+    const bucket = mock.addBucket(NAME, "2026-01-01T00:00:00.000Z", Array.from({ length: 1001 }, (_, i) => "chunk-" + i));
     writeState({ owned: { bucketCreationDate: recordedDate } });
     expect((await runTs("teardown")).status).toBe(1);
-    expect(mock.bucketJobBodies).toEqual([]);
-    expect(mock.buckets.get(NAME)?.objects.size).toBe(1001);
+    expect(bucket.lifecycle).toBeUndefined();
+    expect(bucket.objects.size).toBe(1001);
     expect(mock.deletes()).toEqual([]);
-  });
-
-  it("stops polling a running bucket-emptying job at six minutes", async () => {
-    vi.useFakeTimers();
-    const fetchJob = vi.fn(async () => Response.json({ result: { id: "empty-1", status: "RUNNING" } }));
-    vi.stubGlobal("fetch", fetchJob);
-    try {
-      const finished = expect(emptyBucket({ id: "dummy-account", token: "dummy-token" }, NAME)).rejects.toThrow("six-minute deadline");
-      await vi.advanceTimersByTimeAsync(6 * 60_000);
-      await finished;
-      expect(fetchJob).toHaveBeenCalledTimes(72);
-    } finally {
-      vi.useRealTimers();
-      vi.unstubAllGlobals();
-    }
   });
 
   it("leaves a Worker and a bucket alone that this run did not record creating", async () => {
@@ -236,12 +182,83 @@ describe("teardown", () => {
     expect(mock.buckets.has(NAME)).toBe(false);
   });
 
+  it("deletes the Durable Object namespaces that outlive the Worker this run created", async () => {
+    mock.addWorker(NAME, undefined, "this-runs-tag");
+    mock.workerDeleteKeepsNamespaces = true;
+    writeState({ owned: { workerTag: "this-runs-tag" } });
+    const { status, output } = await runTs("teardown");
+    expect({ status, errors: output.includes("::error::") }).toEqual({ status: 0, errors: false });
+    expect(mock.workers.has(NAME)).toBe(false);
+    expect(mock.namespaces).toEqual([]);
+    expect(output).toContain("which outlived the Worker");
+  });
+
   it("leaves a Worker and a bucket alone that replaced the ones this run created", async () => {
     mock.addWorker(NAME, "someone-elses-worker");
     mock.addBucket(NAME, "2026-02-02T00:00:00.000Z", ["theirs.txt"]);
     writeState({ owned: { workerTag: "this-runs-tag", bucketCreationDate: "2026-01-01T00:00:00.000Z" } });
     const { status } = await runTs("teardown");
     expect(status).toBe(1);
+    expect(mock.deletes()).toEqual([]);
+  });
+});
+
+describe("sweep", () => {
+  const HOUR = 3_600_000;
+  const attempt = (startedMs: number, endedMs: number, path = ".github/workflows/deploy-test.yml", status = "completed") => ({ path, status, run_started_at: new Date(startedMs).toISOString(), updated_at: new Date(endedMs).toISOString() });
+
+  it("deletes the Worker and the empty bucket a finished run left, and sets the lifecycle rule on a bucket that still holds objects", async () => {
+    mock.runAttempts.set("7/1", attempt(Date.now() - HOUR, Date.now()));
+    mock.runAttempts.set("8/2", attempt(Date.now() - HOUR, Date.now(), ".github/workflows/load-test.yml"));
+    mock.addWorker("koidrive-test-7-1");
+    mock.addBucket("koidrive-test-7-1");
+    const full = mock.addBucket("koidrive-test-8-2", undefined, ["spaces/a/chunks/aa/aa/1"]);
+    mock.addBucket("user-koidrive-test-7-1", undefined, ["theirs.txt"]);
+    mock.namespaces.push({ id: "orphan-account", class: "AccountDO", script: "koidrive-test-8-2" });
+    const { status, output } = await runTs("sweep");
+    expect({ status, warnings: output.includes("::warning::") }).toEqual({ status: 0, warnings: false });
+    expect(mock.workers.size).toBe(0);
+    expect(mock.namespaces).toEqual([]);
+    expect([...mock.buckets.keys()].sort()).toEqual(["koidrive-test-8-2", "user-koidrive-test-7-1"]);
+    expect(full.lifecycle).toEqual(EXPIRY);
+    expect(full.objects.size).toBe(1);
+    expect(mock.buckets.get("user-koidrive-test-7-1")?.lifecycle).toBeUndefined();
+  });
+
+  it.each([
+    ["this run's own", NAME, undefined, false],
+    ["a running attempt's", "koidrive-test-9-1", attempt(Date.now() - HOUR, Date.now(), undefined, "in_progress"), false],
+    ["an unknown run's", "koidrive-test-9-1", undefined, true],
+    ["another workflow's", "koidrive-test-9-1", attempt(Date.now() - HOUR, Date.now() + HOUR, ".github/workflows/ci.yml"), true],
+    ["an unparsable name's", "koidrive-test-manual", undefined, true],
+    ["an attempt that ended before they were created", "koidrive-test-9-1", attempt(Date.now() - 3 * HOUR, Date.now() - 2 * HOUR), true],
+  ])("leaves %s Worker and bucket alone", async (_, name, run, warns) => {
+    if (run) mock.runAttempts.set("9/1", run);
+    mock.addWorker(name);
+    const bucket = mock.addBucket(name, undefined, ["spaces/a/chunks/aa/aa/1"]);
+    const { status, output } = await runTs("sweep");
+    expect({ status, warns: output.includes("::warning::The sweep left alone the Worker " + name) }).toEqual({ status: 0, warns });
+    expect(mock.deletes()).toEqual([]);
+    expect(bucket.lifecycle).toBeUndefined();
+    expect(mock.workers.has(name)).toBe(true);
+  });
+
+  it("leaves alone a Durable Object namespace whose deleted Worker no finished run of a test workflow can claim", async () => {
+    mock.runAttempts.set("9/1", attempt(Date.now() - HOUR, Date.now(), undefined, "in_progress"));
+    const orphans = [{ id: "a", class: "AccountDO", script: "koidrive-test-9-1" }, { id: "b", class: "SpaceDO", script: "koidrive-test-10-1" }, { id: "c", class: "SpaceDO", script: "someone-else" }];
+    mock.namespaces.push(...orphans);
+    const { status, output } = await runTs("sweep");
+    expect(status).toBe(0);
+    expect(mock.namespaces).toEqual(orphans);
+    expect(output).toContain("::warning::The sweep left alone the Durable Object namespace SpaceDO b of the deleted Worker koidrive-test-10-1");
+  });
+
+  it("fails and deletes nothing when GitHub cannot say whether the run finished", async () => {
+    mock.githubStatus = 500;
+    mock.addBucket("koidrive-test-7-1");
+    const { status, output } = await runTs("sweep");
+    expect(status).toBe(1);
+    expect(output).toContain("::error::sweep: R2 bucket koidrive-test-7-1: GitHub returned HTTP 500");
     expect(mock.deletes()).toEqual([]);
   });
 });
@@ -449,6 +466,7 @@ describe("deploy", () => {
     expect(deployed.status).toBe(1);
     expect(mock.workers.get(NAME)?.versions[0]?.tag).toBe(readState().owned.workerTag);
     expect(readState().owned.workerTag).toMatch(/^[0-9a-f]{16}$/);
+    expect(mock.buckets.get(NAME)?.lifecycle).toEqual(EXPIRY);
     const tornDown = await runTs("teardown");
     expect(tornDown.output).not.toContain("::error::");
     expect(tornDown.status).toBe(0);

@@ -15,15 +15,21 @@ import {
   newestDeployment,
   createBucket,
   deleteBucket,
+  deleteNamespace,
   deleteObject,
   deleteWorker,
-  emptyBucket,
+  EXPIRY_SECONDS,
+  expireAllObjects,
   getBucket,
   getWorker,
   graphql,
-  listObjects,
+  listBuckets,
+  listNamespaces,
+  listObjectPage,
+  listWorkers,
   type Namespace,
   namespacesOf,
+  type R2Object,
   requireAccount,
   serves,
   WORKER_KEYS,
@@ -32,7 +38,7 @@ import {
   workerTag,
 } from "./cloudflare.ts";
 import { CHUNK_PACKS, configuredFeatures } from "../../src/features.ts";
-import { readState, type State, testName, writeState } from "./state.ts";
+import { NAME_PREFIX, readState, type State, testName, writeState } from "./state.ts";
 
 const INSTALL_MS = 5 * 60_000;
 const DEPLOY_MS = 5 * 60_000;
@@ -223,7 +229,8 @@ async function deploy(account: Account, ref: string): Promise<void> {
     }
     state.owned.bucketCreationDate = (await getBucket(account, state.name) ?? fail("the bucket " + state.name + " was created but cannot be read back")).creationDate;
     writeState(state);
-    console.log("Created the R2 bucket " + state.name + " (created " + state.owned.bucketCreationDate + ")");
+    await expireAllObjects(account, state.name);
+    console.log("Created the R2 bucket " + state.name + " (created " + state.owned.bucketCreationDate + "), whose lifecycle rule deletes each object " + EXPIRY_SECONDS / 3600 + " hours after its upload");
   } else if (!state.owned.workerTag || (await workerTag(account, state.name, state.owned.workerTag)) !== "tagged") {
     fail("the Worker " + state.name + " is no longer the one this run created; refusing to deploy over it");
   }
@@ -371,11 +378,21 @@ interface Storage {
   exportBytes: number;
 }
 
-async function emptyAndDeleteBucket(account: Account, name: string): Promise<Storage | undefined> {
-  const first = await listObjects(account, name);
-  if (!first) return undefined;
+function described(namespaces: Namespace[]): string {
+  return namespaces.map((namespace) => namespace.class + " " + namespace.id).join(", ");
+}
+
+async function deleteNamespacesOf(account: Account, script: string): Promise<Namespace[]> {
+  const left = await namespacesOf(account, script);
+  for (const namespace of left) await deleteNamespace(account, namespace.id);
+  const remaining = await namespacesOf(account, script);
+  if (remaining.length > 0) throw new Error("Durable Object namespaces of " + script + " remain after deleting them: " + described(remaining));
+  return left;
+}
+
+function storageOf(objects: R2Object[]): Storage {
   const storage: Storage = { objects: 0, bytes: 0, chunkObjects: 0, chunkBytes: 0, exportObjects: 0, exportBytes: 0 };
-  for (const object of first) {
+  for (const object of objects) {
     storage.objects++;
     storage.bytes += object.size;
     if (/^spaces\/[^/]+\/chunks\//.test(object.key)) {
@@ -386,22 +403,23 @@ async function emptyAndDeleteBucket(account: Account, name: string): Promise<Sto
       storage.exportBytes += object.size;
     }
   }
-  let objects = first;
-  if (first.length > 1000) {
-    await emptyBucket(account, name);
-    objects = (await listObjects(account, name)) ?? [];
-  }
-  for (let attempt = 1; ; attempt++) {
-    for (let i = 0; i < objects.length; i += 8) await Promise.all(objects.slice(i, i + 8).map((object) => deleteObject(account, name, object.key)));
+  return storage;
+}
+
+async function deleteOrExpireBucket(account: Account, name: string): Promise<Storage | "expiring" | undefined> {
+  const page = await listObjectPage(account, name);
+  if (!page) return undefined;
+  if (!page.next) {
+    for (let i = 0; i < page.objects.length; i += 8) await Promise.all(page.objects.slice(i, i + 8).map((object) => deleteObject(account, name, object.key)));
     try {
       await deleteBucket(account, name);
-      return storage;
+      return storageOf(page.objects);
     } catch (error) {
-      if (attempt >= 5) throw error;
-      await sleep(5000 * attempt);
-      objects = (await listObjects(account, name)) ?? [];
+      if (!(error instanceof ApiError && error.status === 409)) throw error;
     }
   }
+  await expireAllObjects(account, name);
+  return "expiring";
 }
 
 function bytes(n: number): string {
@@ -487,8 +505,8 @@ async function teardown(account: Account): Promise<void> {
     namespaces = (await attempt("listing the Durable Object namespaces", () => namespacesOf(account, name))) ?? [];
     const deleted = await attempt("deleting the Worker", () => deleteWorker(account, name));
     if (deleted) console.log("Deleted the Worker " + name + " (id " + worker.id + "), which carries the tag of this run's deploy");
-    const left = await attempt("checking the Durable Object namespaces", () => namespacesOf(account, name));
-    if (left?.length) problems.push("Durable Object namespaces of " + name + " remain: " + left.map((namespace) => namespace.class + " " + namespace.id).join(", "));
+    const left = await attempt("deleting the Durable Object namespaces of " + name, () => deleteNamespacesOf(account, name));
+    if (left?.length) console.log("Deleted the Durable Object namespaces " + described(left) + ", which outlived the Worker");
     else if (left) console.log("No Durable Object namespace of " + name + " remains (" + (namespaces.map((namespace) => namespace.class).join(", ") || "none") + " deleted with the Worker)");
   } else if (worker && (found === "untagged" || found === "unlisted")) {
     problems.push(
@@ -499,13 +517,16 @@ async function teardown(account: Account): Promise<void> {
     problems.push("a Worker named " + name + " (id " + worker.id + ") exists, but this run did not record creating it, so it was left alone");
   } else if (!worker && tag) {
     console.log("No Worker named " + name + " exists, so this run's deploy left none to delete");
+    const left = await attempt("deleting the Durable Object namespaces of " + name, () => deleteNamespacesOf(account, name));
+    if (left?.length) console.log("Deleted the Durable Object namespaces " + described(left) + ", which outlived the Worker");
   }
 
-  let storage: Storage | undefined;
+  let storage: Storage | "expiring" | undefined;
   const bucket = await attempt("reading the R2 bucket", () => getBucket(account, name));
   if (bucket && bucket.creationDate === state.owned.bucketCreationDate) {
-    storage = await attempt("emptying and deleting the R2 bucket", () => emptyAndDeleteBucket(account, name));
-    if (storage) console.log("Deleted the R2 bucket " + name + " and its " + storage.objects + " objects");
+    storage = await attempt("deleting the R2 bucket", () => deleteOrExpireBucket(account, name));
+    if (storage === "expiring") console.log("The R2 bucket " + name + " holds more objects than one listing page. Its lifecycle rule deletes them within a day, and the sweep of a later run deletes the empty bucket");
+    else if (storage) console.log("Deleted the R2 bucket " + name + " and its " + storage.objects + " objects");
   } else if (bucket) {
     problems.push("an R2 bucket named " + name + " (created " + bucket.creationDate + ") exists, but this run did not record creating it, so it was left alone");
   } else if (state.owned.bucketCreationDate) {
@@ -518,9 +539,9 @@ async function teardown(account: Account): Promise<void> {
     ["Worker and bucket", name],
     ["Deployed", deployments.map((deployment) => deployment.ref + " (" + deployment.sha.slice(0, 12) + ", version " + deployment.versionId + ")").join(", then ") || "nothing"],
     ["Test client requests", state.stats.requests + " HTTPS and WebSocket requests, " + bytes(state.stats.bytesUp) + " sent, " + bytes(state.stats.bytesDown) + " received"],
-    ["R2 storage at teardown", storage ? storage.objects + " objects, " + bytes(storage.bytes) : "no bucket deleted"],
-    ["  chunks", storage ? storage.chunkObjects + " objects, " + bytes(storage.chunkBytes) : "-"],
-    ["  metadata export", storage ? storage.exportObjects + " objects, " + bytes(storage.exportBytes) : "-"],
+    ["R2 storage at teardown", storage === "expiring" ? "over 1000 objects, left to the bucket's lifecycle rule" : storage ? storage.objects + " objects, " + bytes(storage.bytes) : "no bucket deleted"],
+    ["  chunks", storage && storage !== "expiring" ? storage.chunkObjects + " objects, " + bytes(storage.chunkBytes) : "-"],
+    ["  metadata export", storage && storage !== "expiring" ? storage.exportObjects + " objects, " + bytes(storage.exportBytes) : "-"],
     ["Durable Object namespaces", namespaces.map((namespace) => namespace.class).join(", ") || "none deleted"],
   ];
   if (deployments.length > 0) {
@@ -542,13 +563,113 @@ async function teardown(account: Account): Promise<void> {
   }
 }
 
+const RUN_NAME = /^koidrive-test-(\d+)-(\d+)$/;
+const TEST_WORKFLOWS = [".github/workflows/deploy-test.yml", ".github/workflows/load-test.yml"];
+const SWEEP_SKEW_MS = 5 * 60_000;
+
+interface RunAttempt {
+  path: string;
+  status: string;
+  run_started_at: string;
+  updated_at: string;
+}
+
+async function runAttempt(repository: string, id: string, attempt: string): Promise<RunAttempt | undefined> {
+  const api = process.env.GITHUB_API_URL || "https://api.github.com";
+  const token = process.env.GH_TOKEN ?? "";
+  const response = await fetch(api + "/repos/" + repository + "/actions/runs/" + id + "/attempts/" + attempt, {
+    headers: { Accept: "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28", ...(token ? { Authorization: "Bearer " + token } : {}) },
+    signal: AbortSignal.timeout(30_000),
+  });
+  if (response.status === 404) {
+    await response.body?.cancel();
+    return undefined;
+  }
+  if (!response.ok) throw new Error("GitHub returned HTTP " + response.status + " for run " + id + " attempt " + attempt);
+  return (await response.json()) as RunAttempt;
+}
+
+type Verdict = "sweep" | "running" | { leftAlone: string };
+
+async function sweep(account: Account): Promise<void> {
+  const current = testName();
+  const repository = process.env.GITHUB_REPOSITORY || fail("GITHUB_REPOSITORY must name the repository whose runs the sweep checks");
+  const [buckets, workers] = await Promise.all([listBuckets(account, NAME_PREFIX), listWorkers(account)]);
+  const attempts = new Map<string, RunAttempt | undefined>();
+  const verdict = async (name: string, createdOn: string | undefined): Promise<Verdict> => {
+    if (name === current) return "running";
+    const [, id, attempt] = RUN_NAME.exec(name) ?? [];
+    if (!id || !attempt) return { leftAlone: "its name is not koidrive-test-<run id>-<attempt>" };
+    if (!attempts.has(name)) attempts.set(name, await runAttempt(repository, id, attempt));
+    const run = attempts.get(name);
+    if (!run || !TEST_WORKFLOWS.includes(run.path)) return { leftAlone: "no deploy-test or load-test run of " + repository + " has id " + id + " and attempt " + attempt };
+    if (run.status !== "completed") return "running";
+    const created = createdOn === undefined ? undefined : Date.parse(createdOn);
+    if (created !== undefined && !(created >= Date.parse(run.run_started_at) - SWEEP_SKEW_MS && created <= Date.parse(run.updated_at) + SWEEP_SKEW_MS)) {
+      return { leftAlone: "it was created at " + createdOn + ", outside run " + id + " attempt " + attempt + " (" + run.run_started_at + " to " + run.updated_at + ")" };
+    }
+    return "sweep";
+  };
+  const problems: string[] = [];
+  const leftAlone: string[] = [];
+  const live = new Set(workers.map((worker) => worker.name));
+  const visit = async (what: string, name: string, createdOn: string | undefined, remove: () => Promise<void>) => {
+    try {
+      const found = await verdict(name, createdOn);
+      if (found === "running") console.log("Skipped the " + what + ": its run is still going");
+      else if (found === "sweep") await remove();
+      else leftAlone.push("the " + what + ", because " + found.leftAlone);
+    } catch (error) {
+      problems.push(what + ": " + (error instanceof Error ? error.message : String(error)));
+    }
+  };
+
+  for (const worker of workers.filter((candidate) => candidate.name.startsWith(NAME_PREFIX))) {
+    await visit("Worker " + worker.name, worker.name, worker.createdOn, async () => {
+      await deleteWorker(account, worker.name);
+      console.log("Deleted the Worker " + worker.name + " and its Durable Objects, which its finished run left behind");
+      live.delete(worker.name);
+    });
+  }
+  for (const bucket of buckets) {
+    await visit("R2 bucket " + bucket.name, bucket.name, bucket.creationDate, async () => {
+      try {
+        await deleteBucket(account, bucket.name);
+        console.log("Deleted the empty R2 bucket " + bucket.name + ", which its finished run left behind");
+      } catch (error) {
+        if (!(error instanceof ApiError && error.status === 409)) throw error;
+        await expireAllObjects(account, bucket.name);
+        console.log("The R2 bucket " + bucket.name + " still holds objects. Its lifecycle rule deletes them within a day, and a later run's sweep deletes the bucket");
+      }
+    });
+  }
+  try {
+    for (const namespace of await listNamespaces(account)) {
+      if (!namespace.script.startsWith(NAME_PREFIX) || live.has(namespace.script)) continue;
+      await visit("Durable Object namespace " + described([namespace]) + " of the deleted Worker " + namespace.script, namespace.script, undefined, async () => {
+        await deleteNamespace(account, namespace.id);
+        console.log("Deleted the Durable Object namespace " + described([namespace]) + ", which outlived the Worker " + namespace.script + " of a finished run");
+      });
+    }
+  } catch (error) {
+    problems.push("listing the Durable Object namespaces: " + (error instanceof Error ? error.message : String(error)));
+  }
+
+  for (const item of leftAlone) console.log("::warning::The sweep left alone " + item);
+  if (problems.length > 0) {
+    for (const problem of problems) console.error("::error::sweep: " + problem);
+    fail("the sweep could not check or delete everything earlier runs left behind");
+  }
+}
+
 const [command, arg = ""] = process.argv.slice(2);
 try {
   if (command === "upgrade-from") upgradeFrom(arg);
   else if (command === "deploy") await deploy(requireAccount(), arg || "HEAD");
   else if (command === "claim") await claim(requireAccount());
   else if (command === "teardown") await teardown(requireAccount());
-  else fail("usage: run.ts upgrade-from [<ref>] | deploy <ref> | claim | teardown");
+  else if (command === "sweep") await sweep(requireAccount());
+  else fail("usage: run.ts upgrade-from [<ref>] | deploy <ref> | claim | teardown | sweep");
 } catch (error) {
   console.error("::error::deploy test " + command + ": " + (error instanceof Error ? error.message : String(error)));
   process.exitCode = 1;

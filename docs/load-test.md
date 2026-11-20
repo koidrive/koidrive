@@ -47,7 +47,7 @@ The budget is not a hard ceiling on rows written. It does not count the setup's 
 6. **Steps.** Each step starts its writers, waits `warmup_seconds`, then measures for `measure_seconds`. Each writer is a paired device with its own WebSocket. It sends one commit at a time, a single `UpdateContent` of its own file that switches between the two stored chunks, so no commit touches R2 and no two writers touch the same node. Each space has one subscriber, so every commit pays for one push. During each step the owner times `GET /v1/spaces` every 2 seconds. That request and the Worker's token check go only to the Account DO, so the probe shows how long the Account DO keeps requests waiting.
 7. **Analytics.** Three minutes after the last step, the run reads each step's window from the Durable Objects datasets of the GraphQL Analytics API ([metrics and analytics](https://developers.cloudflare.com/durable-objects/observability/metrics-and-analytics/)). It waits up to 20 minutes for a storage sample taken after the load.
 8. **Results**: a table in the log and on the summary page, and `load-results.json` as a run artifact kept for 30 days. It holds every step's counts, the calibration, the storage samples and a timeline of commits.
-9. **Teardown and usage summary**, as in the deploy test, whatever happened before.
+9. **Teardown, sweep and usage summary**, as in the deploy test, whatever happened before.
 
 ## When a run stops early
 
