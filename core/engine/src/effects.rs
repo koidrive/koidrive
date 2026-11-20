@@ -1159,13 +1159,17 @@ pub fn stuck_on_disk(
         )
     }));
     stuck.extend(planned.iter().filter_map(|id| {
-        let Step::Blocked(Some(holder)) = view.step(id) else {
-            return None;
-        };
-        merge_residue
-            .0
-            .contains_key(&holder)
-            .then(|| ((*id).clone(), Stuck::Behind(holder)))
+        let mut at = (*id).clone();
+        for _ in 0..trees.local().len() {
+            let Step::Blocked(Some(holder)) = view.step(&at) else {
+                return None;
+            };
+            if merge_residue.0.contains_key(&holder) {
+                return Some(((*id).clone(), Stuck::Behind(holder)));
+            }
+            at = holder;
+        }
+        None
     }));
     let idle = effects.in_flight().is_empty()
         && effects
@@ -1376,14 +1380,18 @@ impl<'a> View<'a> {
         if let Some(local) = local.filter(|_| self.trees.left_behind(id)) {
             return self.remove(id, local);
         }
-        if let Some(holder) = remote.and_then(|shape| self.merge_holds_place(id, shape)) {
-            return Step::Blocked(Some(holder));
-        }
         if let Some(local) = local.filter(|local| local.parked && self.trees.ignored(id)) {
             if self.trees.trashed_while_parked(id) {
                 return self.remove(id, local);
             }
-            return self.unpark(id, local, self.way_out(id, local));
+            let target = self.way_out(id, local);
+            if let Some(holder) = self.merge_holds_place(id, target) {
+                return Step::Blocked(Some(holder));
+            }
+            return self.unpark(id, local, target);
+        }
+        if let Some(holder) = remote.and_then(|shape| self.merge_holds_place(id, shape)) {
+            return Step::Blocked(Some(holder));
         }
         let (local, remote) = match (local, remote) {
             (None, None) => return Step::Skip,
@@ -1786,7 +1794,9 @@ impl<'a> View<'a> {
                         .is_some_and(|remote| node.shape.same_position(remote))
             })
             && self.stuck(id, trees.local().len()).is_none()
-            && !(trees.remote().live(id)).is_some_and(|remote| self.goes_home(id, remote))
+            && !(trees.remote().live(id)).is_some_and(|remote| {
+                self.goes_home(id, remote) || self.merge_holds_place(id, remote).is_some()
+            })
     }
 
     fn park(&self, id: &NodeId) -> Option<(Effect, Option<Shape>)> {
