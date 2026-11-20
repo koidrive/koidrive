@@ -1,4 +1,4 @@
-390
+398
 # Harness: the engine_sync device keeps folders the user makes at a name the rules leave out on its disk unseen, refuses each effect that would put an entry at such a name, retries blocked effects once the run goes quiet as the driver's retry timer does, and accepts a node that stays blocked only where no conflict name is allowed. Before this, engine_sync never refused an effect, so it could not reach the shape this PR fixes.
 # Harness: the sent-move check accepts an unmarked Move only when the device holds a record that its disk refused R's name for the node and the Move is made over the live place R holds. A unit test pins each direction: with the record it passes, and without the record, with R trashed, with R elsewhere, or without from it is flagged. The existing sent-move tests cover only moves the disk already shows and pending marks.
 # Generator: a property test moves a node onto a folder the rules leave out with random changes around it, so the record-keyed exemption runs on generated cases. It found the parked-file case this PR also fixes.
@@ -9,3 +9,4 @@
 # Sim: a refused remote name still gets a conflict copy when the parked file's old local name is left out. The earlier parked-file test uses an included local name.
 # Commit: a conflict rename in a commit dropped unanswered is sent again while R holds the node at the place it was sent over, and its record ends when R moved the node meanwhile. No existing test drops the commit that carries a conflict rename.
 # Store: an abandoned engine state load stops while it reads the refused-name records, as every other engine state reader does. No existing abandoned-read test fills names_left_out.
+# Harness: engine_sync lets an effect stay blocked only when it puts a node at a root name a folder the rules leave out holds on the disk, instead of any blocked effect away from R's place. Main's harness asserted no blocked effect at all; this keeps that for every other effect.
