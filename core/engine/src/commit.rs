@@ -2523,7 +2523,7 @@ impl Commits {
         };
         let restored = carried(&self.restores, &flight).expect("a Restore op in flight is queued");
         let result = flight.result.expect("taken with a result");
-        let sent_again = trees.record_results(&flight.commit, &result);
+        let (sent_again, held_elsewhere) = trees.record_results(&flight.commit, &result);
         (self.granted.0).extend(
             given_nodes(&flight.commit, &result)
                 .into_iter()
@@ -2691,11 +2691,11 @@ impl Commits {
                         agreed.extend(agree(trees, &create_id, result.seq));
                         synced.set(&create_id, Some(shape));
                     } else if superseded && trees.remote().get(&create_id).is_none() {
-                        trees.give_way_to_purge(
-                            create_id.clone(),
-                            shape,
-                            Origin::Commit(flight.commit.device_seq),
-                        );
+                        let origin = Origin::Commit(flight.commit.device_seq);
+                        match held_elsewhere.contains(&create_id) {
+                            true => trees.take_lost_position(create_id.clone(), shape, origin),
+                            false => trees.give_way_to_purge(create_id.clone(), shape, origin),
+                        }
                     } else if superseded {
                         synced.set(&create_id, Some(shape));
                     }
