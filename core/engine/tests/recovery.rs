@@ -6009,8 +6009,10 @@ fn a_move_the_answer_carries_into_a_live_folder_waits_for_that_folders_own_move(
     trees.set_local("b".into(), moved);
     trees.settle(&Default::default());
     let sent = ops(&mut commits, &mut trees, &mut ids);
-    let at = |op: (&str, &str)| sent.iter().position(|sent| *sent == (op.0, op.1.into()));
-    assert!(at(("move", "b")).is_some(), "{sent:?}");
+    let at = |op: (&str, &str)| {
+        (sent.iter().position(|sent| *sent == (op.0, op.1.into())))
+            .unwrap_or_else(|| panic!("{op:?} not in {sent:?}"))
+    };
     assert!(at(("move", "d")) < at(("move", "b")), "{sent:?}");
 }
 #[test]
@@ -6040,8 +6042,10 @@ fn carried_moves_follow_the_moves_of_the_folders_they_go_into_when_the_answer_is
         assert!(commits.decide(&question.id, Answer::Publish));
     }
     let sent = ops(&mut commits, &mut trees, &mut ids);
-    let at = |op: (&str, &str)| sent.iter().position(|sent| *sent == (op.0, op.1.into()));
-    assert!(at(("delete", "c")).is_some(), "{sent:?}");
+    let at = |op: (&str, &str)| {
+        (sent.iter().position(|sent| *sent == (op.0, op.1.into())))
+            .unwrap_or_else(|| panic!("{op:?} not in {sent:?}"))
+    };
     assert!(at(("move", "b")) < at(("move", "a")), "{sent:?}");
     assert!(at(("move", "a")) < at(("move", "d")), "{sent:?}");
     assert!(at(("move", "d")) < at(("delete", "c")), "{sent:?}");
@@ -6230,8 +6234,10 @@ fn a_carried_move_waits_for_its_folders_move_into_a_new_folder_or_its_own_child(
         trees.set_local("b".into(), moved);
         trees.settle(&Default::default());
         let sent = ops(&mut commits, &mut trees, &mut ids);
-        let at = |op: (&str, &str)| sent.iter().position(|sent| *sent == (op.0, op.1.into()));
-        assert!(at(("move", "b")).is_some(), "{sent:?}");
+        let at = |op: (&str, &str)| {
+            (sent.iter().position(|sent| *sent == (op.0, op.1.into())))
+                .unwrap_or_else(|| panic!("{op:?} not in {sent:?}"))
+        };
         assert!(at(("move", "d")) < at(("move", "b")), "{sent:?}");
     }
 }
