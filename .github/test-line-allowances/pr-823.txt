@@ -1,2 +1,2 @@
-59
+62
 # The cases need separate paths to the same result: recovery Discard of a never-sent folder, including one with its own rules and a create in flight; a purged folder after a rename or restart; and a merged create on a disk that holds one spelling versus a disk that holds two. Existing remote-delete tests start with a server trash node and cannot distinguish these paths.
