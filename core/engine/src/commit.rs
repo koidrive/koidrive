@@ -27,7 +27,7 @@ use crate::restore::{
 };
 use crate::state::{
     Agreed, CONTENT_ANCESTRY_LIMIT, CommitsChanges, CommitsState, FinishOrigin, GivenUp,
-    MovePosition, StateError,
+    MovePosition, RenamedOver, StateError,
 };
 use crate::tracked::{Marked, TrackedMap, TrackedSet};
 use crate::tree::{
@@ -51,7 +51,7 @@ pub const MAX_COMMIT_BYTES: usize = 512 * 1024;
 /// and framing.
 const RECORD_BYTES: usize = 256;
 const MAX_CHUNK_REF_BYTES: usize = 48;
-const MAX_CONFLICT_ATTEMPTS: u32 = 100;
+pub const MAX_CONFLICT_ATTEMPTS: u32 = 100;
 
 const MAX_ANCESTRY_BYTES: usize = CONTENT_ANCESTRY_LIMIT * (1 + 1 + 36);
 
@@ -265,7 +265,7 @@ impl Commits {
         if self.halted.is_some() || !trees.rules_known() {
             return BTreeSet::new();
         }
-        (effects::displaced_by_excluded(trees).into_keys())
+        (effects::displaced_by_excluded(trees).into_iter())
             .filter(|id| !self.problems.contains(id))
             .filter(|id| !(self.questions.iter()).any(|q| q.holds().any(|held| held == id)))
             .filter(|id| conflict_rename(trees, id, &self.device_name.0, now_ms).is_some())
@@ -1534,6 +1534,7 @@ impl Commits {
             trees.resend_folders_of_changes();
         }
         trees.unsend_finishes(None);
+        trees.unsend_left_out_renames();
         trees.applied_head(base.seq);
         trees.check_finishes();
         self.retry_waiting(trees, BTreeSet::new(), Vec::new());
@@ -1556,7 +1557,12 @@ impl Commits {
             self.hold(trees);
         }
         self.ask_missing(trees, ids, now_ms);
-        let waiting = (trees.waiting().keys()).filter(|id| !changed_locally(trees, id));
+        let waiting: BTreeSet<NodeId> = (trees.waiting().keys())
+            .filter(|id| !changed_locally(trees, id))
+            .cloned()
+            .collect();
+        let skip_ordinary =
+            |skip: &BTreeSet<NodeId>, id: &NodeId| skip.contains(id) || waiting.contains(id);
         let asked: BTreeSet<NodeId> = (self.questions.iter())
             .filter(|q| recovery::asks(q) || first_link::asks(q))
             .flat_map(Question::holds)
@@ -1565,13 +1571,12 @@ impl Commits {
         let mut skip: BTreeSet<NodeId> = self
             .problems
             .iter()
-            .chain(waiting)
             .chain(trees.held_finishes())
             .chain(parked_until_moved(trees))
             .chain(&asked)
             .cloned()
             .collect();
-        let (needed, agreed) = rebase(trees, ids, now_ms, &skip, &asked);
+        let (needed, agreed) = rebase(trees, ids, now_ms, |id| skip_ordinary(&skip, id), &asked);
         skip.extend(parked_until_moved(trees).cloned());
         let excluded: Vec<NodeId> = (trees.dirty_others().iter())
             .filter(|id| (trees.excluded(id) && !owed.contains(*id)) || trees.held(id))
@@ -1581,7 +1586,7 @@ impl Commits {
         let needed = self.retry_waiting(trees, needed, agreed);
         let cap = self.cap.unwrap_or(MAX_OPS);
         let (asking, answered): (Vec<String>, Vec<proto::Op>) = self
-            .conflicts(trees, &skip, cap, ids, now_ms)
+            .conflicts(trees, |id| skip_ordinary(&skip, id), cap, ids, now_ms)
             .into_iter()
             .unzip();
         skip.extend((answered.iter().filter_map(|op| op.op.as_ref())).map(op_node));
@@ -1615,7 +1620,7 @@ impl Commits {
         }
         let mut deleted: BTreeSet<NodeId> = (trees.dirty_others().iter())
             .filter(|id| {
-                !skip.contains(*id)
+                !skip_ordinary(&skip, id)
                     && !self.given_up_nodes.contains_key(*id)
                     && deletes(trees, id, &needed)
             })
@@ -1730,7 +1735,7 @@ impl Commits {
                     trees,
                     &candidates,
                     bound,
-                    &skip,
+                    |id| skip_ordinary(&skip, id),
                     &self.problems,
                     &needed,
                     cap,
@@ -1821,7 +1826,7 @@ impl Commits {
         if ops.is_empty() && released.is_empty() {
             let mut bytes = 0;
             let first: Vec<(NodeId, NodeId, String)> =
-                (finishes(trees, |id| skip.contains(id), Some(device_id)))
+                (finishes(trees, |id| skip_ordinary(&skip, id), Some(device_id)))
                     .filter(|(id, .., free)| !free || disk_first(trees, id))
                     .take(cap)
                     .take_while(|(id, _, name, _)| {
@@ -1861,6 +1866,17 @@ impl Commits {
         }
         if ops.is_empty() && released.is_empty() {
             ops.extend(displaced_renames(trees, &skip, &self.device_name.0, now_ms).take(cap));
+            for op in &ops {
+                if let Some(op::Op::Move(moved)) = &op.op
+                    && let Some(from) = &moved.from
+                {
+                    let over = RenamedOver {
+                        parent: NodeId::from(&from.parent_id),
+                        name: from.name.clone(),
+                    };
+                    trees.send_left_out_rename(&NodeId::from(&moved.node_id), over);
+                }
+            }
         }
         if ops.is_empty() {
             self.keep_unsent(trees, released);
@@ -1967,7 +1983,7 @@ impl Commits {
     fn conflicts(
         &mut self,
         trees: &Trees,
-        skip: &BTreeSet<NodeId>,
+        skip: impl Fn(&NodeId) -> bool,
         cap: usize,
         ids: &mut IdGen,
         now_ms: u64,
@@ -1995,9 +2011,8 @@ impl Commits {
                 }
                 Drift::None => {}
             }
-            let ready = in_sync(trees, original, copy)
-                && !skip.contains(&original.node_id)
-                && !skip.contains(&copy.node_id);
+            let ready =
+                in_sync(trees, original, copy) && !skip(&original.node_id) && !skip(&copy.node_id);
             let free = !taken.contains(&original.node_id) && !taken.contains(&copy.node_id);
             let held = trees.remote().get(&original.node_id).expect("live in R");
             let copied = trees.remote().get(&copy.node_id).expect("live in R");
@@ -2582,6 +2597,11 @@ impl Commits {
                         && applied
                         && target != *id
                         && !finished
+                        && !(moved.from.as_ref()).is_some_and(|from| {
+                            trees.left_out_rename_sent_over(id).is_some_and(|over| {
+                                over.parent == from.parent_id && over.name == from.name
+                            })
+                        })
                     {
                         let shape = Shape {
                             parent: target.clone(),
@@ -2598,6 +2618,7 @@ impl Commits {
                     if applied || cycle || superseded {
                         trees.sent_move(id);
                     }
+                    trees.answer_left_out_rename(id);
                     if cycle {
                         trees.revert(id.clone());
                     }
@@ -3150,6 +3171,7 @@ impl Commits {
         }
         if self.in_flight.is_none() {
             trees.unsend_finishes(head_moved);
+            trees.unsend_left_out_renames();
         }
         self.reject_unsent_when_read_only();
         Ok(failure)
@@ -3696,7 +3718,7 @@ fn rebase(
     trees: &mut Trees,
     ids: &mut IdGen,
     now_ms: u64,
-    skip: &BTreeSet<NodeId>,
+    skip: impl Fn(&NodeId) -> bool,
     asked: &BTreeSet<NodeId>,
 ) -> (BTreeSet<NodeId>, Vec<(NodeId, Option<Shape>)>) {
     settle_kept_folders(trees, ids, now_ms);
@@ -3715,7 +3737,7 @@ fn rebase(
             rekey_copy(trees, id, &NodeId::from(ids.uuid_v7(now_ms)));
         }
     }
-    for id in dirty.iter().filter(|id| !skip.contains(*id)) {
+    for id in dirty.iter().filter(|id| !skip(id)) {
         if trees.acknowledged_class(id) != Class::Concurrent
             || !edited_on_both_sides(trees, id)
             || trees.excluded(id)
@@ -3751,7 +3773,7 @@ fn rebase(
     let mut agreed = Vec::new();
     for id in &dirty {
         keep(trees, id, asked, &mut needed);
-        if skip.contains(id) {
+        if skip(id) {
             continue;
         }
         match trees.acknowledged_class(id) {
@@ -3832,7 +3854,7 @@ fn displaced_renames<'a>(
     device_name: &'a str,
     now_ms: u64,
 ) -> impl Iterator<Item = proto::Op> + 'a {
-    (effects::displaced_by_excluded(trees).into_keys())
+    (effects::displaced_by_excluded(trees).into_iter())
         .filter(|id| !skip.contains(id))
         .filter_map(move |id| {
             let shape = trees.remote().live(&id)?;
@@ -3855,17 +3877,25 @@ fn displaced_renames<'a>(
 
 fn conflict_rename(trees: &Trees, id: &NodeId, device_name: &str, now_ms: u64) -> Option<String> {
     let shape = trees.remote().live(id)?;
-    let (names, kind) = path(trees.remote(), id)?;
-    let mut names: Vec<String> = names.into_iter().map(str::to_owned).collect();
+    let (remote, kind) = path(trees.remote(), id)?;
+    let written = trees
+        .written(id)
+        .map(|(names, _)| names)
+        .filter(|names| names != &remote);
     (1..=MAX_CONFLICT_ATTEMPTS)
         .map(|attempt| conflict_name(&shape.name, device_name, now_ms as i64, attempt))
         .find(|name| {
             let key = name_key(name);
-            *names.last_mut().expect("a path names the node") = name.clone();
             trees.local_holders(&shape.parent, name).next().is_none()
                 && (trees.remote_holders_of_key(&shape.parent, &key))
                     .all(|other| trees.remote().live(other).is_none())
-                && !trees.ignores(&names, kind)
+                && std::iter::once(&remote)
+                    .chain(written.as_ref())
+                    .all(|path| {
+                        let mut names = path.to_vec();
+                        *names.last_mut().expect("a path names the node") = name;
+                        !trees.ignores(&names, kind)
+                    })
         })
 }
 
@@ -3941,6 +3971,7 @@ fn parked_until_moved(trees: &Trees) -> impl Iterator<Item = &NodeId> {
         .filter(move |(id, node)| {
             node.parked
                 && !effects::kept_out(trees, id)
+                && !trees.name_left_out(id)
                 && (known(id) || effects::unparks_to(trees, id, &node.shape))
         })
         .map(|(id, _)| id)
@@ -3986,7 +4017,7 @@ fn wedged(
     wants: &[Option<Want>],
     scratch: &Scratch,
     moving: &BTreeSet<NodeId>,
-    problems: &BTreeSet<NodeId>,
+    skip: impl Fn(&NodeId) -> bool,
 ) -> Vec<(NodeId, NodeId)> {
     let targets: BTreeMap<&NodeId, (&NodeId, Fit)> = (wants.iter().flatten())
         .filter_map(|want| match want {
@@ -4011,7 +4042,7 @@ fn wedged(
         loop {
             let pending = matches!(trees.class(at), Class::Remote | Class::Concurrent);
             let create = trees.dirty_creates().contains(at);
-            if problems.contains(at)
+            if skip(at)
                 || trees.is_discarded(at)
                 || (pending && !trees.excluded(at))
                 || (create && (trees.excluded(at) || trees.held(at)))
@@ -4467,7 +4498,7 @@ fn plan(
     trees: &Trees,
     candidates: &[&NodeId],
     bound: Option<(usize, &NodeId)>,
-    skip: &BTreeSet<NodeId>,
+    skip: impl Fn(&NodeId) -> bool,
     problems: &TrackedSet<NodeId>,
     needed: &BTreeSet<NodeId>,
     cap: usize,
@@ -4543,7 +4574,7 @@ fn plan(
     let mut reverts = Vec::new();
     let mut cycle_reverts = Vec::new();
     let mut within = None;
-    for &id in candidates.iter().filter(|id| !skip.contains(**id)) {
+    for &id in candidates.iter().filter(|id| !skip(id)) {
         if within.is_none() && bound.is_some_and(|(_, bound)| id >= bound) {
             within = Some(wants.len());
         }
@@ -4650,7 +4681,7 @@ fn plan(
         }
     }
     built_in_below(trees, problems, &mut deleted);
-    deleted.extend(given_up.keys().filter(|id| !skip.contains(*id)).cloned());
+    deleted.extend(given_up.keys().filter(|id| !skip(id)).cloned());
     let within = within.unwrap_or(wants.len());
     let mut scratch = Scratch::new(trees);
     scratch.finishing = finishing;
@@ -4708,7 +4739,7 @@ fn plan(
                 };
                 if *at == trees.local().root
                     || trees.remote().live(at).is_some()
-                    || (skip.contains(at) && !trees.excluded(at))
+                    || (skip(at) && !trees.excluded(at))
                     || (creates.contains(at) && trees.held(at) && !trees.excluded(at))
                 {
                     return true;
@@ -4815,9 +4846,7 @@ fn plan(
         }
     }
     let unsettled = |node: &&NodeId| {
-        skip.contains(*node)
-            || trees.waiting().contains_key(node)
-            || trees.class(node) == Class::Same
+        skip(node) || trees.waiting().contains_key(node) || trees.class(node) == Class::Same
     };
     let (unsettled, settled): (Vec<&NodeId>, Vec<&NodeId>) =
         restored.into_iter().partition(unsettled);
@@ -5364,7 +5393,7 @@ fn plan(
             }
         }
         if cfg!(debug_assertions) && bound.is_none() {
-            let wedged = wedged(trees, &wants, &scratch, &moving, skip);
+            let wedged = wedged(trees, &wants, &scratch, &moving, &skip);
             assert!(
                 wedged.is_empty(),
                 "planned creates or moves wait on a parent that neither the server holds, nor the plan places, nor a pending change brings: {wedged:?}"

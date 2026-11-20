@@ -19,7 +19,7 @@ The terms follow Pierce and Vouillon ([2004](https://www.cis.upenn.edu/~bcpierce
 Both conditions hold after every step, since a crash can end a run anywhere:
 
 - Preserve user changes: if L(n) ≠ S(n), no effect changes n on disk. The only disk operations on a locally changed node are those the user's own change implies after the server answers: renaming a fork to its conflict name (§2.7), or giving a recovered file a free name (§5.2). Both keep the content.
-- Propagate only user changes: every effect makes L(n) equal to R(n), and every op makes R(n) equal to L(n). The two exceptions are conflict names, which the server chooses (spec §6.1), and parked locations (§2.5), which are hidden and never uploaded.
+- Propagate only user changes: every effect makes L(n) equal to R(n), and every op makes R(n) equal to L(n). The two exceptions are conflict names, which the server chooses (spec §6.1) or this device gives a node whose name its disk cannot take (filesystem §5.10), and parked locations (§2.5), which are hidden and never uploaded.
 
 The engine resolves every conflict deterministically and keeps both sides (spec §1 principle 4). It never stops at a conflict to ask. §3.3 states what that must preserve.
 
@@ -54,7 +54,7 @@ Property: from any reachable state, after quiescence starts, every device eventu
 
 ## 3.5 No resurrection
 
-Property: a node trashed by a delete whose author had seen its latest state stays trashed unless a later op revives it. Every op a device sends derives from one specific user action on that device that has not been propagated yet (an edit, move, rename, create or delete it observed on disk), from a user's restore request or recovery answer, or carries another user's change that the server lost or that a recovery answer must keep: a compensating op of §6.4 or a carried replay (RFC 0018, RFC 0019, RFC 0029 §5.4). A carried op never counts as a change of this device's user.
+Property: a node trashed by a delete whose author had seen its latest state stays trashed unless a later op revives it. Every op a device sends derives from one specific user action on that device that has not been propagated yet (an edit, move, rename, create or delete it observed on disk), from a user's restore request or recovery answer, from a conflict name this device's disk needs (filesystem §5.10), or carries another user's change that the server lost or that a recovery answer must keep: a compensating op of §6.4 or a carried replay (RFC 0018, RFC 0019, RFC 0029 §5.4). A carried op never counts as a change of this device's user.
 
 The engine sends ops only for L ≠ S, L changes only through observations, and S moves only toward what was sent or what R says. Two paths could make a known file look new, and both are guarded: a crash, handled by effect recovery (§2.8, §5.3), and a lost store, handled as a first link that matches local files against R before anything is uploaded and holds the unmatched ones when the root marker counts effects the store lacks, or when the server counts commits of this device or the folder held the space's root marker before the link. Without that evidence, it holds the ones at a path R's trash holds, so a fresh link of a copy that left out `.koidrive` can bring back a deleted file that the trash no longer holds (§6.4).
 

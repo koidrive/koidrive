@@ -154,7 +154,82 @@ fn sent_move_check_of(parent: &str, name: &str, pending_for: &str) -> Result<(),
         pending_for: pending_for.into(),
         ..Default::default()
     };
-    sent_move_check(&moved, &held.shape, None, None, "me", &BTreeMap::new())
+    sent_move_check(
+        &moved,
+        &held.shape,
+        None,
+        None,
+        "me",
+        &BTreeMap::new(),
+        None,
+    )
+}
+
+fn refused_name_check(
+    left_out: bool,
+    change: impl FnOnce(&mut Move, &mut NodeState),
+) -> Result<(), TestCaseError> {
+    let mut state = NodeState {
+        node_id: "x".into(),
+        parent_id: "home".into(),
+        name: "ss".into(),
+        kind: 1,
+        status: 1,
+        ..Default::default()
+    };
+    let refused_at = left_out.then(|| RenamedOver {
+        parent: NodeId::from(&state.parent_id),
+        name: state.name.clone(),
+    });
+    let mut moved = Move {
+        node_id: "x".into(),
+        new_parent_id: "home".into(),
+        new_name: "ss (conflict)".into(),
+        from: Some(koidrive_proto::v1::Place {
+            parent_id: "home".into(),
+            name: "ss".into(),
+        }),
+        ..Default::default()
+    };
+    change(&mut moved, &mut state);
+    let (_, remote) = RemoteNode::from_state(&state).unwrap();
+    let held = Shape {
+        name: "a".into(),
+        ..remote.shape.clone()
+    };
+    let checked = sent_move_check(
+        &moved,
+        &held,
+        Some(&held),
+        Some(&remote),
+        "me",
+        &BTreeMap::new(),
+        refused_at.as_ref(),
+    );
+    if let Err(error) = &checked {
+        assert!(
+            error.to_string().contains("disk does not hold it at"),
+            "{error}"
+        );
+    }
+    checked
+}
+
+#[test]
+fn a_conflict_rename_of_a_name_the_disk_refused_passes_the_sent_move_check_only_over_the_live_place_r_holds()
+ {
+    assert!(refused_name_check(true, |_, _| {}).is_ok());
+    assert!(refused_name_check(false, |_, _| {}).is_err());
+    assert!(refused_name_check(true, |_, state| state.status = 2).is_err());
+    assert!(refused_name_check(true, |_, state| state.name = "b".into()).is_err());
+    assert!(refused_name_check(true, |moved, _| moved.from = None).is_err());
+    assert!(
+        refused_name_check(true, |moved, state| {
+            state.name = "b".into();
+            moved.from.as_mut().unwrap().name = state.name.clone();
+        })
+        .is_err()
+    );
 }
 
 fn owed_rename_check_with(
@@ -191,6 +266,7 @@ fn owed_rename_check_with(
         Some(&remote),
         "me",
         &BTreeMap::new(),
+        None,
     )
 }
 
@@ -266,6 +342,7 @@ fn finish_check_of(to: &str, from: &str, name: &str, mark: &str) -> Result<(), T
         Some(&held),
         "me",
         &BTreeMap::new(),
+        None,
     )
 }
 

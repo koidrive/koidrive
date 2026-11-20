@@ -2762,3 +2762,42 @@ fn a_file_given_up_after_a_lost_edit_and_removed_while_excluded_downloads_once_i
     assert_eq!(trees.local().live(&"a".into()), Some(&file("x", "a", 1)));
     assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
 }
+
+#[test]
+fn a_resent_move_answered_after_the_user_moved_the_node_back_sends_that_move_back() {
+    let mut trees = trees(&[(
+        "n",
+        Some(file(ROOT, "c", 1)),
+        Some(file(ROOT, "a", 1)),
+        Some(remote(file(ROOT, "b", 1))),
+    )]);
+    let mut state = trees.state();
+    state.resends.insert("n".into());
+    trees.restore(state).unwrap();
+    trees.rules_scanned();
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    trees.settle(commits.aliases());
+    let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
+    let sent = ops(&commit);
+    let [op::Op::Move(sent)] = sent.as_slice() else {
+        panic!("{sent:?}");
+    };
+    let from = (sent.from.as_ref()).map(|from| from.name.as_str());
+    assert_eq!((sent.new_name.as_str(), from), ("c", Some("b")));
+    trees.set_local("n".into(), local(file(ROOT, "a", 1), 1));
+    trees.set_remote("n".into(), remote_at(file(ROOT, "c", 1), 6));
+    commits
+        .received(result(6, vec![outcome(op_result::Code::Applied)]))
+        .unwrap();
+    assert!(commits.acknowledge(&mut trees, 6));
+    trees.settle(commits.aliases());
+    let next =
+        build(&mut commits, &mut trees, &mut ids).map_or_else(Vec::new, |commit| ops(&commit));
+    let names: Vec<&str> = (next.iter())
+        .filter_map(|op| match op {
+            op::Op::Move(moved) if moved.node_id == "n" => Some(moved.new_name.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(names, ["a"]);
+}

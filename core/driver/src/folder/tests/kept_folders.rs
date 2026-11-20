@@ -325,6 +325,42 @@ fn a_file_another_device_makes_at_a_kept_folders_place_downloads_beside_it_under
 }
 
 #[test]
+fn a_file_another_device_makes_at_the_name_of_a_folder_its_rules_leave_out_downloads_under_a_conflict_name()
+ {
+    let mut remote = Remote::new();
+    let (site_a, mut a) = linked(&mut remote, "a");
+    let site = Site::new(&remote, "b");
+    let mut b = site.start_with(&ignore_rules());
+    b.connect(&remote);
+    b.scan_until(|device| device.folder.scanned);
+    b.rest(&mut remote);
+    let env = site.root.join("node_modules/.env");
+    fs::create_dir(site.root.join("node_modules")).unwrap();
+    fs::write(&env, local_only(&env)).unwrap();
+    b.settle();
+
+    a.create(
+        &mut remote,
+        &site_a.root.join("node_modules"),
+        b"a file now",
+    );
+    for _ in 0..3 {
+        b.pull(&remote);
+        b.rest(&mut remote);
+    }
+
+    let names = remote.names();
+    let [copy] = names.as_slice() else {
+        panic!("{names:?}");
+    };
+    assert!(copy.starts_with("node_modules (conflict from "), "{copy}");
+    assert_eq!(fs::read(site.root.join(copy)).unwrap(), b"a file now");
+    assert_eq!(fs::read_to_string(&env).unwrap(), local_only(&env));
+    let view = b.folder.view();
+    assert_eq!((view.state, view.problem), (FolderState::UpToDate, None));
+}
+
+#[test]
 fn two_devices_that_keep_a_folder_rename_a_file_made_at_its_name_once() {
     let mut remote = Remote::new();
     let (site_a, mut a) = linked(&mut remote, "a");

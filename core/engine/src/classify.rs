@@ -16,7 +16,7 @@ use crate::question::Frozen;
 use crate::state::{
     Agreed, ContentProvenance, ContentValue, ContentVersion, FinishOrigin, KeptCause, KeptEntries,
     KeptRules, KeptRulesFile, LostPosition, MoveHistory, MovePosition, MovedHere, PendingFinish,
-    StateError, SyncedPosition, TreesChanges, TreesState, made_over,
+    RenamedOver, StateError, SyncedPosition, TreesChanges, TreesState, made_over,
 };
 use crate::tracked::{TrackedMap, TrackedSet};
 use crate::tree::{
@@ -659,6 +659,7 @@ pub struct Trees {
     /// See [`TreesState::dropped_edits`].
     dropped_edits: TrackedSet<NodeId>,
     unsent_moves: TrackedSet<NodeId>,
+    names_left_out: TrackedMap<NodeId, Option<RenamedOver>>,
     unsent_creates: TrackedSet<NodeId>,
     kept_folders: TrackedSet<NodeId>,
     kept_entries: TrackedMap<NodeId, KeptEntries>,
@@ -785,6 +786,7 @@ impl Trees {
             unsent_edits: TrackedSet::default(),
             dropped_edits: TrackedSet::default(),
             unsent_moves: TrackedSet::default(),
+            names_left_out: TrackedMap::default(),
             unsent_creates: TrackedSet::default(),
             kept_folders: TrackedSet::default(),
             kept_entries: TrackedMap::default(),
@@ -1354,6 +1356,12 @@ impl Trees {
 
     fn place_remote(&mut self, id: NodeId, node: RemoteNode, made_here: bool) {
         self.place_ids.remove(&id);
+        let moved = !(self.r.live(&id)).is_some_and(|old| old.same_position(&node.shape));
+        let home = (self.l.get(&id))
+            .is_some_and(|local| !local.parked && local.shape.same_position(&node.shape));
+        if (node.trashed || moved || home) && !self.left_out_rename_sent(&id) {
+            self.names_left_out.remove(&id);
+        }
         let sent_again = self.resends.contains(&id) || self.lost_creates.contains(&id);
         let changed_after_loss = !made_here
             && sent_again
@@ -1780,6 +1788,9 @@ impl Trees {
     }
 
     pub fn remove_remote(&mut self, id: &NodeId) {
+        if !self.left_out_rename_sent(id) {
+            self.names_left_out.remove(id);
+        }
         self.cycles_may_end = true;
         self.place_ids.remove(id);
         self.remote_rules_files.remove(id);
@@ -2145,6 +2156,11 @@ impl Trees {
         self.lost.remove(&id);
         self.removed_from.remove(&id);
         self.found.remove(&id);
+        let home = !node.parked
+            && (self.r.live(&id)).is_some_and(|remote| node.shape.same_position(remote));
+        if home && !self.left_out_rename_sent(&id) {
+            self.names_left_out.remove(&id);
+        }
         if self.outside.remove(&id) {
             let children: Vec<NodeId> = self.l_names.children(&id).cloned().collect();
             self.outside.extend(children);
@@ -2156,8 +2172,6 @@ impl Trees {
             finish.disk_first |=
                 node.shape.parent == finish.parent && nfc(&node.shape.name) == nfc(&finish.name);
         }
-        let home = !node.parked
-            && (self.r.live(&id)).is_some_and(|remote| node.shape.same_position(remote));
         if home
             && (self.discarded.get(&id)).is_some_and(|shape| self.r.get(&shape.parent).is_none())
         {
@@ -2615,6 +2629,7 @@ impl Trees {
 
     pub(crate) fn rewound(&mut self) {
         self.recoveries += 1;
+        self.unsend_left_out_renames();
         for finish in self.pending_finishes.values_mut() {
             finish.sending = false;
             finish.base = None;
@@ -3460,6 +3475,65 @@ impl Trees {
         }
     }
 
+    pub(crate) fn leave_name_out(&mut self, id: &NodeId) {
+        self.names_left_out.get_or_insert_with(id.clone(), || None);
+    }
+
+    pub fn name_left_out(&self, id: &NodeId) -> bool {
+        self.names_left_out.contains_key(id)
+    }
+
+    pub(crate) fn rules_leave_out_folder_at(&self, at: &Shape) -> bool {
+        let mut names = if at.parent == self.l.root {
+            Vec::new()
+        } else if let Some((names, _)) = path(&self.l, &at.parent) {
+            names
+        } else {
+            return false;
+        };
+        names.push(&at.name);
+        self.ignores(&names, Kind::Dir)
+    }
+
+    pub(crate) fn send_left_out_rename(&mut self, id: &NodeId, over: RenamedOver) {
+        if let Some(sent) = self.names_left_out.get_mut(id) {
+            *sent = Some(over);
+        }
+    }
+
+    pub(crate) fn left_out_rename_sent_over(&self, id: &NodeId) -> Option<&RenamedOver> {
+        self.names_left_out.get(id)?.as_ref()
+    }
+
+    pub(crate) fn left_out_rename_sent(&self, id: &NodeId) -> bool {
+        self.left_out_rename_sent_over(id).is_some()
+    }
+
+    pub(crate) fn answer_left_out_rename(&mut self, id: &NodeId) {
+        if self.left_out_rename_sent(id) {
+            self.names_left_out.remove(id);
+        }
+    }
+
+    pub(crate) fn unsend_left_out_renames(&mut self) {
+        let sent: Vec<(NodeId, RenamedOver)> = (self.names_left_out.iter())
+            .filter_map(|(id, over)| Some((id.clone(), over.clone()?)))
+            .collect();
+        for (id, over) in sent {
+            let refused = (self.r.live(&id)).is_some_and(|remote| {
+                remote.parent == over.parent
+                    && same_name(&remote.name, &over.name)
+                    && !(self.l.get(&id))
+                        .is_some_and(|local| !local.parked && local.shape.same_position(remote))
+            });
+            match refused {
+                true => self.names_left_out.insert(id, None),
+                false => self.names_left_out.remove(&id),
+            };
+        }
+        self.end_names_no_longer_left_out();
+    }
+
     /// The nodes [`Trees::displace_local`] took out of L, each with the identity L held for it.
     pub fn displaced_local(&self) -> &TrackedMap<NodeId, FileIdentity> {
         &self.displaced
@@ -3826,6 +3900,23 @@ impl Trees {
             self.local_scope(&node.shape.parent, &self.ignore, scopes),
             Some(Some(scope)) if scope.status(&node.shape.name, kind) == Status::Included
         )
+    }
+
+    fn end_names_no_longer_left_out(&mut self) {
+        if !self.rules_known {
+            return;
+        }
+        let lifted: Vec<NodeId> = (self.names_left_out.keys())
+            .filter(|id| {
+                !self.left_out_rename_sent(id)
+                    && !(self.r.live(id))
+                        .is_some_and(|remote| self.rules_leave_out_folder_at(remote))
+            })
+            .cloned()
+            .collect();
+        for id in lifted {
+            self.names_left_out.remove(&id);
+        }
     }
 
     fn note_unobserved(&mut self, abandoned: &dyn Fn() -> bool) -> Option<()> {
@@ -4764,7 +4855,7 @@ impl Trees {
             .any(|(names, kind)| self.ignores(names, *kind))
     }
 
-    fn written(&self, id: &NodeId) -> Option<(Vec<&str>, Kind)> {
+    pub(crate) fn written(&self, id: &NodeId) -> Option<(Vec<&str>, Kind)> {
         let remote = self.r.live(id)?;
         let mut names = vec![remote.name.as_str()];
         let mut current = &remote.parent;
@@ -6184,6 +6275,7 @@ impl Trees {
             self.wait_to_link(unfit);
         }
         self.settle_marked(abandoned)?;
+        self.end_names_no_longer_left_out();
         self.note_unobserved(abandoned)?;
         while self.link_due() {
             self.settle_marked(abandoned)?;
@@ -7045,6 +7137,23 @@ impl Trees {
             "an unsent move of a node L does not hold or that L, S and R all hold"
         );
         debug_assert_eq!(
+            (self.names_left_out.keys())
+                .filter(|id| !self.left_out_rename_sent(id))
+                .find(|id| match self.r.live(id) {
+                    None => true,
+                    Some(remote) => {
+                        (self.l.get(id))
+                            .is_some_and(|local| !local.parked && local.shape.same_position(remote))
+                            || self.rules_known
+                                && self.rules_changed.is_empty()
+                                && !self.rules_leave_out_folder_at(remote)
+                    }
+                })
+                .cloned(),
+            None,
+            "a name left out for a node R does not hold live, L holds at R's place, or the rules no longer leave out a folder at R's place"
+        );
+        debug_assert_eq!(
             (self.unsent_creates.iter())
                 .find(|id| self.l.get(id).is_none() || self.r.get(id).is_some())
                 .cloned(),
@@ -7137,6 +7246,7 @@ impl Trees {
             unsent_edits: self.unsent_edits.to_set(),
             dropped_edits: self.dropped_edits.to_set(),
             unsent_moves: self.unsent_moves.to_set(),
+            names_left_out: self.names_left_out.to_map(),
             unsent_creates: self.unsent_creates.to_set(),
             kept_folders: self.kept_folders.to_set(),
             kept_entries: self.kept_entries.to_map(),
@@ -7193,6 +7303,7 @@ impl Trees {
             unsent_edits,
             dropped_edits,
             unsent_moves,
+            names_left_out,
             unsent_creates,
             kept_folders,
             kept_entries,
@@ -7273,6 +7384,7 @@ impl Trees {
             unsent_edits: unsent_edits.take_changes(),
             dropped_edits: dropped_edits.take_changes(),
             unsent_moves: unsent_moves.take_changes(),
+            names_left_out: names_left_out.take_changes(),
             unsent_creates: unsent_creates.take_changes(),
             kept_folders: kept_folders.take_changes(),
             kept_entries: kept_entries.take_changes(),
@@ -7515,6 +7627,7 @@ impl Trees {
             unsent_edits,
             dropped_edits,
             unsent_moves,
+            names_left_out,
             unsent_creates,
             kept_folders,
             kept_entries,
@@ -7572,6 +7685,7 @@ impl Trees {
         self.unsent_edits = unsent_edits.into();
         self.dropped_edits = dropped_edits.into();
         self.unsent_moves = unsent_moves.into();
+        self.names_left_out = names_left_out.into();
         self.unsent_creates = unsent_creates.into();
         self.kept_folders = kept_folders.into();
         self.kept_entries = kept_entries.into();

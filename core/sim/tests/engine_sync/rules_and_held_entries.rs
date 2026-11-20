@@ -898,3 +898,113 @@ fn a_folder_deleted_around_only_a_moved_away_entry_leaves_nothing_on_disk() {
     assert_eq!(local_path(&device.trees, &"c".into()), ["p", "b", "c.txt"]);
     assert!(device.trees.local().get(&a).is_none());
 }
+
+#[test]
+fn a_left_out_folder_does_not_keep_a_file_waiting_if_a_numbered_conflict_name_is_included() {
+    let mut device = Device::new(Trees::new("root"));
+    let id = NodeId::from("file");
+    let (content, chunks) = split(Some(content(1, 0)));
+    device.trees.set_remote(
+        id.clone(),
+        RemoteNode {
+            made_over: Vec::new(),
+            shape: Shape {
+                parent: "root".into(),
+                name: "ss".into(),
+                kind: Kind::File,
+                content,
+            },
+            trashed: false,
+            content_rev: 1,
+            meta_rev: 1,
+            meta_edit_rev: 1,
+            trash_group: String::new(),
+            version_id: String::new(),
+            edit_rev: 1,
+            pending_for: None,
+            pending_by: None,
+            chunks,
+        },
+    );
+    device.left_out_folders.insert("ss".into());
+    device.rule(&Ruling::File(vec!["ss/", "* (conflict *-??-??)"]));
+    assert!(!waits_on_left_out(&device, &id), "suffix 2 is included");
+    device.rule(&Ruling::File(vec![
+        "ss/",
+        "* (conflict from unknown device *",
+    ]));
+    assert!(waits_on_left_out(&device, &id), "all suffixes are excluded");
+}
+
+#[test]
+fn a_file_another_device_renames_to_a_folder_the_rules_leave_out_here_takes_a_conflict_name() {
+    let parked = vec![(false, vec![act(0, 0, 0, 0, 0)])];
+    for during in [vec![], parked] {
+        let ran = run_ignoring(
+            &[act(1, 0, 0, 0, 0)],
+            &[act(0, 0, 0, 6, 0)],
+            &[act(3, 0, 0, 6, 0)],
+            MAX_OPS,
+            false,
+            &during,
+            Cut::None,
+            &[Ruling::Exclude(vec!["ss/"])],
+            Answer::Discard,
+            None,
+        )
+        .unwrap();
+        let names: Vec<String> = (ran.space.nodes().into_iter())
+            .filter(|node| node.status == 1 && node.kind == 2)
+            .map(|node| node.name)
+            .collect();
+        assert_eq!(names, ["ss (conflict from unknown device 2026-11-09)"]);
+    }
+}
+
+fn parked_file_beside_left_out_folder(conflict_rule: Option<&'static str>) -> Vec<String> {
+    let patterns = |name| std::iter::once(name).chain(conflict_rule).collect();
+    let ran = run_ignoring(
+        &[act(1, 0, 0, 0, 0)],
+        &[act(0, 0, 0, 6, 0), act(3, 0, 0, 3, 0)],
+        &[act(3, 0, 0, 6, 0), act(0, 0, 0, 3, 0)],
+        MAX_OPS,
+        false,
+        &[
+            (
+                false,
+                vec![act(3, 487716592678468472, 4220595476152624058, 5, 0)],
+            ),
+            (false, vec![act(0, 0, 0, 0, 0)]),
+        ],
+        Cut::None,
+        &[
+            Ruling::Exclude(patterns("ss/")),
+            Ruling::File(patterns("ss/")),
+            Ruling::Exclude(patterns("*.txt")),
+        ],
+        Answer::Delete,
+        None,
+    )
+    .unwrap();
+    (ran.space.nodes().into_iter())
+        .filter(|node| node.status == 1 && node.kind == 2)
+        .map(|node| node.name)
+        .collect()
+}
+
+#[test]
+fn a_parked_file_whose_own_name_the_rules_leave_out_takes_a_conflict_name_when_the_disk_refuses_the_name_another_device_holds()
+ {
+    assert_eq!(
+        parked_file_beside_left_out_folder(None),
+        ["ß (conflict from unknown device 2026-11-09)"]
+    );
+}
+
+#[test]
+fn a_parked_file_is_reported_when_the_rules_leave_out_every_conflict_name() {
+    assert_eq!(
+        parked_file_beside_left_out_folder(Some("* (conflict from unknown device *")),
+        ["ß"]
+    );
+}

@@ -105,13 +105,18 @@ fn a_folder_kept_for_excluded_entries_waits_for_a_scan_of_itself_once_they_go() 
 }
 
 #[test]
-fn a_file_made_at_the_name_of_a_folder_its_rules_exclude_waits_for_that_name() {
-    let _red = expect_red(
-        Check::NameLeftOut,
-        "device 1 is quiet, but the effects for [\"01a1c2c0-39a0-7510-83bc-38d6c6b89fe4\"] wait for names that entries its rules leave out hold",
-    );
+fn a_file_made_at_the_name_of_a_folder_its_rules_exclude_downloads_under_a_conflict_name() {
     let phases = [vec![(1, folder("ss"))], vec![(0, file("ss"))]];
-    converge_excluding(&[vec![], vec!["ss/"]], &phases).unwrap();
+    let world = converge_excluding(&[vec![], vec!["ss/"]], &phases).unwrap();
+    let names: Vec<String> = (files_on(&world, 0).into_iter())
+        .map(|(name, _)| name)
+        .collect();
+    let [copy] = names.as_slice() else {
+        panic!("{names:?}");
+    };
+    assert!(copy.starts_with("ss (conflict from "), "{copy}");
+    assert_eq!(content_on(&world, 1, copy), content_on(&world, 0, copy));
+    assert_eq!(world.devices[1].disk.entries().len(), 2);
 }
 
 #[test]
@@ -477,4 +482,324 @@ fn a_file_edited_then_moved_into_an_ignored_folder_keeps_its_edit_there_when_its
 #[test]
 fn a_folder_moved_into_an_ignored_folder_with_an_edit_keeps_it_there_when_its_old_folder_goes() {
     edited_then_moved_into_an_ignored_folder(true);
+}
+
+#[test]
+fn a_file_at_the_name_of_a_left_out_folder_downloads_at_that_name_once_the_folder_moves_away() {
+    let mut racing = vec![(0, user(1, 0, 1, "ss"))];
+    racing.extend(commit(0));
+    racing.extend([
+        (1, DELIVER),
+        (1, EFFECT),
+        (1, EFFECT),
+        (1, rename(1, 0, "ss")),
+    ]);
+    let phases = [
+        vec![(0, folder("b"))],
+        vec![(1, user(0, 0, 1, "ss"))],
+        racing,
+    ];
+    let world = converge_excluding(&[vec![], vec!["ss/"]], &phases).unwrap();
+    let files = |device| -> Vec<(String, Option<Content>)> {
+        (files_on(&world, device).into_iter())
+            .filter(|(_, content)| content.is_some())
+            .collect()
+    };
+    assert_eq!(files(0).len(), 1);
+    assert_eq!(files(1), files(0));
+    assert_eq!(files(1)[0].0, "ss");
+    assert_eq!(world.devices[1].disk.entries().len(), 3);
+}
+
+#[test]
+fn a_file_another_device_renames_onto_the_name_of_a_folder_its_rules_exclude_gets_a_conflict_name()
+{
+    let phases = [
+        vec![(1, folder("ss"))],
+        vec![(0, file("a"))],
+        vec![(0, rename(0, 0, "ss"))],
+    ];
+    let world = converge_excluding(&[vec![], vec!["ss/"]], &phases).unwrap();
+    let names: Vec<String> = (files_on(&world, 0).into_iter())
+        .map(|(name, _)| name)
+        .collect();
+    let [copy] = names.as_slice() else {
+        panic!("{names:?}");
+    };
+    assert!(copy.starts_with("ss (conflict from "), "{copy}");
+    assert_eq!(content_on(&world, 1, copy), content_on(&world, 0, copy));
+    assert_eq!(world.devices[1].disk.entries().len(), 2);
+}
+
+#[test]
+fn a_file_refused_at_the_name_of_a_left_out_folder_keeps_that_name_once_the_rules_let_the_folder_in()
+ {
+    let mut world = converge_excluding(
+        &[vec![], vec!["ss/"]],
+        &[vec![(1, folder("ss")), (1, user(1, 0, 1, "b"))]],
+    )
+    .unwrap();
+    let mut steps = vec![(0, file("ss"))];
+    steps.extend(commit(0));
+    steps.extend([(1, DELIVER), (1, EFFECT), (1, EFFECT)]);
+    world.run(1, &steps).unwrap();
+    assert!(
+        !world.devices[1]
+            .engine
+            .trees
+            .state()
+            .names_left_out
+            .is_empty()
+    );
+    world.rule(1, &Ruling::Exclude(vec![])).unwrap();
+    world.phase(2, &[]).unwrap();
+    assert!(
+        live_node_at(&world, &["ss"]).is_some(),
+        "{:?}",
+        files_on(&world, 1)
+    );
+}
+
+fn refused_at_a_left_out_folders_name(
+    rule: &'static str,
+    first: &[Vec<(usize, Step)>],
+    arrives: Step,
+) -> (World, usize) {
+    let mut world = converge_excluding(&[vec![], vec![rule]], first).unwrap();
+    let mut steps = vec![(0, arrives)];
+    steps.extend(commit(0));
+    steps.extend([(1, DELIVER), (1, EFFECT), (1, EFFECT)]);
+    world.run(first.len(), &steps).unwrap();
+    assert!(
+        !world.devices[1]
+            .engine
+            .trees
+            .state()
+            .names_left_out
+            .is_empty()
+    );
+    (world, first.len())
+}
+
+fn left_out_name_shapes() -> [(World, usize); 2] {
+    let downloaded = [vec![(1, folder("ss")), (1, user(1, 0, 1, "b"))]];
+    let moved = [vec![(1, folder("ss"))], vec![(0, file("a"))]];
+    [
+        refused_at_a_left_out_folders_name("ss/", &downloaded, file("ss")),
+        refused_at_a_left_out_folders_name("ss/", &moved, rename(0, 0, "ss")),
+    ]
+}
+
+#[test]
+fn a_file_refused_at_a_left_out_folders_name_takes_one_conflict_name_however_often_the_device_commits()
+ {
+    for (shape, (mut world, phase)) in left_out_name_shapes().into_iter().enumerate() {
+        let steps: Vec<(usize, Step)> = (0..3).flat_map(|_| commit(1)).collect();
+        world.run(phase, &steps).unwrap();
+        world.phase(phase + 1, &[]).unwrap();
+        for device in 0..2 {
+            let copies = conflict_copies(&world, device);
+            let [copy] = copies.as_slice() else {
+                panic!("shape {shape}, device {device}: {copies:?}");
+            };
+            assert_eq!(
+                copy.matches("(conflict from").count(),
+                1,
+                "shape {shape}: {copy}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_file_deleted_here_before_it_follows_its_conflict_name_comes_back_for_the_move_its_user_never_saw()
+ {
+    let [_, (mut world, phase)] = left_out_name_shapes();
+    let mut steps = commit(1);
+    steps.push((1, delete(1)));
+    world.run(phase, &steps).unwrap();
+    world.phase(phase + 1, &[]).unwrap();
+    for device in 0..2 {
+        assert_eq!(conflict_copies(&world, device).len(), 1, "{device}");
+    }
+}
+
+#[test]
+fn a_file_refused_beside_a_folder_an_anchored_rule_leaves_out_takes_one_conflict_name_once_another_device_renames_their_parent()
+ {
+    let first = [vec![(1, folder("b")), (1, user(0, 0, 1, "ss"))]];
+    let (mut world, phase) =
+        refused_at_a_left_out_folders_name("/b/ss/", &first, user(1, 0, 1, "ss"));
+    let mut steps = vec![(0, rename(0, 0, "A"))];
+    steps.extend(commit(0));
+    world.run(phase, &steps).unwrap();
+    world.phase(phase + 1, &[]).unwrap();
+    assert_eq!(paths_on(&world, 0), paths_on(&world, 1));
+    assert_eq!(
+        conflict_copies(&world, 1).len(),
+        1,
+        "{:?}",
+        paths_on(&world, 1)
+    );
+}
+
+#[test]
+fn a_refused_file_gets_one_conflict_name_while_its_parents_rename_is_blocked() {
+    for parent_moves_first in [false, true] {
+        refuse_under_a_parent_whose_rename_is_blocked(parent_moves_first, None);
+    }
+}
+
+#[test]
+fn a_refused_file_skips_conflict_names_left_out_at_either_parent_path() {
+    for rule in ["/a/* (conflict *-??-??)", "/b/* (conflict *-??-??)"] {
+        for parent_moves_first in [false, true] {
+            let copy =
+                refuse_under_a_parent_whose_rename_is_blocked(parent_moves_first, Some(rule));
+            assert!(copy.ends_with(" 2)"), "{rule}: {copy}");
+        }
+    }
+}
+
+fn refuse_under_a_parent_whose_rename_is_blocked(
+    parent_moves_first: bool,
+    candidate_rule: Option<&'static str>,
+) -> String {
+    let mut rules = vec!["*.txt", "/b/ss/"];
+    rules.extend(candidate_rule);
+    let mut world = converge_excluding(
+        &[vec![], rules],
+        &[
+            vec![(0, folder("a"))],
+            vec![(1, user(1, 0, 1, "c.txt"))],
+            vec![(0, delete(0))],
+            vec![(0, folder("b"))],
+        ],
+    )
+    .unwrap();
+    ino_at(&world, 1, &["a", "c.txt"]);
+    let local_parent = folder_number(&world, 1, &["b"]);
+    world
+        .run(4, &[(1, user(0, 0, local_parent, "ss"))])
+        .unwrap();
+    let rename_parent = |world: &mut World| {
+        let parent = target(world, 0, &["b"]);
+        let mut steps = vec![(0, rename(parent, 0, "a"))];
+        steps.extend(commit(0));
+        steps.extend([(1, DELIVER), (1, EFFECT), (1, EFFECT)]);
+        world.run(4, &steps).unwrap();
+    };
+    if parent_moves_first {
+        rename_parent(&mut world);
+    }
+    let parent = if parent_moves_first { "a" } else { "b" };
+    let server_parent = folder_number(&world, 0, &[parent]);
+    let mut steps = vec![(0, user(1, 0, server_parent, "ss"))];
+    steps.extend(commit(0));
+    steps.extend([(1, DELIVER), (1, EFFECT), (1, EFFECT)]);
+    world.run(4, &steps).unwrap();
+    if !parent_moves_first {
+        assert!(
+            !world.devices[1]
+                .engine
+                .trees
+                .state()
+                .names_left_out
+                .is_empty()
+        );
+        rename_parent(&mut world);
+    }
+    let holder = ino_at(&world, 1, &["b", "ss"]);
+    let file = live_node_at(&world, &["a", "ss"]).unwrap();
+    let attempts: Vec<_> = (0..3).flat_map(|_| commit(1)).collect();
+    world.run(4, &attempts).unwrap();
+    let copy = world.space().node(&file).unwrap().name;
+    assert_eq!(copy.matches("(conflict from").count(), 1, "{copy}");
+    assert_eq!(world.seen.get("move with from applied"), Some(&1));
+    assert!(
+        world.devices[1]
+            .engine
+            .trees
+            .state()
+            .names_left_out
+            .is_empty()
+    );
+    world.run(4, &[(1, EFFECT); 2]).unwrap();
+    ino_at(&world, 1, &["b", &copy]);
+    assert_eq!(ino_at(&world, 1, &["b", "ss"]), holder);
+    copy
+}
+
+fn conflict_copies(world: &World, device: usize) -> Vec<String> {
+    (files_on(world, device).into_iter())
+        .map(|(name, _)| name)
+        .filter(|name| name.contains("(conflict from"))
+        .collect()
+}
+
+#[test]
+fn a_file_another_device_deletes_after_the_disk_refused_its_name_here_stays_deleted() {
+    for heard in [true, false] {
+        let [_, (mut world, phase)] = left_out_name_shapes();
+        let mut steps = vec![(0, delete(0))];
+        steps.extend(commit(0));
+        steps.extend(heard.then_some((1, DELIVER)));
+        steps.extend(commit(1));
+        world.run(phase, &steps).unwrap();
+        world.phase(phase + 1, &[]).unwrap();
+        assert_eq!(world.seen.get("move with from applied"), None, "{heard}");
+        let superseded = world.seen.get("move with from superseded").copied();
+        assert_eq!(superseded, (!heard).then_some(1), "{heard}");
+        assert_eq!(live_node_at(&world, &["ss"]), None);
+        for device in 0..2 {
+            assert!(
+                files_on(&world, device)
+                    .iter()
+                    .all(|(_, content)| content.is_none())
+            );
+        }
+    }
+}
+
+#[test]
+fn a_file_another_device_renames_after_the_disk_refused_its_name_here_keeps_that_name() {
+    for heard in [true, false] {
+        let [_, (mut world, phase)] = left_out_name_shapes();
+        let mut steps = vec![(0, rename(0, 0, "b"))];
+        steps.extend(commit(0));
+        steps.extend(heard.then_some((1, DELIVER)));
+        steps.extend(commit(1));
+        world.run(phase, &steps).unwrap();
+        world.phase(phase + 1, &[]).unwrap();
+        assert_eq!(world.seen.get("move with from applied"), None, "{heard}");
+        let superseded = world.seen.get("move with from superseded").copied();
+        assert_eq!(superseded, (!heard).then_some(1), "{heard}");
+        assert!(live_node_at(&world, &["b"]).is_some());
+        for device in 0..2 {
+            assert_eq!(conflict_copies(&world, device), Vec::<String>::new());
+            assert!(files_on(&world, device).iter().any(|(name, _)| name == "b"));
+        }
+        assert!(
+            world.devices[1]
+                .engine
+                .trees
+                .state()
+                .names_left_out
+                .is_empty()
+        );
+    }
+}
+
+#[test]
+fn a_file_whose_conflict_rename_is_in_flight_when_the_rules_let_its_name_in_follows_that_rename() {
+    for lift in 0..5 {
+        let [_, (mut world, phase)] = left_out_name_shapes();
+        let steps = commit(1);
+        world.run(phase, &steps[..lift]).unwrap();
+        world.rule(1, &Ruling::Exclude(vec![])).unwrap();
+        world.run(phase, &steps[lift..]).unwrap();
+        world.phase(phase + 1, &[]).unwrap();
+        assert_eq!(paths_on(&world, 0), paths_on(&world, 1), "{lift}");
+        assert_eq!(conflict_copies(&world, 1).len(), 1, "{lift}");
+    }
 }

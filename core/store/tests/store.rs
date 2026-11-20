@@ -16,7 +16,7 @@ use koidrive_engine::question::{
 use koidrive_engine::restore::{Outcome, Rejection, Resolved, RestoreIntent, SplitRestore};
 use koidrive_engine::state::{
     Agreed, CommitsState, EffectsState, FinishOrigin, GivenUp, KeptCause, KeptEntries, KeptRules,
-    KeptRulesFile, LostPosition, MovedHere, PendingFinish, SyncedPosition, TreesState,
+    KeptRulesFile, LostPosition, MovedHere, PendingFinish, RenamedOver, SyncedPosition, TreesState,
 };
 use koidrive_engine::tree::{
     ContentKey, FileIdentity, Kind, LocalNode as EngineLocalNode, NodeId, RemoteNode,
@@ -1435,6 +1435,14 @@ fn engine_state() -> EngineState {
             unsent_edits: nodes(["u"]),
             dropped_edits: nodes(["d"]),
             unsent_moves: nodes(["m"]),
+            names_left_out: [(
+                "n".into(),
+                Some(RenamedOver {
+                    parent: "p".into(),
+                    name: "n.txt".into(),
+                }),
+            )]
+            .into(),
             unsent_creates: nodes(["c"]),
             kept_folders: nodes(["k"]),
             kept_entries: BTreeMap::from([
@@ -1777,6 +1785,22 @@ fn an_abandoned_engine_state_read_stops_in_every_commit_part() {
                 let read = tx.engine_state_unless(&mut EngineState::default(), &mut || true)?;
                 assert!(!read, "{:?}", state.commits);
             }
+            Ok::<_, Error>(())
+        })
+        .unwrap();
+}
+
+#[test]
+fn an_abandoned_engine_state_read_stops_in_the_refused_names() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::open(dir.path().join("state.db")).unwrap();
+    store
+        .transaction(|tx| {
+            let mut state = EngineState::default();
+            state.trees.names_left_out = engine_state().trees.names_left_out;
+            tx.set_engine_state(&state)?;
+            let read = tx.engine_state_unless(&mut EngineState::default(), &mut || true)?;
+            assert!(!read);
             Ok::<_, Error>(())
         })
         .unwrap();

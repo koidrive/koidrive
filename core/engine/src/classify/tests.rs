@@ -1632,3 +1632,27 @@ fn names_built_to_share_an_fnv_hash_are_synced_in_linear_reads() {
     let two_hundred_fifty_six = reads(8, u64::MAX);
     reads(11, two_hundred_fifty_six * 11);
 }
+
+#[test]
+fn a_listing_that_moves_or_trashes_a_file_whose_name_was_left_out_ends_the_record() {
+    for trashed in [false, true] {
+        let mut trees = ancestry_tree();
+        let at = |name: &str| RemoteNode {
+            shape: Shape {
+                name: name.into(),
+                ..ancestry_file(1)
+            },
+            ..ancestry_remote(1, "held", &["foreign-base"])
+        };
+        trees.set_remote("f".into(), at("ss"));
+        trees.leave_name_out(&"f".into());
+        assert!(trees.name_left_out(&"f".into()));
+        let listed = RemoteNode {
+            trashed,
+            ..at("elsewhere")
+        };
+        trees.set_listed_remote("f".into(), listed);
+        assert!(!trees.name_left_out(&"f".into()), "trashed: {trashed}");
+        assert_eq!(trees.check(), Ok(()));
+    }
+}
