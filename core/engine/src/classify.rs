@@ -2785,6 +2785,21 @@ impl Trees {
             && (self.l.get(id)).is_some_and(|node| node.shape.kind == Kind::Dir)
     }
 
+    fn in_a_taken_along_folder(&self, id: &NodeId, taken: &BTreeSet<&NodeId>) -> bool {
+        let mut at = id;
+        for _ in 0..self.l.len() {
+            let Some(node) = self.l.get(at) else {
+                return false;
+            };
+            at = &node.shape.parent;
+            let recorded = self.discarded.contains_key(at) && self.r.get(at).is_some();
+            if taken.contains(at) || recorded {
+                return true;
+            }
+        }
+        false
+    }
+
     fn kept_as_discarded_in(&self, id: &NodeId, folder: &NodeId) -> bool {
         if !(self.discarded.get(id)).is_some_and(|shape| shape.parent == *folder) {
             return false;
@@ -3042,38 +3057,30 @@ impl Trees {
     ) -> Vec<(NodeId, Shape)> {
         self.forget_reclaims();
         let mut kept = Vec::new();
+        let left_out = |child: &NodeId| {
+            self.excluded(child)
+                || (self.l.get(child)).is_some_and(|node| node.left_out_when_placed)
+        };
         for folder in shown.keys() {
-            let in_a_server_folder = self.in_a_server_folder_of_a_held_one(folder, shown);
             for child in self.local_children(folder) {
-                let left_out = in_a_server_folder
-                    || self.excluded(child)
-                    || (self.l.get(child)).is_some_and(|node| node.left_out_when_placed);
-                if !shown.contains_key(child) && left_out {
+                if !shown.contains_key(child) && left_out(child) {
+                    self.server_copy(child, shown, landing, &mut kept);
+                }
+            }
+        }
+        let taken: BTreeSet<NodeId> = kept.iter().map(|(id, _)| id.clone()).collect();
+        let taken: BTreeSet<&NodeId> = taken.iter().collect();
+        for folder in shown
+            .keys()
+            .filter(|folder| self.in_a_taken_along_folder(folder, &taken))
+        {
+            for child in self.local_children(folder) {
+                if !shown.contains_key(child) && !left_out(child) {
                     self.server_copy(child, shown, landing, &mut kept);
                 }
             }
         }
         kept
-    }
-
-    fn in_a_server_folder_of_a_held_one(
-        &self,
-        id: &NodeId,
-        shown: &BTreeMap<NodeId, Shape>,
-    ) -> bool {
-        let mut server_folder = false;
-        let mut at = id;
-        for _ in 0..self.l.len() {
-            let Some(node) = self.l.get(at) else {
-                return false;
-            };
-            at = &node.shape.parent;
-            if shown.contains_key(at) {
-                return server_folder;
-            }
-            server_folder |= self.r.get(at).is_some();
-        }
-        false
     }
 
     pub(crate) fn discard_taken(&mut self, taken: Vec<(NodeId, Shape)>) {

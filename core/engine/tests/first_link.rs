@@ -6977,6 +6977,17 @@ fn discarded_after_a_server_folder_moved_in_while_excluded(
     answered: Option<&[(&str, Shape)]>,
     restart: bool,
 ) -> (Vec<(&'static str, String)>, Trees, Commits) {
+    discarded_after_a_server_folder_moved_in(before, excluded, answered, restart, false, false)
+}
+
+fn discarded_after_a_server_folder_moved_in(
+    before: &[(&str, Shape)],
+    excluded: &[(&str, Shape)],
+    answered: Option<&[(&str, Shape)]>,
+    restart: bool,
+    nested: bool,
+    in_view: bool,
+) -> (Vec<(&'static str, String)>, Trees, Commits) {
     let mut trees = trees(
         &[
             ("h", dir(ROOT, "a")),
@@ -6994,6 +7005,10 @@ fn discarded_after_a_server_folder_moved_in_while_excluded(
             ("sf", file(ROOT, "c.txt", 5)),
         ],
     );
+    if nested {
+        trees.set_local("hd".into(), local_node(dir("hc", "inner"), 98));
+        trees.settle(&Default::default());
+    }
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(7));
     commits.first_link(&mut trees, &mut ids, NOW, PriorSync::Shown);
     let asked = question(&commits);
@@ -7027,8 +7042,14 @@ fn discarded_after_a_server_folder_moved_in_while_excluded(
         .iter()
         .for_each(|moved| change(&mut trees, &commits, moved));
     let root: [&str; 0] = [];
+    let into_h = ("s", dir("h", "c.txt"));
+    if in_view {
+        change(&mut trees, &commits, &into_h);
+    }
     trees.set_rules(&root, Source::Koiignore, Some(RuleFile::parse(b"a\n")));
-    change(&mut trees, &commits, &("s", dir("h", "c.txt")));
+    if !in_view {
+        change(&mut trees, &commits, &into_h);
+    }
     excluded
         .iter()
         .for_each(|moved| change(&mut trees, &commits, moved));
@@ -7202,5 +7223,57 @@ fn a_held_folder_the_user_adds_to_after_the_discard_is_sent_inside_the_server_fo
         trees.local().get(&"h".into()).is_none(),
         "{:?}",
         local(&trees)
+    );
+}
+
+#[test]
+fn a_held_folder_nested_in_another_inside_the_server_folder_sends_back_a_server_file_moved_into_it()
+{
+    let before = [("sf", file("hd", "c.txt", 5))];
+    let (sent, trees, _) =
+        discarded_after_a_server_folder_moved_in(&before, &[], Some(&[]), false, true, false);
+    assert_eq!(sent, [], "{:?}", local(&trees));
+    assert_discarded_with_the_server_folder_back(&sent, &trees);
+    assert!(
+        trees.local().get(&"hd".into()).is_none(),
+        "{:?}",
+        local(&trees)
+    );
+}
+
+#[test]
+fn a_held_folder_in_a_server_folder_moved_in_view_keeps_the_server_file_the_user_moved_into_it() {
+    let before = [("sf", file("hc", "c.txt", 5))];
+    let (sent, trees, _) =
+        discarded_after_a_server_folder_moved_in(&before, &[], Some(&[]), false, false, true);
+    assert_eq!(
+        sent[..2],
+        [("create dir", "h".into()), ("move", "s".into())]
+    );
+    assert_eq!(
+        trees.local().get(&"s".into()).unwrap().shape,
+        dir("h", "c.txt")
+    );
+    assert_eq!(
+        trees.local().get(&"hc".into()).unwrap().shape,
+        dir("s", "C.TXT")
+    );
+    assert_eq!(
+        trees.local().get(&"sf".into()).unwrap().shape,
+        file("hc", "c.txt", 5)
+    );
+}
+
+#[test]
+fn a_server_file_edited_in_a_held_folder_inside_the_server_folder_keeps_its_edit() {
+    let before = [
+        ("sf", file("hc", "c.txt", 5)),
+        ("sf", file("hc", "c.txt", 9)),
+    ];
+    let (_, trees, _) =
+        discarded_after_a_server_folder_moved_in_while_excluded(&before, &[], Some(&[]), false);
+    assert_eq!(
+        trees.local().get(&"sf".into()).unwrap().shape,
+        file("hc", "c.txt", 9)
     );
 }
