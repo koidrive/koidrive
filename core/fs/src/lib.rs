@@ -2373,6 +2373,8 @@ impl Snapshot {
         let mut unplaced = BTreeSet::new();
         let mut still_hidden = BTreeSet::new();
         let mut holding = BTreeMap::new();
+        let mut restored_from: Vec<PathBuf> = Vec::new();
+        let mut held: Vec<PathBuf> = Vec::new();
         for path in doubtful {
             let Some(gone) = path.ancestors().find(|above| removed.contains(*above)) else {
                 continue;
@@ -2387,20 +2389,60 @@ impl Snapshot {
                 .cloned()
                 .collect();
             let proven = hidden.contains(&path);
+            let carrier = (moves.iter()).find(|(from, _)| gone.parent() == Some(*from));
+            let mut targets = vec![place.clone()];
+            let mut put_back: Vec<(PathBuf, &Path, &Path)> = Vec::new();
+            let mut stuck = false;
+            let mut next = 0;
+            while let Some(target) = targets.get(next).cloned() {
+                next += 1;
+                let mut onto: Vec<(&Path, &Path)> = (moves.iter())
+                    .filter(|(_, to)| to.starts_with(&target))
+                    .copied()
+                    .collect();
+                onto.sort_by_key(|(from, _)| from.components().count());
+                for (from, to) in onto {
+                    if (put_back.iter()).any(|(_, put, _)| from.starts_with(put)) {
+                        continue;
+                    }
+                    match (carrier, from.file_name()) {
+                        (Some((folder, now)), Some(name)) if from.parent() == Some(*folder) => {
+                            targets.push(now.join(name));
+                            put_back.push((now.join(name), from, to));
+                        }
+                        _ => stuck = true,
+                    }
+                }
+            }
+            let renamed_onto =
+                |inside: &Path| (put_back.iter()).any(|(_, _, to)| inside.starts_with(to));
+            let occupants: Vec<PathBuf> = (targets.iter())
+                .flat_map(|target| {
+                    (scan.new.range(target.clone()..))
+                        .map(|(inside, _)| inside)
+                        .take_while(move |inside| inside.starts_with(target))
+                        .cloned()
+                })
+                .collect();
             if (proven && !moving.contains(&path) && !occupant.is_empty())
-                || moves.iter().any(|(_, to)| to.starts_with(&place))
-                || (occupant.iter())
-                    .any(|inside| !inside.ancestors().any(|above| created.contains(above)))
+                || stuck
+                || (occupants.iter()).any(|inside| {
+                    !renamed_onto(inside)
+                        && !(inside.starts_with(&place)
+                            && inside.ancestors().any(|above| created.contains(above)))
+                })
             {
                 continue;
             }
-            if place.ancestors().any(|above| {
-                (!proven
-                    && self.unplaced.contains(above)
-                    && !matches!(keep, Keep::Unexplained { waiting } if waiting.contains(above)))
-                    || settling.contains(above)
-                    || unplaced.contains(above)
-                    || still_hidden.contains(above)
+            if (targets.iter()).any(|held| {
+                held.ancestors().any(|above| {
+                    (!proven
+                        && self.unplaced.contains(above)
+                        && !matches!(keep, Keep::Unexplained { waiting } if waiting.contains(above)))
+                        || settling.contains(above)
+                        || unplaced.contains(above)
+                        || still_hidden.contains(above)
+                })
             }) {
                 continue;
             }
@@ -2417,14 +2459,42 @@ impl Snapshot {
             if kept.is_empty() {
                 continue;
             }
-            for inside in occupant {
+            let carried_along: HashSet<(FileId, EntryKind)> = (put_back.iter())
+                .flat_map(|(_, _, to)| {
+                    (scan.new.range(to.to_path_buf()..))
+                        .take_while(move |(inside, _)| inside.starts_with(to))
+                        .map(|(_, entry)| (entry.id, entry.kind))
+                })
+                .collect();
+            let restored: Vec<(PathBuf, Entry)> = (put_back.iter())
+                .flat_map(|(back, from, _)| {
+                    (old.range(from.to_path_buf()..))
+                        .take_while(move |(inside, _)| inside.starts_with(from))
+                        .filter(|(_, entry)| {
+                            carried_along.contains(&(entry.id, entry.kind))
+                                || !arrived.contains(&(entry.id, entry.kind))
+                        })
+                        .map(move |(inside, entry)| {
+                            let below = inside.strip_prefix(from).expect("taken below the source");
+                            let at = match below.as_os_str().is_empty() {
+                                true => back.clone(),
+                                false => back.join(below),
+                            };
+                            (at, *entry)
+                        })
+                })
+                .collect();
+            for inside in occupants {
                 scan.new.remove(&inside);
             }
             scan.new.extend(kept);
+            scan.new.extend(restored);
+            restored_from.extend(put_back.iter().map(|(_, from, _)| from.to_path_buf()));
+            held.extend(targets.iter().cloned());
             holding.insert(gone.to_path_buf(), place.clone());
             match proven {
-                true => still_hidden.insert(place),
-                false => unplaced.insert(place),
+                true => still_hidden.extend(targets),
+                false => unplaced.extend(targets),
             };
         }
         for (gone, place) in &holding {
@@ -2441,10 +2511,12 @@ impl Snapshot {
         changes.retain(|change| match change {
             Change::Removed { path, .. } | Change::Missing { path, .. } => {
                 !holding.contains_key(path)
+                    && !restored_from.iter().any(|from| path.starts_with(from))
             }
-            Change::Created { path, .. } => {
-                !(holding.values()).any(|place| path.starts_with(place))
+            Change::Created { path, .. } | Change::Modified { path, .. } => {
+                !held.iter().any(|place| path.starts_with(place))
             }
+            Change::Renamed { to, .. } => !held.iter().any(|place| to.starts_with(place)),
             _ => true,
         });
         let covered = |path: &Path| (scan.replaced.iter()).any(|scope| path.starts_with(scope));

@@ -1337,3 +1337,265 @@ fn a_waiting_file_restored_by_an_inconclusive_confirmation_keeps_waiting() {
         "{released:?}"
     );
 }
+
+#[cfg(target_os = "macos")]
+struct Published {
+    nodes: BTreeMap<PathBuf, (u128, PathBuf)>,
+    broken: Vec<String>,
+    lost: Vec<PathBuf>,
+}
+
+#[cfg(target_os = "macos")]
+impl Published {
+    fn apply(&mut self, changes: &[Change], snapshot: &Snapshot, root: &Path) {
+        let disk: BTreeSet<u128> = (Snapshot::scan(root).unwrap().entries.values())
+            .map(|entry| entry.id.ino)
+            .collect();
+        let sources: Vec<(&PathBuf, Option<&PathBuf>)> = (changes.iter())
+            .filter_map(|change| match change {
+                Change::Removed { path, .. } => Some((path, None)),
+                Change::Renamed { from, to, .. } => Some((from, Some(to))),
+                _ => None,
+            })
+            .collect();
+        for (from, _) in &sources {
+            if !self.nodes.contains_key(*from) {
+                self.broken.push(format!("{from:?} was never published"));
+            }
+        }
+        for (path, node) in std::mem::take(&mut self.nodes) {
+            let deepest = (sources.iter())
+                .filter(|(from, _)| path.starts_with(from))
+                .max_by_key(|(from, _)| from.components().count());
+            match deepest {
+                None => drop(self.nodes.insert(path, node)),
+                Some((from, Some(to))) => {
+                    let at = to.join(path.strip_prefix(from).unwrap());
+                    self.nodes.insert(at, node);
+                }
+                Some((_, None)) if disk.contains(&node.0) => self.lost.push(node.1),
+                Some(_) => {}
+            }
+        }
+        for change in changes {
+            match change {
+                Change::Created { path, .. } => {
+                    let ino = snapshot.entries[path].id.ino;
+                    self.nodes.insert(path.clone(), (ino, path.clone()));
+                }
+                Change::Modified { path } => match self.nodes.get_mut(path) {
+                    Some(node) => node.0 = snapshot.entries[path].id.ino,
+                    None => self.broken.push(format!("{path:?} modified unpublished")),
+                },
+                _ => {}
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn run_ops(root: &Path, ops: &[&str]) {
+    for op in ops {
+        let words: Vec<&str> = op.split(' ').collect();
+        match words[..] {
+            ["mv", from, to] => fs::rename(root.join(from), root.join(to)).unwrap(),
+            ["rm", path] if root.join(path).is_dir() => fs::remove_dir(root.join(path)).unwrap(),
+            ["rm", path] => fs::remove_file(root.join(path)).unwrap(),
+            ["write", path] => fs::write(root.join(path), *op).unwrap(),
+            _ => panic!("{op}"),
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn a_consumer_replaying_the_changes_loses_history_only_where_main_does_when_a_moving_file_is_held()
+{
+    let file_sibling = ["mv a b", "mv b/x c/x", "mv b/y b/x"];
+    let cases: [(&str, &[&str], &[&str]); 20] = [
+        ("a/x a/y", &file_sibling, &[]),
+        ("a/x a/y/ a/y/inner", &file_sibling, &[]),
+        (
+            "a/x a/y/ a/y/inner",
+            &[
+                "mv a b",
+                "mv b/x c/x",
+                "mv b/y b/x",
+                "mv b/x/inner b/x/other",
+            ],
+            &[],
+        ),
+        (
+            "a/x a/y/ a/y/inner",
+            &["mv a b", "mv b/x c/x", "mv b/y b/x", "write b/x/new"],
+            &[],
+        ),
+        (
+            "a/x a/y/ a/y/inner",
+            &["mv a b", "mv b/x c/x", "mv b/y b/x", "rm b/x/inner"],
+            &[],
+        ),
+        (
+            "a/x a/y/ a/y/inner",
+            &["mv a b", "mv b/x c/x", "mv b/y b/x", "mv b/x/inner b/inner"],
+            &[],
+        ),
+        (
+            "a/x a/y/ a/z",
+            &["mv a b", "mv b/x c/x", "mv b/y b/x", "mv b/z b/x/z"],
+            &[],
+        ),
+        (
+            "a/x a/y a/v",
+            &["mv a b", "mv b/x c/x", "mv b/y b/x", "mv b/v b/y"],
+            &[],
+        ),
+        (
+            "a/x a/y",
+            &["mv a b", "mv b/x c/x", "mv b/y b/x", "write b/x"],
+            &[],
+        ),
+        (
+            "a/x",
+            &["mv a b", "mv b/x c/x", "write b/x"],
+            &["a/x", "c/w"],
+        ),
+        ("a/x", &["mv a b", "mv b/x c/x"], &[]),
+        (
+            "a/x a/s/ a/s/y",
+            &["mv a b", "mv b/x c/x", "mv b/s/y b/x"],
+            &["a/x", "c/w"],
+        ),
+        (
+            "a/x a/s/ a/s/y a/s/k",
+            &["mv a b", "mv b/s b/t", "mv b/x c/x", "mv b/t/y b/x"],
+            &["a/x", "c/w"],
+        ),
+        (
+            "a/x a/s/ a/s/y",
+            &["mv a b", "mv b/x c/x", "mv b/s/y b/x", "rm b/s"],
+            &["a/x", "c/w"],
+        ),
+        (
+            "a/x a/y",
+            &["mv a b", "mv b/x c/x", "mv b/y b/x", "write b/y"],
+            &["a/x", "c/w"],
+        ),
+        (
+            "a/x a/y d/ d/y",
+            &["mv a b", "mv b/x c/x", "mv d/y b/x"],
+            &["a/x", "c/w"],
+        ),
+        (
+            "a/x a/y",
+            &["mv a b", "mv b/x c/x", "mv b/y b/x", "|", "write b/y"],
+            &["b/x"],
+        ),
+        (
+            "a/x a/y",
+            &["mv a b", "mv b/x c/x", "mv b/y b/x", "|", "write b/x"],
+            &[],
+        ),
+        (
+            "a/x a/y",
+            &["mv a b", "mv b/x c/x", "mv b/y b/x", "|", "rm c/w"],
+            &[],
+        ),
+        (
+            "a/x a/y",
+            &["mv a b", "mv b/x c/x", "mv b/y b/x", "|", "mv c/w b/y"],
+            &[],
+        ),
+    ];
+    let mut failures = Vec::new();
+    for (tree, ops, may_lose) in cases {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        for path in tree.split(' ').chain(["c/"]) {
+            match path.strip_suffix('/') {
+                Some(folder) => fs::create_dir_all(root.join(folder)).unwrap(),
+                None => {
+                    fs::create_dir_all(root.join(path).parent().unwrap()).unwrap();
+                    fs::write(root.join(path), path).unwrap();
+                }
+            }
+        }
+        let mut snapshot = Snapshot::scan(root).unwrap();
+        let mut published = Published {
+            nodes: (snapshot.entries.iter())
+                .map(|(path, entry)| (path.clone(), (entry.id.ino, path.clone())))
+                .collect(),
+            broken: Vec::new(),
+            lost: Vec::new(),
+        };
+        let born: BTreeMap<u128, PathBuf> = published.nodes.values().cloned().collect();
+        let (before, during) =
+            ops.split_at(ops.iter().position(|op| *op == "|").unwrap_or(ops.len()));
+        run_ops(root, before);
+        let mut again = Some(());
+        let scopes = [PathBuf::from("a"), PathBuf::from("b")];
+        let mut rescan = snapshot
+            .rescan_with(root, scopes, None, &mut |cut| {
+                if matches!(cut, Cut::Located(at) if at == Path::new("c/x"))
+                    && again.take().is_some()
+                {
+                    fs::rename(root.join("c/x"), root.join("c/w")).unwrap();
+                    run_ops(root, during.get(1..).unwrap_or_default());
+                }
+            })
+            .unwrap();
+        assert!(
+            again.is_none(),
+            "{tree} {ops:?}: the scan never located c/x"
+        );
+        published.apply(&rescan.changes, &snapshot, root);
+        for _ in 0..6 {
+            if rescan.unsettled.is_empty() {
+                break;
+            }
+            rescan = snapshot.rescan(root, rescan.unsettled).unwrap();
+            published.apply(&rescan.changes, &snapshot, root);
+        }
+        assert_eq!(rescan.unsettled, Vec::<PathBuf>::new(), "{tree} {ops:?}");
+        let whole = snapshot.rescan(root, [PathBuf::new()]).unwrap();
+        published.apply(&whole.changes, &snapshot, root);
+        let fresh = Snapshot::scan(root).unwrap();
+        for (path, entry) in &fresh.entries {
+            match published.nodes.get(path) {
+                None => published.broken.push(format!("{path:?} unpublished")),
+                Some((ino, _)) if *ino != entry.id.ino => published
+                    .broken
+                    .push(format!("{path:?} holds another file")),
+                Some((_, history))
+                    if born.get(&entry.id.ino).is_some_and(|file| file != history) =>
+                {
+                    published.lost.push(path.clone())
+                }
+                Some(_) => {}
+            }
+        }
+        for path in published
+            .nodes
+            .keys()
+            .filter(|path| !fresh.entries.contains_key(*path))
+        {
+            published
+                .broken
+                .push(format!("{path:?} published but gone"));
+        }
+        let unexpected: Vec<&PathBuf> = (published.lost.iter())
+            .filter(|path| {
+                !may_lose
+                    .iter()
+                    .any(|lost| path.as_path() == Path::new(lost))
+            })
+            .collect();
+        if !published.broken.is_empty() || !unexpected.is_empty() {
+            failures.push(format!(
+                "{tree} {ops:?}: {:?} lost {unexpected:?}",
+                published.broken
+            ));
+        }
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
+}
