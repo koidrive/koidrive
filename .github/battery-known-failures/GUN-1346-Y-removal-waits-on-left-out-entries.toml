@@ -1,5 +1,5 @@
 class = "Y"
-issue = "GUN-1217"
+issue = "GUN-1346"
 tests = ["devices_with_rules_converge_once_the_faults_stop", "devices_with_rules_lose_no_write"]
 message = '''(after phase <n>: device <n> is quiet, but it waits to remove the folders of \["<id>"(, "<id>")*\], which hold entries its rules leave out\.|not recorded: devices::\S+ \S+ RemoveLeftOut device <n> is quiet, but it waits to remove the folders of \["<id>"(, "<id>")*\], which hold entries its rules leave out( not recorded: devices::\S+ \S+ RemoveLeftOut (?:(?! not recorded: ).)+?leave out)*)'''
 examples = [
