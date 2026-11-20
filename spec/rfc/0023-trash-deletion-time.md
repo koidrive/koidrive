@@ -20,6 +20,7 @@ For each node in `TrashPage.nodes`, the server adds one `Trashed` entry with the
 - A `Delete` of a folder gives every node it trashes the same entry.
 - A node trashed before its folder keeps its own entry, as it keeps its own trash group (RFC 0012 §1).
 - A node that R8 or R9 revives and a later `Delete` trashes again gets the entry of the later commit.
+- A node that a commit stores in the trash without a `Delete`, as a carried create into a trashed folder (RFC 0029 §3.4), gets the entry of that commit.
 
 The entries count toward the 1 MiB page limit, and each page carries the entries of its own nodes.
 

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+import { create } from "@bufbuild/protobuf";
 import { evictDurableObject, runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
@@ -7,12 +8,13 @@ import type { AccountDO } from "../src/account-do";
 import { SESSION_LEASE_MS } from "../src/account/account";
 import { MIGRATIONS as ACCOUNT_MIGRATIONS } from "../src/account/schema";
 import { sha256 } from "../src/crypto";
-import { OpResult_Code } from "../src/gen/koidrive/v1/commit_pb";
-import { toHex, uuidv7 } from "../src/ids";
+import { type Op, OpResult_Code, OpSchema } from "../src/gen/koidrive/v1/commit_pb";
+import { IntentSchema } from "../src/gen/koidrive/v1/model_pb";
+import { fromHex, toHex, uuidv7 } from "../src/ids";
 import type { Migration } from "../src/migrations";
 import type { SpaceDO } from "../src/space-do";
 import { LEGACY_INTENTS_DUE, MIGRATIONS as SPACE_MIGRATIONS } from "../src/space/schema";
-import { client, op, OWNER, SPACE_KEY } from "./helpers";
+import { client, op, OWNER, SPACE_KEY, type TestClient } from "./helpers";
 
 const SPACE_SCHEMA_DIGESTS = [
   "f0dd32ba05d33cf9fb7f49c7d88d2e31834c31e90d2c04b67f4ff0a13b4308fe",
@@ -32,6 +34,7 @@ const SPACE_SCHEMA_DIGESTS = [
   "e02ca2a4d105c62a8677141db1541530f75153517cb6352d0e53f9ed44452f84",
   "4432d4095ccfb57e94b47c74ac3a1b7ddaf42129f05137df821264e6749d4a74",
   "8d6b6315f8f2ebdc8a072b798ff81e961b7232db883ef7893008e95d07ec8f67",
+  "4064e9bd84678741d049aaf71c2636808189df3b733a5178b63b0507dbe9a774",
 ];
 const ACCOUNT_SCHEMA_DIGESTS = [
   "cdd5988fc835119f5b6ad96ebde0be7f38aac621215c10844fdb4fb99f4a7fcf",
@@ -248,6 +251,92 @@ describe("upgraded objects keep working", () => {
     const deleted = await desk.commit([op.delete(target)]);
     expect(deleted.results.map((result) => result.code)).toEqual([OpResult_Code.SUPERSEDED]);
     expect([...(await desk.tree()).values()].map((node) => node.name).sort()).toEqual(["", "a", "b", "inside"]);
+  });
+
+  it("lists the device that deleted a node trashed before the deletion device had its own column", async () => {
+    const spaceId = uuidv7();
+    const stub = SPACE.stub(spaceId) as DurableObjectStub<SpaceDO>;
+    await stub.init({ spaceId, name: "Upgraded", ownerUserId: OWNER, spaceKey: SPACE_KEY });
+    const laptop = await client({ spaceId, stub }, "Laptop");
+    const desk = await client({ spaceId, stub }, "Desk");
+    const folder = uuidv7();
+    await laptop.commit([op.mkdir(folder, spaceId, "Project")]);
+    desk.baseSeq = laptop.baseSeq;
+    const deleted = await desk.commit([op.delete(folder)]);
+    await inObject(stub, (sql) => {
+      sql.exec("ALTER TABLE nodes DROP COLUMN trashed_dev");
+      const beforeTrashedDev = SPACE_MIGRATIONS.findIndex((step) => step.toString().includes("trashed_dev"));
+      sql.exec("UPDATE meta SET value = ? WHERE key = 'schema_version'", beforeTrashedDev);
+    });
+    await evictDurableObject(stub);
+    const page = await laptop.call({ case: "listTrash", value: {} });
+    if (page.case !== "trash") throw new Error("listTrash failed");
+    expect(page.value.trashed.map(({ nodeId, trashedAtMs, deviceId }) => ({ nodeId, trashedAtMs, deviceId }))).toEqual([
+      { nodeId: folder, trashedAtMs: deleted.committedAtMs, deviceId: desk.session.deviceId },
+    ]);
+  });
+
+  it("lists the device whose commit deleted a node even when a later held merge rewrote its meta_dev before the upgrade", async () => {
+    const spaceId = uuidv7();
+    const stub = SPACE.stub(spaceId) as DurableObjectStub<SpaceDO>;
+    await stub.init({ spaceId, name: "Upgraded", ownerUserId: OWNER, spaceKey: SPACE_KEY });
+    const laptop = await client({ spaceId, stub }, "Laptop");
+    const desk = await client({ spaceId, stub }, "Desk");
+    const intentId = () => fromHex(uuidv7().replaceAll("-", ""))!;
+    const holding = (nodeId: string, c: TestClient): Op =>
+      create(OpSchema, {
+        op: { case: "delete", value: { nodeId, unseen: [], held: [intentId()], trashGroup: "" } },
+        intent: create(IntentSchema, { id: intentId(), authorDeviceId: c.session.deviceId }),
+      });
+    const [folder, inside] = [uuidv7(), uuidv7()];
+    await laptop.commit([op.mkdir(folder, spaceId, "Project"), op.mkdir(inside, folder, "slides")]);
+    desk.baseSeq = laptop.baseSeq;
+    const deleted = await desk.commit([holding(folder, desk)]);
+    await laptop.commit([holding(inside, laptop)]);
+    await inObject(stub, (sql) => {
+      sql.exec("ALTER TABLE nodes DROP COLUMN trashed_dev");
+      const beforeTrashedDev = SPACE_MIGRATIONS.findIndex((step) => step.toString().includes("trashed_dev"));
+      sql.exec("UPDATE meta SET value = ? WHERE key = 'schema_version'", beforeTrashedDev);
+    });
+    await evictDurableObject(stub);
+    const page = await laptop.call({ case: "listTrash", value: {} });
+    if (page.case !== "trash") throw new Error("listTrash failed");
+    const byDesk = { trashedAtMs: deleted.committedAtMs, deviceId: desk.session.deviceId };
+    expect(new Map(page.value.trashed.map(({ nodeId, trashedAtMs, deviceId }) => [nodeId, { trashedAtMs, deviceId }]))).toEqual(
+      new Map([[folder, byDesk], [inside, byDesk]]),
+    );
+  });
+
+  it("lists the device whose commit stored a carried create in the trash even when a later held merge rewrote its meta_dev before the upgrade", async () => {
+    const spaceId = uuidv7();
+    const stub = SPACE.stub(spaceId) as DurableObjectStub<SpaceDO>;
+    await stub.init({ spaceId, name: "Upgraded", ownerUserId: OWNER, spaceKey: SPACE_KEY });
+    const [laptop, desk, phone] = [await client({ spaceId, stub }, "Laptop"), await client({ spaceId, stub }, "Desk"), await client({ spaceId, stub }, "Phone")];
+    const intentId = () => fromHex(uuidv7().replaceAll("-", ""))!;
+    const withIntent = (sent: Op, author: TestClient, id = intentId(), replay = false): Op =>
+      create(OpSchema, { ...sent, intent: create(IntentSchema, { id, authorDeviceId: author.session.deviceId, replay }) });
+    const holding = (nodeId: string, author: TestClient, held: Uint8Array[]): Op =>
+      withIntent(create(OpSchema, { op: { case: "delete", value: { nodeId, unseen: [], held, trashGroup: "" } } }), author);
+    const [dir, carried] = [uuidv7(), uuidv7()];
+    const lost = intentId();
+    await laptop.commit([op.mkdir(dir, spaceId, "Gone")]);
+    await laptop.commit([holding(dir, laptop, [lost])]);
+    desk.baseSeq = laptop.baseSeq;
+    const stored = await desk.commit([withIntent(op.mkdir(carried, dir, "Old"), desk, lost, true)]);
+    expect(stored.results[0]!.code).toBe(OpResult_Code.SUPERSEDED);
+    phone.baseSeq = desk.baseSeq;
+    await phone.commit([holding(carried, phone, [intentId()])]);
+    await inObject(stub, (sql) => {
+      sql.exec("ALTER TABLE nodes DROP COLUMN trashed_dev");
+      const beforeTrashedDev = SPACE_MIGRATIONS.findIndex((step) => step.toString().includes("trashed_dev"));
+      sql.exec("UPDATE meta SET value = ? WHERE key = 'schema_version'", beforeTrashedDev);
+    });
+    await evictDurableObject(stub);
+    const page = await laptop.call({ case: "listTrash", value: {} });
+    if (page.case !== "trash") throw new Error("listTrash failed");
+    const listed = new Map(page.value.trashed.map(({ nodeId, trashedAtMs, deviceId }) => [nodeId, { trashedAtMs, deviceId }]));
+    expect(listed.get(carried)).toEqual({ trashedAtMs: stored.committedAtMs, deviceId: desk.session.deviceId });
+    expect(listed.get(dir)?.deviceId).toBe(laptop.session.deviceId);
   });
 
   for (const state of oldStates(ACCOUNT)) {

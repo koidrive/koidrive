@@ -43,6 +43,7 @@ export interface NodeRow {
   cur_version_id: string | null;
   trash_group: string | null;
   trashed_at_ms: number | null;
+  trashed_dev: string | null;
   pending_for: string | null;
   pending_by: string | null;
   status_before: string | null;

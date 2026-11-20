@@ -1384,7 +1384,7 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
           trashed:
             node.trashed_at_ms === null
               ? undefined
-              : create(TrashedSchema, { nodeId: node.node_id, trashedAtMs: BigInt(node.trashed_at_ms), deviceId: node.meta_dev }),
+              : create(TrashedSchema, { nodeId: node.node_id, trashedAtMs: BigInt(node.trashed_at_ms), deviceId: node.trashed_dev ?? "" }),
         }),
         ({ state, trashed }) => toBinary(NodeStateSchema, state).length + (trashed ? toBinary(TrashedSchema, trashed).length + 6 : 0),
       );

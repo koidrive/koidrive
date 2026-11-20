@@ -140,6 +140,17 @@ export const MIGRATIONS: readonly Migration[] = [
     sql.exec("CREATE INDEX IF NOT EXISTS packs_sparse ON packs(live_bytes) WHERE state = 2 AND size > (live_bytes + live_count * 36 + 16) * 2");
   },
   (sql) => sql.exec("CREATE INDEX IF NOT EXISTS packs_empty ON packs(state, hold_until_ms) WHERE live_count = 0"),
+  (sql) => {
+    const columns = sql.exec("SELECT name FROM pragma_table_info('nodes')").toArray().map((row) => row.name);
+    if (columns.includes("trashed_dev")) return;
+    sql.exec("ALTER TABLE nodes ADD COLUMN trashed_dev TEXT");
+    sql.exec(`UPDATE nodes SET trashed_dev = COALESCE(
+      (SELECT device_id FROM commits WHERE seq = nodes.meta_edit_rev AND committed_at_ms = nodes.trashed_at_ms),
+      (SELECT device_id FROM commits
+        WHERE commit_id = substr(nodes.trash_group, 1, instr(nodes.trash_group, ':') - 1) AND committed_at_ms = nodes.trashed_at_ms),
+      meta_dev)
+      WHERE trashed_at_ms IS NOT NULL`);
+  },
 ];
 
 export const LEGACY_INTENTS_DUE = "legacy_intents_due";

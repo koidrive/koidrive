@@ -742,6 +742,11 @@ describe("RFC 0029 section 3.4 and 3.5: replays reaching the trash", () => {
     const trashed = (await stateOf(space, dir))!;
     expect(await stateOf(space, folder)).toMatchObject({ parentId: dir, status: NodeStatus.TRASHED, trashGroup: trashed.trashGroup });
     expect(idOf((await stateOf(space, folder))!.intents!.place)).toBe(idOf(lost));
+    const page = await a.call({ case: "listTrash", value: {} });
+    if (page.case !== "trash") throw new Error("listTrash failed");
+    const listed = new Map(page.value.trashed.map(({ nodeId, trashedAtMs, deviceId }) => [nodeId, { trashedAtMs, deviceId }]));
+    expect(listed.get(folder)).toEqual({ trashedAtMs: created.committedAtMs, deviceId: b.session.deviceId });
+    expect(listed.get(dir)?.deviceId).toBe(a.session.deviceId);
     const later = await b.commit([sent(op.create(child, folder, "z.txt", values[0]!), intent(b.session.deviceId, { replay: true }))]);
     expect(later.results[0]!.code).toBe(OpResult_Code.CONFLICT_COPY);
     expect(await stateOf(space, later.results[0]!.nodeId)).toMatchObject({ parentId: root, status: NodeStatus.LIVE });

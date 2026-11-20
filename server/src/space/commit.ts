@@ -407,7 +407,7 @@ export class CommitApplier {
     const picked = this.pickName(parentId, desiredName, node.node_id);
     this.sql.exec(
       `UPDATE nodes SET status = 1, parent_id = ?, parent_rev = ?, parent_dev = ?, name = ?, name_key = ?, trash_group = NULL,
-         trashed_at_ms = NULL, status_before = NULL, meta_rev = ?, meta_dev = ?, meta_edit_rev = ?, meta_edit_dev = ? WHERE node_id = ?`,
+         trashed_at_ms = NULL, trashed_dev = NULL, status_before = NULL, meta_rev = ?, meta_dev = ?, meta_edit_rev = ?, meta_edit_dev = ? WHERE node_id = ?`,
       parentId,
       this.ctx.seq,
       parentDev,
@@ -463,7 +463,7 @@ export class CommitApplier {
         this.sql.exec(`INSERT INTO field_intents (${fields.join(", ")}) VALUES (${fields.map(() => "?").join(", ")})`, ...fields.map((field) => row[field]!));
       }
       if (trashHeld(this.sql, String(node.trash_group)).some((intentId) => !held.includes(intentId))) {
-        this.sql.exec("UPDATE nodes SET meta_rev = ? WHERE node_id = ?", this.ctx.seq, nodeId);
+        this.sql.exec("UPDATE nodes SET meta_rev = ?, meta_dev = ? WHERE node_id = ?", this.ctx.seq, this.dev, nodeId);
       }
     }
   }
@@ -652,7 +652,7 @@ export class CommitApplier {
     if (trash && seen && this.depth(trash) < MAX_DEPTH) {
       const versionId = content ? this.insertVersion(nodeId, content.value, content.value.chunks, content.lineage) : null;
       this.insertNode(nodeId, trash.node_id, name, content ? NodeKindValue.FILE : NodeKindValue.DIR, versionId, this.dev);
-      this.sql.exec("UPDATE nodes SET status = 2, trash_group = ?, trashed_at_ms = ? WHERE node_id = ?", trash.trash_group, this.ctx.nowMs, nodeId);
+      this.sql.exec("UPDATE nodes SET status = 2, trash_group = ?, trashed_at_ms = ?, trashed_dev = ? WHERE node_id = ?", trash.trash_group, this.ctx.nowMs, this.dev, nodeId);
       for (const field of content ? FIELDS : (["place", "status"] as const)) this.setIntent(nodeId, field);
       this.mark(nodeId, pendingFor);
       return superseded();
@@ -897,10 +897,11 @@ export class CommitApplier {
   private trashNode(node: NodeRow, group: string): void {
     this.trashings++;
     this.sql.exec(
-      `UPDATE nodes SET status = 2, trash_group = ?, trashed_at_ms = ?, meta_rev = ?, meta_dev = ?, meta_edit_rev = ?, meta_edit_dev = ?,
-         status_before = ? WHERE node_id = ?`,
+      `UPDATE nodes SET status = 2, trash_group = ?, trashed_at_ms = ?, trashed_dev = ?, meta_rev = ?, meta_dev = ?, meta_edit_rev = ?,
+         meta_edit_dev = ?, status_before = ? WHERE node_id = ?`,
       group,
       this.ctx.nowMs,
+      this.dev,
       this.ctx.seq,
       this.dev,
       this.ctx.seq,

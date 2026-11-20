@@ -131,7 +131,7 @@ describe("RFC 0029 section 3.4: a folder a commit revived only as an ancestor of
     const second = intentId();
     const result = await laptop.commit([op.move(f, x, "f"), deleteHolding(d, laptop.session.deviceId, [second]), op.move(f, space.spaceId, "f")]);
     const after = await storedRow(space, x);
-    expect(after.node).toEqual({ ...before.node, meta_rev: Number(result.seq) });
+    expect(after.node).toEqual({ ...before.node, meta_rev: Number(result.seq), meta_dev: laptop.session.deviceId });
     expect(await trashEntry(laptop, x)).toMatchObject({ trashedAtMs: trashedX.committedAtMs, deviceId: desk.session.deviceId });
     expect(after.intents).toEqual(before.intents);
     expect(after.held.map((row) => row.intent_id)).toEqual([first, second].map(toHex).sort());
