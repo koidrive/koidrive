@@ -307,6 +307,38 @@ describe("upgraded objects keep working", () => {
     );
   });
 
+  it("lists the device whose commit stored a carried create in the trash even when a later held merge rewrote its meta_dev before the upgrade", async () => {
+    const spaceId = uuidv7();
+    const stub = SPACE.stub(spaceId) as DurableObjectStub<SpaceDO>;
+    await stub.init({ spaceId, name: "Upgraded", ownerUserId: OWNER, spaceKey: SPACE_KEY });
+    const [laptop, desk, phone] = [await client({ spaceId, stub }, "Laptop"), await client({ spaceId, stub }, "Desk"), await client({ spaceId, stub }, "Phone")];
+    const intentId = () => fromHex(uuidv7().replaceAll("-", ""))!;
+    const withIntent = (sent: Op, author: TestClient, id = intentId(), replay = false): Op =>
+      create(OpSchema, { ...sent, intent: create(IntentSchema, { id, authorDeviceId: author.session.deviceId, replay }) });
+    const holding = (nodeId: string, author: TestClient, held: Uint8Array[]): Op =>
+      withIntent(create(OpSchema, { op: { case: "delete", value: { nodeId, unseen: [], held, trashGroup: "" } } }), author);
+    const [dir, carried] = [uuidv7(), uuidv7()];
+    const lost = intentId();
+    await laptop.commit([op.mkdir(dir, spaceId, "Gone")]);
+    await laptop.commit([holding(dir, laptop, [lost])]);
+    desk.baseSeq = laptop.baseSeq;
+    const stored = await desk.commit([withIntent(op.mkdir(carried, dir, "Old"), desk, lost, true)]);
+    expect(stored.results[0]!.code).toBe(OpResult_Code.SUPERSEDED);
+    phone.baseSeq = desk.baseSeq;
+    await phone.commit([holding(carried, phone, [intentId()])]);
+    await inObject(stub, (sql) => {
+      sql.exec("ALTER TABLE nodes DROP COLUMN trashed_dev");
+      const beforeTrashedDev = SPACE_MIGRATIONS.findIndex((step) => step.toString().includes("trashed_dev"));
+      sql.exec("UPDATE meta SET value = ? WHERE key = 'schema_version'", beforeTrashedDev);
+    });
+    await evictDurableObject(stub);
+    const page = await laptop.call({ case: "listTrash", value: {} });
+    if (page.case !== "trash") throw new Error("listTrash failed");
+    const listed = new Map(page.value.trashed.map(({ nodeId, trashedAtMs, deviceId }) => [nodeId, { trashedAtMs, deviceId }]));
+    expect(listed.get(carried)).toEqual({ trashedAtMs: stored.committedAtMs, deviceId: desk.session.deviceId });
+    expect(listed.get(dir)?.deviceId).toBe(laptop.session.deviceId);
+  });
+
   for (const state of oldStates(ACCOUNT)) {
     it(`claims a deployment whose Account DO storage was at ${state.label}`, async () => {
       const stub = ACCOUNT.stub(`claim-${state.label}`) as DurableObjectStub<AccountDO>;
