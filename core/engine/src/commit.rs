@@ -3873,17 +3873,25 @@ fn displaced_renames<'a>(
 
 fn conflict_rename(trees: &Trees, id: &NodeId, device_name: &str, now_ms: u64) -> Option<String> {
     let shape = trees.remote().live(id)?;
-    let (names, kind) = path(trees.remote(), id)?;
-    let mut names: Vec<String> = names.into_iter().map(str::to_owned).collect();
+    let (remote, kind) = path(trees.remote(), id)?;
+    let written = trees
+        .written(id)
+        .map(|(names, _)| names)
+        .filter(|names| names != &remote);
     (1..=MAX_CONFLICT_ATTEMPTS)
         .map(|attempt| conflict_name(&shape.name, device_name, now_ms as i64, attempt))
         .find(|name| {
             let key = name_key(name);
-            *names.last_mut().expect("a path names the node") = name.clone();
             trees.local_holders(&shape.parent, name).next().is_none()
                 && (trees.remote_holders_of_key(&shape.parent, &key))
                     .all(|other| trees.remote().live(other).is_none())
-                && !trees.ignores(&names, kind)
+                && std::iter::once(&remote)
+                    .chain(written.as_ref())
+                    .all(|path| {
+                        let mut names = path.to_vec();
+                        *names.last_mut().expect("a path names the node") = name;
+                        !trees.ignores(&names, kind)
+                    })
         })
 }
 

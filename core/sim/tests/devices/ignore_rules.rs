@@ -646,67 +646,88 @@ fn a_file_refused_beside_a_folder_an_anchored_rule_leaves_out_takes_one_conflict
 #[test]
 fn a_refused_file_gets_one_conflict_name_while_its_parents_rename_is_blocked() {
     for parent_moves_first in [false, true] {
-        let mut world = converge_excluding(
-            &[vec![], vec!["*.txt", "/b/ss/"]],
-            &[
-                vec![(0, folder("a"))],
-                vec![(1, user(1, 0, 1, "c.txt"))],
-                vec![(0, delete(0))],
-                vec![(0, folder("b"))],
-            ],
-        )
-        .unwrap();
-        ino_at(&world, 1, &["a", "c.txt"]);
-        let local_parent = folder_number(&world, 1, &["b"]);
-        world
-            .run(4, &[(1, user(0, 0, local_parent, "ss"))])
-            .unwrap();
-        let rename_parent = |world: &mut World| {
-            let parent = target(world, 0, &["b"]);
-            let mut steps = vec![(0, rename(parent, 0, "a"))];
-            steps.extend(commit(0));
-            steps.extend([(1, DELIVER), (1, EFFECT), (1, EFFECT)]);
-            world.run(4, &steps).unwrap();
-        };
-        if parent_moves_first {
-            rename_parent(&mut world);
+        refuse_under_a_parent_whose_rename_is_blocked(parent_moves_first, None);
+    }
+}
+
+#[test]
+fn a_refused_file_skips_conflict_names_left_out_at_either_parent_path() {
+    for rule in ["/a/* (conflict *-??-??)", "/b/* (conflict *-??-??)"] {
+        for parent_moves_first in [false, true] {
+            let copy =
+                refuse_under_a_parent_whose_rename_is_blocked(parent_moves_first, Some(rule));
+            assert!(copy.ends_with(" 2)"), "{rule}: {copy}");
         }
-        let parent = if parent_moves_first { "a" } else { "b" };
-        let server_parent = folder_number(&world, 0, &[parent]);
-        let mut steps = vec![(0, user(1, 0, server_parent, "ss"))];
+    }
+}
+
+fn refuse_under_a_parent_whose_rename_is_blocked(
+    parent_moves_first: bool,
+    candidate_rule: Option<&'static str>,
+) -> String {
+    let mut rules = vec!["*.txt", "/b/ss/"];
+    rules.extend(candidate_rule);
+    let mut world = converge_excluding(
+        &[vec![], rules],
+        &[
+            vec![(0, folder("a"))],
+            vec![(1, user(1, 0, 1, "c.txt"))],
+            vec![(0, delete(0))],
+            vec![(0, folder("b"))],
+        ],
+    )
+    .unwrap();
+    ino_at(&world, 1, &["a", "c.txt"]);
+    let local_parent = folder_number(&world, 1, &["b"]);
+    world
+        .run(4, &[(1, user(0, 0, local_parent, "ss"))])
+        .unwrap();
+    let rename_parent = |world: &mut World| {
+        let parent = target(world, 0, &["b"]);
+        let mut steps = vec![(0, rename(parent, 0, "a"))];
         steps.extend(commit(0));
         steps.extend([(1, DELIVER), (1, EFFECT), (1, EFFECT)]);
         world.run(4, &steps).unwrap();
-        if !parent_moves_first {
-            assert!(
-                !world.devices[1]
-                    .engine
-                    .trees
-                    .state()
-                    .names_left_out
-                    .is_empty()
-            );
-            rename_parent(&mut world);
-        }
-        let holder = ino_at(&world, 1, &["b", "ss"]);
-        let file = live_node_at(&world, &["a", "ss"]).unwrap();
-        let attempts: Vec<_> = (0..3).flat_map(|_| commit(1)).collect();
-        world.run(4, &attempts).unwrap();
-        let copy = world.space().node(&file).unwrap().name;
-        assert_eq!(copy.matches("(conflict from").count(), 1, "{copy}");
-        assert_eq!(world.seen.get("move with from applied"), Some(&1));
+    };
+    if parent_moves_first {
+        rename_parent(&mut world);
+    }
+    let parent = if parent_moves_first { "a" } else { "b" };
+    let server_parent = folder_number(&world, 0, &[parent]);
+    let mut steps = vec![(0, user(1, 0, server_parent, "ss"))];
+    steps.extend(commit(0));
+    steps.extend([(1, DELIVER), (1, EFFECT), (1, EFFECT)]);
+    world.run(4, &steps).unwrap();
+    if !parent_moves_first {
         assert!(
-            world.devices[1]
+            !world.devices[1]
                 .engine
                 .trees
                 .state()
                 .names_left_out
                 .is_empty()
         );
-        world.run(4, &[(1, EFFECT); 2]).unwrap();
-        ino_at(&world, 1, &["b", &copy]);
-        assert_eq!(ino_at(&world, 1, &["b", "ss"]), holder);
+        rename_parent(&mut world);
     }
+    let holder = ino_at(&world, 1, &["b", "ss"]);
+    let file = live_node_at(&world, &["a", "ss"]).unwrap();
+    let attempts: Vec<_> = (0..3).flat_map(|_| commit(1)).collect();
+    world.run(4, &attempts).unwrap();
+    let copy = world.space().node(&file).unwrap().name;
+    assert_eq!(copy.matches("(conflict from").count(), 1, "{copy}");
+    assert_eq!(world.seen.get("move with from applied"), Some(&1));
+    assert!(
+        world.devices[1]
+            .engine
+            .trees
+            .state()
+            .names_left_out
+            .is_empty()
+    );
+    world.run(4, &[(1, EFFECT); 2]).unwrap();
+    ino_at(&world, 1, &["b", &copy]);
+    assert_eq!(ino_at(&world, 1, &["b", "ss"]), holder);
+    copy
 }
 
 fn conflict_copies(world: &World, device: usize) -> Vec<String> {

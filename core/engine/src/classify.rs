@@ -4853,7 +4853,7 @@ impl Trees {
             .any(|(names, kind)| self.ignores(names, *kind))
     }
 
-    fn written(&self, id: &NodeId) -> Option<(Vec<&str>, Kind)> {
+    pub(crate) fn written(&self, id: &NodeId) -> Option<(Vec<&str>, Kind)> {
         let remote = self.r.live(id)?;
         let mut names = vec![remote.name.as_str()];
         let mut current = &remote.parent;
