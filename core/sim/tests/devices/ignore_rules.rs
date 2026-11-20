@@ -1536,3 +1536,137 @@ fn a_file_made_in_a_folder_its_include_list_takes_syncs_through_the_folders_pend
     let rulings = [(0, 1, Ruling::Include(vec!["ss/"]))];
     converge_ruled(&[vec![], vec![]], &rulings, &[phase]).unwrap();
 }
+
+#[test]
+fn a_park_queued_before_its_folder_falls_behind_a_merged_folder_keeps_it_in_place_until_the_chain_goes()
+ {
+    let mut world = refused_beside_a(None);
+    let merged = reported_merge(&world);
+    world
+        .phase(2, &[(1, folder("b")), (1, folder("ß")), (1, folder("É"))])
+        .unwrap();
+    let [sharp, accent] = ["ß", "É"].map(|name| held_at(&world, 0, &[name]).unwrap());
+    for (from, to) in [("ß", "c.txt"), ("É", "ß"), ("c.txt", "É")] {
+        let entry = target(&world, 1, &[from]);
+        world.run(3, &[(1, rename(entry, 0, to))]).unwrap();
+        world.run(3, &commit(1)).unwrap();
+    }
+    assert_eq!(live_node_at(&world, &["É"]), Some(sharp.to_string()));
+    assert_eq!(live_node_at(&world, &["ß"]), Some(accent.to_string()));
+    world.run(3, &[(0, DELIVER); 8]).unwrap();
+    world.run(3, &[(0, EFFECT)]).unwrap();
+    let [park] = world.devices[0].engine.effects.in_flight() else {
+        panic!(
+            "expected a park for the swap, got {:?}",
+            world.devices[0].engine.effects.in_flight()
+        );
+    };
+    assert!(
+        matches!(
+            &park.effect,
+            Effect::Move {
+                to: koidrive_engine::effects::Location::Parked(_),
+                ..
+            }
+        ),
+        "{park:?}"
+    );
+    let parked = park.node.clone();
+    let visible = if parked == sharp {
+        "ß"
+    } else {
+        assert_eq!(parked, accent);
+        "É"
+    };
+    let ino = ino_at(&world, 0, &[visible]);
+    let survivor = target(&world, 1, &["a"]);
+    world.run(4, &[(1, delete(survivor))]).unwrap();
+    world.run(4, &commit(1)).unwrap();
+    for (from, to) in [("b", "A"), (visible, "b")] {
+        let entry = target(&world, 1, &[from]);
+        world.run(4, &[(1, rename(entry, 0, to))]).unwrap();
+        world.run(4, &commit(1)).unwrap();
+    }
+    world.run(4, &[(0, DELIVER); 8]).unwrap();
+    assert_eq!(
+        world.reported_problems(0).get(&parked),
+        Some(&Stuck::Behind(merged.clone()))
+    );
+    world.run(4, &[(0, EFFECT)]).unwrap();
+    assert_eq!(
+        world.devices[0].disk.child(&Place::Root, visible),
+        Some(ino),
+        "an in-flight park hid a folder already reported as waiting behind {merged}"
+    );
+    assert!(world.devices[0].engine.effects.blocked().is_empty());
+    let holder = target(&world, 1, &["A"]);
+    world.run(5, &[(1, delete(holder))]).unwrap();
+    world.run(5, &commit(1)).unwrap();
+    world.phase(6, &[]).unwrap();
+    assert!(world.reported_problems(0).is_empty());
+    let back = live_node_at(&world, &["b"]).unwrap();
+    assert_eq!(held_at(&world, 0, &["b"]), Some(NodeId::from(back)));
+}
+
+fn parked_ids_on(world: &World, d: usize) -> Vec<NodeId> {
+    (world.devices[d].engine.trees.local().iter())
+        .filter(|(_, node)| node.parked)
+        .map(|(id, _)| id.clone())
+        .collect()
+}
+
+#[test]
+fn a_park_planned_in_a_swap_does_not_apply_once_the_chain_reaches_a_merged_folder() {
+    let mut world = converge_excluding(
+        &[vec!["*.txt"], vec![]],
+        &[vec![
+            (0, folder("a")),
+            (0, folder("b")),
+            (0, folder("\u{df}")),
+        ]],
+    )
+    .unwrap();
+    let mut steps = vec![
+        (0, folder("c.txt")),
+        (0, user(1, 0, 4, "c.txt")),
+        (0, rename(3, 0, "A")),
+    ];
+    world.phase(1, &steps).unwrap();
+    let (tb, tss) = (target(&world, 1, &["b"]), target(&world, 1, &["\u{df}"]));
+    steps = vec![
+        (1, rename(tb, 0, "\u{e9}")),
+        (1, rename(tss, 0, "b")),
+        (1, rename(tb, 0, "\u{df}")),
+    ];
+    steps.extend(commit(1));
+    steps.extend([(0, DELIVER); 8]);
+    steps.push((0, EFFECT));
+    world.run(2, &steps).unwrap();
+    let flight = world.devices[0].engine.effects.in_flight().to_vec();
+    let parked = flight
+        .iter()
+        .find(|r| {
+            matches!(
+                r.effect,
+                koidrive_engine::effects::Effect::Move {
+                    to: koidrive_engine::effects::Location::Parked(_),
+                    ..
+                }
+            )
+        })
+        .expect("the swap plans a park")
+        .node
+        .clone();
+    let other = ["b", "\u{df}"]
+        .into_iter()
+        .find(|n| held_at(&world, 0, &[n]) != Some(parked.clone()))
+        .unwrap();
+    let (ta, tother) = (target(&world, 1, &["a"]), target(&world, 1, &[other]));
+    steps = vec![(1, delete(ta)), (1, rename(tother, 0, "A"))];
+    steps.extend(commit(1));
+    steps.extend([(0, DELIVER); 8]);
+    steps.push((0, EFFECT));
+    world.run(3, &steps).unwrap();
+    let quiet = world.phase(4, &[]);
+    assert!(!parked_ids_on(&world, 0).contains(&parked), "{quiet:?}");
+}

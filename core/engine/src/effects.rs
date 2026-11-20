@@ -297,15 +297,11 @@ impl MergeResidue {
             Effect::Move {
                 to: Location::Parked(_),
                 ..
-            } => {
-                !self.0.contains_key(&record.node)
-                    && (trees.remote().live(&record.node))
-                        .is_none_or(|remote| view.merge_holds_place(&record.node, remote).is_none())
-            }
+            } => !view.keeps_in_place(&record.node),
             _ => record
                 .after
                 .as_ref()
-                .is_none_or(|shape| view.merge_holds_place(&record.node, shape).is_none()),
+                .is_none_or(|shape| view.holds_place(&record.node, shape).is_none()),
         }
     }
 }
@@ -631,7 +627,7 @@ impl Effects {
                     name: name.to_owned(),
                     ..local.shape.clone()
                 };
-                if view.merge_holds_place(id, &after).is_some() {
+                if view.holds_place(id, &after).is_some() {
                     return None;
                 }
                 let effect = Effect::Move {
@@ -1349,6 +1345,12 @@ impl<'a> View<'a> {
         }
     }
 
+    fn keeps_in_place(&self, id: &NodeId) -> bool {
+        self.merge_residue
+            .is_some_and(|residue| residue.0.contains_key(id))
+            || self.behind_merge(id).is_some()
+    }
+
     fn behind_merge(&self, id: &NodeId) -> Option<NodeId> {
         let residue = self.merge_residue?;
         let mut at = id.clone();
@@ -1359,12 +1361,15 @@ impl<'a> View<'a> {
             if residue.0.contains_key(&holder) {
                 return Some(holder);
             }
+            if self.trees.excluded(&holder) {
+                return None;
+            }
             at = holder;
         }
         None
     }
 
-    fn merge_holds_place(&self, id: &NodeId, shape: &Shape) -> Option<NodeId> {
+    fn holds_place(&self, id: &NodeId, shape: &Shape) -> Option<NodeId> {
         let residue = self.merge_residue?;
         self.trees
             .local_holders(&shape.parent, &shape.name)
@@ -1391,12 +1396,12 @@ impl<'a> View<'a> {
                 return self.remove(id, local);
             }
             let target = self.way_out(id, local);
-            if let Some(holder) = self.merge_holds_place(id, target) {
+            if let Some(holder) = self.holds_place(id, target) {
                 return Step::Blocked(Some(holder));
             }
             return self.unpark(id, local, target);
         }
-        if let Some(holder) = remote.and_then(|shape| self.merge_holds_place(id, shape)) {
+        if let Some(holder) = remote.and_then(|shape| self.holds_place(id, shape)) {
             return Step::Blocked(Some(holder));
         }
         let (local, remote) = match (local, remote) {
@@ -1790,9 +1795,6 @@ impl<'a> View<'a> {
         let trees = self.trees;
         (candidate(trees, id) || trees.waiting().contains_key(id) || trees.reclaimed(id))
             && !trees.excluded(id)
-            && !self
-                .merge_residue
-                .is_some_and(|residue| residue.0.contains_key(id))
             && !trees.held(id)
             && trees.local().get(id).is_some_and(|node| {
                 !node.parked
@@ -1801,7 +1803,7 @@ impl<'a> View<'a> {
             })
             && self.stuck(id, trees.local().len()).is_none()
             && !(trees.remote().live(id)).is_some_and(|remote| self.goes_home(id, remote))
-            && self.behind_merge(id).is_none()
+            && !self.keeps_in_place(id)
     }
 
     fn park(&self, id: &NodeId) -> Option<(Effect, Option<Shape>)> {
