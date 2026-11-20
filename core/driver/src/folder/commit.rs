@@ -132,6 +132,19 @@ impl Folder {
     /// when R already holds it. The engine keeps the result once, and acknowledges it when R has reached its seq.
     /// The second delivery finds no commit waiting for a result and changes nothing.
     pub(super) fn result(&mut self, commit_id: &str, result: CommitResult) -> Result<(), Stop> {
+        let begun = std::time::Instant::now();
+        let changes = result.changes.len();
+        let mut laps: Vec<(&str, u128)> = Vec::new();
+        let out = self.result_timed(commit_id, result, &mut laps, begun);
+        let took = begun.elapsed().as_millis();
+        if took >= 300 {
+            eprintln!("RESULT took={took} changes={changes} {laps:?}");
+        }
+        out
+    }
+
+    fn result_timed(&mut self, commit_id: &str, result: CommitResult, laps: &mut Vec<(&'static str, u128)>, begun: std::time::Instant) -> Result<(), Stop> {
+        let mut mark = |name: &'static str| laps.push((name, begun.elapsed().as_millis()));
         let ours = (self.engine.commits.in_flight())
             .is_some_and(|flight| flight.commit.commit_id == commit_id && flight.result.is_none());
         let flight = self.engine.commits.in_flight().filter(|_| ours);
@@ -143,12 +156,15 @@ impl Folder {
                 .as_ref()
                 .is_some_and(|cursor| result.seq == cursor.last_seq + 1),
         };
+        mark("start");
         if next {
             self.timing.forget(&result.changes);
         }
+        mark("forget");
         if let Some(flight) = flight {
             self.timing.uploaded(&flight.commit, &result);
         }
+        mark("uploaded");
         if let Some(refused) = flight.map(|flight| not_applied(&flight.commit, &result)) {
             let problems = self.engine.commits.problems();
             self.refused_nodes.retain(|id, _| problems.contains(id));
@@ -163,6 +179,7 @@ impl Folder {
                 self.refused_nodes.insert(NodeId::from(node), why);
             }
         }
+        mark("refused");
         let receive = |engine: &mut Engine, result: CommitResult| {
             (engine.commits.received(result)).map_err(|error| {
                 Stop::Protocol(format!("the result of commit {commit_id}: {error:?}"))
@@ -198,6 +215,7 @@ impl Folder {
             }
             Ok(tx.remote_node_count()?)
         })?;
+        mark("step");
         Ok(())
     }
 
