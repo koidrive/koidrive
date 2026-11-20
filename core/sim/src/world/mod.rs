@@ -604,10 +604,8 @@ pub struct World {
     unasked: Option<String>,
     intents: Intents,
     /// For each write, how many more files than one the server may hold it in: one for each
-    /// copy a user made or published, and one for each file a download left on a disk that a
-    /// restart took for a new one (section 5.3).
+    /// copy a user made or published.
     copied: BTreeMap<i64, usize>,
-    stray_copies: BTreeSet<(usize, u128, i64)>,
     /// The last copy of the server's storage.
     backup: Option<Backup>,
     earlier_backup: Option<Backup>,
@@ -700,7 +698,6 @@ impl World {
             unasked: None,
             intents: Intents::new(count),
             copied: BTreeMap::new(),
-            stray_copies: BTreeSet::new(),
             backup: None,
             earlier_backup: None,
             retired: BTreeSet::new(),
@@ -1750,12 +1747,8 @@ impl World {
             Outcome::Crash(_) => batch.len() - 1,
             _ => (self.clock.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 32) as usize % batch.len(),
         };
-        for (index, record) in batch.iter().enumerate() {
-            if index != unlucky || outcome != Outcome::Fail {
-                self.devices[d].disk.stage(record);
-            }
-        }
         let mut ends = Vec::new();
+        let mut recorded = false;
         for (index, record) in batch.iter().enumerate() {
             let outcome = if index == unlucky {
                 outcome
@@ -1770,6 +1763,14 @@ impl World {
                 Outcome::Crash(cut) if applies => Some(cut),
                 _ => None,
             };
+            if until.is_some()
+                && let Some(identity) = device.disk.stage(record)
+            {
+                (device.engine.effects.stage(&record.effect_id, identity))
+                    .map_err(|error| Failure::Broken(format!("staging refused: {error:?}")))?;
+                device.persist()?;
+                recorded = true;
+            }
             let applied = device.disk.apply(record, until);
             if let Some((path, _)) = (kept.iter()).find_map(|(ino, kept)| {
                 (device.disk.entries().get(ino))
@@ -1914,6 +1915,10 @@ impl World {
             }
         }
         device.persist()?;
+        if recorded {
+            device.rotate();
+        }
+        device.disk.unstage();
         self.read_rules_file(d);
         let device = &mut self.devices[d];
         device.engine.scan(&device.disk);
@@ -1933,7 +1938,8 @@ impl World {
         device.engine = device.store.reload(&device.rules)?;
         let effects = &device.engine.effects;
         let (marker, cleared) = (device.disk.marker(), effects.cleared());
-        if marker > cleared + effects.in_flight().len() as u64 {
+        let ahead = marker > cleared + effects.in_flight().len() as u64;
+        if ahead || device.disk.token() > device.engine.token && marker >= cleared {
             let trees = &device.engine.trees;
             device.disk.bring_back_all(|parked| {
                 (trees
@@ -1955,10 +1961,14 @@ impl World {
                 .unwrap_or_else(|| parked.to_owned())
             });
             device.engine.effects.catch_up(marker);
+            device.engine.token = device.disk.token();
             self.recover(
                 d,
                 RecoveryTrigger::StoreOlderThanDisk,
-                format!("the root marker counts {marker} effects, more than the store"),
+                match ahead {
+                    true => format!("the root marker counts {marker} effects, more than the store"),
+                    false => "the root marker holds a token the store does not".to_owned(),
+                },
             )?;
         }
         if marker < cleared {
@@ -2018,8 +2028,8 @@ impl World {
                 Ok(identity) if applies && !refuted => {
                     // A file that the user made with the bytes of the download counts as the
                     // download. The server holds that write from then on.
-                    let taken = identity
-                        .as_ref()
+                    let taken = (identity.as_ref())
+                        .filter(|_| record.staged.is_none())
                         .zip(download)
                         .and_then(|(identity, content)| {
                             let found = device.disk.entries()[&identity.ino].content.as_ref()?;
@@ -2091,20 +2101,8 @@ impl World {
                     && (entry.mark.as_ref())
                         .is_some_and(|mark| mark.ino == **ino && mark.node == record.node)
             });
-            for (ino, entry) in strays {
+            for (ino, _) in strays {
                 self.intents.detach(d, *ino, &record.node, self.moment + 1);
-                let holds = |c: &&Content| {
-                    entry
-                        .content
-                        .as_ref()
-                        .is_some_and(|held| tag(held) == tag(c))
-                };
-                let Some(write) = download.filter(holds).map(tag) else {
-                    continue;
-                };
-                if self.stray_copies.insert((d, *ino, write)) {
-                    *self.copied.entry(write).or_default() += 1;
-                }
             }
         }
         if let Some(lost) =
@@ -2121,6 +2119,10 @@ impl World {
         if !batch.is_empty() {
             device.persist()?;
         }
+        if batch.iter().any(|record| record.staged.is_some()) {
+            device.rotate();
+        }
+        device.disk.unstage();
         if device.engine.commits.in_flight().is_some() {
             note(&mut self.seen, "restart with a commit in flight");
         }
@@ -4045,6 +4047,7 @@ mod tests {
             },
             after: None,
             recoveries: 0,
+            staged: None,
         };
         disk.apply(&record, Some(Cut::Done)).unwrap();
         assert!(disk.binned(5));
@@ -4202,6 +4205,7 @@ mod tests {
                 content: Some(incoming),
             }),
             recoveries: 0,
+            staged: None,
         };
         let applied = disk.apply(&record, Some(Cut::Done)).unwrap();
         assert!(
@@ -4247,6 +4251,7 @@ mod tests {
             },
             after: None,
             recoveries: 0,
+            staged: None,
         };
         let applied = Applied {
             outcome: Ok(None),
@@ -4307,6 +4312,7 @@ mod tests {
             },
             after: None,
             recoveries: 0,
+            staged: None,
         };
         disk.apply(&record, Some(Cut::Done)).unwrap();
         assert!(disk.binned(5));
@@ -4476,6 +4482,7 @@ mod tests {
             },
             after: Some(after),
             recoveries: 0,
+            staged: None,
         };
         assert!(record.applies(&world.devices[0].engine.trees, None));
         let mut state = world.devices[0].engine.effects.state();

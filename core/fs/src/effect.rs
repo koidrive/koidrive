@@ -67,10 +67,12 @@ pub enum Action {
     },
     /// Puts the staged file `.koidrive/staging/<effect id>` at `at`. With
     /// `replaces`, that entry goes to quarantine first; it sits elsewhere when
-    /// the node also moves.
+    /// the node also moves. `staged` is the staged file's identity once the
+    /// record holds it (design §5.3).
     WriteFile {
         at: Location,
         replaces: Option<Displaced>,
+        staged: Option<FileId>,
     },
     /// Renames the entry with identity `id`.
     Move {
@@ -215,7 +217,7 @@ impl Section<'_> {
         contents: &mut dyn Contents,
         now: SystemTime,
     ) -> io::Result<()> {
-        let outcome = self.space.apply_effect(effect, contents, now, self.hook)?;
+        let outcome = self.space.attempt(effect, contents, now, self.hook)?;
         self.outcomes.push(outcome);
         Ok(())
     }
@@ -402,7 +404,7 @@ impl Space {
         }
         let changed: Vec<(&Location, Change)> = match action {
             Action::CreateDir { at } => vec![(at, Change::AddsFolder)],
-            Action::WriteFile { at, replaces } => std::iter::once((at, Change::AddsFile))
+            Action::WriteFile { at, replaces, .. } => std::iter::once((at, Change::AddsFile))
                 .chain(
                     replaces
                         .iter()
@@ -449,6 +451,13 @@ impl Space {
         Ok(rustix::fs::openat(staging.fd(), id, flags, Mode::from_raw_mode(0o644))?.into())
     }
 
+    /// Flushes the staging folder, so that every staged file whose identity the store records next survives a power
+    /// loss.
+    pub fn sync_staging(&self) -> io::Result<()> {
+        let staging = self.private(&[STAGING_DIR])?;
+        self.flush_folder(&staging, Flush::Barrier)
+    }
+
     /// Flushes `folder` after a change in it. A folder on another device than the root, such as a volume mounted
     /// below it, is flushed in full, since the full flush that ends a section reaches only the root's device.
     pub(crate) fn flush_folder(&self, folder: &Folder, how: Flush) -> io::Result<()> {
@@ -466,10 +475,11 @@ impl Space {
     }
 
     /// Sets the staged file's executable bit and flushes it, which design
-    /// §5.2 requires before the file is renamed into place. The caller has
-    /// written and verified its content, and finishes the file before it
-    /// begins the [`Section`] that places it.
-    pub fn finish_staged(&self, id: &str, executable: bool) -> io::Result<()> {
+    /// §5.2 requires before the file is renamed into place, and returns its
+    /// identity for the effect's record. The caller has written and verified
+    /// its content, and finishes the file before it begins the [`Section`]
+    /// that places it.
+    pub fn finish_staged(&self, id: &str, executable: bool) -> io::Result<FileId> {
         check_name(OsStr::new(id))?;
         let staging = self.private(&[STAGING_DIR])?;
         let flags = OFlags::RDONLY | OFlags::NOFOLLOW;
@@ -481,7 +491,8 @@ impl Space {
             mode & !0o111
         };
         rustix::fs::fchmod(&file, Mode::from_raw_mode(mode as _))?;
-        flush(rustix::fd::AsFd::as_fd(&file), Flush::Plain)
+        flush(file.as_fd(), Flush::Plain)?;
+        Ok(stat_fd(file.as_fd())?.id)
     }
 
     /// Deletes every staged file except `keep`, the effect in flight. Staged
@@ -661,20 +672,6 @@ impl Space {
         })
     }
 
-    fn apply_effect(
-        &self,
-        effect: &Effect,
-        contents: &mut dyn Contents,
-        now: SystemTime,
-        hook: &mut dyn FnMut(Step),
-    ) -> io::Result<Outcome> {
-        let outcome = self.attempt(effect, contents, now, hook)?;
-        if !matches!(outcome, Outcome::Done { .. }) {
-            self.drop_staged(&effect.id)?;
-        }
-        Ok(outcome)
-    }
-
     fn attempt(
         &self,
         effect: &Effect,
@@ -702,7 +699,9 @@ impl Space {
                     identity: Some(identity),
                 }
             }
-            Action::WriteFile { at, replaces: None } => {
+            Action::WriteFile {
+                at, replaces: None, ..
+            } => {
                 let staging = open!(self.private(&[STAGING_DIR]));
                 let (parent, name) = resolve!(self.parent(at));
                 hook(Step::Checked);
@@ -711,6 +710,7 @@ impl Space {
             Action::WriteFile {
                 at,
                 replaces: Some(displaced),
+                ..
             } => self.displace(effect, displaced, Some(at), contents, now, hook)?,
             Action::RemoveFile { displaced } => {
                 self.displace(effect, displaced, None, contents, now, hook)?
@@ -842,9 +842,6 @@ impl Space {
             }
             None => Outcome::Done { identity: None },
         };
-        if !matches!(outcome, Outcome::Done { .. }) {
-            self.drop_staged(&effect.id)?;
-        }
         if displaced.entry.kind == EntryKind::Dir {
             clear_platform_files(quarantine.fd(), id)?;
         }
@@ -895,7 +892,6 @@ impl Space {
         let id = OsStr::new(&effect.id);
         let recovered = self.put_back(quarantine, id, &displaced.at, now)?;
         hook(Step::Returned);
-        self.drop_staged(&effect.id)?;
         Ok(Outcome::Failed { reason, recovered })
     }
 
@@ -952,10 +948,15 @@ impl Space {
         let staging = self.private(&[STAGING_DIR])?;
         let id = OsStr::new(&effect.id);
         let staged = lookup(staging.fd(), id)?.is_some();
+        let recorded = match &effect.action {
+            Action::WriteFile { staged, .. } => *staged,
+            _ => None,
+        };
         let displacing = match &effect.action {
             Action::WriteFile {
                 at,
                 replaces: Some(displaced),
+                ..
             } => Some((displaced.clone(), Some(at))),
             Action::RemoveFile { displaced } => Some((displaced.clone(), None)),
             Action::RemoveDir { at, id, .. } => Some((
@@ -1004,6 +1005,7 @@ impl Space {
                     }
                     overtaken(placed)
                 }
+                Some(_) if recorded.is_some() => Outcome::Done { identity: recorded },
                 Some(at) => match self.written_at(at, contents)? {
                     Some(identity) => Outcome::Done {
                         identity: Some(identity),
@@ -1012,7 +1014,6 @@ impl Space {
                 },
                 None => Outcome::Done { identity: None },
             };
-            self.drop_staged(&effect.id)?;
             let original = location_name(&displaced.at);
             if displaced.entry.kind == EntryKind::Dir {
                 clear_platform_files(quarantine.fd(), id)?;
@@ -1032,7 +1033,16 @@ impl Space {
         if !staged && let Some(done) = self.finished(effect, contents)? {
             return Ok(done);
         }
-        self.drop_staged(&effect.id)?;
+        let replaced = matches!(
+            effect.action,
+            Action::WriteFile {
+                replaces: Some(_),
+                ..
+            }
+        );
+        if staged && replaced && self.trashed(&effect.id)? {
+            return Ok(failed(Reason::Overtaken));
+        }
         Ok(failed(Reason::Interrupted))
     }
 
@@ -1052,19 +1062,20 @@ impl Space {
                 Err(err) => Err(err.into()),
             }
         };
-        let trashed = || -> io::Result<bool> {
-            let trash = self.private(&[TRASH_DIR])?;
-            Ok(lookup(trash.fd(), OsStr::new(&effect.id))?.is_some())
-        };
+        let trashed = || self.trashed(&effect.id);
         let identity = match &effect.action {
             Action::CreateDir { at } => match entry_at(at)? {
                 Some(Some(stat)) if stat.file_type == FileType::Directory => Some(stat.id),
                 _ => return Ok(None),
             },
             Action::WriteFile {
+                staged: Some(identity),
+                ..
+            } => Some(*identity),
+            Action::WriteFile {
                 replaces: Some(_), ..
             } if !trashed()? => return Ok(None),
-            Action::WriteFile { at, replaces } => match self.written_at(at, contents)? {
+            Action::WriteFile { at, replaces, .. } => match self.written_at(at, contents)? {
                 Some(identity) => Some(identity),
                 None if replaces.is_some() => {
                     return Ok(Some(failed(Reason::Overtaken)));
@@ -1085,6 +1096,11 @@ impl Space {
             },
         };
         Ok(Some(Outcome::Done { identity }))
+    }
+
+    fn trashed(&self, id: &str) -> io::Result<bool> {
+        let trash = self.private(&[TRASH_DIR])?;
+        Ok(lookup(trash.fd(), OsStr::new(id))?.is_some())
     }
 
     fn found<'a>(&self, at: &'a Location) -> Result<(Folder, &'a OsStr), Unresolved> {
@@ -1135,7 +1151,8 @@ impl Space {
         }
     }
 
-    fn drop_staged(&self, id: &str) -> io::Result<()> {
+    /// Deletes the staged file of effect `id`.
+    pub fn drop_staged(&self, id: &str) -> io::Result<()> {
         let dropped = (self.private(&[STAGING_DIR]).map_err(io::Error::from))
             .and_then(|staging| remove_if_present(staging.fd(), id));
         match dropped {

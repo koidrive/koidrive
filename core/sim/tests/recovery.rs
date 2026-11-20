@@ -3482,6 +3482,7 @@ fn recovery_finds_no_folder_the_parked_directory_holds() {
             },
             after: None,
             recoveries: 0,
+            staged: None,
         };
         disk.rename(folder, Place::Root, "moved").unwrap();
         assert_eq!(

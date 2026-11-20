@@ -78,6 +78,7 @@ fn placement_check_after_a_move(
         },
         after: Some(after),
         recoveries: 0,
+        staged: None,
     };
     assert!(record.applies(&trees, None));
     let mut state = Effects::default().state();

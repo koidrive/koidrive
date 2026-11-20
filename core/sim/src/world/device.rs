@@ -36,6 +36,7 @@ pub struct Engine {
     /// nothing is planned until it comes (section 4.4).
     pub behind: bool,
     pub history: String,
+    pub token: u64,
 }
 
 impl Engine {
@@ -57,6 +58,7 @@ impl Engine {
             cursor: Base::default(),
             behind: false,
             history: history.to_owned(),
+            token: 0,
         }
     }
 
@@ -89,6 +91,7 @@ impl Engine {
             cursor: self.cursor.clone(),
             behind: self.behind,
             history: self.history.clone(),
+            token: self.token,
         };
         let mut stored = self.clone();
         rules.read(&mut stored.trees);
@@ -643,6 +646,12 @@ impl Device {
     pub fn recovering(&self) -> bool {
         let engine = if self.down { &self.store } else { &self.engine };
         matches!(engine.commits.halted(), Some(Halt::Recovery { .. }))
+    }
+
+    pub fn rotate(&mut self) {
+        let token = self.disk.rotate();
+        self.engine.token = token;
+        self.store.token = token;
     }
 
     /// The end of one call into the engine: what needs no decision is settled, and the state goes

@@ -103,6 +103,9 @@ pub struct EffectRecord {
     pub after: Option<Shape>,
     /// The recoveries [`Trees::recoveries`] counted when the effect was planned.
     pub recoveries: u64,
+    /// The identity of a write's staged file, which the driver records before it places the file
+    /// (section 5.3).
+    pub staged: Option<FileIdentity>,
 }
 
 impl PartialEq for EffectRecord {
@@ -114,14 +117,16 @@ impl PartialEq for EffectRecord {
             effect,
             after,
             recoveries: _,
+            staged,
         } = self;
-        (effect_id, node, counter, effect, after)
+        (effect_id, node, counter, effect, after, staged)
             == (
                 &other.effect_id,
                 &other.node,
                 &other.counter,
                 &other.effect,
                 &other.after,
+                &other.staged,
             )
     }
 }
@@ -386,9 +391,19 @@ impl Effects {
                 effect,
                 after,
                 recoveries: trees.recoveries(),
+                staged: None,
             });
         }
         self.in_flight.as_slice()
+    }
+
+    /// Records `identity` as the staged file of the write in flight with `effect_id`.
+    pub fn stage(&mut self, effect_id: &str, identity: FileIdentity) -> Result<(), EffectError> {
+        let record = (self.in_flight.get_mut().iter_mut())
+            .find(|record| record.effect_id == effect_id)
+            .ok_or_else(|| EffectError::NotInFlight(effect_id.to_owned()))?;
+        record.staged = Some(identity);
+        Ok(())
     }
 
     fn choose(

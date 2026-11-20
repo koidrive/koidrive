@@ -126,13 +126,14 @@ pub struct Disk {
     entries: BTreeMap<u128, Entry>,
     inos: u128,
     /// The effects in flight whose download is staged and has no name in the folder yet.
-    pub(super) staged: BTreeSet<String>,
+    pub(super) staged: BTreeMap<String, u128>,
     /// The entries that effects in flight displaced and have not sent to the local trash yet.
     pub(super) quarantine: BTreeMap<String, (u128, Entry)>,
     /// The effects whose displaced entry is in the local trash.
     trash: BTreeSet<String>,
     binned: BTreeSet<i64>,
     marker: u64,
+    token: u64,
     pub(super) brought_back: BTreeSet<u128>,
 }
 
@@ -153,6 +154,15 @@ impl Disk {
 
     pub fn marker(&self) -> u64 {
         self.marker
+    }
+
+    pub fn token(&self) -> u64 {
+        self.token
+    }
+
+    pub fn rotate(&mut self) -> u64 {
+        self.token += 1;
+        self.token
     }
 
     pub fn entries(&self) -> &BTreeMap<u128, Entry> {
@@ -300,6 +310,19 @@ impl Disk {
             return None;
         }
         self.inos += 1;
+        self.put(self.inos, place, name, content)
+    }
+
+    fn put(
+        &mut self,
+        ino: u128,
+        place: Place,
+        name: &str,
+        content: Option<Content>,
+    ) -> Option<u128> {
+        if self.child(&place, name).is_some() {
+            return None;
+        }
         let content = content.map(|content| self.stamped(content));
         let held = content.iter().map(|c| c.manifest_digest.clone()).collect();
         let entry = Entry {
@@ -309,8 +332,8 @@ impl Disk {
             held,
             mark: None,
         };
-        self.entries.insert(self.inos, entry);
-        Some(self.inos)
+        self.entries.insert(ino, entry);
+        Some(ino)
     }
 
     pub fn copy(&mut self, ino: u128, place: Place, name: &str) -> Option<u128> {
@@ -401,15 +424,9 @@ impl Disk {
     /// the local trash also when the new entry finds its name taken.
     pub fn apply(&mut self, record: &EffectRecord, until: Option<Cut>) -> Option<Applied> {
         self.marker = record.counter;
-        let Some(until) = until else {
-            self.staged.remove(&record.effect_id);
-            return None;
-        };
+        let until = until?;
         let mut trashed = None;
         let outcome = self.change(record, until, &mut trashed);
-        if until == Cut::Done {
-            self.staged.remove(&record.effect_id);
-        }
         let removal = matches!(
             record.effect,
             Effect::RemoveFile { .. } | Effect::RemoveDir { .. }
@@ -422,10 +439,31 @@ impl Disk {
     }
 
     /// Stages the download of a write before the effect section that applies it.
-    pub fn stage(&mut self, record: &EffectRecord) {
-        if matches!(record.effect, Effect::WriteFile { .. }) {
-            self.staged.insert(record.effect_id.clone());
+    pub fn stage(&mut self, record: &EffectRecord) -> Option<FileIdentity> {
+        if !matches!(record.effect, Effect::WriteFile { .. }) {
+            return None;
         }
+        self.inos += 1;
+        self.staged.insert(record.effect_id.clone(), self.inos);
+        Some(identity(self.inos))
+    }
+
+    pub fn unstage(&mut self) {
+        self.staged.clear();
+    }
+
+    fn place_staged(
+        &mut self,
+        record: &EffectRecord,
+        at: &Location,
+        content: &Content,
+    ) -> Option<u128> {
+        let (place, name) = self.locate(at).ok()?;
+        let ino = *self.staged.get(&record.effect_id)?;
+        self.put(ino, place, &name, Some(content.clone()))?;
+        self.staged.remove(&record.effect_id);
+        self.marked(ino, &record.node);
+        Some(ino)
     }
 
     fn change(
@@ -450,9 +488,11 @@ impl Disk {
                 content,
                 replaces,
             } => {
-                self.staged.insert(id.clone());
+                if !self.staged.contains_key(id) {
+                    self.stage(record);
+                }
                 let displaced = replaces.as_ref().map(|d| self.displaced(d)).transpose()?;
-                let (place, name) = self.locate(at)?;
+                self.locate(at)?;
                 if let Some(ino) = displaced
                     && let Some(entry) = self.entries.remove(&ino)
                 {
@@ -461,11 +501,7 @@ impl Disk {
                 if until == Cut::Quarantined {
                     return Ok(None);
                 }
-                let ino = self.create(place, &name, Some(content.clone()));
-                if let Some(ino) = ino {
-                    self.staged.remove(id);
-                    self.marked(ino, &record.node);
-                }
+                let ino = self.place_staged(record, at, content);
                 if until == Cut::Done {
                     *trashed = self
                         .quarantine
@@ -544,10 +580,20 @@ impl Disk {
     /// or whose target the user has changed since.
     pub fn recover(&mut self, record: &EffectRecord) -> Applied {
         self.marker = record.counter;
-        let staged = self.staged.remove(&record.effect_id);
+        let staged = self.staged.contains_key(&record.effect_id);
         let Some((_, entry)) = self.quarantine.remove(&record.effect_id) else {
+            let replaced = matches!(
+                record.effect,
+                Effect::WriteFile {
+                    replaces: Some(_),
+                    ..
+                }
+            );
             let outcome = match staged {
                 false => self.finished(record),
+                true if replaced && self.trash.contains(&record.effect_id) => {
+                    Err(Refused::Overtaken)
+                }
                 true => Err(Refused::Interrupted),
             };
             return Applied {
@@ -556,16 +602,11 @@ impl Disk {
             };
         };
         let outcome = match &record.effect {
-            Effect::WriteFile { at, content, .. } if staged => {
-                let placed = (self.locate(at).ok())
-                    .and_then(|(place, name)| self.create(place, &name, Some(content.clone())));
-                if let Some(ino) = placed {
-                    self.marked(ino, &record.node);
-                }
-                placed
-                    .map(|ino| Some(identity(ino)))
-                    .ok_or(Refused::Overtaken)
-            }
+            Effect::WriteFile { at, content, .. } if staged => (self
+                .place_staged(record, at, content))
+            .map(|ino| Some(identity(ino)))
+            .ok_or(Refused::Overtaken),
+            Effect::WriteFile { .. } if record.staged.is_some() => Ok(record.staged),
             Effect::WriteFile { at, content, .. } => {
                 (self.written(at, content).map(Some)).ok_or(Refused::Overtaken)
             }
@@ -588,6 +629,7 @@ impl Disk {
             Effect::CreateDir { at: place } => at(place)?
                 .filter(|ino| self.entries[ino].content.is_none())
                 .map(|ino| Some(identity(ino))),
+            Effect::WriteFile { .. } if record.staged.is_some() => Some(record.staged),
             Effect::WriteFile {
                 replaces: Some(_), ..
             } if !self.trash.contains(&record.effect_id) => None,

@@ -45,6 +45,7 @@ fn prepare(root: &Path) -> Vec<Effect> {
             Action::WriteFile {
                 at: docs("a.txt"),
                 replaces: None,
+                staged: None,
             },
         ),
         effect(
@@ -52,6 +53,7 @@ fn prepare(root: &Path) -> Vec<Effect> {
             Action::WriteFile {
                 at: docs("b.txt"),
                 replaces: None,
+                staged: None,
             },
         ),
         effect("c", Action::CreateDir { at: docs("sub") }),
@@ -63,6 +65,7 @@ fn prepare(root: &Path) -> Vec<Effect> {
                     at: docs("report.txt"),
                     entry: found[1],
                 }),
+                staged: None,
             },
         ),
         effect(
@@ -109,7 +112,9 @@ fn recover(root: &Path, effects: &[Effect]) -> Vec<Outcome> {
     for effect in effects {
         section.recover(effect, &mut Bytes, now()).unwrap();
     }
-    section.finish().unwrap()
+    let outcomes = section.finish().unwrap();
+    space.clear_staging(None).unwrap();
+    outcomes
 }
 
 fn done(outcomes: &[Outcome]) -> Vec<bool> {

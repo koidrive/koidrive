@@ -1633,11 +1633,8 @@ fn a_download_cut_by_a_crash_is_not_done_twice() {
     assert_eq!(world.devices[1].disk.entries().len(), 1);
 }
 
-/// As above, and the user renames the downloaded file while the device is down. The restart finds
-/// no file with the download's bytes at its name and reports the download as not done (section
-/// 5.3). The engine takes the renamed file for a new one and downloads the file again.
 #[test]
-fn a_file_renamed_while_the_device_was_down_after_its_download_is_downloaded_again() {
+fn a_file_renamed_while_the_device_was_down_after_its_download_keeps_its_new_name() {
     let mut schedule = vec![(0, file("a"))];
     schedule.extend(commit(0));
     schedule.extend([
@@ -1647,30 +1644,73 @@ fn a_file_renamed_while_the_device_was_down_after_its_download_is_downloaded_aga
         (1, rename(0, 0, "b")),
     ]);
     let world = converge(2, &[schedule]).unwrap();
-    assert_eq!(world.seen["restart finds the effect in flight not done"], 1);
-    let names = |d: usize| -> Vec<&str> {
-        let entries = world.devices[d].disk.entries().values();
-        entries.map(|entry| entry.name.as_str()).collect()
-    };
-    assert_eq!(names(0), ["a", "b"]);
-    assert_eq!(names(1), ["b", "a"]);
+    assert_eq!(world.seen["restart finds the effect in flight done"], 1);
+    assert_eq!(sorted_names(&world), [vec!["b"], vec!["b"]]);
 }
 
-/// As above, with an overwrite instead of a rename. The engine takes the overwritten file for a new
-/// one, so the user's bytes are uploaded beside the file that the download brings again.
 #[test]
-fn a_file_overwritten_while_the_device_was_down_after_its_download_is_kept_beside_it() {
+fn a_file_overwritten_while_the_device_was_down_after_its_download_is_an_edit_of_it() {
     let synced = vec![(0, file("a"))];
     let mut racing = vec![(0, overwrite(0))];
     racing.extend(commit(0));
     racing.extend([(1, DELIVER), (1, EFFECT), (1, CRASH), (1, overwrite(0))]);
     let world = converge(2, &[synced, racing]).unwrap();
-    assert_eq!(world.seen["restart finds a write its user overtook"], 1);
-    assert_eq!(world.devices[0].disk.entries().len(), 2);
-    assert_eq!(world.devices[1].disk.entries().len(), 2);
+    assert_eq!(world.seen["restart finds the effect in flight done"], 1);
+    assert_eq!(sorted_names(&world), [vec!["a"], vec!["a"]]);
+    let held = |d: usize| {
+        world.devices[d]
+            .disk
+            .entries()
+            .values()
+            .next()
+            .unwrap()
+            .content
+            .clone()
+    };
+    assert_eq!(held(0), held(1));
 }
 
-fn a_download_a_crash_hid_and_its_user_changed(cut: Cut, change: Step) -> World {
+fn sorted_names(world: &World) -> Vec<Vec<&str>> {
+    (world.devices.iter())
+        .map(|device| {
+            let mut names: Vec<&str> = (device.disk.entries().values())
+                .map(|entry| entry.name.as_str())
+                .collect();
+            names.sort();
+            names
+        })
+        .collect()
+}
+
+fn a_download_beside_a_file_with_its_bytes_crashed(changes: &[Step]) -> World {
+    let mut schedule = vec![(0, file("c.txt"))];
+    schedule.extend(commit(0));
+    schedule.extend([(1, DELIVER), (1, EFFECT), (1, EFFECT), (0, file("a"))]);
+    schedule.extend(commit(0));
+    schedule.extend([(1, DELIVER), (1, EFFECT), (1, CRASH)]);
+    schedule.extend(changes.iter().map(|change| (1, *change)));
+    converge(2, &[schedule]).unwrap()
+}
+
+#[test]
+fn two_files_with_the_same_bytes_swapped_while_the_device_was_down_stay_two_files() {
+    let swap = [rename(1, 0, "b"), rename(0, 0, "a"), rename(1, 0, "c.txt")];
+    let world = a_download_beside_a_file_with_its_bytes_crashed(&swap);
+    assert_eq!(world.seen["restart finds the effect in flight done"], 1);
+    assert_eq!(
+        sorted_names(&world),
+        [vec!["a", "c.txt"], vec!["a", "c.txt"]]
+    );
+}
+
+#[test]
+fn a_download_deleted_while_the_device_was_down_beside_a_file_with_its_bytes_stays_deleted() {
+    let world = a_download_beside_a_file_with_its_bytes_crashed(&[delete(1)]);
+    assert_eq!(world.seen["restart finds the effect in flight done"], 1);
+    assert_eq!(sorted_names(&world), [vec!["c.txt"], vec!["c.txt"]]);
+}
+
+fn a_download_a_crash_hid_and_its_user_changed(cut: Cut, changes: &[Step]) -> World {
     let synced = vec![(0, file("a"))];
     let mut racing = vec![(2, overwrite(0))];
     racing.extend(commit(2));
@@ -1678,21 +1718,24 @@ fn a_download_a_crash_hid_and_its_user_changed(cut: Cut, change: Step) -> World 
         (1, DELIVER),
         (1, EFFECT),
         (1, Step::Effect(Outcome::Crash(cut))),
-        (1, change),
-        (0, DELIVER),
-        (0, EFFECT),
-        (0, EFFECT),
-        (0, overwrite(0)),
     ]);
+    racing.extend(changes.iter().map(|change| (1, *change)));
+    racing.extend([(0, DELIVER), (0, EFFECT), (0, EFFECT), (0, overwrite(0))]);
     racing.extend(commit(0));
-    converge(3, &[synced, racing]).unwrap()
+    let world = converge(3, &[synced, racing]).unwrap();
+    let recovered = match cut {
+        Cut::Quarantined => "restart finds a write its user overtook",
+        Cut::Placed => "restart ends an effect that left an entry in quarantine",
+        Cut::Done => "restart finds the effect in flight done",
+    };
+    assert_eq!(world.seen[recovered], 1);
+    world
 }
 
 #[test]
 fn a_download_a_crash_hid_and_its_user_deleted_keeps_an_edit_back_to_the_bytes_it_replaced() {
     for cut in [Cut::Placed, Cut::Done] {
-        let world = a_download_a_crash_hid_and_its_user_changed(cut, delete(0));
-        assert_eq!(world.seen["restart finds a write its user overtook"], 1);
+        let world = a_download_a_crash_hid_and_its_user_changed(cut, &[delete(0)]);
         for device in &world.devices {
             assert_eq!(device.disk.entries().len(), 1);
         }
@@ -1701,18 +1744,23 @@ fn a_download_a_crash_hid_and_its_user_deleted_keeps_an_edit_back_to_the_bytes_i
 
 #[test]
 fn a_file_made_at_the_name_a_crashed_download_freed_keeps_an_edit_back_to_the_bytes_it_replaced() {
-    let world = a_download_a_crash_hid_and_its_user_changed(Cut::Quarantined, file("a"));
-    assert_eq!(world.seen["restart finds a write its user overtook"], 1);
+    let world = a_download_a_crash_hid_and_its_user_changed(Cut::Quarantined, &[file("a")]);
     for device in &world.devices {
         assert_eq!(device.disk.entries().len(), 2);
     }
 }
 
 #[test]
+fn a_store_copied_before_a_restart_dropped_a_staged_download_reads_as_older_than_the_disk() {
+    let changes = [Step::CopyStore, file("a"), SCAN, Step::RollBack];
+    let world = a_download_a_crash_hid_and_its_user_changed(Cut::Quarantined, &changes);
+    assert_eq!(world.seen["recovery starts after a store rollback"], 1);
+}
+
+#[test]
 fn a_download_a_crash_hid_and_its_user_overwrote_keeps_an_edit_back_to_the_bytes_it_replaced() {
     for cut in [Cut::Placed, Cut::Done] {
-        let world = a_download_a_crash_hid_and_its_user_changed(cut, overwrite(0));
-        assert_eq!(world.seen["restart finds a write its user overtook"], 1);
+        let world = a_download_a_crash_hid_and_its_user_changed(cut, &[overwrite(0)]);
         for device in &world.devices {
             assert_eq!(device.disk.entries().len(), 2);
         }
@@ -12827,31 +12875,18 @@ fn two_downloads_of_the_same_bytes_swapped_while_their_device_is_down() -> World
 }
 
 #[test]
-fn a_restart_that_takes_the_other_download_leaves_each_file_to_the_node_it_holds() {
-    for deleted in ["a", "c (conflict from device-0"] {
+fn a_restart_finds_two_swapped_downloads_done_and_leaves_each_file_to_the_node_it_holds() {
+    for deleted in ["a", "c.txt"] {
         let mut world = two_downloads_of_the_same_bytes_swapped_while_their_device_is_down();
         world.phase(0, &[]).unwrap();
         assert!(
             world
                 .seen
-                .contains_key("restart takes a file of the user for the download")
+                .contains_key("restart finds the effect in flight done")
         );
         let delete = at_entry(&world, 0, deleted, 4, 0);
         world.phase(1, &[(0, delete)]).unwrap();
     }
-}
-
-#[test]
-fn a_server_that_copies_the_download_a_restart_took_for_a_new_file_is_caught() {
-    let mut world = two_downloads_of_the_same_bytes_swapped_while_their_device_is_down();
-    world.space_mut().copy_each_created_file();
-    let failure = world.phase(0, &[]).unwrap_err();
-    assert!(
-        failure
-            .to_string()
-            .contains("write 1 is in 3 live nodes on the server"),
-        "{failure}"
-    );
 }
 
 #[test]
@@ -12893,7 +12928,7 @@ fn a_server_that_copies_a_file_sent_again_after_a_restore_is_caught() {
 }
 
 #[test]
-fn a_download_its_user_moved_before_the_restart_is_a_new_file_to_delete() {
+fn a_download_its_user_moved_before_the_restart_keeps_its_node_under_the_new_name() {
     use Step::*;
     let mut world = on(&[Precision::Fine, Precision::Fine]);
     let file = User(Action {
@@ -12920,7 +12955,7 @@ fn a_download_its_user_moved_before_the_restart_is_a_new_file_to_delete() {
     assert!(
         world
             .seen
-            .contains_key("restart finds the effect in flight not done")
+            .contains_key("restart finds the effect in flight done")
     );
     let delete = at_entry(&world, 0, "b", 4, 0);
     world.phase(1, &[(0, delete)]).unwrap();

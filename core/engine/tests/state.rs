@@ -485,6 +485,7 @@ fn effects_state() -> EffectsState {
             effect: create.clone(),
             after: Some(dir(ROOT, "a")),
             recoveries: 0,
+            staged: None,
         }],
         cleared: 3,
         failed: [("b".into(), create)].into(),
@@ -859,6 +860,7 @@ fn an_identity_without_a_birth_time_round_trips() {
             },
             after: None,
             recoveries: 0,
+            staged: None,
         }],
         cleared: 0,
         failed: [(
