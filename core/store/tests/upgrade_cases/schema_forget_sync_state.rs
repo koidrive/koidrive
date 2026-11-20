@@ -44,7 +44,12 @@ upgrade_case!(schema_forget_sync_state, |store| {
         tx.set_id_generator(&7u64.to_le_bytes())
     })
     .unwrap();
+    rusqlite::Connection::open(&path)
+        .unwrap()
+        .execute("INSERT INTO discard_members VALUES ('n', 'f')", [])
+        .unwrap();
     let before = rows(&path);
+    assert!(before.contains(&("discard_members".into(), 1)), "{before:?}");
     copy.transaction(|tx| tx.forget_sync_state()).unwrap();
     copy.transaction(|tx| {
         assert_eq!(tx.root_tokens()?, tokens);

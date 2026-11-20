@@ -5415,8 +5415,12 @@ fn rules_let_in_a_server_folder_a_discard_took_along(
     discard(&mut trees, &mut commits, &mut ids);
     let mut effects = Effects::default();
     run_effects(&mut effects, &mut commits, &mut trees, &mut ids, 100);
+    let trashed = !matches!(form, ThePersonDiscardsTheFolderAgain);
     match form {
-        AnotherDeviceTrashesIt => trash(&mut trees, &commits),
+        AnotherDeviceTrashesIt => {
+            trash(&mut trees, &commits);
+            run_effects(&mut effects, &mut commits, &mut trees, &mut ids, 120);
+        }
         ThePersonDiscardsTheFolderAgain => {
             trees.set_local("nn".into(), local_node(dir("n", "C.TXT"), 99));
             trees.settle(commits.aliases());
@@ -5425,6 +5429,10 @@ fn rules_let_in_a_server_folder_a_discard_took_along(
             run_effects(&mut effects, &mut commits, &mut trees, &mut ids, 150);
         }
         AnotherDeviceTrashesItBeforeTheAnswer => {}
+    }
+    if trashed {
+        let s = &trees.local().get(&"s".into()).unwrap().shape;
+        assert_eq!(*s, dir("n", "ignored"), "{form:?} {restart}");
     }
     trees.set_rules(&root, Source::Koiignore, None);
     trees.settle(commits.aliases());
@@ -7203,11 +7211,20 @@ fn quiet(trees: &mut Trees, commits: &mut Commits, ids: &mut IdGen) -> Vec<(&'st
         }
         let built = ops(commits, trees, ids);
         if built.is_empty() {
-            break;
+            return sent;
         }
         sent.extend(built);
     }
-    sent
+    panic!("still planning after 60 steps: {sent:?} {:?}", local(trees));
+}
+
+fn planned_move(commits: &Commits, id: &str) -> Option<(String, String)> {
+    (commits.in_flight()?.commit.ops.iter()).find_map(|op| match &op.op {
+        Some(op::Op::Move(moved)) if moved.node_id == id => {
+            Some((moved.new_parent_id.clone(), moved.new_name.clone()))
+        }
+        _ => None,
+    })
 }
 
 fn assert_discarded_with_the_server_folder_back(sent: &[(&'static str, String)], trees: &Trees) {
@@ -7241,6 +7258,13 @@ fn a_discard_sends_back_a_server_folder_moved_into_it_while_excluded_with_its_he
             discarded_after_a_server_folder_moved_in_while_excluded(&[], &[], Some(&[]), restart);
         assert_eq!(sent, [], "restart {restart}");
         assert_discarded_with_the_server_folder_back(&sent, &trees);
+        for (id, shape) in [("sd", dir("s", "d")), ("sx", file("s", "y", 4))] {
+            assert_eq!(
+                trees.local().get(&id.into()).unwrap().shape,
+                shape,
+                "{restart}"
+            );
+        }
     }
 }
 
@@ -7271,9 +7295,13 @@ fn a_held_folder_moved_deeper_into_the_server_folder_still_goes_back_with_it() {
 #[test]
 fn a_server_file_moved_within_the_taken_along_folder_in_view_keeps_its_place() {
     let moved = [("sx", file("sd", "z", 4))];
-    let (sent, trees, _) =
+    let (sent, trees, commits) =
         discarded_after_a_server_folder_moved_in_while_excluded(&moved, &[], Some(&[]), false);
     assert_eq!(sent, [("move", "sx".into())]);
+    assert_eq!(
+        planned_move(&commits, "sx"),
+        Some(("sd".into(), "z".into()))
+    );
     assert_discarded_with_the_server_folder_back(&sent, &trees);
     assert_eq!(
         trees.local().get(&"sx".into()).unwrap().shape,
@@ -7284,10 +7312,13 @@ fn a_server_file_moved_within_the_taken_along_folder_in_view_keeps_its_place() {
 #[test]
 fn a_held_folder_whose_question_is_open_stays_in_the_server_folder_moved_into_an_excluded_one() {
     let moved = [("sf", file("hc", "c.txt", 5))];
-    let (sent, trees, commits) =
-        discarded_after_a_server_folder_moved_in_while_excluded(&moved, &[], None, false);
+    let (sent, mut trees, mut commits, mut ids) =
+        answered_discard_of_a_server_folder_moved_in(&moved, &[], None, false, false);
+    let asked = question(&commits);
     assert_eq!(sent, []);
-    assert!(!commits.questions().is_empty());
+    assert_eq!(quiet(&mut trees, &mut commits, &mut ids), []);
+    let open = question(&commits);
+    assert_eq!((open.id, open.answer), (asked.id, None));
     assert_eq!(
         trees.local().get(&"hc".into()).unwrap().shape,
         dir("s", "C.TXT")
@@ -7301,9 +7332,13 @@ fn a_held_folder_whose_question_is_open_stays_in_the_server_folder_moved_into_an
 #[test]
 fn a_server_folder_the_user_edited_in_keeps_the_excluded_folder_it_was_moved_into() {
     let edited = [("sx", file("s", "y", 9))];
-    let (sent, trees, _) =
+    let (sent, trees, commits) =
         discarded_after_a_server_folder_moved_in_while_excluded(&[], &edited, Some(&[]), false);
     assert!(sent.contains(&("create dir", "h".into())), "{sent:?}");
+    assert_eq!(
+        planned_move(&commits, "s"),
+        Some(("h".into(), "c.txt".into()))
+    );
     assert_eq!(
         trees.local().get(&"s".into()).unwrap().shape,
         dir("h", "c.txt")
@@ -7313,8 +7348,13 @@ fn a_server_folder_the_user_edited_in_keeps_the_excluded_folder_it_was_moved_int
 #[test]
 fn a_held_folder_the_user_adds_to_after_the_discard_is_sent_inside_the_server_folder_alone() {
     let after = [("sf", file("hc", "c.txt", 5))];
-    let (sent, trees, _) =
+    let (sent, trees, commits) =
         discarded_after_a_server_folder_moved_in_while_excluded(&[], &[], Some(&after), false);
+    assert_eq!(
+        planned_move(&commits, "sf"),
+        Some(("hc".into(), "c.txt".into()))
+    );
+    assert_eq!(trees.local().get(&"sf".into()).unwrap().shape, after[0].1);
     assert!(
         !sent.iter().any(|(_, id)| id == "h" || id == "s"),
         "{sent:?}"
@@ -7379,8 +7419,9 @@ fn a_server_file_edited_in_a_held_folder_inside_the_server_folder_keeps_its_edit
         ("sf", file("hc", "c.txt", 5)),
         ("sf", file("hc", "c.txt", 9)),
     ];
-    let (_, trees, _) =
+    let (sent, trees, _) =
         discarded_after_a_server_folder_moved_in_while_excluded(&before, &[], Some(&[]), false);
+    assert!(sent.contains(&("update", "sf".into())), "{sent:?}");
     assert_eq!(
         trees.local().get(&"sf".into()).unwrap().shape,
         file("hc", "c.txt", 9)
