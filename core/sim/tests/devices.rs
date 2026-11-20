@@ -13270,3 +13270,49 @@ fn publishing_a_rename_of_a_kept_copy_preserves_another_devices_edit() {
     ];
     converge(3, &phases).unwrap();
 }
+
+fn copy_to_b(target: usize) -> Step {
+    Step::Copy(Action {
+        kind: 0,
+        target,
+        parent: 0,
+        name: 2,
+        text: 0,
+    })
+}
+
+#[test]
+fn a_restart_takes_a_copy_with_the_bytes_of_a_download_that_crashed_before_staging() {
+    let mut schedule = vec![(0, file("a"))];
+    schedule.extend(commit(0));
+    schedule.extend([(1, DELIVER), (1, EFFECT), (1, EFFECT), (0, file("b"))]);
+    schedule.extend(commit(0));
+    schedule.extend([
+        (1, DELIVER),
+        (1, EFFECT),
+        (1, Step::Crash),
+        (1, copy_to_b(0)),
+    ]);
+    let world = converge(2, &[schedule]).unwrap();
+    assert_eq!(
+        world.seen["restart takes a file of the user for the download"],
+        1
+    );
+    assert_eq!(sorted_names(&world), [vec!["a", "b"], vec!["a", "b"]]);
+}
+
+#[test]
+fn a_server_copy_of_a_download_whose_bytes_a_restart_found_on_disk_is_caught() {
+    let mut world = on(&[Precision::Fine; 2]);
+    let mut downloaded = vec![(0, file("a"))];
+    downloaded.extend(commit(0));
+    world.phase(0, &downloaded).unwrap();
+    world.space_mut().copy_each_created_file();
+    let mut copied = vec![(0, copy_to_b(0))];
+    copied.extend(commit(0));
+    copied.extend([(1, DELIVER), (1, EFFECT), (1, Step::Crash)]);
+    let failure = world.phase(1, &copied).unwrap_err().to_string();
+    assert_eq!(world.seen["restart finds the effect in flight not done"], 1);
+    let expected = "write 1 is in 3 live nodes on the server";
+    assert!(failure.contains(expected), "{failure}");
+}
