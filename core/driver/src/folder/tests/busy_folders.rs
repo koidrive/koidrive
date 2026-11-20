@@ -255,3 +255,72 @@ fn a_folder_moved_away_from_a_busy_place_holds_no_upload_elsewhere() {
         "the edit outside logs is uploaded while the new logs stays busy"
     );
 }
+
+fn changed_while_uploaded(site: &Site, b: &mut Device) {
+    fs::write(site.root.join("logs/app.log"), b"started\nbuilding\n").unwrap();
+    b.scan_until(|b| !b.work.is_empty());
+    let Some(Work::Upload(upload)) = b.work.pop_front() else {
+        panic!("the content is uploaded first");
+    };
+    fs::write(
+        site.root.join("logs/app.log"),
+        b"started\nbuilding\nlinking\n",
+    )
+    .unwrap();
+    let step = (b.folder).uploaded(Err(ChunkError::SourceChanged {
+        hash: upload.chunks[0].hash.clone(),
+    }));
+    b.take(step).unwrap();
+    assert!(b.folder.disk.awaits_scan());
+}
+
+fn linked_at(remote: &Remote, path: &str) -> bool {
+    (remote.tree().get(path)).is_some_and(|id| server_size(remote, id) == 25)
+}
+
+#[test]
+fn a_folder_renamed_elsewhere_while_a_file_in_it_awaits_a_scan_keeps_the_file_s_last_edit() {
+    let mut remote = Remote::new();
+    let (site, mut b) = busy_logs(&mut remote, &SyncRules::default());
+    let (site_a, mut a) = linked(&mut remote, "a");
+    a.rest(&mut remote);
+    changed_while_uploaded(&site, &mut b);
+    fs::rename(site_a.root.join("logs"), site_a.root.join("archive")).unwrap();
+    a.rescan();
+    a.rest(&mut remote);
+    b.pull(&remote);
+    let kept = until(&mut b, &mut remote, |_, remote| {
+        linked_at(remote, "archive/app.log")
+    });
+    assert!(
+        kept,
+        "the last edit reaches the server at the folder's new place"
+    );
+    assert_eq!(
+        fs::read(site.root.join("archive/app.log")).unwrap(),
+        b"started\nbuilding\nlinking\n"
+    );
+}
+
+#[test]
+fn a_dropped_batch_keeps_a_changed_upload_waiting_for_the_scan_that_replaces_it() {
+    let mut remote = Remote::new();
+    let (site, mut b) = busy_logs(&mut remote, &SyncRules::default());
+    changed_while_uploaded(&site, &mut b);
+    let sections = b.folder.sections();
+    let batch = (0..100)
+        .find_map(|_| (sections.observe(&mut b.observer, Duration::from_millis(20))).unwrap())
+        .expect("the batch that answers the rescan");
+    b.folder.disk.forget_sections();
+    let entries = b.observer.snapshot().entries.len() as u64;
+    let step = b.folder.observed(batch, entries);
+    b.take(step).unwrap();
+    assert!(
+        b.folder.disk.awaits_scan(),
+        "the changed file waits for the scan that replaces the dropped batch"
+    );
+    let kept = until(&mut b, &mut remote, |_, remote| {
+        linked_at(remote, "logs/app.log")
+    });
+    assert!(kept, "the last edit reaches the server");
+}

@@ -870,7 +870,6 @@ impl Disk {
             observation.all_rules,
         );
         answered.narrow_folders(&mut self.awaited_rules);
-        answered.narrow(&mut self.awaited_scans);
         answered.narrow(&mut self.unscanned.effects);
         answered.narrow(&mut self.unscanned.dropped);
         if stamp.0 < self.forgotten {
@@ -886,10 +885,14 @@ impl Disk {
                 pending(&self.unscanned.all(&root), &observation.waiting),
             );
             let requested = self.sections.request(engine.resets(root.iter().cloned()));
+            for (awaited, _) in &mut self.awaited_scans {
+                *awaited = requested;
+            }
             self.unscanned.dropped.push((requested, root));
             self.hold(engine);
             return Ok(());
         }
+        answered.narrow(&mut self.awaited_scans);
         let mut scopes: BTreeSet<PathBuf> = (self.spans.iter())
             .filter(|(end, _)| *end > stamp.0)
             .flat_map(|(_, scopes)| scopes.iter().cloned())
@@ -977,7 +980,8 @@ impl Disk {
     /// places at or below them ([`Engine::await_scan`]): the rules file's folder after an effect on a rules file, both
     /// places of a moved folder, the folder of a removal that awaits a scan ([`Settled::AwaitsScan`]), and the paths of
     /// an upload that found the disk changed (design §5.10). A wait ends with the batch that answers the reset the
-    /// effect requested ([`Batch::answered`]). A rules folder stays held whole while a scope of its request that the
+    /// effect requested ([`Batch::answered`]), and a batch older than the sections remembered moves every scan wait to
+    /// the reset of the whole folder that replaces it. A rules folder stays held whole while a scope of its request that the
     /// scans have not settled overlaps it, and the other holds shrink to those scopes.
     pub fn awaits_scan(&self) -> bool {
         !self.awaited_rules.is_empty() || !self.awaited_scans.is_empty()
