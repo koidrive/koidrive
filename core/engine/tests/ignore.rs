@@ -2859,3 +2859,89 @@ fn a_moved_out_file_whose_create_is_in_flight_keeps_its_record_until_the_result_
     assert_eq!(ops(&mut trees), []);
     assert!(trees.displaced_local().is_empty());
 }
+
+#[test]
+fn a_folder_the_server_merges_into_a_live_folder_of_its_name_key_is_taken_over_under_the_live_name()
+{
+    let mut trees = trees(&[
+        ("a", Some(dir(ROOT, "A")), None, None),
+        ("c", Some(file("a", "c.txt", 1)), None, None),
+    ]);
+    trees.set_rules(&AT_ROOT, Source::Koiignore, rules("*.txt\n"));
+    trees.settle(&Default::default());
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    let sent = commits
+        .build(&mut trees, &mut ids, NOW, HISTORY, "me", 7)
+        .cloned()
+        .unwrap();
+    let sent: Vec<op::Op> = sent.ops.into_iter().map(|op| op.op.unwrap()).collect();
+    assert!(
+        matches!(&sent[..], [op::Op::CreateDir(create)] if create.name == "A"),
+        "{sent:?}"
+    );
+    trees.set_remote("b".into(), remote(dir(ROOT, "a")));
+    let merged = proto::OpResult {
+        code: proto::op_result::Code::MergedInto as i32,
+        node_id: "b".into(),
+        ..Default::default()
+    };
+    let result = proto::CommitResult {
+        seq: 1,
+        results: vec![merged],
+        ..Default::default()
+    };
+    commits.received(result).unwrap();
+    assert!(commits.acknowledge(&mut trees, 1));
+    trees.settle(commits.aliases());
+    trees.set_remote("r".into(), remote(file("b", "r", 2)));
+    let mut effects = Effects::default();
+    let mut done = Vec::new();
+    for _ in 0..8 {
+        trees.settle(commits.aliases());
+        if let Some(commit) = commits.build(&mut trees, &mut ids, NOW, HISTORY, "me", 7) {
+            panic!("{:?}", commit.ops);
+        }
+        let planned = effects.plan(&trees, commits.in_flight(), &mut ids, NOW, BatchLimit::ONE);
+        let Some(record) = planned.first().cloned() else {
+            continue;
+        };
+        let made = identity(100 + done.len() as u128);
+        effects
+            .done(
+                &mut trees,
+                commits.in_flight(),
+                &record.effect_id,
+                Some(made),
+            )
+            .unwrap();
+        done.push(record.effect);
+    }
+    assert!(
+        !done
+            .iter()
+            .any(|effect| matches!(effect, Effect::CreateDir { .. } | Effect::RemoveDir { .. })),
+        "{done:?}"
+    );
+    let shape = |id: &str| {
+        trees
+            .local()
+            .get(&NodeId::from(id))
+            .map(|node| node.shape.clone())
+    };
+    assert_eq!(shape("b"), Some(dir(ROOT, "a")));
+    assert_eq!(shape("a"), None);
+    assert_eq!(shape("c"), Some(file("b", "c.txt", 1)));
+    assert_eq!(
+        trees.local().get(&NodeId::from("c")).unwrap().identity.ino,
+        2
+    );
+    assert_eq!(shape("r"), Some(file("b", "r", 2)));
+    assert_eq!(
+        trees
+            .local()
+            .iter()
+            .filter(|(_, node)| node.shape.kind == Kind::Dir)
+            .count(),
+        1
+    );
+}
