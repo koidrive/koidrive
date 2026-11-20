@@ -126,10 +126,10 @@ impl Engine {
         self.owed
             .retain(|id| trees.local().get(id).is_none() && trees.synced().live(id).is_some());
         for id in self.owed.difference(&self.stored_owed) {
-            tx.set_owed_delete(id, true)?;
+            tx.set_owed_delete(&id.to_string(), true)?;
         }
         for id in self.stored_owed.difference(&self.owed) {
-            tx.set_owed_delete(id, false)?;
+            tx.set_owed_delete(&id.to_string(), false)?;
         }
         self.stored_owed.clone_from(&self.owed);
         for id in &changed.synced {

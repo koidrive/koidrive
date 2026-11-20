@@ -1038,7 +1038,14 @@ fn a_delete_waiting_at_a_restart_is_sent_whenever_a_rule_leaves_its_file_out() {
         fs::write(site.root.join("other.txt"), b"other").unwrap();
         a.scan_until(|a| a.folder.engine.commits.in_flight().is_some());
         fs::remove_file(site.root.join("docs/report.txt")).unwrap();
-        a.scan_until(|a| a.folder.engine.trees.local().get(&before).is_none());
+        a.scan_until(|a| {
+            a.folder
+                .engine
+                .trees
+                .local()
+                .get(&NodeId::from(&before))
+                .is_none()
+        });
         let ignore = || fs::write(site.root.join(".koiignore"), b"report.txt\n").unwrap();
         if rule == "before the stop" {
             ignore();
@@ -1089,7 +1096,14 @@ fn a_file_put_back_at_the_path_a_rule_leaves_out_keeps_its_node_on_the_server() 
         fs::write(site.root.join("other.txt"), b"other").unwrap();
         a.scan_until(|a| a.folder.engine.commits.in_flight().is_some());
         fs::remove_file(&report).unwrap();
-        a.scan_until(|a| a.folder.engine.trees.local().get(&before).is_none());
+        a.scan_until(|a| {
+            a.folder
+                .engine
+                .trees
+                .local()
+                .get(&NodeId::from(&before))
+                .is_none()
+        });
         let ignore = || fs::write(site.root.join(".koiignore"), b"report.txt\n").unwrap();
         let put_back = || {
             if folder != "docs" {
