@@ -1099,11 +1099,12 @@ impl Engine {
                     if let Some(node) = local_at(&self.trees, path)
                         && self.trees.ignored_local().contains(&node)
                         && let Some(local) = self.trees.local().get(&node)
-                        && ((self.trees.local_with_identity(&file_identity(*id)))
-                            .is_some_and(|other| *other != node)
-                            || (self.trees)
-                                .displaced_with_identity(&file_identity(*id), local.shape.kind)
-                                .is_some()) =>
+                        && self.replacement_is_held(
+                            &node,
+                            path,
+                            file_identity(*id),
+                            local.shape.kind,
+                        ) =>
                 {
                     lost = Observed::Removed {
                         path: path.clone(),
@@ -1434,6 +1435,28 @@ impl Engine {
             .collect()
     }
 
+    fn replacement_is_held(
+        &self,
+        node: &NodeId,
+        path: &Path,
+        identity: FileIdentity,
+        kind: Kind,
+    ) -> bool {
+        let found = self.trees.found_local();
+        let at = found.get(node).map_or(path, PathBuf::as_path);
+        self.trees.locals_with_identity(&identity).any(|other| {
+            other != node
+                && if let Some(other_at) = found.get(other) {
+                    volume_at(&self.mounts, other_at) == volume_at(&self.mounts, at)
+                } else {
+                    same_volume(&self.trees, &self.mounts, other, at)
+                }
+        }) || self
+            .trees
+            .displaced_with_identity(&identity, kind)
+            .is_some()
+    }
+
     pub fn found(&self) -> BTreeMap<PathBuf, PathBuf> {
         if !self.trees.unknown_rules().is_empty() {
             return BTreeMap::new();
@@ -1746,15 +1769,14 @@ fn same_volume(
     node: &NodeId,
     path: &Path,
 ) -> bool {
-    let volume = |path: &Path| {
-        path.ancestors()
-            .find(|above| mounts.contains_key(*above))
-            .map(Path::to_path_buf)
-    };
     trees
         .local()
         .path(node)
-        .is_none_or(|at| volume(&at) == volume(path))
+        .is_none_or(|at| volume_at(mounts, &at) == volume_at(mounts, path))
+}
+
+fn volume_at<'a>(mounts: &BTreeMap<PathBuf, Mount>, path: &'a Path) -> Option<&'a Path> {
+    path.ancestors().find(|above| mounts.contains_key(*above))
 }
 
 /// The names from the root to `path`, or `None` when one of them is not a name L can hold.
@@ -4066,24 +4088,29 @@ mod tests {
 
     #[test]
     fn a_recorded_node_whose_place_holds_another_nodes_identity_is_gone() {
-        let (_dir, mut engine) = mapper();
-        engine.observe(
-            &[
-                created("a", ino(1), false, 1),
-                created("b", ino(2), false, 2),
-            ],
-            0,
-        );
-        let (a, _, _) = holding(&engine, "a").unwrap();
-        engine.trees.ignore_local(&a);
-        let reidentified = Observed::Reidentified {
-            path: "a".into(),
-            id: ino(2),
-        };
-        engine.observe(&[reidentified], 1);
-        assert!(holding(&engine, "a").is_none());
-        let identity = holding(&engine, "b").map(|(_, identity, _)| identity);
-        assert_eq!(identity, Some(file_identity(ino(2))));
+        for (found, same_volume) in [("dist/a", true), ("disk/dist/a", false)] {
+            let (_dir, mut engine) = mapper();
+            engine.mounts.insert("disk".into(), Mount::Unidentified);
+            engine.observe(
+                &[
+                    created("a", ino(1), false, 1),
+                    created("b", ino(2), false, 2),
+                ],
+                0,
+            );
+            let (a, _, _) = holding(&engine, "a").unwrap();
+            engine.trees.ignore_local(&a);
+            engine.trees.find_local(&a, found.into());
+            let reidentified = Observed::Reidentified {
+                path: "a".into(),
+                id: ino(2),
+            };
+            engine.observe(&[reidentified], 1);
+            let replaced = holding(&engine, "a").map(|(_, id, _)| id);
+            assert_eq!(replaced, (!same_volume).then(|| file_identity(ino(2))));
+            let identity = holding(&engine, "b").map(|(_, identity, _)| identity);
+            assert_eq!(identity, Some(file_identity(ino(2))));
+        }
     }
 
     /// Names that the edits of [`batches`] pick from, few enough that entries often take each other's names.
