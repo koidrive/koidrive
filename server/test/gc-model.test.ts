@@ -1168,13 +1168,19 @@ const settings = { numRuns: cases, examples: (saved as Step[][]).map((sequence):
 
 async function run(sequence: Step[], directed = false): Promise<World> {
   const world = await newWorld();
-  for (const [i, next] of sequence.entries()) {
-    vi.setSystemTime(Date.now() + 1000);
-    const took = await act(world, next);
-    await snapshot(world);
-    await check(world);
-    if (!took && directed) throw new Error(`directed step ${i}, ${JSON.stringify(next)}, did not take effect`);
+  try {
+    for (const [i, next] of sequence.entries()) {
+      vi.setSystemTime(Date.now() + 1000);
+      const took = await act(world, next);
+      await snapshot(world);
+      await check(world);
+      if (!took && directed) throw new Error(`directed step ${i}, ${JSON.stringify(next)}, did not take effect`);
+    }
+  } finally {
+    await finishCompaction(world);
   }
+  await snapshot(world);
+  await check(world);
   return world;
 }
 
