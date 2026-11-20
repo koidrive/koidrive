@@ -3095,7 +3095,7 @@ impl Trees {
 
     /// Records `at` as where the search of the ignored folders found the node that [`Trees::ignore_local`]
     /// recorded. Changes nothing for a node it did not record.
-    pub fn find_local(&mut self, id: &str, at: PathBuf) {
+    pub fn find_local(&mut self, id: &NodeId, at: PathBuf) {
         if self.outside.contains(id) {
             self.found.insert(id.to_owned(), at);
         }

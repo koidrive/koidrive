@@ -2231,7 +2231,7 @@ mod tests {
         }
     }
 
-    struct LooksInVain(Scripted);
+    struct LooksInVain(Scripted, Looked);
 
     impl Watcher for LooksInVain {
         fn poll(&mut self, timeout: Duration) -> Result<Poll, FsError> {
@@ -2252,13 +2252,24 @@ mod tests {
             _: &BTreeMap<PathBuf, PathBuf>,
         ) -> Result<Vec<(PathBuf, Looked)>, FsError> {
             Ok((wanted.keys())
-                .map(|path| (path.clone(), Looked::Gone))
+                .map(|path| (path.clone(), self.1.clone()))
                 .collect())
         }
     }
 
     #[test]
     fn a_recorded_file_moved_into_a_pending_folder_is_not_reported_removed() {
+        a_pending_folder_can_still_hold_the_original(Looked::Gone);
+    }
+
+    #[test]
+    fn a_replacement_waits_for_the_original_in_a_pending_folder() {
+        a_pending_folder_can_still_hold_the_original(Looked::Replaced(FileId::stored(
+            1, None, None,
+        )));
+    }
+
+    fn a_pending_folder_can_still_hold_the_original(looked: Looked) {
         let dir = marked();
         let root = dir.path();
         fs::create_dir(root.join("logs")).unwrap();
@@ -2276,25 +2287,37 @@ mod tests {
             root: observer.scanned(),
             ..Poll::default()
         };
-        observer.watcher = Box::new(LooksInVain(Scripted {
-            snapshot: observer.snapshot().clone(),
-            polls: vec![busy, settled],
-        }));
+        observer.watcher = Box::new(LooksInVain(
+            Scripted {
+                snapshot: observer.snapshot().clone(),
+                polls: vec![busy, settled],
+            },
+            looked.clone(),
+        ));
         let recorded = PathBuf::from("dist/report.docx");
         let kind = EntryKind::File;
-        observer.seek(BTreeMap::from([(recorded.clone(), Known { kind, id })]));
-        let busy = observer.observe(Duration::ZERO).unwrap();
+        observer.seek(
+            BTreeMap::from([(recorded.clone(), Known { kind, id })]),
+            BTreeMap::new(),
+        );
+        let busy = observer.observe(Duration::ZERO).unwrap().unwrap();
         assert!(
-            busy.is_none_or(|batch| batch.changes.is_empty()),
-            "the file is in logs, which no scan has settled"
+            matches!(&busy.changes[..], [Observed::Found { path, at }] if *path == recorded && at == Path::new("logs/report.docx"))
         );
         fs::remove_file(&moved).unwrap();
         let settled =
             (observer.observe(Duration::ZERO).unwrap()).expect("the batch after logs settled");
-        assert!(matches!(
-            settled.changes.as_slice(),
-            [Observed::Removed { kind: EntryKind::File, path }] if *path == recorded
-        ));
+        match looked {
+            Looked::Gone => assert!(matches!(
+                settled.changes.as_slice(),
+                [Observed::Removed { kind: EntryKind::File, path }] if *path == recorded
+            )),
+            Looked::Replaced(id) => assert!(matches!(
+                settled.changes.as_slice(),
+                [Observed::Reidentified { path, id: applied }] if *path == recorded && *applied == id
+            )),
+            Looked::Found(_) => unreachable!(),
+        }
     }
 
     /// The first scan of an observer saw `proj`, a folder it knew, disappear and could not settle it, so it may not

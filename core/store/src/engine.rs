@@ -1384,7 +1384,7 @@ impl Tx<'_> {
         )?;
         for (node, at) in found {
             place.execute(params![
-                node,
+                node.to_string(),
                 at.as_ref().map(|at| at.as_os_str().as_bytes())
             ])?;
         }
