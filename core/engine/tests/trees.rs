@@ -1448,7 +1448,7 @@ fn known_rules_above_a_folder_whose_copy_went_retry_the_release_below_it() {
 
 #[test]
 fn a_node_that_awaits_a_scan_holds_itself_and_what_l_s_or_r_places_below_it() {
-    let mut trees = Trees::new(ROOT);
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
     trees.set_local("logs".into(), local(dir(ROOT, "logs"), 1));
     trees.set_local("app".into(), local(file("logs", "app.log", 1), 2));
     trees.set_local("notes".into(), local(file(ROOT, "notes.txt", 3), 3));
@@ -1464,7 +1464,7 @@ fn a_node_that_awaits_a_scan_holds_itself_and_what_l_s_or_r_places_below_it() {
 
 #[test]
 fn a_path_that_awaits_a_scan_holds_what_r_places_there_later_and_nothing_else() {
-    let mut trees = Trees::new(ROOT);
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
     trees.set_local("notes".into(), local(file(ROOT, "notes.txt", 1), 1));
     trees.await_scan([vec!["logs".to_owned()]]);
     assert!(!trees.held(&NodeId::from("notes")));
