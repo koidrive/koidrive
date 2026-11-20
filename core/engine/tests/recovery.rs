@@ -6175,32 +6175,41 @@ fn an_answer_commits_when_an_earlier_carried_move_takes_another_moved_node_out_o
             .chain([ROOT.to_owned()])
             .collect();
         let nodes: Vec<(String, Shape, bool)> = (sent.iter())
-            .map(|op| match &op.op {
+            .flat_map(|op| match &op.op {
                 Some(op::Op::Move(moved)) => {
                     assert!(live.contains(&moved.new_parent_id), "{sent:?}");
+                    let remote = trees.remote().get(&moved.node_id.as_str().into()).unwrap();
+                    let revives = !live.contains(&moved.node_id);
+                    let mut placed: Vec<(String, Shape, bool)> = (trees.remote().iter())
+                        .filter(|(id, node)| {
+                            revives
+                                && node.trashed
+                                && node.trash_group == remote.trash_group
+                                && !live.contains(&id.to_string())
+                        })
+                        .map(|(id, node)| (id.to_string(), node.shape.clone(), false))
+                        .collect();
+                    live.extend(placed.iter().map(|(id, ..)| id.clone()));
                     live.insert(moved.node_id.clone());
-                    let id = NodeId::from(moved.node_id.as_str());
                     let shape = Shape {
                         parent: moved.new_parent_id.as_str().into(),
                         name: moved.new_name.clone(),
-                        ..trees.remote().get(&id).unwrap().shape.clone()
+                        ..remote.shape.clone()
                     };
-                    (moved.node_id.clone(), shape, false)
+                    placed.push((moved.node_id.clone(), shape, false));
+                    placed
                 }
                 Some(op::Op::CreateDir(create)) => {
                     assert!(live.contains(&create.parent_id), "{sent:?}");
                     live.insert(create.node_id.clone());
-                    (
-                        create.node_id.clone(),
-                        dir(&create.parent_id, &create.name),
-                        false,
-                    )
+                    let shape = dir(&create.parent_id, &create.name);
+                    vec![(create.node_id.clone(), shape, false)]
                 }
                 Some(op::Op::Delete(delete)) => {
                     live.remove(&delete.node_id);
                     let id = NodeId::from(delete.node_id.as_str());
                     let shape = trees.remote().get(&id).unwrap().shape.clone();
-                    (delete.node_id.clone(), shape, true)
+                    vec![(delete.node_id.clone(), shape, true)]
                 }
                 other => panic!("unexpected op {other:?}"),
             })
