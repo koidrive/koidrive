@@ -1362,7 +1362,7 @@ impl Engine {
                 }
             }
         }
-        self.continue_saves(now_ms, &moving, &mut touched, &mut gone);
+        self.continue_saves(now_ms, &moving, &mut touched, &mut gone, copy_volume);
         for id in parked {
             if self.trees.local().get(&id).is_some_and(|node| node.parked) {
                 self.remove(&id, &moving, false, false, &mut touched, &mut gone);
@@ -1420,6 +1420,7 @@ impl Engine {
         moving: &BTreeSet<NodeId>,
         touched: &mut BTreeSet<NodeId>,
         gone: &mut Gone,
+        copy_volume: impl Fn(&Self, &Path, FileId) -> Option<VolumeId>,
     ) {
         let sent =
             |id: &NodeId| (self.commits.in_flight()).is_some_and(|flight| flight.deletes_node(id));
@@ -1481,6 +1482,8 @@ impl Engine {
                 &path,
                 EntryKind::File,
                 identity,
+                false,
+                copy_volume(self, &path, file_id(identity)),
                 content,
                 None,
                 now_ms,
