@@ -17,7 +17,7 @@ import {
 } from "../gen/koidrive/v1/commit_pb";
 import { type ChangeRecord, ChangeRecordSchema, type ChunkRef, type Content } from "../gen/koidrive/v1/model_pb";
 import { Error_Code } from "../gen/koidrive/v1/rpc_pb";
-import type { Sql } from "../host";
+import type { Sql, SqlRow } from "../host";
 import { toHex, uuidv7 } from "../ids";
 import type { OpEffect } from "../policy";
 import {
@@ -95,6 +95,11 @@ interface DeleteView {
   seenContent: Set<string>;
 }
 
+interface StoredRows {
+  node: SqlRow;
+  intents: SqlRow[];
+}
+
 interface LostContent {
   node: NodeRow;
   content: FieldIntent;
@@ -126,6 +131,9 @@ export class CommitApplier {
   private readonly trashed = new Set<string>();
   private readonly madeCopies = new Set<string>();
   private readonly purged: ChangeRecord[] = [];
+  private readonly targets = new Set<string>();
+  private readonly named = new Set<string>();
+  private readonly revivedAncestors = new Map<string, StoredRows>();
   private trashings = 0;
   private intents!: OpIntents;
 
@@ -141,10 +149,12 @@ export class CommitApplier {
       this.parentBefore = new Map();
       this.intents = resolveIntents(op, { deviceId: this.dev, seq: this.ctx.seq, nowMs: this.ctx.nowMs });
       const outcome = this.applyOp(op, index);
+      if (op.op.case && op.op.case !== "delete") this.named.add(this.id(op.op.value.nodeId));
       if (outcome.code === OpResult_Code.CONFLICT_COPY && !this.incoming("content").carried) this.madeCopies.add(outcome.nodeId);
       if (!this.ctx.authorize(op, this.effect(op))) throw new CallFailure(Error_Code.FORBIDDEN, `op ${index} is not allowed for this device`);
       return outcome;
     });
+    this.retrashUnneededAncestors();
     const changes = [...this.touched].map((nodeId) =>
       create(ChangeRecordSchema, { change: { case: "node", value: nodeState(this.sql, getNode(this.sql, nodeId)!) } }),
     );
@@ -192,6 +202,11 @@ export class CommitApplier {
   }
 
   private touch(nodeId: string, previousParent?: string | null): void {
+    this.report(nodeId, previousParent);
+    this.targets.add(nodeId);
+  }
+
+  private report(nodeId: string, previousParent?: string | null): void {
     this.touched.add(nodeId);
     this.changed.add(nodeId);
     if (previousParent !== undefined && !this.parentBefore.has(nodeId)) this.parentBefore.set(nodeId, previousParent);
@@ -268,7 +283,7 @@ export class CommitApplier {
       if (!intent.replay) continue;
       const holder = holdersOf(this.sql, intent.id).find((found) => found.node_id !== nodeId);
       if (!holder) continue;
-      this.touch(holder.node_id);
+      this.report(holder.node_id);
       return true;
     }
     return false;
@@ -387,7 +402,7 @@ export class CommitApplier {
     }
   }
 
-  private reviveOne(node: NodeRow, parentId: string, desiredName: string, parentDev: string): { name: string; renamed: boolean } {
+  private reviveOne(node: NodeRow, parentId: string, desiredName: string, parentDev: string, ancestor = false): { name: string; renamed: boolean } {
     const picked = this.pickName(parentId, desiredName, node.node_id);
     this.sql.exec(
       `UPDATE nodes SET status = 1, parent_id = ?, parent_rev = ?, parent_dev = ?, name = ?, name_key = ?, trash_group = NULL,
@@ -405,7 +420,8 @@ export class CommitApplier {
     );
     this.setIntent(node.node_id, "status");
     if (parentId !== node.parent_id || picked.name !== node.name) this.setIntent(node.node_id, "place");
-    this.touch(node.node_id, node.parent_id);
+    if (ancestor) this.report(node.node_id, node.parent_id);
+    else this.touch(node.node_id, node.parent_id);
     return picked;
   }
 
@@ -414,7 +430,37 @@ export class CommitApplier {
     for (let cur = getNode(this.sql, nodeId); cur && cur.status === NodeStatusValue.TRASHED; cur = getNode(this.sql, cur.parent_id ?? "")) {
       chain.push(cur);
     }
-    for (const node of chain.reverse()) this.reviveOne(node, node.parent_id!, node.name, "");
+    for (const node of chain.reverse()) {
+      const ancestor = !this.targets.has(node.node_id);
+      if (ancestor && !this.revivedAncestors.has(node.node_id)) this.revivedAncestors.set(node.node_id, this.storedRows(node.node_id));
+      this.reviveOne(node, node.parent_id!, node.name, "", ancestor);
+    }
+  }
+
+  private storedRows(nodeId: string): StoredRows {
+    return {
+      node: this.sql.exec("SELECT * FROM nodes WHERE node_id = ?", nodeId).one(),
+      intents: this.sql.exec("SELECT * FROM field_intents WHERE node_id = ?", nodeId).toArray(),
+    };
+  }
+
+  private retrashUnneededAncestors(): void {
+    const needed = new Set<string>();
+    for (const nodeId of this.targets) {
+      for (let cur = getNode(this.sql, nodeId); cur?.status === NodeStatusValue.LIVE && !needed.has(cur.node_id); cur = getNode(this.sql, cur.parent_id ?? "")) {
+        needed.add(cur.node_id);
+      }
+    }
+    for (const [nodeId, { node, intents }] of this.revivedAncestors) {
+      if (this.named.has(nodeId) || needed.has(nodeId) || getNode(this.sql, nodeId)?.status !== NodeStatusValue.LIVE) continue;
+      const columns = Object.keys(node).filter((column) => column !== "node_id");
+      this.sql.exec(`UPDATE nodes SET ${columns.map((column) => `${column} = ?`).join(", ")} WHERE node_id = ?`, ...columns.map((column) => node[column]!), nodeId);
+      this.sql.exec("DELETE FROM field_intents WHERE node_id = ?", nodeId);
+      for (const row of intents) {
+        const fields = Object.keys(row);
+        this.sql.exec(`INSERT INTO field_intents (${fields.join(", ")}) VALUES (${fields.map(() => "?").join(", ")})`, ...fields.map((field) => row[field]!));
+      }
+    }
   }
 
   private reviveGroup(parentId: string, group: string): void {
@@ -858,7 +904,7 @@ export class CommitApplier {
       node.node_id,
     );
     this.setIntent(node.node_id, "status");
-    this.touch(node.node_id);
+    this.report(node.node_id);
     if (node.kind === NodeKindValue.FILE) this.trashed.add(node.node_id);
   }
 
@@ -947,7 +993,7 @@ export class CommitApplier {
     if (added) {
       for (const member of rows<{ node_id: string }>(this.sql.exec("SELECT node_id FROM nodes WHERE trash_group = ?", group))) {
         this.sql.exec("UPDATE nodes SET meta_rev = ?, meta_dev = ? WHERE node_id = ?", this.ctx.seq, this.dev, member.node_id);
-        this.touch(member.node_id);
+        this.report(member.node_id);
       }
     }
     this.trashCopies(held, group);
