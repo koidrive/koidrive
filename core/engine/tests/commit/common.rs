@@ -142,7 +142,11 @@ fn synced(id: &'static str, shape: Shape) -> Row {
 }
 
 fn build(commits: &mut Commits, trees: &mut Trees, ids: &mut IdGen) -> Option<proto::Commit> {
-    commits.build(trees, ids, NOW, HISTORY, "me", 7).cloned()
+    let built = commits.build(trees, ids, NOW, HISTORY, "me", 7).cloned();
+    if let Err(why) = commits.check_buildable() {
+        panic!("{why}");
+    }
+    built
 }
 
 fn ops(commit: &proto::Commit) -> Vec<op::Op> {

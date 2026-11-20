@@ -1069,7 +1069,7 @@ impl Trees {
                 return false;
             }
             let Some(new) = new else {
-                return !has_children(id);
+                return !has_children(id) && !self.deleted_around_parked(id);
             };
             if new.kind != Kind::Dir && has_children(id) {
                 return false;
@@ -2361,6 +2361,19 @@ impl Trees {
         self.forget_local(id);
     }
 
+    /// Whether a parked node stays parked because none of L, S and R holds the folder it was in,
+    /// as for one deleted before it reached the server (section 2.5).
+    pub fn stays_parked(&self, id: &NodeId) -> bool {
+        let Some(node) = self.l.get(id).filter(|node| node.parked) else {
+            return false;
+        };
+        let folder = &node.shape.parent;
+        *folder != self.l.root
+            && self.l.get(folder).is_none()
+            && self.acknowledged(folder).is_none()
+            && self.r.get(folder).is_none()
+    }
+
     fn forget_local(&mut self, id: &NodeId) {
         if let Some(provenance) = self.content_provenance.get_mut(id) {
             provenance.local = None;
@@ -2844,6 +2857,28 @@ impl Trees {
         id: &'a NodeId,
     ) -> impl Iterator<Item = &'a NodeId> + 'a {
         self.local_children(id).chain(self.l_parked.children(id))
+    }
+
+    pub(crate) fn deleted_around_parked(&self, id: &NodeId) -> bool {
+        self.l.get(id).is_none()
+            && (self.l_parked.children(id).next().is_some()
+                || self
+                    .s_names
+                    .children(id)
+                    .any(|child| self.deleted_around_parked(child)))
+    }
+
+    pub(crate) fn created_again(&self, id: &NodeId) -> bool {
+        self.r.get(id).is_none()
+            && self.deleted_around_parked(id)
+            && (self
+                .l_parked
+                .children(id)
+                .any(|child| self.acknowledged(child).is_none())
+                || self
+                    .s_names
+                    .children(id)
+                    .any(|child| self.created_again(child)))
     }
 
     fn s_children<'a>(&'a self, id: &'a NodeId) -> impl Iterator<Item = &'a NodeId> + 'a {
@@ -5866,6 +5901,7 @@ impl Trees {
                 below.push(child);
             }
         }
+        lost.retain(|id| !self.deleted_around_parked(id));
         let mut waits = BTreeSet::new();
         for (_, shape) in self.s.iter().filter(|(id, _)| !lost.contains(*id)) {
             let mut parent = &shape.parent;
@@ -6698,7 +6734,7 @@ impl Trees {
                     let fixed = |other: &&NodeId| !candidates.contains(other);
                     let fixed_child = self.s_names.children(id).any(|c| fixed(&c));
                     let Some(shape) = target(id) else {
-                        return fixed_child;
+                        return fixed_child || self.deleted_around_parked(id);
                     };
                     (fixed_child && shape.kind != Kind::Dir)
                         || (shape.parent != *root
@@ -6852,7 +6888,7 @@ impl Trees {
     pub(crate) fn fits_synced(&self, id: &NodeId, next: Option<&Shape>) -> bool {
         let has_children = self.s_names.children(id).next().is_some();
         let Some(shape) = next else {
-            return !has_children;
+            return !has_children && !self.deleted_around_parked(id);
         };
         if has_children && shape.kind != Kind::Dir {
             return false;
@@ -7767,8 +7803,11 @@ mod release {
 
     impl Trees {
         pub(super) fn release(&self, group: Vec<(NodeId, Option<Shape>)>) -> Option<Released> {
-            let held = |id: &NodeId| self.l.get(id).is_none() && self.pending_at(id);
-            (!group.iter().any(|(id, _)| held(id))).then_some(Released(group))
+            let held = |id: &NodeId, next: &Option<Shape>| {
+                (self.l.get(id).is_none() && self.pending_at(id))
+                    || (next.is_none() && self.deleted_around_parked(id))
+            };
+            (!group.iter().any(|(id, next)| held(id, next))).then_some(Released(group))
         }
 
         pub(super) fn take_released(&mut self, Released(group): Released) -> Vec<NodeId> {

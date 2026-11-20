@@ -2656,6 +2656,9 @@ impl World {
                     .map(|(id, node)| (node.identity.ino, id.clone()))
                     .collect();
                 commits.build(trees, ids, NOW as u64, &history, device_id, cursor.clone());
+                if let Err(why) = commits.check_buildable() {
+                    panic!("{why}");
+                }
                 let ops = commits.in_flight().map(|flight| &flight.commit.ops);
                 if let Some(placed) =
                     (ops.into_iter().flatten()).find_map(|op| excluded_op(trees, op))

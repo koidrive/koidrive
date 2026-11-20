@@ -5937,3 +5937,41 @@ fn a_file_the_log_no_longer_reaches_back_to_is_held_when_its_synced_version_post
         );
     }
 }
+
+#[test]
+fn a_folder_deleted_around_a_parked_folder_after_a_rewind_is_created_again_once_the_person_keeps_it()
+ {
+    for answer in [Answer::Keep, Answer::Discard] {
+        let (d, f) = (dir(ROOT, "d"), dir("d", "f"));
+        let mut trees = trees(
+            &[("d", d.clone()), ("f", f.clone())],
+            &[("d", d.clone()), ("f", f.clone())],
+            &[live("d", d), live("f", f)],
+        );
+        let parked = LocalNode {
+            parked: true,
+            ..trees.local().get(&"f".into()).unwrap().clone()
+        };
+        trees.set_local("f".into(), parked);
+        trees.remove_remote(&"d".into());
+        trees.remove_remote(&"f".into());
+        trees.remove_local(&"d".into());
+        trees.settle(&Default::default());
+        let (mut commits, mut ids) = recovered(&mut trees, 0);
+        let question = asked(&commits, RecoveryGroup::CreatedAfterRestorePoint, &["f"]);
+        assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
+        assert!(commits.decide(&mut trees, &question.id, answer));
+        trees.settle(commits.aliases());
+        let sent = ops(&mut commits, &mut trees, &mut ids);
+        match answer {
+            Answer::Keep => assert_eq!(
+                sent,
+                [
+                    ("create dir", "d".to_owned()),
+                    ("create dir", "f".to_owned())
+                ]
+            ),
+            _ => assert_eq!(sent, []),
+        }
+    }
+}

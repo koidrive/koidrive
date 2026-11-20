@@ -397,6 +397,9 @@ impl Bench {
                 ))
                 .cloned()
             });
+            if let Err(why) = self.commits.check_buildable() {
+                panic!("{why}");
+            }
             let Some(commit) = built else {
                 let asked = (self.commits.questions().iter())
                     .find(|question| matches!(question.kind, QuestionKind::MassDelete { .. }))
