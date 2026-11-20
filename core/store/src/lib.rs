@@ -1080,6 +1080,44 @@ impl Tx<'_> {
         Ok(())
     }
 
+    /// The change time of each folder inside the folder, relative to its root, that its scans were last not allowed to
+    /// read while no removal waited on it, or `None` while the store predates these records.
+    pub fn unread_folders(&self) -> Result<Option<BTreeMap<PathBuf, i64>>> {
+        let recorded: bool = self.0.query_row(
+            "SELECT EXISTS (SELECT 1 FROM unread_folders_recorded)",
+            [],
+            |row| row.get(0),
+        )?;
+        if !recorded {
+            return Ok(None);
+        }
+        let mut stmt = self
+            .0
+            .prepare_cached("SELECT path, ctime_ns FROM unread_folders")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                PathBuf::from(OsStr::from_bytes(&row.get::<_, Vec<u8>>(0)?)),
+                row.get(1)?,
+            ))
+        })?;
+        Ok(Some(rows.collect::<rusqlite::Result<_>>()?))
+    }
+
+    pub fn set_unread_folders(&self, unread: &BTreeMap<PathBuf, i64>) -> Result<()> {
+        self.0.execute(
+            "INSERT OR IGNORE INTO unread_folders_recorded (only) VALUES (0)",
+            [],
+        )?;
+        self.0.execute("DELETE FROM unread_folders", [])?;
+        let mut stmt = self
+            .0
+            .prepare_cached("INSERT INTO unread_folders (path, ctime_ns) VALUES (?1, ?2)")?;
+        for (path, ctime_ns) in unread {
+            stmt.execute(params![path.as_os_str().as_bytes(), ctime_ns])?;
+        }
+        Ok(())
+    }
+
     /// Every question, answered or not, oldest first.
     pub fn questions(&self) -> Result<Vec<StoredQuestion>> {
         let mut stmt = self.0.prepare_cached(

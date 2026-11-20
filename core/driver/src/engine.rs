@@ -24,7 +24,7 @@ use koidrive_engine::tree::{
     Content, FileIdentity, Kind, LocalNode, Names, Node, NodeId, RemoteNode, Shape, Tree,
     same_content,
 };
-use koidrive_fs::{Ctime, Entry, EntryKind, FileId, Known, Mount, Snapshot};
+use koidrive_fs::{Ctime, Entry, EntryKind, FileId, Known, Mount, Snapshot, Unread};
 use koidrive_proto::v1::{
     CaughtUp, ChangeRecord, CommitRecord, NodeKind, NodeState, TrashPage, TreePage, change_record,
 };
@@ -52,6 +52,7 @@ pub(crate) struct Engine {
     pub recovery_cause: Option<RecoveryCause>,
     unscanned: Option<BTreeSet<NodeId>>,
     pub mounts: BTreeMap<PathBuf, Mount>,
+    pub unread: Option<BTreeMap<PathBuf, i64>>,
     stored_ctimes: BTreeMap<NodeId, i64>,
     unstored_ctimes: BTreeMap<NodeId, i64>,
     pub local_written_since_load: bool,
@@ -744,6 +745,20 @@ impl Engine {
         }
         Some(Snapshot {
             entries,
+            unread: (self.unread.as_ref()).map(|unread| {
+                (unread.iter())
+                    .map(|(dir, ctime_ns)| {
+                        let ctime_ns = Some(i128::from(*ctime_ns));
+                        (
+                            dir.clone(),
+                            Unread {
+                                ctime_ns,
+                                ..Unread::default()
+                            },
+                        )
+                    })
+                    .collect()
+            }),
             ..Snapshot::default()
         })
     }
@@ -1638,6 +1653,7 @@ pub(crate) struct Stored {
     ids: Option<Vec<u8>>,
     cursor: Option<Cursor>,
     mounts: BTreeMap<PathBuf, Mount>,
+    unread: Option<BTreeMap<PathBuf, i64>>,
     ctimes: BTreeMap<NodeId, i64>,
 }
 
@@ -1649,6 +1665,7 @@ impl Stored {
             ids: None,
             cursor: None,
             mounts: BTreeMap::new(),
+            unread: None,
             ctimes: BTreeMap::new(),
         }
     }
@@ -1747,6 +1764,7 @@ impl Stored {
         self.ids = tx.id_generator()?;
         self.cursor = tx.cursor()?;
         self.mounts = tx.volume_mounts()?;
+        self.unread = tx.unread_folders()?;
         Ok(true)
     }
 
@@ -1757,6 +1775,7 @@ impl Stored {
             ids,
             cursor,
             mounts,
+            unread,
             ctimes,
         } = self;
         if abandoned() {
@@ -1798,6 +1817,7 @@ impl Stored {
             recovery_cause: None,
             unscanned: None,
             mounts,
+            unread,
             stored_ctimes: ctimes,
             unstored_ctimes: BTreeMap::new(),
             local_written_since_load: false,
@@ -2662,6 +2682,7 @@ mod tests {
             recovery_cause: None,
             unscanned: None,
             mounts: BTreeMap::new(),
+            unread: Some(BTreeMap::new()),
             stored_ctimes: BTreeMap::new(),
             unstored_ctimes: BTreeMap::new(),
             local_written_since_load: false,

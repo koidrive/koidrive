@@ -40,6 +40,7 @@ upgrade_case!(schema_forget_sync_state, |store| {
     copy.transaction(|tx| {
         tx.set_root_tokens(&tokens)?;
         tx.set_volume_mounts(&mounts)?;
+        tx.set_unread_folders(&std::collections::BTreeMap::from([("Private".into(), 42)]))?;
         tx.set_id_generator(&7u64.to_le_bytes())
     })
     .unwrap();
@@ -50,6 +51,7 @@ upgrade_case!(schema_forget_sync_state, |store| {
         assert_eq!(tx.volume_mounts()?, mounts);
         assert_eq!(tx.id_generator()?, Some(7u64.to_le_bytes().to_vec()));
         assert_eq!(tx.cursor()?, None);
+        assert_eq!(tx.unread_folders()?, None);
         assert_eq!(tx.engine_state()?, koidrive_store::EngineState::default());
         Ok::<_, koidrive_store::Error>(())
     })
@@ -72,7 +74,7 @@ upgrade_case!(schema_forget_sync_state, |store| {
          lost_positions lost_shapes missing_nodes moved_here node_maps node_sets open_question_items open_question_members \
          open_question_shapes open_question_frozen open_questions past_positions pending_finishes published_nodes questions \
          recorded_nodes remote_cursor remote_nodes removed_from removed_here replaced_versions resends synced_nodes synced_positions \
-         taken_answers trash_groups trashed_here unobserved unseen_changes unsent_creates unsent_edits unsent_marks unsent_moves waiting_updates \
+         taken_answers trash_groups trashed_here unobserved unread_folders unread_folders_recorded unseen_changes unsent_creates unsent_edits unsent_marks unsent_moves waiting_updates \
          watched_contents watched_positions";
     let mut tables: Vec<&str> = kept.iter().copied().chain(forgotten.split_whitespace()).collect();
     tables.sort();

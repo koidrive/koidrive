@@ -911,6 +911,7 @@ fn observe(a: &mut Device, changes: Vec<Observed>) {
             mounts: BTreeMap::new(),
             detached: BTreeMap::new(),
             ctimes: BTreeMap::new(),
+            unread: None,
         },
     };
     let step = a.folder.observed(batch, 1);

@@ -287,6 +287,7 @@ fn removals_below_a_folder_move_that_is_dropped_are_dropped_with_it() {
             mounts: BTreeMap::new(),
             detached: BTreeMap::new(),
             ctimes: BTreeMap::new(),
+            unread: None,
         },
     };
     let step = b.folder.observed(stale, 1);
@@ -339,6 +340,7 @@ fn a_removal_dropped_while_excluded_stays_unobserved_until_the_reset_scan_answer
             mounts: BTreeMap::new(),
             detached: BTreeMap::new(),
             ctimes: BTreeMap::new(),
+            unread: None,
         },
     };
     let stale = batch(
@@ -401,8 +403,7 @@ fn a_deleted_folder_that_keeps_an_excluded_file_on_the_server_leaves_the_folder_
 }
 
 #[test]
-fn a_remote_delete_of_a_folder_holding_an_entry_l_does_not_know_keeps_the_folder_with_it()
- {
+fn a_remote_delete_of_a_folder_holding_an_entry_l_does_not_know_keeps_the_folder_with_it() {
     for unknown in ["build.log", "link"] {
         let mut remote = Remote::new();
         let (site_a, mut a) = linked(&mut remote, "a");
@@ -472,8 +473,7 @@ fn a_remote_delete_of_a_folder_holding_an_entry_l_does_not_know_keeps_the_folder
 }
 
 #[test]
-fn a_remote_delete_of_a_folder_whose_subfolder_holds_an_entry_l_does_not_know_keeps_both_folders()
- {
+fn a_remote_delete_of_a_folder_whose_subfolder_holds_an_entry_l_does_not_know_keeps_both_folders() {
     let mut remote = Remote::new();
     let (site_a, mut a) = linked(&mut remote, "a");
     fs::create_dir_all(site_a.root.join("held/sub")).unwrap();
@@ -525,8 +525,7 @@ fn a_remote_delete_of_a_folder_whose_subfolder_holds_an_entry_l_does_not_know_ke
 }
 
 #[test]
-fn a_wait_for_another_failed_effect_plans_nothing_for_a_kept_folder()
- {
+fn a_wait_for_another_failed_effect_plans_nothing_for_a_kept_folder() {
     let mut remote = Remote::new();
     let (site_a, mut a) = linked(&mut remote, "a");
     fs::create_dir(site_a.root.join("held")).unwrap();
@@ -1091,6 +1090,7 @@ fn a_batch_that_was_not_asked_to_scan_a_moved_folder_does_not_end_the_wait_for_i
             mounts: BTreeMap::new(),
             detached: BTreeMap::new(),
             ctimes: BTreeMap::new(),
+            unread: None,
         },
     };
     let step = b.folder.observed(unrelated, 1);
@@ -1121,7 +1121,10 @@ fn a_remote_delete_of_a_folder_holding_a_symlink_with_a_name_that_is_not_utf8_ke
     b.scan_until(|b| b.folder.scanned);
     b.run(&mut remote);
     b.settle();
-    let entry = site.root.join("held").join(std::ffi::OsStr::from_bytes(b"link\xff"));
+    let entry = site
+        .root
+        .join("held")
+        .join(std::ffi::OsStr::from_bytes(b"link\xff"));
     std::os::unix::fs::symlink("/etc/hosts", &entry).unwrap();
     b.settle();
 
@@ -2595,4 +2598,117 @@ fn a_copy_below_a_left_out_folder_that_turns_readable_again_comes_back_only_if_i
             "deleted: {deleted}"
         );
     }
+}
+
+fn a_file_moved_into_a_folder_that_turns_unreadable_stays_on_the_server(into: &str) {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mut remote = Remote::new();
+    let (site, mut a) = linked(&mut remote, "a");
+    fs::create_dir_all(site.root.join(into)).unwrap();
+    a.create(&mut remote, &site.root.join("report.docx"), b"written on a");
+    let id = live_id(&server_nodes(&remote), "report.docx");
+
+    let blocked = site.root.join("box");
+    fs::rename(
+        site.root.join("report.docx"),
+        site.root.join(into).join("report.docx"),
+    )
+    .unwrap();
+    fs::set_permissions(&blocked, fs::Permissions::from_mode(0o000)).unwrap();
+    if fs::read_dir(&blocked).is_ok() {
+        assert!(rustix::process::geteuid().is_root());
+        eprintln!("SKIPPED: running as root, so permissions do not block reads");
+        return;
+    }
+    for _ in 0..5 {
+        a.try_scan(Duration::from_millis(100)).unwrap();
+        a.run(&mut remote);
+    }
+    drop(a);
+    let mut a = restarted(&site, &mut remote);
+    for _ in 0..5 {
+        a.try_scan(Duration::from_millis(100)).unwrap();
+        a.run(&mut remote);
+    }
+    assert_eq!(
+        live_id(&server_nodes(&remote), "report.docx"),
+        id,
+        "{:?}",
+        server_nodes(&remote)
+    );
+
+    fs::set_permissions(&blocked, fs::Permissions::from_mode(0o755)).unwrap();
+    a.rest(&mut remote);
+    let nodes = server_nodes(&remote);
+    assert_eq!(live_id(&nodes, "report.docx"), id, "{nodes:?}");
+    assert_eq!(
+        nodes
+            .iter()
+            .filter(|(name, _, _)| name == "report.docx")
+            .count(),
+        1,
+        "{nodes:?}"
+    );
+}
+
+#[test]
+fn a_file_moved_into_a_folder_that_turns_unreadable_is_not_deleted() {
+    a_file_moved_into_a_folder_that_turns_unreadable_stays_on_the_server("box");
+}
+
+#[test]
+fn a_file_moved_below_a_folder_that_turns_unreadable_is_not_deleted() {
+    a_file_moved_into_a_folder_that_turns_unreadable_stays_on_the_server("box/inner");
+}
+
+#[test]
+fn a_delete_made_while_stopped_next_to_a_folder_that_stays_unreadable_reaches_the_server() {
+    deleted_while_stopped_next_to_a_folder_that_stays_unreadable(false);
+}
+
+#[test]
+fn a_delete_made_across_an_upgrade_next_to_a_folder_that_stays_unreadable_reaches_the_server() {
+    deleted_while_stopped_next_to_a_folder_that_stays_unreadable(true);
+}
+
+fn deleted_while_stopped_next_to_a_folder_that_stays_unreadable(upgraded: bool) {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mut remote = Remote::new();
+    let (site, mut a) = linked(&mut remote, "a");
+    let blocked = site.root.join("box");
+    fs::create_dir_all(&blocked).unwrap();
+    a.create(&mut remote, &site.root.join("report.docx"), b"written on a");
+    a.rest(&mut remote);
+    fs::set_permissions(&blocked, fs::Permissions::from_mode(0o000)).unwrap();
+    if fs::read_dir(&blocked).is_ok() {
+        assert!(rustix::process::geteuid().is_root());
+        eprintln!("SKIPPED: running as root, so permissions do not block reads");
+        return;
+    }
+    for _ in 0..3 {
+        a.try_scan(Duration::from_millis(100)).unwrap();
+        a.run(&mut remote);
+    }
+    drop(a);
+    if upgraded {
+        (rusqlite::Connection::open(&site.db).unwrap())
+            .execute_batch("DELETE FROM unread_folders; DELETE FROM unread_folders_recorded")
+            .unwrap();
+    }
+    fs::remove_file(site.root.join("report.docx")).unwrap();
+    let mut a = restarted(&site, &mut remote);
+    for _ in 0..30 {
+        a.try_scan(Duration::from_millis(100)).unwrap();
+        a.run(&mut remote);
+    }
+    let nodes = server_nodes(&remote);
+    fs::set_permissions(&blocked, fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(
+        !nodes
+            .iter()
+            .any(|(name, _, live)| name == "report.docx" && *live),
+        "{nodes:?}"
+    );
 }
