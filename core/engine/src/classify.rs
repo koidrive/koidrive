@@ -6178,7 +6178,11 @@ impl Trees {
     /// server does not hold ([`Trees::unsent_edits`]) is changed locally, although S may hold the
     /// same bytes.
     pub fn class_against(&self, id: &NodeId, synced: Option<&Shape>) -> Class {
-        let synced = synced.or_else(|| self.trashed_where_l_holds(id));
+        let given = synced
+            .is_none()
+            .then(|| self.base_at_a_place_the_server_gave(id))
+            .flatten();
+        let synced = synced.or(given.as_ref());
         let class = classify(self.l.live(id), synced, self.r.live(id));
         if class == Class::Remote && self.unsent_creates.contains(id) {
             return Class::Concurrent;
@@ -6349,13 +6353,23 @@ impl Trees {
         }
     }
 
-    fn trashed_where_l_holds(&self, id: &NodeId) -> Option<&Shape> {
+    fn base_at_a_place_the_server_gave(&self, id: &NodeId) -> Option<Shape> {
         let remote = self.r.get(id).filter(|node| {
             node.trashed && !self.asked.contains(id) && !self.kept_folders.contains(id)
         })?;
-        (self.l.get(id))
-            .is_some_and(|local| local.shape.same_position(&remote.shape) && !self.revives(id))
-            .then_some(&remote.shape)
+        let local = self.l.get(id)?;
+        let last_synced = (local.parked && !self.unsent_moves.contains(id))
+            .then_some(&local.shape)
+            .or_else(|| self.forgotten_shapes.get(id));
+        let given = [Some(&remote.shape), last_synced]
+            .into_iter()
+            .flatten()
+            .any(|place| local.shape.same_position(place));
+        (given && !self.revives(id)).then(|| Shape {
+            parent: local.shape.parent.clone(),
+            name: local.shape.name.clone(),
+            ..remote.shape.clone()
+        })
     }
 
     pub(crate) fn acknowledged_class(&self, id: &NodeId) -> Class {

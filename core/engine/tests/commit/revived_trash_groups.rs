@@ -1286,3 +1286,87 @@ fn a_folder_another_device_trashed_where_this_device_holds_it_waits_for_the_ques
         "{effects:?}"
     );
 }
+
+fn with_state(trees: &mut Trees, edit: impl FnOnce(&mut TreesState)) {
+    let mut state = trees.state();
+    edit(&mut state);
+    trees.restore(state).unwrap();
+    trees.rules_scanned();
+    trees.settle(&Default::default());
+}
+
+#[test]
+fn a_parked_folder_another_device_renamed_and_trashed_goes_to_the_local_trash() {
+    let mut trees = trees(&[
+        synced("s", dir(ROOT, "ss")),
+        (
+            "p",
+            Some(dir(ROOT, "ß")),
+            None,
+            Some(trashed(dir(ROOT, "renamed"))),
+        ),
+    ]);
+    trees.set_local(
+        "p".into(),
+        LocalNode {
+            parked: true,
+            ..local(dir(ROOT, "ß"), 2)
+        },
+    );
+    trees.settle(&Default::default());
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
+    let effects = effects_for(&mut trees, &mut ids, "p");
+    assert!(
+        matches!(&effects[..], [Effect::RemoveDir { .. }]),
+        "{effects:?}"
+    );
+}
+
+#[test]
+fn a_file_a_server_loss_made_s_forget_that_another_device_renamed_and_trashed_goes_to_the_local_trash()
+ {
+    let mut trees = trees(&[(
+        "f",
+        Some(file(ROOT, "old", 1)),
+        None,
+        Some(trashed(file(ROOT, "new", 1))),
+    )]);
+    with_state(&mut trees, |state| {
+        state
+            .forgotten_shapes
+            .insert("f".into(), file(ROOT, "old", 1));
+        state.unsent_edits.remove(&NodeId::from("f"));
+    });
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
+    let effects = effects_for(&mut trees, &mut ids, "f");
+    assert!(
+        matches!(&effects[..], [Effect::RemoveFile { .. }]),
+        "{effects:?}"
+    );
+}
+
+#[test]
+fn a_node_its_user_moves_back_to_a_place_the_server_held_it_at_before_is_brought_back() {
+    let mut trees = trees(&[(
+        "f",
+        Some(file(ROOT, "old", 1)),
+        None,
+        Some(trashed(file(ROOT, "new", 1))),
+    )]);
+    with_state(&mut trees, |state| {
+        let old = koidrive_engine::state::Agreed {
+            rev: 1,
+            parent: ROOT.into(),
+            name: "old".into(),
+            trash_group: None,
+        };
+        state.past_positions.insert("f".into(), vec![old]);
+    });
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    let sent = build(&mut commits, &mut trees, &mut ids)
+        .map(|commit| ops(&commit))
+        .unwrap_or_default();
+    assert!(sent.contains(&mv("f", ROOT, "old")), "{sent:?}");
+}
