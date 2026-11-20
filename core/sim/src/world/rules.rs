@@ -44,6 +44,7 @@ fn path_in<'a>(
 pub(super) fn excluded_op(trees: &Trees, ops: &[Op]) -> Vec<String> {
     let mut sent = BTreeMap::new();
     let mut placements = Vec::new();
+    let mut trashed = BTreeMap::new();
     for op in ops {
         placements.extend(excluded_at(trees, &sent, op));
         let server = |id: &NodeId| {
@@ -72,19 +73,26 @@ pub(super) fn excluded_op(trees: &Trees, ops: &[Op]) -> Vec<String> {
                 )
             }),
             Some(op::Op::Restore(restore)) if restore.version_id.is_empty() => {
-                (trees.remote().get(&NodeId::from(&restore.node_id)))
-                    .filter(|node| node.trashed)
-                    .map(|node| {
+                let id = NodeId::from(&restore.node_id);
+                let held = trashed.insert(id.clone(), false);
+                (trees.remote().get(&id))
+                    .filter(|node| held.unwrap_or(node.trashed))
+                    .and_then(|_| server(&id))
+                    .map(|shape| {
                         let parent = match restore.target_parent_id.as_str() {
-                            "" => node.shape.parent.clone(),
+                            "" => shape.parent.clone(),
                             parent => NodeId::from(parent),
                         };
                         let name = match restore.name.as_str() {
-                            "" => node.shape.name.as_str(),
+                            "" => shape.name.as_str(),
                             name => name,
                         };
-                        (&restore.node_id, parent, name, node.shape.kind)
+                        (&restore.node_id, parent, name, shape.kind)
                     })
+            }
+            Some(op::Op::Delete(delete)) => {
+                trashed.insert(NodeId::from(&delete.node_id), true);
+                None
             }
             _ => None,
         };

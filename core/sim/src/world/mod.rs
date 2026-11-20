@@ -3857,8 +3857,21 @@ mod tests {
                 ..Default::default()
             }))
         };
+        let delete = |node: &str| {
+            op(op::Op::Delete(koidrive_proto::v1::Delete {
+                node_id: node.into(),
+                ..Default::default()
+            }))
+        };
         assert_eq!(
             excluded_op(&trees, &[restore("x", "p", ""), create("x")]),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            excluded_op(
+                &trees,
+                &[restore("x", "p", ""), restore("x", "", ""), create("x")]
+            ),
             Vec::<String>::new()
         );
         assert_eq!(excluded_op(&trees, &[create("x")]).len(), 1);
@@ -3869,6 +3882,22 @@ mod tests {
         assert_eq!(
             excluded_op(&trees, &[restore("z", "p", ""), create("z")]),
             ["node c at [\"blocked\", \"z\", \"c\"]"]
+        );
+        assert_eq!(
+            excluded_op(&trees, &[delete("z"), restore("z", "p", ""), create("z")]),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            excluded_op(
+                &trees,
+                &[
+                    restore("x", "p", ""),
+                    delete("x"),
+                    restore("x", "", ""),
+                    create("x")
+                ]
+            ),
+            Vec::<String>::new()
         );
     }
 
