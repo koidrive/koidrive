@@ -135,17 +135,9 @@ pub struct Disk {
     marker: u64,
     token: u64,
     pub(super) brought_back: BTreeSet<u128>,
-    pub no_birth_times: bool,
 }
 
 impl Disk {
-    pub fn identity_of(&self, ino: u128) -> FileIdentity {
-        FileIdentity {
-            birth_ns: identity(ino).birth_ns.filter(|_| !self.no_birth_times),
-            ..identity(ino)
-        }
-    }
-
     pub fn new(precision: Precision) -> Self {
         Self {
             precision,
@@ -502,7 +494,7 @@ impl Disk {
                 }
                 let ino = self.create(place, &name, None).ok_or(Refused::Taken)?;
                 self.marked(ino, &record.node);
-                Ok(Some(self.identity_of(ino)))
+                Ok(Some(identity(ino)))
             }
             Effect::WriteFile {
                 at,
@@ -533,7 +525,7 @@ impl Disk {
                     Some(_) if until == Cut::Done => Refused::Overtaken,
                     _ => Refused::Taken,
                 };
-                ino.map(|ino| Some(self.identity_of(ino))).ok_or(refused)
+                ino.map(|ino| Some(identity(ino))).ok_or(refused)
             }
             Effect::Move {
                 from,
@@ -625,7 +617,7 @@ impl Disk {
         let outcome = match &record.effect {
             Effect::WriteFile { at, content, .. } if staged => (self
                 .place_staged(record, at, content))
-            .map(|ino| Some(self.identity_of(ino)))
+            .map(|ino| Some(identity(ino)))
             .ok_or(Refused::Overtaken),
             Effect::WriteFile { .. } if record.staged.is_some() => Ok(record.staged),
             Effect::WriteFile { at, content, .. } => {
@@ -649,7 +641,7 @@ impl Disk {
         let done = match &record.effect {
             Effect::CreateDir { at: place } => at(place)?
                 .filter(|ino| self.entries[ino].content.is_none())
-                .map(|ino| Some(self.identity_of(ino))),
+                .map(|ino| Some(identity(ino))),
             Effect::WriteFile { .. } if record.staged.is_some() => Some(record.staged),
             Effect::WriteFile {
                 replaces: Some(_), ..
@@ -687,7 +679,7 @@ impl Disk {
     fn written(&self, at: &Location, content: &Content) -> Option<FileIdentity> {
         let ino = self.found(at).ok()??;
         let held = self.entries[&ino].content.as_ref()?;
-        same_bytes(held, content).then(|| self.identity_of(ino))
+        same_bytes(held, content).then(|| identity(ino))
     }
 
     /// The file an effect displaces, when it still is the file the engine saw.

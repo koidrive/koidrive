@@ -1,0 +1,4 @@
+184
+# restore_rename_races.rs (+165) comes from #911, which this branch carries until #911 lands on its own. Those tests protect #911's revert rule: a move the server renamed is sent again when a restore loses the rename, but not over a later rename, delete or reused-seq rename the restore lost. This PR's own tests add +419.
+# ignore_rules.rs: each scenario test fails on main and on a mutant of this fix. The r3 rewind rows (works 5, 6 and 7) are the only guard for a file moved out of a displaced folder to an included path, because the engine sync oracle and the battery leave such a copy out until GUN-1341 lands.
+# Engine and store: the miss_local unit test, the merged displaced-write harness test, and the displaced_local_nodes migration test and upgrade case each fail on their own mutant. No existing test covers the displaced map's new state, or #910's found place kept through the recorded_nodes rebuild.

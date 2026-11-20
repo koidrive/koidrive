@@ -2277,68 +2277,7 @@ fn renaming_an_entry_the_user_moved_in_from_a_folder_another_device_then_brings_
 }
 
 #[test]
-fn a_write_held_by_a_node_displaced_during_an_action_stays_counted() {
-    let mut trees = Trees::new("root");
-    let file = NodeId::from("f");
-    let written = content(1, 1);
-    let shape = koidrive_engine::tree::Shape {
-        parent: "root".into(),
-        name: "a".into(),
-        kind: Kind::File,
-        content: Some(ContentKey::try_from(&written).unwrap()),
-    };
-    let identity = FileIdentity {
-        ino: 1,
-        birth_ns: Some(1),
-        handle: None,
-    };
-    trees.set_local(
-        file.clone(),
-        LocalNode {
-            left_out_when_placed: false,
-            content_from_server: false,
-            shape: shape.clone(),
-            identity,
-            parked: false,
-            chunks: written.chunks.clone().into(),
-        },
-    );
-    trees.set_synced(file.clone(), Some(shape.clone()));
-    trees.set_remote(
-        file.clone(),
-        RemoteNode {
-            made_over: Vec::new(),
-            chunks: written.chunks.clone().into(),
-            shape,
-            trashed: false,
-            content_rev: 1,
-            meta_rev: 1,
-            meta_edit_rev: 1,
-            trash_group: String::new(),
-            version_id: String::new(),
-            edit_rev: 1,
-            pending_for: None,
-            pending_by: None,
-        },
-    );
-    trees.ignore_local(&file);
-    let mut local_writes = BTreeSet::from([written.manifest_digest.clone()]);
-    let mut remote_writes = BTreeSet::new();
-    let before = held(&trees);
-    trees.displace_local(&file);
-    assert!(trees.local().get(&file).is_none());
-    let after = held(&trees);
-    rewritten(
-        &before,
-        &after,
-        &trees,
-        [&mut local_writes, &mut remote_writes],
-    );
-    assert!(local_writes.contains(&written.manifest_digest));
-}
-
-#[test]
-fn a_stale_displaced_record_cannot_prove_a_local_write_was_kept() {
+fn a_displaced_node_keeps_its_write_counted_but_proves_it_kept_only_while_it_owes_it() {
     let mut trees = Trees::new("root");
     let file = NodeId::from("f");
     let written = content(1, 1);
@@ -2381,15 +2320,23 @@ fn a_stale_displaced_record_cannot_prove_a_local_write_was_kept() {
         },
     );
     trees.ignore_local(&file);
-    let writes = BTreeSet::from([written.manifest_digest.clone()]);
-    let check = |trees: &Trees| {
+    let mut writes = BTreeSet::from([written.manifest_digest.clone()]);
+    let check = |trees: &Trees, writes: &BTreeSet<Vec<u8>>| {
         let server = std::iter::once(Some(current.clone()));
-        check_local_writes(trees, &BTreeSet::new(), server, &writes)
+        check_local_writes(trees, &BTreeSet::new(), server, writes)
     };
-    check(&trees).unwrap();
+    check(&trees, &writes).unwrap();
+    let before = held(&trees);
     trees.displace_local(&file);
     assert!(trees.local().get(&file).is_none());
-    let lost = check(&trees).unwrap_err();
+    rewritten(
+        &before,
+        &held(&trees),
+        &trees,
+        [&mut writes, &mut BTreeSet::new()],
+    );
+    assert!(writes.contains(&written.manifest_digest));
+    let lost = check(&trees, &writes).unwrap_err();
     assert!(
         lost.to_string().contains("a local write was lost"),
         "{lost}"
@@ -2397,5 +2344,5 @@ fn a_stale_displaced_record_cannot_prove_a_local_write_was_kept() {
     let mut state = trees.state();
     state.unsent_edits.insert(file.clone());
     trees.restore(state).unwrap();
-    check(&trees).unwrap();
+    check(&trees, &writes).unwrap();
 }

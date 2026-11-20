@@ -19,7 +19,7 @@ use koidrive_proto::v1::{
     ChangeRecord, CommitRecord, CommitResult, Error, NodeState, Resume, change_record,
 };
 
-use super::disk::{Disk, Place};
+use super::disk::{Disk, Place, identity};
 use super::{Failure, NOW, RULES_FILE, split};
 use crate::space::Session;
 
@@ -240,7 +240,7 @@ impl Engine {
                     kind,
                     content,
                 },
-                identity: disk.identity_of(ino),
+                identity: identity(ino),
                 parked: false,
                 chunks,
             };
