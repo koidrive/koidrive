@@ -1,0 +1,6 @@
+273
+# The device and generated tests exercise reachable file and folder collisions, rules changes,
+# superseding edits, rejection and lost answers. Engine-only rename tests cannot reproduce those schedules.
+# The store tests check row constraints and durable origins, then stage an in-flight rename on the
+# release fixture and prove it still retries after an interrupted upgrade. A fresh-store test cannot
+# exercise the migration's defaults or rollback.
