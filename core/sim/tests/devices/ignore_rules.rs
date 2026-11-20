@@ -1670,3 +1670,47 @@ fn a_park_planned_in_a_swap_does_not_apply_once_the_chain_reaches_a_merged_folde
     let quiet = world.phase(4, &[]);
     assert!(!parked_ids_on(&world, 0).contains(&parked), "{quiet:?}");
 }
+
+#[test]
+fn a_swap_at_a_merged_folders_name_key_keeps_both_folders_in_place() {
+    let _red = expect_red(
+        Check::NameLeftOut,
+        "device 0 is quiet, but nodes [\"01a1c2c0-39a0-7510-83bc-38d6c6b89fe4\", \"01a1c2c0-39a0-796a-8df8-fb6da7904e2f\"] wait for names that entries its rules leave out hold",
+    );
+    let mut world = refused_beside_a(None);
+    let merged = reported_merge(&world);
+    world.phase(2, &[(1, folder("b"))]).unwrap();
+    let a = held_at(&world, 0, &["a"]).unwrap();
+    let b = held_at(&world, 0, &["b"]).unwrap();
+    let a_ino = ino_at(&world, 0, &["a"]);
+    let b_ino = ino_at(&world, 0, &["b"]);
+    let ta = target(&world, 1, &["a"]);
+    let tb = target(&world, 1, &["b"]);
+    let mut steps = vec![
+        (1, rename(ta, 0, "É")),
+        (1, rename(tb, 0, "a")),
+        (1, rename(ta, 0, "b")),
+    ];
+    steps.extend(commit(1));
+    steps.extend([(0, DELIVER); 8]);
+    world.run(3, &steps).unwrap();
+    assert_eq!(live_node_at(&world, &["a"]), Some(b.to_string()));
+    assert_eq!(live_node_at(&world, &["b"]), Some(a.to_string()));
+    assert_eq!(
+        world.reported_problems(0).get(&merged),
+        Some(&Stuck::MergedInto(b.clone()))
+    );
+    world.run(3, &[(0, EFFECT), (0, EFFECT)]).unwrap();
+    world.phase(4, &[]).unwrap();
+    let disk = &world.devices[0].disk;
+    assert_eq!(
+        [disk.child(&Place::Root, "a"), disk.child(&Place::Root, "b")],
+        [Some(a_ino), Some(b_ino)],
+        "a swap cannot finish while the merged folder still holds the name key: {:?}",
+        world.reported_problems(0),
+    );
+    let report = world.reported_problems(0);
+    for id in [a, b] {
+        assert_eq!(report.get(&id), Some(&Stuck::Behind(merged.clone())));
+    }
+}

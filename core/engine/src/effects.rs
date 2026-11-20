@@ -1712,19 +1712,17 @@ impl<'a> View<'a> {
         if let Some(step) = self.blocked_in(id, &remote.parent) {
             return Some(step);
         }
-        let merged_beside = |other: &NodeId| {
-            remote.kind == Kind::Dir
-                && (self.trees.local().get(id)).is_some_and(|node| {
-                    node.shape.parent == remote.parent
-                        && name_key(&node.shape.name) == name_key(&remote.name)
-                })
-                && self
-                    .merge_residue
-                    .is_some_and(|residue| residue.0.contains_key(other))
+        let merged = |other: &NodeId| {
+            (self.merge_residue).is_some_and(|residue| residue.0.contains_key(other))
         };
-        self.trees
-            .local_holders(&remote.parent, &remote.name)
-            .find(|other| *other != id && !merged_beside(other))
+        let beside = remote.kind == Kind::Dir
+            && (self.trees.local().get(id)).is_some_and(|node| {
+                node.shape.parent == remote.parent
+                    && name_key(&node.shape.name) == name_key(&remote.name)
+            });
+        (self.trees.local_holders(&remote.parent, &remote.name))
+            .filter(|other| *other != id && !(beside && merged(other)))
+            .min_by_key(|other| (!self.trees.excluded(other), !merged(other)))
             .map(|holder| Step::Blocked(Some(holder.clone())))
     }
 
