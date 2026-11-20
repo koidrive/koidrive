@@ -188,6 +188,36 @@ jobs:
           if-no-files-found: error
           overwrite: true
 
+  sweep:
+    name: delete what earlier runs left behind
+    needs: [trusted, first-sync-build]
+    if: ${{ !cancelled() && needs.trusted.result == 'success' && (needs.first-sync-build.result == 'success' || needs.first-sync-build.result == 'skipped') }}
+    runs-on: ubuntu-latest
+    environment: deploy-test
+    timeout-minutes: 10
+    continue-on-error: true
+    permissions:
+      contents: read
+      actions: read
+    env:
+      KOIDRIVE_TEST_NAME: koidrive-test-${{ github.run_id }}-${{ github.run_attempt }}
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      - name: Delete the Workers, Durable Object namespaces and R2 buckets of finished runs
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/deploy-test/run.ts sweep
+
   deploy-test:
     name: deploy test (${{ inputs.mode }})
     needs: [trusted, first-sync-build]
@@ -242,14 +272,6 @@ jobs:
           node-version: 24
       - uses: ./.github/actions/pnpm-store
       - run: pnpm install --frozen-lockfile
-      - name: Delete what earlier runs left behind
-        continue-on-error: true
-        timeout-minutes: 5
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          GH_TOKEN: ${{ github.token }}
-        run: node scripts/deploy-test/run.ts sweep
       - name: Install the pinned Rust toolchain
         if: inputs.mode == 'e2e' || inputs.mode == 'bench' || inputs.mode == 'bench-small'
         working-directory: .
