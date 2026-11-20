@@ -17,7 +17,7 @@ A **required feature** is a feature (RFC 0022 §2) that a client needs before it
 ## 2. Client rules
 
 1. After the protocol check of a `Welcome`, a client checks that `Welcome.features` lists every required feature it implements.
-2. If one is missing, the client sends nothing more on the connection, closes it, and does not treat it as connected. It tells the person that the server lacks the features it names, shows `Welcome.server_version`, and says to update the server with `koi server upgrade`.
+2. If one is missing, the client sends nothing more on the connection, closes it, and does not treat it as connected. It tells the person that the server lacks the features it names, shows `Welcome.server_version`, and says to run `koi server upgrade`, or, if it just ran, that the server finishes updating within 5 minutes (RFC 0022 §3 rule 2).
 3. The client then connects again with its usual backoff. It never stops for good on a missing required feature: a Space DO can run the previous release for up to 300 seconds after a deploy (RFC 0022 §3 rule 2), and an updated server must get the client syncing again without a restart.
 4. The client decides from `Welcome` alone and does not read `ServerInfo` for this check, so RFC 0022 §4 rule 2 does not apply.
 

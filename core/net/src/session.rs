@@ -1020,7 +1020,7 @@ impl Task {
         }
         Err(Exit::Reconnect {
             reason: DisconnectReason::ServerOutdated(format!(
-                "server {} lacks {}, which this client needs; update the server with koi server upgrade",
+                "server {} lacks {}; if you just ran koi server upgrade, it finishes updating within 5 minutes, otherwise run it",
                 welcome.server_version,
                 missing.join(", ")
             )),

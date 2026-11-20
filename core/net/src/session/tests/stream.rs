@@ -431,7 +431,7 @@ async fn a_welcome_without_a_required_feature_asks_for_a_server_update_and_retri
             ..
         } => assert_eq!(
             why,
-            "server 0.0.9 lacks commit_tokens, which this client needs; update the server with koi server upgrade"
+            "server 0.0.9 lacks commit_tokens; if you just ran koi server upgrade, it finishes updating within 5 minutes, otherwise run it"
         ),
         other => panic!("no Connected for a Welcome without commit_tokens, got {other:?}"),
     }

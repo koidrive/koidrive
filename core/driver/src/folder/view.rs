@@ -187,14 +187,14 @@ impl Folder {
                     unreachable.why
                 ),
             });
-        let refused = reconnect
-            .filter(|disconnected| !disconnected.reason.unreachable())
+        let refused = (self.disconnected.as_ref())
+            .filter(|disconnected| disconnected.shown && !disconnected.reason.unreachable())
             .map(|disconnected| {
-                format!(
-                    "{}; trying again at {}",
-                    disconnected.reason,
-                    utc(disconnected.retry_at)
-                )
+                let when = match disconnected.retry_at > now {
+                    true => format!("at {}", utc(disconnected.retry_at)),
+                    false => "now".to_owned(),
+                };
+                format!("{}; trying again {when}", disconnected.reason)
             });
         let wait = wait.map(|(kind, at, unreachable)| Wait {
             kind,

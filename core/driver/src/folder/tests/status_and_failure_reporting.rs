@@ -644,9 +644,9 @@ fn a_connection_the_server_refused_or_closed_is_not_offline_and_says_what_happen
         ),
         (
             DisconnectReason::ServerOutdated(
-                "server 0.0.9 lacks commit_tokens, which this client needs; update the server with koi server upgrade".into(),
+                "server 0.0.9 lacks commit_tokens; if you just ran koi server upgrade, it finishes updating within 5 minutes, otherwise run it".into(),
             ),
-            "server 0.0.9 lacks commit_tokens, which this client needs; update the server with koi server upgrade; trying again at ",
+            "server 0.0.9 lacks commit_tokens; if you just ran koi server upgrade, it finishes updating within 5 minutes, otherwise run it; trying again at ",
         ),
     ] {
         let mut remote = Remote::new();
@@ -661,6 +661,11 @@ fn a_connection_the_server_refused_or_closed_is_not_offline_and_says_what_happen
         assert_eq!(offline_cause(&view), None, "{reason:?}");
         let problem = view.problem.unwrap_or_default();
         assert!(problem.starts_with(said), "{problem}");
+        crate::clock::advance_to(crate::clock::instant() + Duration::from_secs(30));
+        let view = a.folder.view();
+        assert_eq!(view.state, FolderState::Connecting, "{reason:?}");
+        let attempting = format!("{}now", said.trim_end_matches("at "));
+        assert_eq!(view.problem, Some(attempting), "{reason:?}");
         a.connect(&remote);
         assert_eq!(a.folder.view().problem, None, "{reason:?}");
     }
