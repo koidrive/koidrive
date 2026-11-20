@@ -2735,6 +2735,21 @@ fn a_file_removed_in_the_batch_before_the_rules_give_up_its_folder_is_deleted_on
 }
 
 #[test]
+fn a_file_given_up_with_its_folder_and_moved_out_here_is_created_again_after_a_server_purge() {
+    let mut trees = given_up_beside(&[synced("z", file("x", "g", 1))]);
+    assert_eq!(trees.synced().live(&"z".into()), None);
+    let mut moved = trees.local().get(&"z".into()).unwrap().clone();
+    moved.shape.parent = ROOT.into();
+    moved.shape.name = "zz".into();
+    trees.set_local_changed("z".into(), moved);
+    trees.remove_remote(&"z".into());
+    let planned = effects(&mut trees);
+    assert!(!planned.iter().any(|(id, _)| id == "z"), "{planned:?}");
+    assert_eq!(trees.local().live(&"z".into()), Some(&file(ROOT, "zz", 1)));
+    assert!(matches!(&ops(&mut trees)[..], [op::Op::CreateFile(create)] if create.node_id == "z"));
+}
+
+#[test]
 fn a_folder_given_up_with_more_unchanged_files_than_one_search_takes_loads_after_a_restart() {
     const FILES: [&str; 12] = [
         "c00", "c01", "c02", "c03", "c04", "c05", "c06", "c07", "c08", "c09", "c10", "c11",
