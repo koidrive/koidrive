@@ -118,24 +118,24 @@ jobs:
           [[ "$MODE" != macos-ui || "$OS" != ubuntu ]] || errors+=("macos-ui runs on macOS runners: set os to macos or both.")
           if [ "$MODE" = worker ]; then
             case "$CRATE" in
-              koidrive-net) worker_test=server ;;
-              koidrive-driver) worker_test=sync ;;
-              *) worker_test=; errors+=("worker mode supports koidrive-net and koidrive-driver.") ;;
+              koidrive-net) worker_tests="server" ;;
+              koidrive-driver) worker_tests="sync first_sync_bench" ;;
+              *) worker_tests=; errors+=("worker mode supports koidrive-net and koidrive-driver.") ;;
             esac
-            [[ -z "$TEST" || "$TEST" == "$worker_test" ]] || errors+=("worker mode runs --test $worker_test, not '$TEST'.")
+            [[ -z "$TEST" || " $worker_tests " == *" $TEST "* ]] || errors+=("worker mode runs --test ${worker_tests// / or }, not '$TEST'.")
           fi
           [[ "$SEED" =~ ^(0|[1-9][0-9]{0,14})?$ ]] || errors+=("seed must be empty or a whole number of at most 15 digits without leading zeros, got '$SEED'.")
           [[ "$FEATURES" =~ ^[A-Za-z0-9_/,-]*$ ]] || errors+=("features must be comma-separated feature names, got '$FEATURES'.")
-          allowed='^((MODEL|GUARD_MODEL|KOIDRIVE|KOI)_[A-Z0-9_]+|RUST_BACKTRACE|RUST_LOG|RUST_TEST_THREADS|RUST_MIN_STACK|PROPTEST_VERBOSE)$'
+          allowed='^((MODEL|GUARD_MODEL|KOIDRIVE|KOI)_[A-Z0-9_]+|RUST_BACKTRACE|RUST_LOG|RUST_TEST_THREADS|RUST_TEST_NOCAPTURE|RUST_MIN_STACK|MALLOC_ARENA_MAX|PROPTEST_VERBOSE)$'
           reserved='^(KOIDRIVE_BATTERY_CASES|KOIDRIVE_PROPTEST_DETERMINISTIC)$'
           [[ "$EXTRA_ENV" != *$'\n'* ]] || errors+=("env must be one line of NAME=value pairs.")
-          [[ "$MODE" == cargo && "$PARALLEL" == 1 ]] || [[ "$RELEASE" != true && -z "$EXTRA_ENV" ]] || errors+=("release and env apply only with mode cargo and parallel 1.")
+          [[ "$MODE" == cargo && "$PARALLEL" == 1 ]] || [[ "$MODE" == worker && ( "$CRATE" == koidrive-driver || "$RELEASE" != true ) ]] || [[ "$RELEASE" != true && -z "$EXTRA_ENV" ]] || errors+=("release and env apply only with mode cargo and parallel 1, or with mode worker, where release applies to koidrive-driver only.")
           read -ra pairs <<< "$EXTRA_ENV"
           for pair in ${pairs[@]+"${pairs[@]}"}; do
             if [[ ! "$pair" =~ ^([A-Z_][A-Z0-9_]*)=[^[:space:]]*$ ]]; then
               errors+=("env takes NAME=value pairs, not '$pair'.")
             elif [[ ! "${BASH_REMATCH[1]}" =~ $allowed || "${BASH_REMATCH[1]}" =~ $reserved ]]; then
-              errors+=("env can't set ${BASH_REMATCH[1]}: it takes MODEL_*, GUARD_MODEL_*, KOIDRIVE_*, KOI_* and RUST_BACKTRACE, RUST_LOG, RUST_TEST_THREADS, RUST_MIN_STACK or PROPTEST_VERBOSE, and the cases input sets the case budget.")
+              errors+=("env can't set ${BASH_REMATCH[1]}: it takes MODEL_*, GUARD_MODEL_*, KOIDRIVE_*, KOI_* and RUST_BACKTRACE, RUST_LOG, RUST_TEST_THREADS, RUST_TEST_NOCAPTURE, RUST_MIN_STACK, MALLOC_ARENA_MAX or PROPTEST_VERBOSE, and the cases input sets the case budget.")
             elif [[ "$pair" == PROPTEST_VERBOSE=* && ! "$pair" =~ ^PROPTEST_VERBOSE=[0-9]$ ]]; then
               errors+=("PROPTEST_VERBOSE takes a level from 0 to 9, such as 2, got '$pair'.")
             fi
@@ -221,7 +221,7 @@ jobs:
             echo "::error::$CRATE is not a package of the workspace at $SHA."
             exit 1
           fi
-          if [ "$MODE" = worker ]; then
+          if [ "$MODE" = worker ] && [ -z "$TEST" ]; then
             case "$CRATE" in
               koidrive-net) TEST=server ;;
               koidrive-driver) TEST=sync ;;
@@ -233,10 +233,15 @@ jobs:
       - name: Run parallel or Worker repetitions
         if: env.MODE == 'worker' || env.PARALLEL != '1'
         run: |
+          read -ra pairs <<< "$EXTRA_ENV"
+          for pair in ${pairs[@]+"${pairs[@]}"}; do
+            export "${pair?}"
+          done
+          [ "$MODE-$CRATE" != worker-koidrive-driver ] || export KOIDRIVE_DRIVER_TEST="$TEST"
           python3 .heavy-harness/scripts/stress-test-servers.py \
             --root "$GITHUB_WORKSPACE" --out "$RUNNER_TEMP/heavy-tests" \
             --mode "$MODE" --crate "$CRATE" --test "$TEST" --filter "$FILTER" \
-            --features "$FEATURES" --cases "$CASES" --ignored "$IGNORED" \
+            --features "$FEATURES" --cases "$CASES" --ignored "$IGNORED" --release "$RELEASE" \
             --repeat "$REPEAT" --parallel "$PARALLEL" --seed "$SEED_BASE"
       - name: Run the tests
         if: env.MODE == 'cargo' && env.PARALLEL == '1'

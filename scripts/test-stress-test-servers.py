@@ -170,7 +170,8 @@ while True:
 
     def test_parallel_bounds_and_worker_selection(self):
         for extra in (("--parallel", "0"), ("--parallel", "9"), ("--repeat", "101"),
-                      ("--mode", "worker", "--test", "wrong"), ("--filter=-option",)):
+                      ("--mode", "worker", "--test", "wrong"), ("--filter=-option",),
+                      ("--mode", "worker", "--release", "true"), ("--crate", "koidrive-driver", "--release", "true")):
             with self.subTest(extra=extra), redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
                 self.args(*extra)
         self.assertEqual(self.args("--mode", "worker").test, "server")
@@ -341,6 +342,16 @@ while True:
         self.assertEqual(record["result"], "error")
         self.assertFalse(list(self.probes.glob("*.start")))
         self.assertIn("no prebuilt test target first_sync_bench", (self.root / "out/logs/run-1.log").read_text())
+
+    def test_driver_worker_repetitions_run_the_target_built_in_the_release_profile(self):
+        self.worker_fixture("koidrive-driver")
+        self.build("first_sync_bench")
+        with patch.dict(os.environ, KOIDRIVE_DRIVER_TEST="first_sync_bench"):
+            args = self.args("--mode", "worker", "--crate", "koidrive-driver", "--release", "true")
+        record = self.run_tests(args, KOIDRIVE_DRIVER_TEST="first_sync_bench")[0]
+        self.assertEqual(record["result"], "pass")
+        self.assertEqual((self.probes / "cargo.capture").read_text(),
+                         "test --locked -p koidrive-driver --release --test first_sync_bench")
 
     def test_worker_repetitions_run_every_executable_after_a_failure(self):
         self.worker_fixture()
