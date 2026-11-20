@@ -1288,6 +1288,16 @@ impl Trees {
         seen
     }
 
+    pub(crate) fn accept_recovery_delete_view(&self, id: &NodeId, unseen: &mut Vec<Vec<u8>>) {
+        let seen: BTreeSet<IntentId> = self
+            .remote_fields_below(id)
+            .into_iter()
+            .filter(|field| self.remote_synced_here(&field.node).is_some())
+            .map(|field| field.intent)
+            .collect();
+        unseen.retain(|id| IntentId::from_bytes(id).is_none_or(|intent| !seen.contains(&intent)));
+    }
+
     fn remote_fields_below(&self, id: &NodeId) -> Vec<RemoteField> {
         let mut nodes: Vec<NodeId> = vec![id.to_owned()];
         let mut next = 0;
