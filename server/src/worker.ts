@@ -253,7 +253,8 @@ async function storePack(objects: ObjectStore, secret: Uint8Array, spaceId: stri
   );
   let cause: Error_Cause | undefined;
   try {
-    if ((await objects.put(packKey(spaceId, packId), sealed.bytes, { onlyIf: { etagDoesNotMatch: "*" } })) === null) {
+    const written = await objects.put(packKey(spaceId, packId), sealed.bytes, { sha256: toHex(await sha256(sealed.bytes)), onlyIf: { etagDoesNotMatch: "*" } });
+    if (written === null) {
       console.error("chunk pack upload refused: the pack key exists", spaceId, packId);
       cause = Error_Cause.UNSPECIFIED;
     }

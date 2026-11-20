@@ -20,6 +20,6 @@ export function configuredFeatures(variable: string | undefined): Set<string> {
   return configured;
 }
 
-export function featuresOf(env: Env): Set<string> {
-  return configuredFeatures((env as Env & { KOIDRIVE_FEATURES?: string }).KOIDRIVE_FEATURES);
+export function featuresOf(env: object): Set<string> {
+  return configuredFeatures((env as { KOIDRIVE_FEATURES?: string }).KOIDRIVE_FEATURES);
 }

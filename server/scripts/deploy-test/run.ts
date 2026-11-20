@@ -31,6 +31,7 @@ import {
   type WorkerKey,
   workerTag,
 } from "./cloudflare.ts";
+import { CHUNK_PACKS, configuredFeatures } from "../../src/features.ts";
 import { readState, type State, testName, writeState } from "./state.ts";
 
 const INSTALL_MS = 5 * 60_000;
@@ -206,6 +207,7 @@ async function deploy(account: Account, ref: string): Promise<void> {
   const sha = tryGit(["rev-parse", "--verify", "--quiet", ref + "^{commit}"]) ?? fail(JSON.stringify(ref) + " is not a commit in this repository");
   const traces = traceSampling();
   const featureList = features();
+  output("chunk_packs", String(configuredFeatures(featureList).has(CHUNK_PACKS)));
   const first = state.deployments.length === 0;
   if (first) {
     if (state.owned.workerTag || state.owned.bucketCreationDate) fail("the state file already records resources but no deployment; start a new run");

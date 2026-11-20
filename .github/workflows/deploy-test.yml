@@ -340,6 +340,7 @@ jobs:
         run: pnpm exec vitest run --config scripts/deploy-test/vitest.config.ts --reporter=verbose upgrade-write
 
       - name: Upgrade to this commit
+        id: upgrade
         if: inputs.mode == 'upgrade'
         timeout-minutes: 15
         env:
@@ -354,7 +355,7 @@ jobs:
         run: pnpm exec vitest run --config scripts/deploy-test/vitest.config.ts --reporter=verbose upgrade-verify
 
       - name: Deploy this commit again with chunk_packs off
-        if: inputs.mode == 'upgrade' && contains(format(',{0},', inputs.features), ',chunk_packs,') && !contains(format(',{0},', inputs.features), ',-chunk_packs,')
+        if: inputs.mode == 'upgrade' && steps.upgrade.outputs.chunk_packs == 'true'
         timeout-minutes: 15
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -362,7 +363,7 @@ jobs:
         run: node scripts/deploy-test/run.ts deploy "$GITHUB_SHA"
 
       - name: Check that packs stay readable with chunk_packs off
-        if: inputs.mode == 'upgrade' && contains(format(',{0},', inputs.features), ',chunk_packs,') && !contains(format(',{0},', inputs.features), ',-chunk_packs,')
+        if: inputs.mode == 'upgrade' && steps.upgrade.outputs.chunk_packs == 'true'
         timeout-minutes: 10
         run: pnpm exec vitest run --config scripts/deploy-test/vitest.config.ts --reporter=verbose upgrade-packs-off
 

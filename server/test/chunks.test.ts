@@ -581,13 +581,18 @@ describe("chunk bundles", () => {
       expect((await readPackIndex(env.BUCKET as unknown as ObjectStore, key!)).map((entry) => toHex(entry.hash))).toEqual(file.content.chunks.slice(2).map((chunk) => toHex(chunk.hash)));
     });
 
-    it("answers every packed chunk with the PUT's retry status when the pack write fails or finds its key taken, and leaves unflagged chunks alone", async () => {
+    it("answers every packed chunk with the PUT's retry status when the pack write fails, finds its key taken or arrives corrupted, and leaves unflagged chunks alone", async () => {
       packsOn();
       vi.spyOn(console, "error").mockImplementation(() => {});
       const failures: [string, (key: string, value: ArrayBuffer, options: R2PutOptions) => Promise<unknown>, number, Error_Cause][] = [
         ["rate limited", () => Promise.reject(new Error("put: 429 too many requests (10058)")), 429, Error_Cause.R2_RATE_LIMITED],
         ["unavailable", () => Promise.reject(new Error("put: internal error")), 503, Error_Cause.EXCEPTION],
         ["key taken", async (key, value, options) => (await env.BUCKET.put(key, "another pack"), env.BUCKET.put(key, value, options)), 503, Error_Cause.UNSPECIFIED],
+        ["corrupted in transfer", (key, value, options) => {
+          const corrupted = new Uint8Array(value).slice();
+          corrupted[0] = corrupted[0]! ^ 1;
+          return env.BUCKET.put(key, corrupted, options);
+        }, 503, Error_Cause.R2_ERROR],
       ];
       for (const [name, write, status, cause] of failures) {
         const { spaceId, file, targets, keys } = await planned(...varied(3, name));
