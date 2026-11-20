@@ -279,6 +279,9 @@ async fn a_first_sync_of_two_million_entries_keeps_moving() {
             moved = Some(Instant::now());
         } else if let Some(at) = moved {
             longest = longest.max(at.elapsed());
+            if at.elapsed() >= Duration::from_secs(3) {
+                eprintln!("STILL {} {:?} remote={} progress={:?}", started.elapsed().as_secs(), status.state, status.remote_nodes, status.progress);
+            }
         }
     }
     let status = driver.status().folders.remove(0);

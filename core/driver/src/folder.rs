@@ -876,18 +876,35 @@ impl Folder {
     }
 
     /// Runs one change of the engine and its checkpoint in one store transaction.
+    #[track_caller]
     fn step<T>(
         &mut self,
         change: impl FnOnce(&mut Engine, &Tx<'_>) -> Result<T, Stop>,
     ) -> Result<T, Stop> {
+        let at = std::panic::Location::caller();
         let engine = &mut self.engine;
         let space_id = &self.link.space_id;
+        let begun = std::time::Instant::now();
+        let mut marks = [0u128; 4];
         let (out, questions) = self.store.transaction(|tx| -> Result<_, Stop> {
+            let t = std::time::Instant::now();
             let out = change(engine, tx)?;
+            marks[0] = t.elapsed().as_millis();
+            let t = std::time::Instant::now();
             engine.ask(tx, space_id)?;
+            marks[1] = t.elapsed().as_millis();
+            let t = std::time::Instant::now();
             engine.checkpoint(tx)?;
-            Ok((out, unanswered(tx)?))
+            marks[2] = t.elapsed().as_millis();
+            let t = std::time::Instant::now();
+            let unanswered = unanswered(tx)?;
+            marks[3] = t.elapsed().as_millis();
+            Ok((out, unanswered))
         })?;
+        let total = begun.elapsed().as_millis();
+        if total >= 300 {
+            eprintln!("SLOW step {at} total={total} change={} ask={} checkpoint={} unanswered={}", marks[0], marks[1], marks[2], marks[3]);
+        }
         self.questions = questions;
         let granted = self.engine.commits.take_granted();
         self.mark_granted(granted);
