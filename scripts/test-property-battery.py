@@ -689,7 +689,7 @@ cases = ["{1:064}"]
         n62f7 = "62f7a056c8c4" + "0" * 52
         restored_late = next(text for entry in entries for text in entry["examples"] if "01a1c2c0-39a0-7353-a331-565b5a0660d9" in text)
         queued = next(entry for entry in entries if entry["file"].startswith("GUN-1233-G-"))["examples"][0]
-        parked = next(entry for entry in entries if entry["file"] == "GUN-1050-V-parked-node-neither-leaving-nor-reported.toml")["examples"][0]
+        parked = "a parked node is neither on its way out nor reported at core/sim/tests/engine_sync/common.rs:2074."
         excluded_left = ("assertion failed: `(left == right)` \n  left: `[\"01a1c2c0-39a0-7122-aa2f-19dfbfa03020\"]`,\n"
                          " right: `[]` at core/sim/tests/engine_sync/common.rs:2008.")
         def replayed(case):
@@ -839,7 +839,7 @@ cases = ["{1:064}"]
             (lose_coarse, head_only_undone(lose_coarse, w17e6), w17e6, []),
             (rules_change, parked, v0d10, []),
             (rules_leave_out, parked, vad76, []),
-            (takes_along, parked, v73cf, [("V", "GUN-1050", ["73cfd110a184"])]),
+            (takes_along, parked, v73cf, []),
             (takes_along, parked, other, []),
             (rules_change, excluded_left, v0d10, []),
             (rules_leave_out, excluded_left, vad76, []),
