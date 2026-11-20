@@ -105,9 +105,9 @@ fn field_intents_round_trip_through_the_wire_message() {
 #[test]
 fn a_change_of_a_local_row_keeps_its_base() {
     let mut journal = Journal::new(&IdGen::new(0));
-    let first = journal.user_change("n", content(1), WireBase::None, Some(id(9)));
-    let second = journal.user_change("n", content(2), WireBase::None, Some(id(8)));
-    let row = journal.row("n", Field::Content).unwrap();
+    let first = journal.user_change(&"n".into(), content(1), WireBase::None, Some(id(9)));
+    let second = journal.user_change(&"n".into(), content(2), WireBase::None, Some(id(8)));
+    let row = journal.row(&"n".into(), Field::Content).unwrap();
     assert_ne!(first, second);
     assert_eq!(row.intent, second);
     assert_eq!(row.base, Some(id(9)));
@@ -117,10 +117,10 @@ fn a_change_of_a_local_row_keeps_its_base() {
 #[test]
 fn a_change_after_a_send_is_made_over_the_sent_intent_and_keeps_the_flight() {
     let mut journal = Journal::new(&IdGen::new(0));
-    let first = journal.user_change("n", content(1), WireBase::None, Some(id(9)));
-    journal.send("n", Field::Content, 50);
-    let second = journal.user_change("n", content(2), WireBase::None, None);
-    let row = journal.row("n", Field::Content).unwrap();
+    let first = journal.user_change(&"n".into(), content(1), WireBase::None, Some(id(9)));
+    journal.send(&"n".into(), Field::Content, 50);
+    let second = journal.user_change(&"n".into(), content(2), WireBase::None, None);
+    let row = journal.row(&"n".into(), Field::Content).unwrap();
     assert_eq!(row.intent, second);
     assert_eq!(row.base, Some(first));
     let RowState::Local {
@@ -138,11 +138,11 @@ fn a_change_after_a_send_is_made_over_the_sent_intent_and_keeps_the_flight() {
 #[test]
 fn a_value_returning_to_the_one_in_flight_takes_its_intent_back() {
     let mut journal = Journal::new(&IdGen::new(0));
-    let first = journal.user_change("n", content(1), WireBase::None, Some(id(9)));
-    journal.send("n", Field::Content, 50);
-    journal.user_change("n", content(2), WireBase::None, None);
-    let back = journal.user_change("n", content(1), WireBase::None, None);
-    let row = journal.row("n", Field::Content).unwrap();
+    let first = journal.user_change(&"n".into(), content(1), WireBase::None, Some(id(9)));
+    journal.send(&"n".into(), Field::Content, 50);
+    journal.user_change(&"n".into(), content(2), WireBase::None, None);
+    let back = journal.user_change(&"n".into(), content(1), WireBase::None, None);
+    let row = journal.row(&"n".into(), Field::Content).unwrap();
     assert_eq!(back, first);
     assert_eq!(
         (&row.state, row.base, row.time_ms),
@@ -153,21 +153,36 @@ fn a_value_returning_to_the_one_in_flight_takes_its_intent_back() {
 #[test]
 fn a_change_after_a_held_row_is_made_over_held_as() {
     let mut journal = Journal::new(&IdGen::new(0));
-    let first = journal.user_change("n", content(1), WireBase::None, None);
-    journal.send("n", Field::Content, 0);
-    journal.applied("n", Field::Content, first, &held(7, 100), Some("v7".into()));
-    journal.user_change("n", content(2), WireBase::None, None);
-    assert_eq!(journal.row("n", Field::Content).unwrap().base, Some(id(7)));
+    let first = journal.user_change(&"n".into(), content(1), WireBase::None, None);
+    journal.send(&"n".into(), Field::Content, 0);
+    journal.applied(
+        &"n".into(),
+        Field::Content,
+        first,
+        &held(7, 100),
+        Some("v7".into()),
+    );
+    journal.user_change(&"n".into(), content(2), WireBase::None, None);
+    assert_eq!(
+        journal.row(&"n".into(), Field::Content).unwrap().base,
+        Some(id(7))
+    );
 }
 
 #[test]
 fn an_applied_result_holds_the_row_rebases_and_records_history() {
     let mut journal = Journal::new(&IdGen::new(0));
-    let first = journal.user_change("n", content(1), WireBase::None, Some(id(9)));
-    journal.send("n", Field::Content, 10);
-    let second = journal.user_change("n", content(2), WireBase::None, None);
-    journal.applied("n", Field::Content, first, &held(7, 100), Some("v7".into()));
-    let row = journal.row("n", Field::Content).unwrap();
+    let first = journal.user_change(&"n".into(), content(1), WireBase::None, Some(id(9)));
+    journal.send(&"n".into(), Field::Content, 10);
+    let second = journal.user_change(&"n".into(), content(2), WireBase::None, None);
+    journal.applied(
+        &"n".into(),
+        Field::Content,
+        first,
+        &held(7, 100),
+        Some("v7".into()),
+    );
+    let row = journal.row(&"n".into(), Field::Content).unwrap();
     assert_eq!((row.intent, row.base), (second, Some(id(7))));
     assert_eq!(row.state, RowState::Local { flight: None });
     let entry = HistoryEntry {
@@ -175,11 +190,11 @@ fn an_applied_result_holds_the_row_rebases_and_records_history() {
         applied_at_ms: 100,
         in_local: true,
     };
-    assert_eq!(journal.history("n", Field::Content), [entry]);
-    let third = journal.user_change("m", content(3), WireBase::None, None);
-    journal.send("m", Field::Content, 10);
-    journal.applied("m", Field::Content, third, &held(6, 120), None);
-    let row = journal.row("m", Field::Content).unwrap();
+    assert_eq!(journal.history(&"n".into(), Field::Content), [entry]);
+    let third = journal.user_change(&"m".into(), content(3), WireBase::None, None);
+    journal.send(&"m".into(), Field::Content, 10);
+    journal.applied(&"m".into(), Field::Content, third, &held(6, 120), None);
+    let row = journal.row(&"m".into(), Field::Content).unwrap();
     let state = RowState::Held {
         held_as: id(6),
         version_id: None,
@@ -190,16 +205,16 @@ fn an_applied_result_holds_the_row_rebases_and_records_history() {
 #[test]
 fn a_superseded_row_ends_and_rows_made_over_it_take_the_reported_intent() {
     let mut journal = Journal::new(&IdGen::new(0));
-    let first = journal.user_delete("n", vec![seen("n", Field::Place, 3, None)], None);
-    journal.send("n", Field::Status, 0);
-    journal.superseded("n", Field::Status, first, Some(id(4)));
-    assert_eq!(journal.row("n", Field::Status), None);
-    assert!(journal.seen("n").is_empty());
-    let a = journal.user_change("a", content(1), WireBase::None, None);
-    journal.send("a", Field::Content, 0);
-    journal.user_change("a", content(2), WireBase::None, None);
-    journal.superseded("a", Field::Content, a, Some(id(4)));
-    let row = journal.row("a", Field::Content).unwrap();
+    let first = journal.user_delete(&"n".into(), vec![seen("n", Field::Place, 3, None)], None);
+    journal.send(&"n".into(), Field::Status, 0);
+    journal.superseded(&"n".into(), Field::Status, first, Some(id(4)));
+    assert_eq!(journal.row(&"n".into(), Field::Status), None);
+    assert!(journal.seen(&"n".into()).is_empty());
+    let a = journal.user_change(&"a".into(), content(1), WireBase::None, None);
+    journal.send(&"a".into(), Field::Content, 0);
+    journal.user_change(&"a".into(), content(2), WireBase::None, None);
+    journal.superseded(&"a".into(), Field::Content, a, Some(id(4)));
+    let row = journal.row(&"a".into(), Field::Content).unwrap();
     assert_eq!(
         (row.base, &row.state),
         (Some(id(4)), &RowState::Local { flight: None })
@@ -212,29 +227,29 @@ fn results_visit_the_rows_they_answer_however_many_the_journal_holds() {
         let mut journal = Journal::new(&IdGen::new(0));
         let mut sent = Vec::new();
         for n in 0..nodes {
-            let file = format!("f{n}");
+            let file = NodeId::from(format!("f{n}"));
             sent.push(journal.user_change(&file, content(1), WireBase::None, None));
             journal.send(&file, Field::Content, 0);
             journal.user_change(&file, content(2), WireBase::None, None);
             let place = Place {
-                parent: format!("d{n}"),
-                name: file.clone(),
+                parent: format!("d{n}").into(),
+                name: file.to_string(),
                 mark: None,
             };
             journal.user_change(&file, Value::Place(place), WireBase::None, None);
         }
         rows::VISITED.with(|visited| visited.set(0));
         for (n, sent) in sent.into_iter().enumerate() {
-            let file = format!("f{n}");
+            let file = NodeId::from(format!("f{n}"));
             match n % 2 {
                 0 => journal.applied(&file, Field::Content, sent, &held(7, 100), None),
                 _ => journal.superseded(&file, Field::Content, sent, Some(id(8))),
             }
-            journal.merged_into(&format!("d{n}"), "target", true);
+            journal.merged_into(&format!("d{n}").into(), &"target".into(), true);
         }
         let visited = rows::VISITED.with(std::cell::Cell::get);
         for n in 0..nodes {
-            let file = format!("f{n}");
+            let file = NodeId::from(format!("f{n}"));
             let base = journal.row(&file, Field::Content).unwrap().base;
             assert_eq!(base, Some(id(7 + (n % 2) as u8)));
             let place = &journal.row(&file, Field::Place).unwrap().value;
@@ -248,44 +263,44 @@ fn results_visit_the_rows_they_answer_however_many_the_journal_holds() {
 #[test]
 fn a_held_row_ends_once_r_holds_a_later_intent() {
     let mut journal = Journal::new(&IdGen::new(0));
-    let first = journal.user_change("n", content(1), WireBase::None, None);
-    journal.send("n", Field::Content, 0);
-    journal.applied("n", Field::Content, first, &held(7, 100), None);
-    journal.remote_holds("n", Field::Content, &held(7, 100), true);
-    assert!(journal.row("n", Field::Content).is_some());
-    journal.remote_holds("n", Field::Content, &held(8, 200), false);
-    assert_eq!(journal.row("n", Field::Content), None);
-    assert_eq!(journal.history("n", Field::Content).len(), 2);
+    let first = journal.user_change(&"n".into(), content(1), WireBase::None, None);
+    journal.send(&"n".into(), Field::Content, 0);
+    journal.applied(&"n".into(), Field::Content, first, &held(7, 100), None);
+    journal.remote_holds(&"n".into(), Field::Content, &held(7, 100), true);
+    assert!(journal.row(&"n".into(), Field::Content).is_some());
+    journal.remote_holds(&"n".into(), Field::Content, &held(8, 200), false);
+    assert_eq!(journal.row(&"n".into(), Field::Content), None);
+    assert_eq!(journal.history(&"n".into(), Field::Content).len(), 2);
 }
 
 #[test]
 fn a_record_reaching_r_does_not_end_a_local_or_sent_row() {
     let mut journal = Journal::new(&IdGen::new(0));
-    journal.user_change("n", content(1), WireBase::None, Some(id(1)));
-    journal.remote_holds("n", Field::Content, &held(1, 1), true);
-    journal.remote_holds("n", Field::Content, &held(2, 2), false);
-    assert!(journal.row("n", Field::Content).is_some());
-    journal.send("n", Field::Content, 0);
-    journal.remote_holds("n", Field::Content, &held(3, 3), false);
-    assert!(journal.row("n", Field::Content).is_some());
+    journal.user_change(&"n".into(), content(1), WireBase::None, Some(id(1)));
+    journal.remote_holds(&"n".into(), Field::Content, &held(1, 1), true);
+    journal.remote_holds(&"n".into(), Field::Content, &held(2, 2), false);
+    assert!(journal.row(&"n".into(), Field::Content).is_some());
+    journal.send(&"n".into(), Field::Content, 0);
+    journal.remote_holds(&"n".into(), Field::Content, &held(3, 3), false);
+    assert!(journal.row(&"n".into(), Field::Content).is_some());
 }
 
 #[test]
 fn the_history_keeps_first_positions_and_the_newest_entries() {
     let mut journal = Journal::new(&IdGen::new(0));
-    journal.remote_holds("n", Field::Place, &held(1, 1), false);
-    journal.remote_holds("n", Field::Place, &held(2, 2), false);
-    journal.remote_holds("n", Field::Place, &held(1, 1), true);
-    let order: Vec<_> = (journal.history("n", Field::Place).iter())
+    journal.remote_holds(&"n".into(), Field::Place, &held(1, 1), false);
+    journal.remote_holds(&"n".into(), Field::Place, &held(2, 2), false);
+    journal.remote_holds(&"n".into(), Field::Place, &held(1, 1), true);
+    let order: Vec<_> = (journal.history(&"n".into(), Field::Place).iter())
         .map(|entry| (entry.intent, entry.in_local))
         .collect();
     assert_eq!(order, [(id(1), true), (id(2), false)]);
-    assert!(journal.places_after("n", Field::Place, id(2), id(1)));
-    assert!(!journal.places_after("n", Field::Place, id(1), id(2)));
+    assert!(journal.places_after(&"n".into(), Field::Place, id(2), id(1)));
+    assert!(!journal.places_after(&"n".into(), Field::Place, id(1), id(2)));
     for n in 0..=HISTORY_KEPT as u8 {
-        journal.remote_holds("m", Field::Place, &held(n, 1), false);
+        journal.remote_holds(&"m".into(), Field::Place, &held(n, 1), false);
     }
-    let history = journal.history("m", Field::Place);
+    let history = journal.history(&"m".into(), Field::Place);
     assert_eq!(history.len(), HISTORY_KEPT);
     assert_eq!(history[0].intent, id(1));
 }
@@ -293,22 +308,22 @@ fn the_history_keeps_first_positions_and_the_newest_entries() {
 #[test]
 fn local_holds_marks_the_history_entry() {
     let mut journal = Journal::new(&IdGen::new(0));
-    journal.remote_holds("n", Field::Content, &held(1, 1), false);
-    journal.local_holds("n", Field::Content, id(1));
-    assert!(journal.history("n", Field::Content)[0].in_local);
+    journal.remote_holds(&"n".into(), Field::Content, &held(1, 1), false);
+    journal.local_holds(&"n".into(), Field::Content, id(1));
+    assert!(journal.history(&"n".into(), Field::Content)[0].in_local);
 }
 
 #[test]
 fn a_loss_marks_sent_and_held_rows_as_replays() {
     let mut journal = Journal::new(&IdGen::new(0));
-    let a = journal.user_change("a", content(1), WireBase::None, None);
-    journal.send("a", Field::Content, 0);
-    journal.applied("a", Field::Content, a, &held(1, 1), None);
-    journal.user_change("b", content(1), WireBase::None, None);
-    journal.send("b", Field::Content, 0);
-    journal.user_change("c", content(1), WireBase::None, None);
+    let a = journal.user_change(&"a".into(), content(1), WireBase::None, None);
+    journal.send(&"a".into(), Field::Content, 0);
+    journal.applied(&"a".into(), Field::Content, a, &held(1, 1), None);
+    journal.user_change(&"b".into(), content(1), WireBase::None, None);
+    journal.send(&"b".into(), Field::Content, 0);
+    journal.user_change(&"c".into(), content(1), WireBase::None, None);
     journal.lose();
-    let replay = |node| journal.row(node, Field::Content).unwrap().replay;
+    let replay = |node: &str| journal.row(&node.into(), Field::Content).unwrap().replay;
     assert_eq!((replay("a"), replay("b"), replay("c")), (true, true, false));
 }
 
@@ -343,60 +358,74 @@ fn a_delete_keeps_the_newest_seen_entries_and_a_revival_ends_its_row() {
     let list: Vec<Seen> = (0..=HISTORY_KEPT as u8)
         .map(|n| seen("a", Field::Place, n, None))
         .collect();
-    journal.user_delete("a", list, Some(id(200)));
-    assert_eq!(journal.seen("a").len(), HISTORY_KEPT);
-    assert_eq!(journal.seen("a")[0].intent, id(1));
-    assert_eq!(journal.row("a", Field::Status).unwrap().base, Some(id(200)));
-    journal.user_revived("a");
-    assert_eq!(journal.row("a", Field::Status), None);
-    assert!(journal.seen("a").is_empty());
+    journal.user_delete(&"a".into(), list, Some(id(200)));
+    assert_eq!(journal.seen(&"a".into()).len(), HISTORY_KEPT);
+    assert_eq!(journal.seen(&"a".into())[0].intent, id(1));
+    assert_eq!(
+        journal.row(&"a".into(), Field::Status).unwrap().base,
+        Some(id(200))
+    );
+    journal.user_revived(&"a".into());
+    assert_eq!(journal.row(&"a".into(), Field::Status), None);
+    assert!(journal.seen(&"a".into()).is_empty());
 }
 
 #[test]
 fn replacing_computed_ids_reaches_rows_history_and_seen_lists() {
     let mut journal = Journal::new(&IdGen::new(0));
-    journal.remote_holds("n", Field::Content, &held(1, 1), true);
-    let sent = journal.user_change("n", content(1), WireBase::None, Some(id(1)));
-    journal.send("n", Field::Content, 0);
-    journal.applied("n", Field::Content, sent, &held(2, 2), None);
-    journal.user_delete("d", vec![seen("d", Field::Place, 1, None)], Some(id(1)));
+    journal.remote_holds(&"n".into(), Field::Content, &held(1, 1), true);
+    let sent = journal.user_change(&"n".into(), content(1), WireBase::None, Some(id(1)));
+    journal.send(&"n".into(), Field::Content, 0);
+    journal.applied(&"n".into(), Field::Content, sent, &held(2, 2), None);
+    journal.user_delete(
+        &"d".into(),
+        vec![seen("d", Field::Place, 1, None)],
+        Some(id(1)),
+    );
     journal.replace_ids(&BTreeMap::from([(id(1), id(11)), (id(2), id(12))]));
-    let row = journal.row("n", Field::Content).unwrap();
+    let row = journal.row(&"n".into(), Field::Content).unwrap();
     let state = RowState::Held {
         held_as: id(12),
         version_id: None,
     };
     assert_eq!((&row.state, row.base), (&state, Some(id(11))));
-    let history: Vec<_> = (journal.history("n", Field::Content).iter())
+    let history: Vec<_> = (journal.history(&"n".into(), Field::Content).iter())
         .map(|entry| entry.intent)
         .collect();
     assert_eq!(history, [id(11), id(12)]);
-    assert_eq!(journal.seen("d")[0].intent, id(11));
-    assert_eq!(journal.row("d", Field::Status).unwrap().base, Some(id(11)));
+    assert_eq!(journal.seen(&"d".into())[0].intent, id(11));
+    assert_eq!(
+        journal.row(&"d".into(), Field::Status).unwrap().base,
+        Some(id(11))
+    );
 }
 
 fn deleted_after_a_send(journal: &mut Journal) -> IntentId {
-    let sent = journal.user_change("n", content(1), WireBase::None, None);
-    journal.send("n", Field::Content, 0);
+    let sent = journal.user_change(&"n".into(), content(1), WireBase::None, None);
+    journal.send(&"n".into(), Field::Content, 0);
     let entry = Seen {
         node: "n".into(),
         field: Field::Content,
         intent: sent,
         value: Some(content(1)),
     };
-    journal.user_delete("d", vec![entry], None);
+    journal.user_delete(&"d".into(), vec![entry], None);
     sent
 }
 
 fn seen_ids(journal: &Journal) -> Vec<IntentId> {
-    journal.seen("d").iter().map(|entry| entry.intent).collect()
+    journal
+        .seen(&"d".into())
+        .iter()
+        .map(|entry| entry.intent)
+        .collect()
 }
 
 #[test]
 fn an_applied_result_adds_its_held_as_next_to_the_sent_intent_in_a_seen_list() {
     let mut journal = Journal::new(&IdGen::new(0));
     let sent = deleted_after_a_send(&mut journal);
-    journal.applied("n", Field::Content, sent, &held(2, 2), None);
+    journal.applied(&"n".into(), Field::Content, sent, &held(2, 2), None);
     assert_eq!(seen_ids(&journal), [sent, id(2)]);
 }
 
@@ -404,7 +433,7 @@ fn an_applied_result_adds_its_held_as_next_to_the_sent_intent_in_a_seen_list() {
 fn a_superseded_result_leaves_the_reported_intent_unseen() {
     let mut journal = Journal::new(&IdGen::new(0));
     let sent = deleted_after_a_send(&mut journal);
-    journal.superseded("n", Field::Content, sent, Some(id(2)));
+    journal.superseded(&"n".into(), Field::Content, sent, Some(id(2)));
     assert_eq!(seen_ids(&journal), [sent]);
     let remote = [RemoteField {
         node: "n".into(),
@@ -412,7 +441,10 @@ fn a_superseded_result_leaves_the_reported_intent_unseen() {
         intent: id(2),
         value: content(2),
     }];
-    assert_eq!(delete_view(journal.seen("d"), &remote).unseen, [id(2)]);
+    assert_eq!(
+        delete_view(journal.seen(&"d".into()), &remote).unseen,
+        [id(2)]
+    );
 }
 
 #[test]
@@ -434,10 +466,10 @@ fn the_generator_is_its_own_stream_and_a_restore_mints_from_the_one_it_was_loade
 #[test]
 fn changes_name_only_what_changed_and_a_state_restores() {
     let mut journal = Journal::new(&IdGen::new(0));
-    journal.user_change("n", content(1), WireBase::None, None);
+    journal.user_change(&"n".into(), content(1), WireBase::None, None);
     journal.take_changes(whole);
     let before = journal.state(whole);
-    journal.remote_holds("m", Field::Place, &held(1, 1), false);
+    journal.remote_holds(&"m".into(), Field::Place, &held(1, 1), false);
     journal.set_listed(true);
     let changes = journal.take_changes(whole);
     assert!(changes.rows.is_empty());
@@ -456,20 +488,20 @@ fn changes_name_only_what_changed_and_a_state_restores() {
 fn a_compact_row_that_leaves_and_ends_before_a_take_reaches_the_store_as_ended() {
     for replaced in [false, true] {
         let mut journal = Journal::new(&IdGen::new(0));
-        let first = journal.user_change("n", content(1), WireBase::None, None);
-        journal.send("n", Field::Content, 0);
-        journal.applied("n", Field::Content, first, &held(7, 100), None);
-        let key = ("n".to_owned(), Field::Content);
-        let row = journal.row("n", Field::Content).cloned().unwrap();
+        let first = journal.user_change(&"n".into(), content(1), WireBase::None, None);
+        journal.send(&"n".into(), Field::Content, 0);
+        journal.applied(&"n".into(), Field::Content, first, &held(7, 100), None);
+        let key = ("n".into(), Field::Content);
+        let row = journal.row(&"n".into(), Field::Content).cloned().unwrap();
         journal.take_changes(whole);
         assert!(journal.compact(key.clone()));
         match replaced {
             false => journal.write_out(key.clone(), row),
             true => {
-                journal.user_change("n", content(2), WireBase::None, None);
+                journal.user_change(&"n".into(), content(2), WireBase::None, None);
             }
         }
-        journal.end("n", Field::Content);
+        journal.end(&"n".into(), Field::Content);
         assert_eq!(
             journal.take_changes(whole).rows,
             [(key, None)],
@@ -481,18 +513,18 @@ fn a_compact_row_that_leaves_and_ends_before_a_take_reaches_the_store_as_ended()
 #[test]
 fn a_result_that_keeps_the_intent_it_was_sent_leaves_compact_rows_based_on_it_unchanged() {
     let mut journal = Journal::new(&IdGen::new(0));
-    let sent = journal.user_change("n", content(1), WireBase::None, Some(id(5)));
-    journal.send("n", Field::Content, 0);
+    let sent = journal.user_change(&"n".into(), content(1), WireBase::None, Some(id(5)));
+    journal.send(&"n".into(), Field::Content, 0);
     let kept = FieldIntent {
         id: sent,
         ..held(0, 100)
     };
-    journal.applied("n", Field::Content, sent, &kept, None);
-    assert!(journal.compact(("n".to_owned(), Field::Content)));
+    journal.applied(&"n".into(), Field::Content, sent, &kept, None);
+    assert!(journal.compact(("n".into(), Field::Content)));
     let full = |_: &RowKey, held: &HeldRow| held.full(content(1), 100, None);
     journal.take_changes(full);
     let before = journal.state(full);
-    journal.applied("m", Field::Place, id(5), &held(5, 200), None);
+    journal.applied(&"m".into(), Field::Place, id(5), &held(5, 200), None);
     let changes = journal.take_changes(full);
     assert!(changes.rows.is_empty(), "{:?}", changes.rows);
     assert_eq!(

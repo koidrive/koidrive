@@ -19,7 +19,7 @@ upgrade_case!(journal, |store| {
                 content: None,
                 status: None,
             };
-            tx.set_synced_intents(&node, Some(&intents))?;
+            tx.set_synced_intents(&node.to_string(), Some(&intents))?;
             assert_eq!(
                 tx.synced_intents()?,
                 std::collections::BTreeMap::from([(node, intents)])

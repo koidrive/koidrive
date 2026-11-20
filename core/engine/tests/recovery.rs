@@ -2358,7 +2358,7 @@ fn a_child_an_answer_trashes_again_is_deleted_under_the_trash_intent_with_what_t
         applied_at_ms: 0,
     };
     for (node, n) in [("d", 10), ("f", 20)] {
-        let mut remote = trees.remote().get(node).unwrap().clone();
+        let mut remote = trees.remote().get(&node.into()).unwrap().clone();
         remote.intents = Some(NodeIntents {
             place: Some(intent(n, "me")),
             content: (node == "f").then(|| intent(n + 1, "me")),
@@ -2400,7 +2400,7 @@ fn a_child_an_answer_trashes_again_is_deleted_under_the_trash_intent_with_what_t
         held.contains(&vec![22; 16]) && held.contains(&vec![23; 16]),
         "{held:?}"
     );
-    let mut edited = trees.remote().get("f").unwrap().clone();
+    let mut edited = trees.remote().get(&"f".into()).unwrap().clone();
     if let Some(intents) = edited.intents.as_mut() {
         intents.content = Some(intent(30, "another"));
         intents.trash_held.push(id(31));
