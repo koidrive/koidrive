@@ -84,19 +84,10 @@ fn placement_check_after_a_move(
     let mut state = Effects::default().state();
     state.in_flight.push(record.clone());
     let mut effects = Effects::from_state(state).unwrap();
-    let mut device = Device {
-        trees,
-        ids: IdGen::new(7),
-        inos: 1,
-        fresh_dir_names: false,
-        rules: Rules::default(),
-        touched: BTreeSet::from(["x".into()]),
-        acted: BTreeSet::from(["x".into()]),
-        removed_from: BTreeMap::new(),
-        kept_back: BTreeSet::new(),
-        relocated: BTreeMap::new(),
-        ignored: IgnoredDisk::default(),
-    };
+    let mut device = Device::new(trees);
+    device.inos = 1;
+    device.touched.insert("x".into());
+    device.acted.insert("x".into());
     let result = placement_check(
         &device,
         &record,
@@ -969,19 +960,7 @@ fn the_keep_rule_lets_a_delete_through_when_the_server_left_the_folder_as_it_was
 
 #[test]
 fn the_keep_rule_keeps_back_a_folder_above_an_entry_it_already_kept_back() {
-    let mut device = Device {
-        trees: Trees::new("root"),
-        ids: IdGen::new(7),
-        inos: 0,
-        fresh_dir_names: false,
-        rules: Rules::default(),
-        touched: BTreeSet::new(),
-        acted: BTreeSet::new(),
-        removed_from: BTreeMap::new(),
-        kept_back: BTreeSet::new(),
-        relocated: BTreeMap::new(),
-        ignored: IgnoredDisk::default(),
-    };
+    let mut device = Device::new(Trees::new("root"));
     let change = |id: &str, parent: &str, name: &str| ChangeRecord {
         change: Some(change_record::Change::Node(NodeState {
             node_id: id.into(),
@@ -1026,19 +1005,7 @@ fn the_keep_rule_keeps_back_a_folder_above_an_entry_it_already_kept_back() {
 
 #[test]
 fn a_move_out_and_back_leaves_no_relocation_to_stop_the_keep_rule_walk() {
-    let mut device = Device {
-        trees: Trees::new("root"),
-        ids: IdGen::new(7),
-        inos: 0,
-        fresh_dir_names: false,
-        rules: Rules::default(),
-        touched: BTreeSet::new(),
-        acted: BTreeSet::new(),
-        removed_from: BTreeMap::new(),
-        kept_back: BTreeSet::new(),
-        relocated: BTreeMap::new(),
-        ignored: IgnoredDisk::default(),
-    };
+    let mut device = Device::new(Trees::new("root"));
     let at = |parent: &str| koidrive_engine::tree::Shape {
         parent: parent.into(),
         name: "m".into(),
@@ -1061,19 +1028,7 @@ fn a_move_out_and_back_leaves_no_relocation_to_stop_the_keep_rule_walk() {
 
 #[test]
 fn a_move_the_server_answers_at_another_place_is_pending_from_there() {
-    let mut device = Device {
-        trees: Trees::new("root"),
-        ids: IdGen::new(7),
-        inos: 0,
-        fresh_dir_names: false,
-        rules: Rules::default(),
-        touched: BTreeSet::new(),
-        acted: BTreeSet::new(),
-        removed_from: BTreeMap::new(),
-        kept_back: BTreeSet::new(),
-        relocated: BTreeMap::new(),
-        ignored: IgnoredDisk::default(),
-    };
+    let mut device = Device::new(Trees::new("root"));
     let at = |parent: &str| koidrive_engine::tree::Shape {
         parent: parent.into(),
         name: "m".into(),

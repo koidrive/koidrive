@@ -310,19 +310,7 @@ fn a_folder_deleted_here_that_holds_excluded_files_comes_back_for_a_folder_the_o
 
 #[test]
 fn a_local_delete_keeps_a_recorded_entry_and_the_folders_above_it_as_the_driver_does() {
-    let mut device = Device {
-        trees: Trees::new("root"),
-        ids: IdGen::new(7),
-        inos: 0,
-        fresh_dir_names: false,
-        rules: Rules::default(),
-        touched: BTreeSet::new(),
-        acted: BTreeSet::new(),
-        removed_from: BTreeMap::new(),
-        kept_back: BTreeSet::new(),
-        relocated: BTreeMap::new(),
-        ignored: IgnoredDisk::default(),
-    };
+    let mut device = Device::new(Trees::new("root"));
     for (id, parent, name) in [("d", "root", "d"), ("m", "d", "m"), ("c", "m", "c")] {
         let shape = koidrive_engine::tree::Shape {
             parent: parent.into(),
@@ -570,19 +558,7 @@ fn a_server_folder_moved_into_a_discarded_folder_out_of_a_folder_deleted_here_se
 
 #[test]
 fn a_server_file_deleted_with_a_deep_chain_of_new_folders_is_acted_below_the_folder_above() {
-    let mut device = Device {
-        trees: Trees::new("root"),
-        ids: IdGen::new(7),
-        inos: 0,
-        fresh_dir_names: false,
-        rules: Rules::default(),
-        touched: BTreeSet::new(),
-        acted: BTreeSet::new(),
-        removed_from: BTreeMap::new(),
-        kept_back: BTreeSet::new(),
-        relocated: BTreeMap::new(),
-        ignored: IgnoredDisk::default(),
-    };
+    let mut device = Device::new(Trees::new("root"));
     let remote = |shape: koidrive_engine::tree::Shape| RemoteNode { made_over: Vec::new(),
         shape,
         trashed: false,
@@ -642,19 +618,7 @@ fn a_server_file_deleted_with_a_deep_chain_of_new_folders_is_acted_below_the_fol
 }
 
 fn an_edit_moved_into_b(b_is_a_node: bool, moved: bool) -> Device {
-    let mut device = Device {
-        trees: Trees::new("root"),
-        ids: IdGen::new(7),
-        inos: 0,
-        fresh_dir_names: false,
-        rules: Rules::default(),
-        touched: BTreeSet::new(),
-        acted: BTreeSet::new(),
-        removed_from: BTreeMap::new(),
-        kept_back: BTreeSet::new(),
-        relocated: BTreeMap::new(),
-        ignored: IgnoredDisk::default(),
-    };
+    let mut device = Device::new(Trees::new("root"));
     device.rules.file = vec!["b"];
     device.rules.read(&mut device.trees);
     let b = b_is_a_node.then_some(("b", "p", "b", None));

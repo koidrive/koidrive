@@ -596,6 +596,22 @@ struct Relocation {
 }
 
 impl Device {
+    fn new(trees: Trees) -> Self {
+        Self {
+            trees,
+            ids: IdGen::new(7),
+            inos: 0,
+            fresh_dir_names: false,
+            rules: Rules::default(),
+            touched: BTreeSet::new(),
+            acted: BTreeSet::new(),
+            removed_from: BTreeMap::new(),
+            kept_back: BTreeSet::new(),
+            relocated: BTreeMap::new(),
+            ignored: IgnoredDisk::new(),
+        }
+    }
+
     fn relocate(
         &mut self,
         id: &NodeId,
@@ -1862,19 +1878,8 @@ fn run_ignoring_answering_after(
     let (mut space, mut other) = seeded(seed);
     let root = space.space_id().to_owned();
     let history = space.history_id().to_owned();
-    let mut device = Device {
-        trees: Trees::new(root.clone()),
-        ids: IdGen::new(7),
-        inos: 0,
-        fresh_dir_names,
-        rules: Rules::default(),
-        touched: BTreeSet::new(),
-        acted: BTreeSet::new(),
-        removed_from: BTreeMap::new(),
-        kept_back: BTreeSet::new(),
-        relocated: BTreeMap::new(),
-        ignored: IgnoredDisk::default(),
-    };
+    let mut device = Device::new(Trees::new(root.clone()));
+    device.fresh_dir_names = fresh_dir_names;
     for state in space.nodes().iter().filter(|n| n.node_id != root) {
         let (id, node) = RemoteNode::from_state(state).unwrap();
         if !node.trashed && first_link.is_none() {
