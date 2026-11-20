@@ -25,7 +25,7 @@ This RFC stores the chunks of one bundle as one R2 object, a pack, and records e
 
 In RFC 0027 §6, "a storage failure fails only its chunk" and "a bundle of 32 makes 32 writes with at most 6 at once" now hold only for targets without `pack=1`.
 
-Today's bundle route used 16 ms of CPU per bundle in run 44391491657, on deploy-test's plan. That is already above the 10 ms per request of Workers Free ([Workers limits, CPU time](https://developers.cloudflare.com/workers/platform/limits/#cpu-time)). Pack writing removes 31 write calls and adds up to 4 MiB of SHA-256. `chunk_packs` is off by default. It turns on by default once compaction (§11 item 5) has merged and packs cost no more server CPU than the bundle route without them, compared as CPU p99 per file on one deploy-test `bench-small` run with `features=chunk_packs`, which measures both (`docs/deploy-test.md`).
+Today's bundle route used 16 ms of CPU per bundle in run 44391491657, on deploy-test's plan. That is already above the 10 ms per request of Workers Free ([Workers limits, CPU time](https://developers.cloudflare.com/workers/platform/limits/#cpu-time)). Pack writing removes 31 write calls and adds up to 4 MiB of SHA-256. `chunk_packs` is off by default. It turns on by default once compaction (§11 item 5) has merged and packs cost no more server CPU than the bundle route without them, compared as request CPU p99 per file on one deploy-test `bench-small` run with `features=chunk_packs`, which measures both (`docs/deploy-test.md`).
 
 ## 3. Confirming locations at commit
 

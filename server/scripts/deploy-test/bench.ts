@@ -170,9 +170,9 @@ async function workerCpu(script: string, path: string, files: number, features: 
   }
   if (unavailable) emit(unavailable);
   if (rows.length === 0) return;
-  emit("| Side | Client upload requests | Worker invocations | CPU p50 ms | CPU p99 ms | CPU p99 ms per file | Errors |\n|---|---|---|---|---|---|---|\n" + rows.join("\n"));
+  emit("| Side | Client upload requests | Worker invocations | CPU p50 ms | CPU p99 ms | Request CPU p99 ms per file | Errors |\n|---|---|---|---|---|---|---|\n" + rows.join("\n"));
   emit(
-    "\nWorker invocations cover the side's whole timed window, so they include the session's WebSocket upgrade as well as the upload requests. On the bundles side, CPU per invocation is CPU per bundle, and a bundle is written as one pack while chunk_packs is on. CPU p99 per file is CPU p99 times client upload requests, divided by the " + files + " files of the side.",
+    "\nWorker invocations cover the side's whole timed window, so they include the session's WebSocket upgrade as well as the upload requests. On the bundles side, CPU per invocation is CPU per bundle, and a bundle is written as one pack while chunk_packs is on. Request CPU p99 per file is the request CPU p99 times client upload requests, divided by the " + files + " files of the side. It estimates CPU per file when every request carries about the same number of files, as a bundle of 32 one-chunk files does.",
   );
 }
 

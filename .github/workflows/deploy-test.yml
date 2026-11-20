@@ -274,7 +274,7 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           REF: ${{ inputs.mode == 'upgrade' && steps.from.outputs.sha || github.sha }}
           KOIDRIVE_TRACE_SAMPLING: ${{ inputs.mode == 'first-sync' && '0.05' || '' }}
-          KOIDRIVE_FEATURES: ${{ (inputs.mode == 'upgrade' || inputs.mode == 'bench-small') && '' || inputs.features }}
+          KOIDRIVE_FEATURES: ${{ inputs.mode != 'upgrade' && inputs.mode != 'bench-small' && inputs.features || '' }}
         run: node scripts/deploy-test/run.ts deploy "$REF"
 
       - name: Claim it with the code from its own log
@@ -354,7 +354,7 @@ jobs:
         run: pnpm exec vitest run --config scripts/deploy-test/vitest.config.ts --reporter=verbose upgrade-verify
 
       - name: Deploy this commit again with chunk_packs off
-        if: inputs.mode == 'upgrade' && contains(inputs.features, 'chunk_packs')
+        if: inputs.mode == 'upgrade' && contains(format(',{0},', inputs.features), ',chunk_packs,') && !contains(format(',{0},', inputs.features), ',-chunk_packs,')
         timeout-minutes: 15
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -362,7 +362,7 @@ jobs:
         run: node scripts/deploy-test/run.ts deploy "$GITHUB_SHA"
 
       - name: Check that packs stay readable with chunk_packs off
-        if: inputs.mode == 'upgrade' && contains(inputs.features, 'chunk_packs')
+        if: inputs.mode == 'upgrade' && contains(format(',{0},', inputs.features), ',chunk_packs,') && !contains(format(',{0},', inputs.features), ',-chunk_packs,')
         timeout-minutes: 10
         run: pnpm exec vitest run --config scripts/deploy-test/vitest.config.ts --reporter=verbose upgrade-packs-off
 

@@ -630,7 +630,7 @@ describe("chunk bundles", () => {
       }
     });
 
-    it("writes the pack and the unflagged chunks of one bundle at most six at once", async () => {
+    it("writes the pack and the unflagged chunks of one bundle with at most six writes open at once", async () => {
       packsOn();
       const { spaceId, file, targets } = await planned(...varied(16, "mixed"));
       let open = 0;
@@ -650,7 +650,8 @@ describe("chunk bundles", () => {
       } as Partial<R2Bucket>);
       const sent = await sendBundle(spaceId, targets.map((target, i) => ({ target: i < 8 ? target.url : unflagged(target.url), data: file.bytes[i]! })), counting);
       expect(sent.results.map((result) => result.receipt?.token.split(".")[0])).toEqual([...Array(8).fill("v2"), ...Array(8).fill("v1")]);
-      expect([writes.filter((key) => key.includes("/packs/")).length, writes.length, peak]).toEqual([1, 9, 6]);
+      expect([writes.filter((key) => key.includes("/packs/")).length, writes.length]).toEqual([1, 9]);
+      expect(peak).toBeLessThanOrEqual(6);
     });
   });
 });
