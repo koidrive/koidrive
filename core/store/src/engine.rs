@@ -435,7 +435,7 @@ impl Tx<'_> {
             .0
             .prepare_cached("SELECT node_id, sent_parent_id, sent_name FROM names_left_out")?;
         let mut rows = stmt.query([])?;
-        while let Some(row) = rows.next()? {
+        while let Some(row) = next_row!(rows, abandoned) {
             let over = (row.get::<_, Option<String>>(1)?)
                 .zip(row.get::<_, Option<String>>(2)?)
                 .map(|(parent, name)| RenamedOver {

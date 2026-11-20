@@ -1790,6 +1790,22 @@ fn an_abandoned_engine_state_read_stops_in_every_commit_part() {
         .unwrap();
 }
 
+#[test]
+fn an_abandoned_engine_state_read_stops_in_the_refused_names() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::open(dir.path().join("state.db")).unwrap();
+    store
+        .transaction(|tx| {
+            let mut state = EngineState::default();
+            state.trees.names_left_out = engine_state().trees.names_left_out;
+            tx.set_engine_state(&state)?;
+            let read = tx.engine_state_unless(&mut EngineState::default(), &mut || true)?;
+            assert!(!read);
+            Ok::<_, Error>(())
+        })
+        .unwrap();
+}
+
 fn count_writes_to_every_table(path: &Path) {
     let conn = Connection::open(path).unwrap();
     let tables = tables(&conn);
