@@ -177,7 +177,7 @@ impl ContentProvenance {
     pub(crate) fn edit(&mut self, previous: Option<&crate::tree::Content>) {
         if let Some(source) = self.local.take() {
             self.edit_bases = source.bases();
-            self.unversioned_bases.clear();
+            self.unversioned_bases = previous.map(ContentValue::from).into_iter().collect();
         } else if let Some(previous) = previous {
             let value = ContentValue::from(previous);
             self.unversioned_bases.retain(|old| old != &value);

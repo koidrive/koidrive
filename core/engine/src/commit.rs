@@ -831,6 +831,13 @@ impl Commits {
         self.given_up_nodes.clear();
         self.answer_moves.clear();
         trees.rewound();
+        let held: BTreeMap<NodeId, RecoveryGroup> = (self.questions.iter())
+            .filter_map(|question| match question.kind {
+                QuestionKind::Recovery { group, .. } => Some((group, question)),
+                _ => None,
+            })
+            .flat_map(|(group, question)| question.holds().map(move |id| (id.clone(), group)))
+            .collect();
         (self.questions.get_mut())
             .retain(|question| matches!(question.kind, QuestionKind::RemoteMassDelete { .. }));
         self.hold(trees);
@@ -862,7 +869,7 @@ impl Commits {
         for (id, shape) in update_synced(trees, agreed.collect()) {
             trees.wait(id, shape, Origin::Other);
         }
-        let mut groups = recovery::classify(trees, cause);
+        let mut groups = recovery::classify(trees, &held, cause);
         if let Some(restored) = groups.get_mut(&RecoveryGroup::CreatedAfterRestorePoint) {
             let unfit = first_link::adopt_equal_files(trees, restored);
             trees.wait_to_link(unfit);
@@ -1195,7 +1202,7 @@ impl Commits {
         now_ms: u64,
     ) -> Vec<Question> {
         let mut asked: BTreeMap<RecoveryGroup, Question> = BTreeMap::new();
-        let mut groups = recovery::regroup(trees, left, cause.as_ref());
+        let mut groups = recovery::regroup(trees, left, &BTreeMap::new(), cause.as_ref());
         groups.remove(&RecoveryGroup::CreatedOnThisDevice);
         let mut intents = None;
         for mut question in std::mem::take(self.questions.get_mut()) {
@@ -1216,7 +1223,7 @@ impl Commits {
                 continue;
             }
             for id in question.holds() {
-                let Some(now) = recovery::group(trees, id, cause.as_ref()) else {
+                let Some(now) = recovery::group(trees, id, Some(group), cause.as_ref()) else {
                     continue;
                 };
                 let now = match now {
@@ -1301,7 +1308,7 @@ impl Commits {
             let cause = question.cause().copied();
             let kept = |id: &NodeId| match intents {
                 true => self.restores.contains_key(&id.to_string()),
-                false => recovery::group(trees, id, cause.as_ref()).is_some(),
+                false => recovery::group(trees, id, None, cause.as_ref()).is_some(),
             };
             let kept = recovery::narrow(trees, question, kept);
             self.questions.get_mut().extend(kept);
@@ -2420,7 +2427,9 @@ impl Commits {
                             agreed.extend(agree(trees, &create_id, result.seq));
                             synced.set(&create_id, Some(shape));
                         }
-                        if trees.source_version_id(&create_id).is_none() {
+                        if (trees.source_version_id(&create_id))
+                            .is_none_or(|source| source == create.source_version_id)
+                        {
                             trees.sent_version(
                                 &create_id,
                                 create.content.as_ref(),
