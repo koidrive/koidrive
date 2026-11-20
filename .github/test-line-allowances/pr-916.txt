@@ -1,3 +1,3 @@
-85
+92
 # schema_content_without_chunks reads store rows written with and without content chunk lists side by side for all five row kinds an upgraded store can hold; no existing case covers old rows with chunks next to new rows without them.
 # The remaining lines are the mechanical ContentKey conversions of existing tests (Shape.content, LocalNode/RemoteNode chunks), which keep every existing assertion.
