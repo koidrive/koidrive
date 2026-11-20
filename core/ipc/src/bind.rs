@@ -245,17 +245,19 @@ mod tests {
         });
         let started = Instant::now();
         let mut binds = 0;
-        while binds < 200 || sightings.load(Ordering::Relaxed) < 20 {
-            assert!(
-                started.elapsed() < Duration::from_secs(60),
-                "the watcher saw the socket {} times in {binds} binds",
-                sightings.load(Ordering::Relaxed)
-            );
+        while (binds < 200 || sightings.load(Ordering::Relaxed) < 20)
+            && started.elapsed() < Duration::from_secs(60)
+        {
             drop(bind(&socket).unwrap());
             binds += 1;
         }
         stop.store(true, Ordering::Relaxed);
         let (at_socket, anywhere) = watcher.join().unwrap();
+        let seen = sightings.load(Ordering::Relaxed);
+        assert!(
+            seen >= 20,
+            "the watcher saw the socket {seen} times in {binds} binds"
+        );
         assert_eq!(at_socket, BTreeSet::from([0o600]));
         if cfg!(target_os = "linux") {
             assert_eq!(anywhere, BTreeSet::from([0o600]));
