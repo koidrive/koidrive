@@ -1,0 +1,40 @@
+class = "D"
+issue = "GUN-1454"
+tests = ["a_first_link_discard_keeps_a_folder_the_user_changes_after_the_server_drops_part_of_it"]
+message = '''<id> was discarded and is created on the server with no later answer to publish it at \S+\.rs:<line>\.'''
+examples = [
+    "01a1c2c0-39a0-775c-844c-3cd7f43c661c was discarded and is created on the server with no later answer to publish it at core/sim/tests/engine_sync/common.rs:2740.",
+    "01a1c2c0-39a0-780a-953a-eb70673e29cb was discarded and is created on the server with no later answer to publish it at core/sim/tests/engine_sync/common.rs:2740.",
+]
+cases = [
+    "07587abbd69e7f8a6c89f50d72c4858b940ffd2476037d6488bd471ec538f15b",
+    "0af45e7d160b14a5dbc27533a2ffdbd5b766b34f49f58047a778da124f4675ba",
+    "0e972ae96f65c17c0331682a35abdf69e941f4df1df324f6231366dfeefa091f",
+    "116cc47a8ae13bd084df5157011c8a0ca480ba315dce5ac0cd7e83c5f9835245",
+    "1e9606632fcb327ed9d65bdbd0c9089d547c2b99329b9c300ca11f888d4f24a5",
+    "1ed4e485416d8e3df55d21f39a75f04387553d6b4e44778df3d73b1d318cef07",
+    "1f9e053fe5bc3d19575fa6baec06a21f1e1fdff87c0bcb2bc72c9e4f2dc967c8",
+    "212602b6f9fba4604d63b4c991b0542c1bd34e4ce3aea1ff6aef186b67713ad2",
+    "22ad76eb6f02e01f61202bbaa6f4694c39f5a532decb5811dd8ab63af8d6f82e",
+    "3bd38323749f8a3d430692dc764d67249fbf1c2ac314c31d62dd484bd4e4229c",
+    "56fc1c187bf867cee2ead511fd4b4aff8f3ca69186c9495bc37e4f50d86a4f0a",
+    "5d300cdb9fc85780f1482860639b5fdf6f4fa5f8cb92d97f27b500e624e405e9",
+    "6a4cad7296fbfbd7806945b01f72d815e3070324e8d0f3075aeb43cde0817a50",
+    "6c1c4d7bd0df04867283f8c658ef0fe91515e3c531fe55aa4a8b44a48f25108b",
+    "8f2506594b6c4055632797bd5b3f0b4a37acf30bb7e50a5c4fe4db0287834718",
+    "99a708f125d84c38265fd25ae623887e9270c4ebedb6f909236e9b1910eceb5d",
+    "9e25b4f0ac71de04019bffbe2a0b6b9e8226cd8fdf7cce97cd20e10fd4b4fd54",
+    "a825cba45a251e4c3f5b45052b8eb4f3f06b0f89df3fd1286a9a872a911a2a64",
+    "ab00143c77b81420316356daca582b50b259e0b720ea61cf4926e04aac70aad0",
+    "afa32eb0506fe4baa66292f2e67be66b0650b2f2bd193176439079d77f37d76b",
+    "bd54231c929c3d418caccb0cdc371c56463595c8f09cac541b77dbd551a8b9ea",
+    "bf9ffa4ef155d997f0ae3e6accab7203d8c48727ec74574483de3a0059ef0e1c",
+    "c34da14dca36292693585d9194ec8cbed60844851b8e09ef1d4ad637b7d30a59",
+    "ca9f240553098973a8a261ec795832be2763cff558f069613f4f66d8b499ad9c",
+    "d85e84669ecc9081db161d75665ec94d8c7ddb3f086883af6bcea3c2d7132068",
+    "de47f94030d7c05b6c321d4171c59759a73fbe03af05ff76f1cfddb38f5d4a10",
+    "e0d007d283595028d268da5627da92f00422dd1b08c1f5294adba502992be32e",
+    "e3174bbfb6c11e74da95847d12e9b64783317d068a62f75af801bd8efa5cd5f9",
+    "f70cfe9acc5be57d872eb90277aa7d8915ee71e6de539017350fc58be465ec9b",
+    "ff60313f0d21d13093a2a575bf8356832ecd5f366d22962ac4c83ce4b6c83437",
+]
