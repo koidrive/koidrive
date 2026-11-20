@@ -2,7 +2,7 @@
 
 use koidrive_engine::commit::{Commits, InFlight};
 use koidrive_engine::effects::{Base, Dir, Effect, EffectRecord, Location};
-use koidrive_engine::first_link::{History, Marks};
+use koidrive_engine::first_link::{LogRead, Marks};
 use koidrive_engine::question::{Answer, QuestionKind, RecoveryCause, RecoveryTrigger};
 use koidrive_engine::tree::NodeId;
 use koidrive_proto::v1::{Commit, Move, NodeStatus, Op, error, op};
@@ -3119,6 +3119,38 @@ fn a_store_older_than_the_disk_asks_its_questions_with_that_cause() {
     assert_eq!(causes, [RecoveryTrigger::StoreOlderThanDisk]);
 }
 
+#[test]
+fn a_store_older_than_the_disk_after_a_rewind_asks_with_the_rewind_cause() {
+    let mut world = synced(2, &[vec![(0, Step::Backup), (0, file("a"))]]);
+    world
+        .run(1, &[(1, Step::CopyStore), (0, rename(0, "b"))])
+        .unwrap();
+    world.run(1, &commit(0)).unwrap();
+    world
+        .run(
+            1,
+            &[
+                (1, DELIVER),
+                (1, EFFECT),
+                (1, EFFECT),
+                (1, overwrite(0)),
+                (0, Step::Rewind),
+                (1, Step::RollBack),
+                (1, Step::Connect),
+                (1, Step::Connect),
+                (1, DELIVER),
+                (1, DELIVER),
+            ],
+        )
+        .unwrap();
+    assert!(recovering(&world, 1).contains("root marker"));
+    let causes: Vec<RecoveryTrigger> = (world.devices[1].engine.commits.questions().iter())
+        .filter_map(|question| question.cause())
+        .map(|cause| cause.trigger)
+        .collect();
+    assert_eq!(causes, [RecoveryTrigger::SpaceRewound]);
+}
+
 fn act(kind: u8, target: usize, parent: usize, name: usize) -> Step {
     Step::User(Action {
         kind,
@@ -3309,7 +3341,7 @@ fn a_publish_for_a_folder_does_not_count_for_its_unchanged_child() {
         seq,
         false,
         &cause,
-        &History::new(),
+        &LogRead::default(),
         &Marks::new(),
         &mut engine.ids,
         1_794_268_740_020,
@@ -4033,4 +4065,210 @@ fn publishing_a_rename_does_not_overwrite_an_edit_made_before_the_create_result(
     );
     world.phase(5, &[]).unwrap();
     assert!(live_writes(&world).contains(&3));
+}
+
+fn open_recovery(world: &World, d: usize) -> usize {
+    (world.devices[d].engine.commits.questions().iter())
+        .filter(|question| question.answer.is_none())
+        .filter(|question| matches!(question.kind, QuestionKind::Recovery { .. }))
+        .count()
+}
+
+fn back_after_the_other_keep(then: &[(usize, Step)]) -> World {
+    let mut world = synced(2, &[vec![(0, Step::Backup), (0, file("c.txt"))]]);
+    let rewind_and_keep = [
+        (1, overwrite(0)),
+        (1, SCAN),
+        (1, COMMIT),
+        (1, COMMIT),
+        (1, DELIVER),
+        (0, Step::Rewind),
+        (0, Step::Connect),
+        (0, DELIVER),
+        (0, Step::Answer(0)),
+        (0, COMMIT),
+        (0, COMMIT),
+        (0, DELIVER),
+    ];
+    let back = [(1, Step::Connect), (1, DELIVER), (1, COMMIT)];
+    world
+        .run(1, &[&rewind_and_keep[..], then, &back].concat())
+        .unwrap();
+    world
+}
+
+#[test]
+fn a_device_back_after_another_devices_keep_is_asked_about_its_own_write() {
+    for (answer, live, binned) in [(0, vec![1, 2], false), (1, vec![1], true)] {
+        let mut world = back_after_the_other_keep(&[]);
+        assert_eq!(open_recovery(&world, 1), 1);
+        world.run(2, &[(1, Step::Answer(answer))]).unwrap();
+        world.phase(3, &[]).unwrap();
+        assert_eq!(live_writes(&world), live, "answer {answer}");
+        assert_eq!(world.devices[1].disk.binned(2), binned, "answer {answer}");
+    }
+}
+
+#[test]
+fn a_device_back_after_another_device_kept_and_deleted_a_file_keeps_its_own_write() {
+    let delete = [
+        (0, delete(0)),
+        (0, SCAN),
+        (0, COMMIT),
+        (0, COMMIT),
+        (0, DELIVER),
+    ];
+    let mut world = back_after_the_other_keep(&delete);
+    assert_eq!(open_recovery(&world, 1), 1);
+    world.run(2, &[(1, Step::Answer(0))]).unwrap();
+    world.phase(3, &[]).unwrap();
+    assert_eq!(live_writes(&world), [2]);
+}
+
+#[test]
+fn a_device_back_after_another_device_kept_and_renamed_the_same_bytes_is_not_asked() {
+    let mut world = synced(2, &[vec![(0, Step::Backup), (0, file("c.txt"))]]);
+    let rewind_and_keep = [
+        (0, Step::Rewind),
+        (0, Step::Connect),
+        (0, DELIVER),
+        (0, Step::Answer(0)),
+        (0, COMMIT),
+        (0, COMMIT),
+        (0, DELIVER),
+        (0, rename(0, "b")),
+        (0, SCAN),
+        (0, COMMIT),
+        (0, COMMIT),
+        (0, DELIVER),
+        (1, Step::Connect),
+        (1, DELIVER),
+        (1, COMMIT),
+    ];
+    world.run(1, &rewind_and_keep).unwrap();
+    assert_eq!(open_recovery(&world, 1), 0);
+    world.phase(2, &[]).unwrap();
+    assert_eq!(live_writes(&world), [1]);
+}
+
+#[test]
+fn a_rewind_of_an_edit_to_a_file_the_restore_point_held_follows_the_server() {
+    for online in [true, false] {
+        let mut world = synced(2, &[vec![(0, file("c.txt"))], vec![(0, Step::Backup)]]);
+        let edit = [
+            (0, overwrite(0)),
+            (0, SCAN),
+            (0, COMMIT),
+            (0, COMMIT),
+            (0, DELIVER),
+            (1, DELIVER),
+        ];
+        let rewind = [
+            (0, Step::Rewind),
+            (0, Step::Connect),
+            (0, DELIVER),
+            (0, COMMIT),
+        ];
+        let back = [(1, Step::Connect), (1, DELIVER), (1, COMMIT)];
+        let schedule = match online {
+            true => [&edit[..], &back, &rewind, &back].concat(),
+            false => [&edit[..], &rewind, &back].concat(),
+        };
+        world.run(1, &schedule).unwrap();
+        assert_eq!(
+            (open_recovery(&world, 0), open_recovery(&world, 1)),
+            (0, 0),
+            "online {online}"
+        );
+        world.phase(2, &[]).unwrap();
+        assert_eq!(live_writes(&world), [1], "online {online}");
+    }
+}
+
+#[test]
+fn a_device_back_after_another_device_edited_and_moved_a_file_in_one_commit_is_asked_once() {
+    for (answer, live, binned) in [(0, vec![2, 3], false), (1, vec![3], true)] {
+        let mut world = synced(2, &[vec![(0, file("c.txt"))], vec![(0, Step::Backup)]]);
+        let schedule = [
+            (1, overwrite(0)),
+            (1, SCAN),
+            (1, COMMIT),
+            (1, COMMIT),
+            (1, DELIVER),
+            (0, Step::Rewind),
+            (0, Step::Connect),
+            (0, DELIVER),
+            (0, COMMIT),
+            (0, overwrite(0)),
+            (0, rename(0, "b")),
+            (0, SCAN),
+            (0, COMMIT),
+            (0, COMMIT),
+            (0, DELIVER),
+            (1, Step::Connect),
+            (1, DELIVER),
+            (1, COMMIT),
+        ];
+        world.run(1, &schedule).unwrap();
+        assert_eq!(open_recovery(&world, 1), 1, "answer {answer}");
+        world.run(2, &[(1, Step::Answer(answer))]).unwrap();
+        world.phase(3, &[]).unwrap();
+        assert_eq!(live_writes(&world), live, "answer {answer}");
+        assert_eq!(world.devices[1].disk.binned(2), binned, "answer {answer}");
+    }
+}
+
+#[test]
+fn a_device_back_after_another_devices_keep_and_a_later_rewind_is_asked_about_its_own_write() {
+    let again = [
+        (0, Step::Backup),
+        (0, Step::Rewind),
+        (0, Step::Connect),
+        (0, DELIVER),
+        (0, COMMIT),
+    ];
+    for reading_the_first in [false, true] {
+        let connected = &[(1, Step::Connect)][..usize::from(reading_the_first)];
+        let mut world = back_after_the_other_keep(&[connected, &again].concat());
+        assert_eq!(open_recovery(&world, 1), 1, "{reading_the_first}");
+        world.run(2, &[(1, Step::Answer(0))]).unwrap();
+        world.phase(3, &[]).unwrap();
+        assert_eq!(live_writes(&world), [1, 2], "{reading_the_first}");
+    }
+}
+
+#[test]
+fn a_device_that_synced_another_devices_keep_follows_a_later_rewind_of_its_own_edit() {
+    let mut world = synced(2, &[vec![(0, Step::Backup), (0, file("c.txt"))]]);
+    let schedule = [
+        (0, Step::Rewind),
+        (0, Step::Connect),
+        (0, DELIVER),
+        (0, Step::Answer(0)),
+        (0, COMMIT),
+        (0, COMMIT),
+        (0, DELIVER),
+        (1, Step::Connect),
+        (1, DELIVER),
+        (1, COMMIT),
+        (1, DELIVER),
+        (0, Step::Backup),
+        (1, overwrite(0)),
+        (1, SCAN),
+        (1, COMMIT),
+        (1, COMMIT),
+        (1, DELIVER),
+        (0, Step::Rewind),
+        (0, Step::Connect),
+        (0, DELIVER),
+        (0, COMMIT),
+        (1, Step::Connect),
+        (1, DELIVER),
+        (1, COMMIT),
+    ];
+    world.run(1, &schedule).unwrap();
+    assert_eq!(open_recovery(&world, 1), 0);
+    world.phase(2, &[]).unwrap();
+    assert_eq!(live_writes(&world), [1]);
+    assert!(world.devices[1].disk.binned(2));
 }

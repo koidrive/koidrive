@@ -20,7 +20,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
 use koidrive_engine::commit::{Base, Halt as CommitHalt, Reconnect};
-use koidrive_engine::first_link::PriorSync;
+use koidrive_engine::first_link::{History, Log, LogRead, PriorSync};
 use koidrive_engine::ignore::LocalRules;
 use koidrive_engine::tree::{FileIdentity, LocalNode, NodeId};
 use koidrive_fs::{Detached, Refusal, Snapshot};
@@ -144,6 +144,7 @@ pub(crate) struct Folder {
     device_seq: u64,
     read_only: bool,
     head_seq: Option<u64>,
+    log_floor_seq: u64,
     local_entries: Option<u64>,
     remote_nodes: u64,
     /// The questions in the store that wait for an answer.
@@ -444,6 +445,7 @@ impl Folder {
             device_seq: 0,
             read_only: false,
             head_seq: None,
+            log_floor_seq: 0,
             local_entries: None,
             remote_nodes,
             questions,
@@ -624,18 +626,27 @@ impl Folder {
             seq = staging.last_seq(),
             "read the space's tree"
         );
-        let recovering = matches!(
-            self.engine.commits.halted(),
-            Some(CommitHalt::Recovery { .. })
-        );
-        let since = (self.engine.cursor.as_ref()).filter(|cursor| {
-            recovering
-                && cursor.history_id == self.history_id
-                && !cursor.ahead_of_server
-                && cursor.last_seq <= staging.last_seq()
-        });
+        let floor_seq = self.log_floor_seq;
+        let since = match self.engine.commits.halted() {
+            Some(CommitHalt::Recovery { cause, .. }) if cause.restore_point_ms.is_some() => {
+                let floor = Log::since_floor(floor_seq, &self.engine.trees);
+                let from = Base {
+                    seq: floor_seq,
+                    ..Base::default()
+                };
+                (floor_seq <= staging.last_seq()).then_some((from, floor))
+            }
+            Some(CommitHalt::Recovery { .. }) => (self.engine.cursor.as_ref())
+                .filter(|cursor| {
+                    cursor.history_id == self.history_id
+                        && !cursor.ahead_of_server
+                        && cursor.last_seq <= staging.last_seq()
+                })
+                .map(|cursor| (cursor.base(), Log::SinceCursor(History::new()))),
+            _ => None,
+        };
         let from = match since {
-            Some(cursor) => staging.read_history_since(cursor.base()),
+            Some((since, log)) => staging.read_history_since(since, log),
             None => staging.last().clone(),
         };
         let work = vec![Work::Subscribe(resume(&self.history_id, &from))];
@@ -908,6 +919,7 @@ impl Folder {
     fn connected(&mut self, welcome: &Welcome, work: &mut Vec<Work>) -> Result<(), Stop> {
         self.disconnected = None;
         self.head_seq = Some(welcome.head_seq);
+        self.log_floor_seq = welcome.log_floor_seq;
         self.history_id.clone_from(&welcome.history_id);
         self.device_seq = welcome.device_seq;
         self.read_only = welcome.read_only;
@@ -1087,9 +1099,7 @@ impl Folder {
             true => PriorSync::Shown,
             false => PriorSync::Fresh,
         };
-        let history = (staging.take_history())
-            .map(|log| koidrive_engine::first_link::since(self.engine.trees.remote(), log))
-            .unwrap_or_default();
+        let log = LogRead::new(&self.engine.trees, &cause, staging.take_history());
         let trees = &self.engine.trees;
         let unheld: BTreeMap<NodeId, FileIdentity> = (trees.local().iter())
             .filter(|(id, _)| recovering && trees.synced().get(id).is_none())
@@ -1105,7 +1115,7 @@ impl Folder {
                     device_seq,
                     read_only,
                     &cause,
-                    &history,
+                    &log,
                     &marks,
                     &mut engine.ids,
                     now_ms,

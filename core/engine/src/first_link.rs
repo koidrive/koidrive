@@ -6,6 +6,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use koidrive_proto::v1::{ChangeRecord, change_record};
+
 use crate::classify::Trees;
 use crate::commit::{rekey, set_synced_together};
 use crate::ids::IdGen;
@@ -24,17 +26,138 @@ pub type History = BTreeMap<NodeId, Vec<Shape>>;
 /// keyed by their ID in L. The caller keeps only marks written on the entry as L holds it.
 pub type Marks = BTreeMap<NodeId, NodeId>;
 
-/// The history of a recovery whose log reaches back to the store's cursor: the shape `remote`, R
-/// as the store held it, gives each live node, and then each shape in `log`.
-pub fn since(remote: &Tree<RemoteNode>, log: History) -> History {
-    let mut history: History = (remote.iter())
-        .filter(|(_, node)| !node.trashed)
-        .map(|(id, node)| (id.clone(), vec![node.shape.clone()]))
-        .collect();
-    for (id, shapes) in log {
-        history.entry(id).or_default().extend(shapes);
+/// What a recovery reads from the server's log.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Log {
+    /// For a store rollback within one history: each shape the log gave a node since the store's
+    /// cursor.
+    SinceCursor(History),
+    /// After a history change: the current history's log from `floor_seq`, as the commit time of
+    /// the first commit read and of each candidate's latest create.
+    SinceFloor {
+        floor_seq: u64,
+        candidates: BTreeSet<NodeId>,
+        first_ms: Option<i64>,
+        created_ms: BTreeMap<NodeId, i64>,
+    },
+}
+
+impl Log {
+    /// The log a recovery after a history change reads from `floor_seq`, keeping only the creates of
+    /// the files S holds, the only ones it can count as held since S₀.
+    pub fn since_floor(floor_seq: u64, trees: &Trees) -> Log {
+        Log::SinceFloor {
+            floor_seq,
+            candidates: synced_versions(trees).map(|(id, _)| id.clone()).collect(),
+            first_ms: None,
+            created_ms: BTreeMap::new(),
+        }
     }
-    history
+
+    /// Takes the changes of the commit at `seq`, committed at `committed_ms`. A node state that
+    /// sets `content_rev` and `meta_rev` to `seq` is a create.
+    pub fn record(&mut self, seq: u64, committed_ms: i64, changes: &[ChangeRecord]) {
+        let states = (changes.iter()).filter_map(|change| match &change.change {
+            Some(change_record::Change::Node(state)) => Some(state),
+            _ => None,
+        });
+        match self {
+            Log::SinceCursor(history) => {
+                for (id, node) in states.filter_map(|state| RemoteNode::from_state(state).ok()) {
+                    history.entry(id).or_default().push(node.shape);
+                }
+            }
+            Log::SinceFloor {
+                candidates,
+                first_ms,
+                created_ms,
+                ..
+            } => {
+                first_ms.get_or_insert(committed_ms);
+                for state in
+                    states.filter(|state| state.content_rev == seq && state.meta_rev == seq)
+                {
+                    let id = NodeId::from(&state.node_id);
+                    if candidates.contains(&id) {
+                        created_ms.insert(id, committed_ms);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// What a recovery learns from the server's log.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct LogRead {
+    /// After a store rollback within one history: the shape R₀ gives each live node, then each
+    /// shape the log gave it since the store's cursor.
+    pub history: History,
+    /// After a history change: the files R′ holds only since S₀.
+    pub recreated: BTreeSet<NodeId>,
+}
+
+impl LogRead {
+    /// `log` is `None` when the log no longer reaches back to where the recovery asked for it.
+    pub fn new(trees: &Trees, cause: &RecoveryCause, log: Option<Log>) -> LogRead {
+        let synced_ms = synced_versions(trees);
+        let after_restore_point = |synced_ms: Option<i64>| {
+            synced_ms
+                .is_some_and(|synced| cause.restore_point_ms.is_some_and(|point| synced > point))
+        };
+        match log {
+            Some(Log::SinceCursor(log)) => {
+                let mut history: History = (trees.remote().iter())
+                    .filter(|(_, node)| !node.trashed)
+                    .map(|(id, node)| (id.clone(), vec![node.shape.clone()]))
+                    .collect();
+                for (id, shapes) in log {
+                    history.entry(id).or_default().extend(shapes);
+                }
+                LogRead {
+                    history,
+                    recreated: BTreeSet::new(),
+                }
+            }
+            Some(Log::SinceFloor {
+                floor_seq,
+                first_ms,
+                created_ms,
+                ..
+            }) => LogRead {
+                history: History::new(),
+                recreated: synced_ms
+                    .filter(|(id, synced_ms)| {
+                        let Some(created) = created_ms.get(*id) else {
+                            let reaches_back = floor_seq == 0
+                                || first_ms
+                                    .zip(*synced_ms)
+                                    .is_some_and(|(first, synced)| first <= synced);
+                            return !reaches_back && after_restore_point(*synced_ms);
+                        };
+                        synced_ms.is_none_or(|synced| *created > synced)
+                    })
+                    .map(|(id, _)| id.clone())
+                    .collect(),
+            },
+            None => LogRead {
+                history: History::new(),
+                recreated: synced_ms
+                    .filter(|(_, synced_ms)| after_restore_point(*synced_ms))
+                    .map(|(id, _)| id.clone())
+                    .collect(),
+            },
+        }
+    }
+}
+
+fn synced_versions(trees: &Trees) -> impl Iterator<Item = (&NodeId, Option<i64>)> {
+    (trees.synced().iter())
+        .filter(|(_, shape)| shape.kind == Kind::File)
+        .map(|(id, _)| {
+            let version_ms = trees.synced_version_id(id).and_then(crate::ids::unix_ms);
+            (id, version_ms.and_then(|ms| i64::try_from(ms).ok()))
+        })
 }
 
 /// Whether the folder synced the space before the store it links with: the server accepted commits

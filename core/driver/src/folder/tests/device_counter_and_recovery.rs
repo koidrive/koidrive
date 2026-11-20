@@ -238,6 +238,83 @@ fn a_recovery_question_records_the_rewind_it_comes_from() {
 }
 
 #[test]
+fn a_device_back_after_another_devices_keep_is_asked_about_its_own_write() {
+    for rewound_again in [false, true] {
+        let mut remote = Remote::new();
+        let (site_a, mut a) = linked(&mut remote, "a");
+        let (site_b, mut b) = linked(&mut remote, "b");
+        let backup = remote.space.clone();
+        a.create(&mut remote, &site_a.root.join("c.txt"), b"one");
+        b.pull(&remote);
+        b.rest(&mut remote);
+        b.create(&mut remote, &site_b.root.join("c.txt"), b"two");
+        remote.space.rewind(&backup, NOW);
+        remote.now_ms += 60_000;
+
+        a.pull(&remote);
+        assert_eq!(a.run(&mut remote).first(), Some(&"reconnect"));
+        a.settle();
+        a.run(&mut remote);
+        drop(a);
+        answer(&site_a, Answer::Keep);
+        let mut a = restarted(&site_a, &mut remote);
+        a.rest(&mut remote);
+        let kept = node_named(&a, "c.txt").to_string();
+        assert_eq!(server_bytes(&remote, &kept), b"one");
+        if rewound_again {
+            let kept = remote.space.clone();
+            remote.space.rewind(&kept, NOW);
+        }
+
+        b.pull(&remote);
+        assert_eq!(b.run(&mut remote).first(), Some(&"reconnect"));
+        b.settle();
+        b.run(&mut remote);
+        assert_eq!(shown(&site_b).len(), 1, "rewound again {rewound_again}");
+        assert_eq!(fs::read(site_b.root.join("c.txt")).unwrap(), b"two");
+    }
+}
+
+#[test]
+fn a_rewind_of_an_edit_to_a_file_the_restore_point_held_is_asked_about_only_when_the_log_is_gone() {
+    for truncated in [false, true] {
+        let mut remote = Remote::new();
+        let (site_a, mut a) = linked(&mut remote, "a");
+        a.create(&mut remote, &site_a.root.join("c.txt"), b"one");
+        let (site_b, mut b) = linked(&mut remote, "b");
+        b.rest(&mut remote);
+        let backup = remote.space.clone();
+        b.create(&mut remote, &site_b.root.join("c.txt"), b"two");
+        remote.space.rewind(&backup, NOW);
+        if truncated {
+            a.pull(&remote);
+            assert_eq!(a.run(&mut remote).first(), Some(&"reconnect"));
+            a.settle();
+            a.run(&mut remote);
+            a.create(&mut remote, &site_a.root.join("other.txt"), b"other");
+            let head = remote.space.head_seq();
+            remote.space.truncate_log(head);
+        }
+
+        b.pull(&remote);
+        assert_eq!(b.run(&mut remote).first(), Some(&"reconnect"));
+        b.settle();
+        b.rest(&mut remote);
+        assert_eq!(
+            shown(&site_b).len(),
+            usize::from(truncated),
+            "truncated {truncated}"
+        );
+        let kept: &[u8] = if truncated { b"two" } else { b"one" };
+        assert_eq!(
+            fs::read(site_b.root.join("c.txt")).unwrap(),
+            kept,
+            "truncated {truncated}"
+        );
+    }
+}
+
+#[test]
 fn an_upload_that_ends_after_a_recovery_leaves_the_next_commit_in_flight() {
     use koidrive_proto::v1::error::Code;
     let mut remote = Remote::new();
@@ -439,7 +516,7 @@ fn a_rewind_on_the_server_holds_the_writes_it_took_until_the_person_keeps_them()
         crate::question::QuestionKind::Recovery {
             group: crate::question::RecoveryGroup::CreatedAfterRestorePoint,
             sent_in: None,
-            cause: Some(RecoveryCause::rewind(0, 0)),
+            cause: Some(RecoveryCause::rewind(1, NOW)),
         }
     );
     let step = a.folder.requested();
@@ -1429,4 +1506,58 @@ fn discarding_a_never_sent_folder_trashes_its_rules_when_the_last_excluded_file_
     assert_eq!(fs::read(kept.join(".koiignore")).unwrap(), rules);
     assert!(a.sent.is_empty());
     assert_eq!(remote.names(), ["note.txt"]);
+}
+
+#[test]
+fn a_file_an_alpha_6_store_synced_is_asked_about_only_when_the_log_creates_it_again() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("state.db");
+    let fixture = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../store/tests/fixtures/alpha6.db"
+    );
+    fs::copy(fixture, &db).unwrap();
+    for created_again in [false, true] {
+        let mut store = Store::open_existing(&db).unwrap();
+        let space = store.transaction(|tx| tx.link()).unwrap().unwrap().space_id;
+        let Engine {
+            mut trees,
+            mut commits,
+            mut ids,
+            ..
+        } = store.transaction(|tx| Engine::load(tx, &space)).unwrap();
+        let id = (trees.synced().iter())
+            .find(|(id, shape)| {
+                shape.kind == Kind::File
+                    && trees
+                        .local()
+                        .get(id)
+                        .is_some_and(|local| local.shape.same(shape))
+            })
+            .map(|(id, _)| id.clone())
+            .unwrap();
+        let mut rewound = trees.remote().get(&id).unwrap().clone();
+        rewound.shape.content.as_mut().unwrap().size += 1;
+        trees.set_remote(id.clone(), rewound);
+        let create = koidrive_proto::v1::NodeState {
+            node_id: (&id).into(),
+            content_rev: 9,
+            meta_rev: 9,
+            ..Default::default()
+        };
+        let changes = [koidrive_proto::v1::ChangeRecord {
+            change: Some(koidrive_proto::v1::change_record::Change::Node(create)),
+        }];
+        let mut log = Log::since_floor(0, &trees);
+        log.record(9, NOW, &changes[..usize::from(created_again)]);
+        let cause = RecoveryCause::rewind(1, NOW);
+        let read = LogRead::new(&trees, &cause, Some(log));
+        commits.enter_recovery(cause);
+        let marks = koidrive_engine::first_link::Marks::new();
+        commits.recover(
+            &mut trees, 0, false, &cause, &read, &marks, &mut ids, NOW as u64,
+        );
+        let held = (commits.questions().iter()).any(|question| question.holds().any(|n| *n == id));
+        assert_eq!(held, created_again);
+    }
 }

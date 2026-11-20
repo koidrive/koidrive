@@ -75,7 +75,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use koidrive_engine::classify::Trees;
 use koidrive_engine::commit::{self, Base, Reconnect};
 use koidrive_engine::effects::{BatchLimit, Effect, EffectRecord, location_of};
-use koidrive_engine::first_link::{self, History, Marks};
+use koidrive_engine::first_link::{self, History, Log, LogRead, Marks};
 use koidrive_engine::ignore::Source;
 use koidrive_engine::names::{name_key, nfc, same_name};
 use koidrive_engine::question::{Answer, QuestionKind, RecoveryCause, RecoveryTrigger};
@@ -84,7 +84,7 @@ use koidrive_engine::tree::{
 };
 use koidrive_proto::v1::{
     ChunkRef, Commit, Error, ListVersions, NodeKind, NodeState, NodeStatus, PrepareUpload, Resume,
-    UploadReceipt, change_record, chunk_plan, error, op, op_result, resync_required,
+    UploadReceipt, chunk_plan, error, op, op_result, resync_required,
 };
 use sha2::{Digest, Sha256};
 
@@ -529,10 +529,10 @@ fn acknowledge(device: &mut Device) -> Result<(), Failure> {
 /// The listing a device whose R the server is behind reads in place of the log: every node of the
 /// server's tree and trash at its head (section 4.4).
 fn listing(space: &SpaceDo) -> Message {
-    listing_with(space, History::new())
+    listing_with(space, LogRead::default())
 }
 
-fn listing_with(space: &SpaceDo, history: History) -> Message {
+fn listing_with(space: &SpaceDo, log: LogRead) -> Message {
     let (commit_id, committed_at_ms) = space.token_at(space.head_seq()).unwrap_or_default();
     Message::Listing {
         nodes: space.nodes(),
@@ -541,32 +541,26 @@ fn listing_with(space: &SpaceDo, history: History) -> Message {
             commit_id,
             committed_at_ms,
         },
-        history,
+        log,
     }
 }
 
-fn history_since(space: &SpaceDo, from: &Resume, trees: &Trees) -> History {
-    let Ok(records) = space.resume(from) else {
-        return History::new();
-    };
-    let mut log = History::new();
-    for record in records {
-        for change in &record.changes {
-            if let Some(change_record::Change::Node(state)) = &change.change
-                && let Ok((id, node)) = RemoteNode::from_state(state)
-            {
-                log.entry(id).or_default().push(node.shape);
-            }
+fn log_since(space: &SpaceDo, from: &Resume, trees: &Trees, cause: &RecoveryCause) -> LogRead {
+    let log = space.resume(from).ok().map(|records| {
+        let mut log = match cause.restore_point_ms {
+            Some(_) => Log::since_floor(from.since_seq, trees),
+            None => Log::SinceCursor(History::new()),
+        };
+        for record in records {
+            log.record(record.seq, record.committed_at_ms, &record.changes);
         }
-    }
-    first_link::since(trees.remote(), log)
+        log
+    });
+    LogRead::new(trees, cause, log)
 }
 
-/// A write a restore took from the server while a device still held it (design sections 2.4 and
-/// 4.4).
 #[derive(Default)]
 struct Exposure {
-    /// The nodes that held the write at the restore, on the server or on a device.
     nodes: BTreeSet<NodeId>,
 }
 
@@ -1378,21 +1372,34 @@ impl World {
             },
         );
         let engine = &self.devices[d].engine;
-        let from = Resume {
-            history_id: engine.history.clone(),
-            since_seq: engine.cursor.seq,
-            since_commit_id: engine.cursor.commit_id.clone(),
-            since_committed_at_ms: engine.cursor.committed_at_ms,
+        let welcome = self.space.welcome(&self.devices[d].session);
+        let rewound =
+            trigger == RecoveryTrigger::SpaceRewound || engine.history != welcome.history_id;
+        let (cause, from) = match rewound {
+            true => (
+                RecoveryCause::rewind(welcome.restore_seq, welcome.restore_point_ms),
+                Resume {
+                    history_id: welcome.history_id,
+                    since_seq: welcome.log_floor_seq,
+                    ..Resume::default()
+                },
+            ),
+            false => (
+                RecoveryCause::of(trigger),
+                Resume {
+                    history_id: engine.history.clone(),
+                    since_seq: engine.cursor.seq,
+                    since_commit_id: engine.cursor.commit_id.clone(),
+                    since_committed_at_ms: engine.cursor.committed_at_ms,
+                },
+            ),
         };
-        let since = history_since(&self.space, &from, &engine.trees);
+        let since = log_since(&self.space, &from, &engine.trees, &cause);
         let history = self.space.history_id().to_owned();
         let device = &mut self.devices[d];
         device.recovery = Some(why);
         device.recovery_from = from;
-        device
-            .engine
-            .commits
-            .enter_recovery(RecoveryCause::of(trigger));
+        device.engine.commits.enter_recovery(cause);
         device.engine.history = history;
         device.engine.behind = true;
         let listed = listing_with(&self.space, since);
@@ -2238,11 +2245,16 @@ impl World {
     fn resume(&mut self, d: usize) -> Result<Message, Failure> {
         let device = &mut self.devices[d];
         if device.engine.behind {
-            let history = match device.recovering() {
-                true => history_since(&self.space, &device.recovery_from, &device.engine.trees),
-                false => History::new(),
+            let log = match device.engine.commits.halted() {
+                Some(commit::Halt::Recovery { cause, .. }) if device.recovering() => log_since(
+                    &self.space,
+                    &device.recovery_from,
+                    &device.engine.trees,
+                    &cause,
+                ),
+                _ => LogRead::default(),
             };
-            return Ok(listing_with(&self.space, history));
+            return Ok(listing_with(&self.space, log));
         }
         let engine = &mut device.engine;
         let resume = Resume {
@@ -2358,11 +2370,7 @@ impl World {
             Message::Listing { .. } if !waits => {
                 note(&mut self.seen, "listing arrives twice");
             }
-            Message::Listing {
-                nodes,
-                head,
-                history,
-            } => {
+            Message::Listing { nodes, head, log } => {
                 note(&mut self.seen, "listing replaces R");
                 let Engine {
                     trees,
@@ -2451,7 +2459,7 @@ impl World {
                         })
                         .collect();
                     commits.recover(
-                        trees, device_seq, false, &cause, &history, &marks, ids, NOW as u64,
+                        trees, device_seq, false, &cause, &log, &marks, ids, NOW as u64,
                     );
                     let unheld: BTreeSet<u128> = unheld.into_iter().map(|(_, ino)| ino).collect();
                     let adopted = (trees.local().iter())
@@ -4445,7 +4453,7 @@ mod tests {
             0,
             false,
             &cause,
-            &History::new(),
+            &LogRead::default(),
             &Marks::new(),
             &mut engine.ids,
             NOW as u64,

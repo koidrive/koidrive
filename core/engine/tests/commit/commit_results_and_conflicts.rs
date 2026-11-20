@@ -941,7 +941,7 @@ fn a_folder_moved_into_a_merged_folder_is_no_longer_reverted_once_a_rewind_forge
         0,
         false,
         &cause,
-        &History::new(),
+        &LogRead::default(),
         &Marks::new(),
         &mut ids,
         NOW,

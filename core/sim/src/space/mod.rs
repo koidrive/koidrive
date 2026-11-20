@@ -427,6 +427,7 @@ pub struct SpaceDo {
     objects: HashMap<Vec<u8>, u32>,
     head_seq: u64,
     restore_seq: u64,
+    restore_point_ms: i64,
     log_floor_seq: u64,
     /// The commit token at `log_floor_seq` (RFC 0013), kept when the log is truncated past it.
     floor_token: Option<(String, i64)>,
@@ -483,6 +484,7 @@ impl SpaceDo {
             objects: HashMap::new(),
             head_seq: 0,
             restore_seq: 0,
+            restore_point_ms: 0,
             log_floor_seq: 0,
             floor_token: None,
             copies_created_files: false,
@@ -577,6 +579,8 @@ impl SpaceDo {
             device_seq,
             device_commit_id,
             device_committed_at_ms,
+            restore_seq: self.restore_seq,
+            restore_point_ms: self.restore_point_ms,
             ..Default::default()
         }
     }
@@ -604,14 +608,16 @@ impl SpaceDo {
             None
         };
         if let Some(reason) = reason {
-            let restore_seq = match reason {
-                resync_required::Reason::HistoryChanged => self.restore_seq,
-                _ => 0,
+            let (restore_seq, restore_point_ms) = match reason {
+                resync_required::Reason::HistoryChanged => {
+                    (self.restore_seq, self.restore_point_ms)
+                }
+                _ => (0, 0),
             };
             return Err(ResyncRequired {
                 reason: reason as i32,
                 restore_seq,
-                ..Default::default()
+                restore_point_ms,
             });
         }
         Ok(self
@@ -645,6 +651,8 @@ impl SpaceDo {
         self.history_id = self.state.ids.uuid_v7(now_ms as u64);
         self.account_history = self.history_id.clone();
         self.restore_seq = self.head_seq;
+        self.restore_point_ms = (backup.token_at(backup.head_seq))
+            .map_or(1, |(_, committed_at_ms)| committed_at_ms.max(1));
     }
 
     /// Makes every later commit that creates a file also keep a conflict copy of it beside it,

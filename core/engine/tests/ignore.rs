@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use koidrive_engine::classify::{Origin, Pending, Trees, Waiting};
 use koidrive_engine::commit::{Commits, InFlight};
 use koidrive_engine::effects::{self, Base, BatchLimit, Effect, Effects, Location, Stuck};
-use koidrive_engine::first_link::{History, Marks};
+use koidrive_engine::first_link::{LogRead, Marks};
 use koidrive_engine::ids::IdGen;
 use koidrive_engine::ignore::{LocalRules, RuleFile, Source};
 use koidrive_engine::question::RecoveryCause;
@@ -2624,10 +2624,8 @@ fn a_file_deleted_here_keeps_its_base_through_a_rewind_and_comes_back_where_anot
         commits.build(&mut trees, &mut ids, NOW, HISTORY, "me", 9),
         None
     );
-    let (history, marks) = (History::new(), Marks::new());
-    commits.recover(
-        &mut trees, 9, false, &cause, &history, &marks, &mut ids, NOW,
-    );
+    let (log, marks) = (LogRead::default(), Marks::new());
+    commits.recover(&mut trees, 9, false, &cause, &log, &marks, &mut ids, NOW);
     trees.settle(commits.aliases());
     moved_out_comes_back(&mut trees);
 }

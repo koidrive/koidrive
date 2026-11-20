@@ -16,7 +16,7 @@ use std::path::{Component, Path, PathBuf};
 use koidrive_engine::classify::{CHECK_EVERY, Pending, Trees};
 use koidrive_engine::commit::{Base, Commits, Halt};
 use koidrive_engine::effects::Effects;
-use koidrive_engine::first_link::History;
+use koidrive_engine::first_link::Log;
 use koidrive_engine::ids::{IdGen, unix_ms};
 use koidrive_engine::question as engine;
 use koidrive_engine::restore::RestoreIntent;
@@ -2082,7 +2082,7 @@ pub(crate) struct Staging {
     /// The head of the last `CaughtUp`.
     caught_up: Option<u64>,
     nodes: BTreeMap<String, NodeState>,
-    history: Option<(u64, History)>,
+    history: Option<(u64, Log)>,
 }
 
 fn edit_revs(node: &NodeState) -> (u64, u64) {
@@ -2149,8 +2149,8 @@ impl Staging {
         &self.last
     }
 
-    pub fn read_history_since(&mut self, since: Base) -> Base {
-        self.history = Some((since.seq, History::new()));
+    pub fn read_history_since(&mut self, since: Base, log: Log) -> Base {
+        self.history = Some((since.seq, log));
         since
     }
 
@@ -2158,43 +2158,48 @@ impl Staging {
         self.history.take().map(|_| &self.last)
     }
 
-    pub fn take_history(&mut self) -> Option<History> {
-        self.history.take().map(|(_, history)| history)
+    pub fn take_history(&mut self) -> Option<Log> {
+        let (through, log) = self.history.take()?;
+        (through >= self.last.seq).then_some(log)
     }
 
-    pub fn remember(&mut self, seq: u64, changes: &[ChangeRecord]) {
-        let Some((through, history)) = &mut self.history else {
+    pub fn replay_result(&mut self, at: Base, changes: &[ChangeRecord]) -> Result<(), Stop> {
+        if (self.history.as_ref()).is_some_and(|(through, _)| at.seq == *through + 1) {
+            self.remember(&at, changes);
+        }
+        if at.seq == self.last.seq + 1 {
+            self.replay_commit(at, changes)?;
+        }
+        Ok(())
+    }
+
+    pub fn remember(&mut self, at: &Base, changes: &[ChangeRecord]) {
+        let Some((through, log)) = &mut self.history else {
             return;
         };
-        if seq <= *through {
+        if at.seq <= *through {
             return;
         }
-        if seq != *through + 1 {
+        if at.seq != *through + 1 {
             self.history = None;
             return;
         }
-        *through = seq;
-        for change in changes {
-            if let Some(change_record::Change::Node(state)) = &change.change
-                && let Ok((id, node)) = RemoteNode::from_state(state)
-            {
-                history.entry(id).or_default().push(node.shape);
-            }
-        }
+        *through = at.seq;
+        log.record(at.seq, at.committed_at_ms, changes);
     }
 
     /// Replays commits of the log in seq order. A node state replaces the listed node only when it is newer, since a
     /// page read later can already hold the result of a commit replayed now.
     pub fn replay(&mut self, records: &[CommitRecord]) -> Result<Applied, Stop> {
         for record in records {
-            if record.seq <= self.last.seq {
-                self.remember(record.seq, &record.changes);
-                continue;
-            }
-            if record.seq != self.last.seq + 1 {
+            if record.seq > self.last.seq + 1 {
                 return Ok(Applied::Gap);
             }
-            self.replay_commit(record_base(record), &record.changes)?;
+            let at = record_base(record);
+            self.remember(&at, &record.changes);
+            if record.seq == self.last.seq + 1 {
+                self.replay_commit(at, &record.changes)?;
+            }
         }
         Ok(Applied::Through)
     }
@@ -2207,7 +2212,6 @@ impl Staging {
                 at.seq
             )));
         }
-        self.remember(at.seq, changes);
         for change in changes {
             match &change.change {
                 Some(change_record::Change::Node(state)) => self.take(state.clone()),
@@ -2326,6 +2330,50 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(dir.path().join("store.sqlite")).unwrap();
         (dir, store)
+    }
+
+    #[test]
+    fn a_commit_result_is_the_log_record_of_its_seq() {
+        let mut staging = backlog_through(3);
+        let result = koidrive_engine::commit::Base {
+            seq: 4,
+            committed_at_ms: 40,
+            ..Default::default()
+        };
+        staging.replay_result(result, &[]).unwrap();
+        assert!(staging.take_history().is_some());
+    }
+
+    #[test]
+    fn a_call_result_ahead_of_the_backlog_leaves_the_log_to_its_ordered_delivery() {
+        let mut staging = backlog_through(0);
+        let result = koidrive_engine::commit::Base {
+            seq: 4,
+            committed_at_ms: 40,
+            ..Default::default()
+        };
+        staging.replay_result(result.clone(), &[]).unwrap();
+        let backlog: Vec<CommitRecord> = (1..=3).map(|seq| record(seq, Vec::new())).collect();
+        staging.replay(&backlog).unwrap();
+        staging.replay_result(result, &[]).unwrap();
+        assert!(staging.take_history().is_some());
+    }
+
+    #[test]
+    fn a_log_short_of_the_replay_is_not_read() {
+        let mut staging = backlog_through(3);
+        let record = record(4, Vec::new());
+        staging.replay_commit(record_base(&record), &[]).unwrap();
+        assert!(staging.take_history().is_none());
+    }
+
+    fn backlog_through(seq: u64) -> Staging {
+        let mut staging = listed(3, Vec::new());
+        let since = koidrive_engine::commit::Base::from(0);
+        staging.read_history_since(since, Log::SinceCursor(Default::default()));
+        let backlog: Vec<CommitRecord> = (1..=seq).map(|seq| record(seq, Vec::new())).collect();
+        staging.replay(&backlog).unwrap();
+        staging
     }
 
     /// A bootstrap's tree of `nodes` that the log has caught up at `seq`.
