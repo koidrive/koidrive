@@ -70,6 +70,7 @@ fn a_store_from_before_moves_were_recorded_records_the_positions_its_commits_set
     before.trees.past_positions.clear();
     before.trees.lost_positions.clear();
     before.trees.lost_creates.clear();
+    before.trees.unsent_deletes.clear();
     assert_eq!(store.transaction(|tx| tx.engine_state()).unwrap(), before);
     store
         .transaction(|tx| tx.update_engine_state(&before, &after))

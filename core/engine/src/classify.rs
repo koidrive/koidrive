@@ -650,6 +650,7 @@ pub struct Trees {
     removed_from: TrackedMap<NodeId, NodeId>,
     forgotten_shapes: TrackedMap<NodeId, Shape>,
     lost_shapes: TrackedMap<NodeId, Shape>,
+    unsent_deletes: TrackedMap<NodeId, Shape>,
     adopted: BTreeSet<NodeId>,
     recoveries: u64,
     /// The files whose content an edit of this device set, each with the seq of its commit, while
@@ -783,6 +784,7 @@ impl Trees {
             removed_from: TrackedMap::default(),
             forgotten_shapes: TrackedMap::default(),
             lost_shapes: TrackedMap::default(),
+            unsent_deletes: TrackedMap::default(),
             adopted: BTreeSet::new(),
             recoveries: 0,
             edited_here: TrackedMap::default(),
@@ -2106,6 +2108,7 @@ impl Trees {
     /// Sets L. A reverted node that L now holds at a position other than its old one and R's was
     /// moved by the user, and is no longer reverted: that move is committed instead.
     pub fn set_local(&mut self, id: NodeId, mut node: LocalNode) {
+        self.unsent_deletes.remove(&id);
         let content_changed = !matches!(
             (self.l.get(&id).and_then(|old| old.shape.content.as_ref()), node.shape.content.as_ref()),
             (Some(old), Some(new)) if same_content(old, new)
@@ -2555,11 +2558,13 @@ impl Trees {
         self.asked = asked;
     }
 
-    /// Whether the node is set aside ([`Trees::set_aside`]), or L, S or R places it at or below a node that awaits a
-    /// scan ([`Trees::await_scan`]). Neither an effect nor a commit is planned for it, and no effect parks it to make
-    /// room for another node.
+    /// Whether the node is set aside ([`Trees::set_aside`]), L, S or R places it at or below a node that awaits a
+    /// scan ([`Trees::await_scan`]), or R holds a delete this device never sent waiting for its folder. Neither an
+    /// effect nor a commit is planned for it, and no effect parks it to make room for another node.
     pub fn held(&self, id: &NodeId) -> bool {
-        self.set_aside(id) || self.awaits_scan(id)
+        self.set_aside(id)
+            || self.awaits_scan(id)
+            || self.unsent_deletes.contains_key(id) && self.r.live(id).is_some()
     }
 
     /// Whether an open question holds the node's local entry ([`Trees::set_asked`]), or L, S or R places it below a
@@ -6248,6 +6253,7 @@ impl Trees {
                 self.wait(id, None, Origin::Other);
             } else {
                 self.remember_lost_shape(&id);
+                self.record_unsent_delete(&id);
                 self.set_synced(id, None);
             }
         }
@@ -6449,6 +6455,74 @@ impl Trees {
         }
     }
 
+    pub(crate) fn record_unsent_delete(&mut self, id: &NodeId) {
+        let deleted = self.l.get(id).is_none() && self.r.get(id).is_none() && !self.unobserved(id);
+        if let Some(seen) = self.s.live(id).filter(|_| deleted).cloned() {
+            self.unsent_deletes.insert(id.clone(), seen);
+        }
+    }
+
+    pub(crate) fn restore_unsent_deletes<'a>(
+        &mut self,
+        restored: impl Iterator<Item = &'a NodeId>,
+    ) {
+        let restored: BTreeSet<&NodeId> = restored.collect();
+        let ended: Vec<NodeId> = (self.unsent_deletes.keys())
+            .filter(|id| {
+                let mut at = Some((*id).clone());
+                for _ in 0..=self.unsent_deletes.len() + self.s.len() {
+                    let Some(node) = at else {
+                        return false;
+                    };
+                    if restored.contains(&node) {
+                        return true;
+                    }
+                    at = (self.unsent_deletes.get(&node).or_else(|| self.s.get(&node)))
+                        .map(|shape| shape.parent.clone());
+                }
+                false
+            })
+            .cloned()
+            .collect();
+        for id in ended {
+            self.unsent_deletes.remove(&id);
+        }
+    }
+
+    fn take_unsent_deletes(&mut self) {
+        let depth = |id: &NodeId| {
+            let mut at = id;
+            let mut depth = 0;
+            while let Some(node) = self.r.get(at).filter(|_| depth <= self.r.len()) {
+                if self.set_aside(at) {
+                    return None;
+                }
+                at = &node.shape.parent;
+                depth += 1;
+            }
+            (depth > 0).then_some(depth)
+        };
+        let mut returned: Vec<(usize, NodeId)> = (self.unsent_deletes.keys())
+            .filter_map(|id| Some((depth(id)?, id.clone())))
+            .collect();
+        returned.sort();
+        for (_, id) in returned {
+            let (Some(seen), Some(node)) = (self.unsent_deletes.get(&id), self.r.get(&id)) else {
+                continue;
+            };
+            let shape = node.shape.clone();
+            if node.trashed
+                || !shape.same(seen)
+                || self.l.get(&id).is_some()
+                || self.s.get(&id).is_some()
+            {
+                self.unsent_deletes.remove(&id);
+                continue;
+            }
+            self.set_synced_if_valid(id, Some(shape));
+        }
+    }
+
     pub(crate) fn lost_shapes(&self) -> &TrackedMap<NodeId, Shape> {
         &self.lost_shapes
     }
@@ -6548,6 +6622,7 @@ impl Trees {
     ) -> Option<()> {
         self.discard_members
             .retain(|_, folder| self.discarded.contains_key(folder));
+        self.take_unsent_deletes();
         self.release_kept_entries_the_person_let_in();
         self.note_kept_causes();
         let mut carried = Vec::new();
@@ -7327,6 +7402,7 @@ impl Trees {
         if shape.is_some() {
             self.forgotten_shapes.remove(id);
             self.lost_shapes.remove(id);
+            self.unsent_deletes.remove(id);
         }
         if (shape.as_ref())
             .is_some_and(|shape| (self.l.get(id)).is_some_and(|local| local.shape.same(shape)))
@@ -7498,6 +7574,13 @@ impl Trees {
             "a lost shape of a node that S holds or that R holds under its ID"
         );
         debug_assert_eq!(
+            (self.unsent_deletes.keys())
+                .find(|id| self.l.get(id).is_some() || self.s.get(id).is_some())
+                .cloned(),
+            None,
+            "an unsent delete of a node that L or S holds"
+        );
+        debug_assert_eq!(
             (self.released.iter())
                 .find(|id| {
                     !self.release_due
@@ -7565,6 +7648,7 @@ impl Trees {
             removed_from: self.removed_from.to_map(),
             forgotten_shapes: self.forgotten_shapes.to_map(),
             lost_shapes: self.lost_shapes.to_map(),
+            unsent_deletes: self.unsent_deletes.to_map(),
             outside: self.outside.to_set(),
             lost: self.lost.to_set(),
             found: self.found.to_map(),
@@ -7627,6 +7711,7 @@ impl Trees {
             removed_from,
             forgotten_shapes,
             lost_shapes,
+            unsent_deletes,
             adopted: _,
             recoveries: _,
             edited_here,
@@ -7706,6 +7791,7 @@ impl Trees {
             removed_from: removed_from.take_changes(),
             forgotten_shapes: forgotten_shapes.take_changes(),
             lost_shapes: lost_shapes.take_changes(),
+            unsent_deletes: unsent_deletes.take_changes(),
             outside: outside.take_changes(),
             lost: lost.take_changes(),
             found: found.take_changes(),
@@ -7950,6 +8036,7 @@ impl Trees {
             removed_from,
             forgotten_shapes,
             lost_shapes,
+            unsent_deletes,
             outside,
             lost,
             found,
@@ -8009,6 +8096,7 @@ impl Trees {
         self.removed_from = removed_from.into();
         self.forgotten_shapes = forgotten_shapes.into();
         self.lost_shapes = lost_shapes.into();
+        self.unsent_deletes = unsent_deletes.into();
         self.outside = outside.into();
         self.lost = lost.into();
         self.found = found.into();

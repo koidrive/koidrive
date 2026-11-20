@@ -257,6 +257,22 @@ impl Tx<'_> {
         }
         let mut stmt = self
             .0
+            .prepare_cached("SELECT node_id, parent_id, name, kind, content FROM unsent_deletes")?;
+        let mut rows = stmt.query([])?;
+        while let Some(row) = next_row!(rows, abandoned) {
+            let shape = Shape {
+                parent: NodeId::from(row.get::<_, Option<String>>(1)?.unwrap_or_default()),
+                name: row.get(2)?,
+                kind: kind(row.get(3)?)?,
+                content: content_key(row.get(4)?)?,
+            };
+            state
+                .trees
+                .unsent_deletes
+                .insert(NodeId::from(row.get::<_, String>(0)?), shape);
+        }
+        let mut stmt = self
+            .0
             .prepare_cached("SELECT node_id FROM published_nodes")?;
         let mut rows = stmt.query([])?;
         while let Some(row) = next_row!(rows, abandoned) {
@@ -775,6 +791,7 @@ impl Tx<'_> {
             removed_from,
             forgotten_shapes,
             lost_shapes,
+            unsent_deletes,
             outside,
             lost,
             found,
@@ -969,6 +986,21 @@ impl Tx<'_> {
             lost_shapes,
             "DELETE FROM lost_shapes WHERE node_id = ?1",
             "INSERT OR REPLACE INTO lost_shapes (node_id, parent_id, name, kind, content)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            |put, node, shape| {
+                put.execute(params![
+                    node,
+                    non_empty(&shape.parent.to_string()),
+                    shape.name,
+                    node_kind(shape.kind),
+                    shape.content.as_ref().map(key_bytes),
+                ])
+            },
+        )?;
+        self.write_node_map(
+            unsent_deletes,
+            "DELETE FROM unsent_deletes WHERE node_id = ?1",
+            "INSERT OR REPLACE INTO unsent_deletes (node_id, parent_id, name, kind, content)
              VALUES (?1, ?2, ?3, ?4, ?5)",
             |put, node, shape| {
                 put.execute(params![

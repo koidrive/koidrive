@@ -1,0 +1,7 @@
+157
+# A delete made offline around a server loss must stay deleted when another device's Keep or resend brings the node back,
+# whether R learns of it from the log, a listing or a restart, and must give way where that device moved the node, changed
+# its content, or the user answered Restore. Where another device renamed the deleted folder, the file's record waits for
+# the folder and is not downloaded meanwhile, both for a file deleted before its folder and with it, and a file another
+# device changed still downloads. Each recovery test is one of those paths and fails on the engine without the record or
+# with one of its rules removed; the store tests cover the add-only table on a fresh store and on an upgrade.

@@ -42,6 +42,7 @@ fn a_store_from_before_discards_froze_what_was_below_leaves_the_build_to_decide(
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("state.db");
     let mut before = engine_state();
+    before.trees.unsent_deletes.clear();
     before.commits.questions = vec![first_link_discard("older", None)];
     Store::open(&path)
         .unwrap()
