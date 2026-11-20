@@ -177,6 +177,21 @@ fn trashed_remote_nodes_count_as_absent() {
 }
 
 #[test]
+fn trees_built_alike_print_alike() {
+    let build = || {
+        let mut trees = Trees::new(ROOT);
+        for i in 0..32 {
+            let id = format!("n{i}");
+            let shape = file(ROOT, &id, 0);
+            trees.set_synced(NodeId::from(&id), Some(shape.clone()));
+            trees.set_local(NodeId::from(&id), local(shape, i));
+        }
+        trees
+    };
+    assert_eq!(format!("{:?}", build()), format!("{:?}", build()));
+}
+
+#[test]
 fn reads_node_states_and_refuses_kinds_this_version_does_not_sync() {
     let state = NodeState {
         node_id: "n".into(),
