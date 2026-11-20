@@ -7879,3 +7879,77 @@ fn a_folder_moved_out_of_a_vanished_folder_survives_a_server_purge() {
         }
     }
 }
+
+#[test]
+fn a_taken_along_server_folder_stays_in_a_discarded_folder_the_user_changes_while_its_old_place_is_excluded()
+ {
+    for undone in [false, true] {
+        let mut trees = trees(
+            &[
+                ("d", dir(ROOT, "out")),
+                ("h", dir("d", "held")),
+                ("g", dir(ROOT, "new")),
+                ("x", dir(ROOT, "server")),
+                ("c", dir("x", "child")),
+            ],
+            &[
+                ("d", dir(ROOT, "out")),
+                ("x", dir(ROOT, "server")),
+                ("c", dir("x", "child")),
+            ],
+        );
+        let (mut commits, mut ids) = (Commits::default(), IdGen::new(7));
+        commits.first_link(&mut trees, &mut ids, NOW, PriorSync::Shown);
+        let asked = question(&commits);
+        trees.set_rules(
+            &[] as &[&str],
+            Source::Koiignore,
+            Some(RuleFile::parse(b"/out\n")),
+        );
+        trees.settle(commits.aliases());
+        let mut moved = trees.local().get(&"x".into()).unwrap().clone();
+        moved.shape.parent = "h".into();
+        trees.set_local_changed("x".into(), moved);
+        trees.settle(commits.aliases());
+        assert!(commits.decide(&mut trees, &asked.id, Answer::Discard));
+        assert!(ops(&mut commits, &mut trees, &mut ids).is_empty());
+        let mut moved = trees.local().get(&"c".into()).unwrap().clone();
+        moved.shape.parent = "h".into();
+        trees.set_local_changed("c".into(), moved);
+        let mut moved = trees.local().get(&"d".into()).unwrap().clone();
+        moved.shape.parent = "g".into();
+        trees.set_local_changed("d".into(), moved);
+        trees.settle(commits.aliases());
+        let mut effects = Effects::default();
+        let planned = effects.plan(&trees, commits.in_flight(), &mut ids, NOW, BatchLimit::ONE);
+        assert!(
+            planned.iter().all(|record| record.node != "x"),
+            "{undone}: {planned:?}"
+        );
+        if undone {
+            let mut moved = trees.local().get(&"c".into()).unwrap().clone();
+            moved.shape.parent = "x".into();
+            trees.set_local_changed("c".into(), moved);
+        }
+        let sent = drive_until_quiet(&mut commits, &mut trees, &mut ids);
+        let (held, x_in) = match undone {
+            false => (vec![("h".into(), "d".into(), "held".into())], "h"),
+            true => (vec![], ROOT),
+        };
+        let expected: Vec<(NodeId, NodeId, String)> = [
+            (
+                "c".into(),
+                if undone { "x" } else { "h" }.into(),
+                "child".into(),
+            ),
+            ("d".into(), "g".into(), "out".into()),
+            ("g".into(), ROOT.into(), "new".into()),
+        ]
+        .into_iter()
+        .chain(held)
+        .chain([("x".into(), x_in.into(), "server".into())])
+        .collect();
+        assert_eq!(local(&trees), expected, "{undone}: {sent:?}");
+        assert!(!undone || sent.iter().all(|(_, id)| id != "h"), "{sent:?}");
+    }
+}

@@ -2718,7 +2718,7 @@ impl Trees {
         };
         let mut parent = &kept.parent;
         for _ in 0..=self.discarded.len() {
-            if self.reclaimed_in_this_pass(parent) {
+            if self.the_users_in_this_pass(parent) {
                 return true;
             }
             match (self.discarded.get(parent)).filter(|_| self.r.get(parent).is_some()) {
@@ -2729,20 +2729,27 @@ impl Trees {
         false
     }
 
-    fn reclaimed_in_this_pass(&self, id: &NodeId) -> bool {
+    fn the_users_in_this_pass(&self, id: &NodeId) -> bool {
         if !self.keeping.borrow().open.is_empty() {
-            return self.reclaimed(id);
+            return self.the_users_again(id);
         }
         let known =
             (self.reclaimed_this_pass.borrow().as_ref()).and_then(|pass| pass.get(id).copied());
-        if let Some(reclaimed) = known {
-            return reclaimed;
+        if let Some(theirs) = known {
+            return theirs;
         }
-        let reclaimed = self.reclaimed(id);
+        let theirs = self.the_users_again(id);
         if let Some(pass) = self.reclaimed_this_pass.borrow_mut().as_mut() {
-            pass.insert(id.to_owned(), reclaimed);
+            pass.insert(id.to_owned(), theirs);
         }
-        reclaimed
+        theirs
+    }
+
+    fn the_users_again(&self, id: &NodeId) -> bool {
+        self.l.get(id).is_some()
+            && self.r.get(id).is_none()
+            && self.discarded.contains_key(id)
+            && (self.discard_state(id)).is_none_or(|state| state == Discard::Reclaimed)
     }
 
     pub(crate) fn in_one_pass<T>(&self, pass: impl FnOnce() -> T) -> T {
