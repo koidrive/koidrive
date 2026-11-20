@@ -933,6 +933,9 @@ impl Commits {
             .collect();
         for (id, shape) in &agreed {
             trees.sent_edit(id, shape.as_ref().and_then(|shape| shape.content.as_ref()));
+            if shape.is_none() {
+                trees.record_unsent_delete(id);
+            }
         }
         let agreed = (agreed.into_iter()).filter(|(id, shape)| {
             !same(trees.synced().live(id), shape.as_ref()) && trees.waiting().get(id).is_none()
@@ -1335,6 +1338,7 @@ impl Commits {
             match answer {
                 Answer::Discard => trees.discard(question.holds().cloned(), &question.shown),
                 Answer::Publish | Answer::Keep => trees.approve(question.holds().cloned()),
+                Answer::Restore => trees.restore_unsent_deletes(question.holds()),
                 _ => {}
             }
             updates.extend(recovery::release(

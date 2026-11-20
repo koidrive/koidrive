@@ -8254,10 +8254,6 @@ fn a_lost_folder_is_not_created_again_inside_a_folder_deleted_while_it_waited() 
 
 #[test]
 fn a_kept_child_of_a_lost_folder_stays_deleted_after_a_crash_mid_effect() {
-    let _red = expect_red(
-        Check::DeleteUndone,
-        "the delete of node 01a1c2c0-39a0-760a-bbe1-ae4b9fee2e6e on device 0 came undone, and no change its user did not see brought the node back",
-    );
     let u = |kind, target, parent, name, text| {
         Step::User(Action {
             kind,
@@ -13490,10 +13486,6 @@ fn a_delete_after_a_rewind_gives_way_to_an_edit_its_device_never_saw() {
 
 #[test]
 fn a_file_another_device_publishes_again_after_its_delete_stays_deleted() {
-    let _red = expect_red(
-        Check::DeleteUndone,
-        "the delete of node 01a1c2c0-39a0-7cb2-989b-810659c5a8bc on device 0 came undone, and no change its user did not see brought the node back",
-    );
     let a = |kind, text| {
         Step::User(Action {
             kind,
@@ -13703,4 +13695,46 @@ fn a_server_copy_of_a_download_whose_bytes_a_restart_found_on_disk_is_caught() {
     assert_eq!(world.seen["restart finds the effect in flight not done"], 1);
     let expected = "write 1 is in 3 live nodes on the server";
     assert!(failure.contains(expected), "{failure}");
+}
+
+#[test]
+fn a_folder_deleted_offline_across_a_rewind_stays_deleted_when_another_device_keeps_it() {
+    let user = |kind, target, parent, name, text| {
+        Step::User(Action {
+            kind,
+            target,
+            parent,
+            name,
+            text,
+        })
+    };
+    converge(
+        2,
+        &[
+            vec![
+                (0, Step::Backup),
+                (0, user(1, 0, 2, 1, 1)),
+                (1, user(0, 0, 3, 2, 3)),
+                (1, user(1, 1, 3, 2, 3)),
+            ],
+            vec![
+                (0, Step::Rewind),
+                (2, Step::Connect),
+                (2, Step::Work(0)),
+                (1, user(1, 1, 1, 3, 3)),
+                (0, Step::Answer(3)),
+                (1, user(3, 0, 2, 3, 3)),
+                (2, user(4, 0, 2, 3, 2)),
+                (2, Step::Deliver(0)),
+                (2, Step::Work(0)),
+                (2, Step::Rewind),
+            ],
+            vec![
+                (0, user(4, 1, 1, 2, 0)),
+                (0, Step::Rewind),
+                (2, user(4, 0, 1, 0, 0)),
+            ],
+        ],
+    )
+    .unwrap();
 }

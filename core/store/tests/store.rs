@@ -1644,6 +1644,10 @@ fn engine_state() -> EngineState {
                 engine_shape("root", "forgotten.txt"),
             )]),
             lost_shapes: BTreeMap::from([("lost".into(), engine_shape("root", "lost.txt"))]),
+            unsent_deletes: BTreeMap::from([(
+                "deleted".into(),
+                engine_shape("root", "deleted.txt"),
+            )]),
             outside: nodes(["kept", "lost"]),
             lost: nodes(["lost"]),
             found: BTreeMap::from([("kept".into(), "dist/kept.txt".into())]),

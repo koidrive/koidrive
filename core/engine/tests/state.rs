@@ -127,6 +127,7 @@ fn trees_state() -> TreesState {
         removed_from: [("gone".into(), ROOT.into())].into(),
         forgotten_shapes: [("a".into(), dir(ROOT, "x"))].into(),
         lost_shapes: [("a".into(), dir(ROOT, "x"))].into(),
+        unsent_deletes: [("d".into(), dir(ROOT, "y"))].into(),
         outside: ["a".into()].into(),
         lost: ["a".into()].into(),
         found: [("a".into(), "build/a".into())].into(),
