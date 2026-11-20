@@ -610,6 +610,7 @@ impl Device {
             };
             let node = NodeId::from(&state.node_id);
             let Some(remote) = self.trees.remote().live(&node).cloned() else {
+                self.removed_from.remove(&node);
                 continue;
             };
             let Some(moved) = self.relocated.get_mut(&node) else {
