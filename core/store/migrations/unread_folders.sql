@@ -1,3 +1,4 @@
+-- requires: question_frozen, recorded_found
 CREATE TABLE unread_folders (
     path BLOB PRIMARY KEY,
     ctime_ns INTEGER NOT NULL
