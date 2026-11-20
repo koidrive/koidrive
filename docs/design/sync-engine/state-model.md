@@ -80,6 +80,7 @@ Every effect follows these rules:
 Some remote states cannot be reached one move at a time, such as two files that swap names or a directory that moves under its former child. When no remote move applies but some are pending, the planner parks one blocking node: it moves the node into `.koidrive/parked/<node_id>` and moves it to its final place later. Parking follows these rules, and §5.10 adds those for excluded nodes:
 
 - Parked nodes are excluded from local-change detection. The rescan after a crash finds them in the parked directory and puts them back into L instead of treating them as deleted.
+- A parked node that S no longer holds has no position the user chose, so no move is sent for it unless the user moved it before it was parked. A folder another device trashed stays trashed unless something the rules keep in it is sent.
 - Parking moves an entry whole and never changes its content.
 - A reverted node (§2.6) that blocks another placement is parked like a node whose only change is remote, so two reverted nodes that hold each other's names are placed one after the other.
 - A parked reverted node that R no longer has and that holds no unuploaded edit is removed from the parked directory.

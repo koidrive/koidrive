@@ -1103,3 +1103,38 @@ fn a_rename_out_of_the_trash_the_server_renamed_and_lost_is_sent_again() {
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
     assert_eq!(ops(&commit), [mv("f", "p", "b")]);
 }
+
+#[test]
+fn a_parked_folder_another_device_trashed_comes_back_only_with_what_the_rules_keep_in_it() {
+    let create = op::Op::CreateDir(proto::CreateDir {
+        node_id: "c".into(),
+        parent_id: "p".into(),
+        name: "c.txt".into(),
+        ..Default::default()
+    });
+    for (child, sent) in [(None, vec![]), (Some("c.tmp"), vec![]), (Some("c.txt"), vec![create])] {
+        let mut rows = vec![
+            synced("s", dir(ROOT, "ss")),
+            ("p", Some(dir(ROOT, "ß")), None, Some(trashed(dir(ROOT, "ß")))),
+        ];
+        rows.extend(child.map(|name| ("c", Some(dir("p", name)), None, None)));
+        let mut trees = trees(&rows);
+        trees.set_local(
+            "p".into(),
+            LocalNode {
+                parked: true,
+                ..local(dir(ROOT, "ß"), 2)
+            },
+        );
+        trees.set_rules(
+            &[] as &[&str],
+            koidrive_engine::ignore::Source::Koiignore,
+            Some(RuleFile::parse(b"*.tmp\n")),
+        );
+        trees.settle(&Default::default());
+        let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+        let commit = build(&mut commits, &mut trees, &mut ids);
+        assert_eq!(commit.as_ref().map(ops).unwrap_or_default(), sent, "{child:?}");
+    }
+}
+

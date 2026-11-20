@@ -1844,6 +1844,27 @@ fn sent_move_check(
     Ok(())
 }
 
+fn revive_check(device: &Device, id: &NodeId) -> Result<(), TestCaseError> {
+    let trees = &device.trees;
+    let changed = |node: &NodeId| device.acted.contains(node) || device.touched.contains(node);
+    let path = |node: &NodeId| {
+        let mut path = vec![node.clone()];
+        while let Some(local) = trees.local().get(path.last().unwrap()) {
+            path.push(local.shape.parent.clone());
+        }
+        path
+    };
+    let below = (trees.local().iter())
+        .any(|(node, _)| changed(node) && !trees.excluded(node) && path(node).contains(id));
+    let above = path(id).iter().skip(1).any(changed);
+    prop_assert!(
+        below || above,
+        "{} is brought back from the server's trash with no change its user made in or above it",
+        id
+    );
+    Ok(())
+}
+
 fn placement_check(
     device: &Device,
     record: &koidrive_engine::effects::EffectRecord,
@@ -2593,6 +2614,11 @@ fn run_ignoring_answering_after(
                     id,
                     into
                 );
+            }
+            if let Some(op::Op::Move(_)) = &op.op
+                && (device.trees.remote().get(id)).is_some_and(|node| node.trashed)
+            {
+                revive_check(&device, id)?;
             }
             if let Some(op::Op::Move(moved)) = &op.op
                 && let Some(local) = device.trees.local().get(id).filter(|node| !node.parked)
