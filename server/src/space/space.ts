@@ -120,6 +120,7 @@ import {
   PURGE_BYTES,
   GC_RETRY_MS,
   R2_DELETE_BATCH,
+  R2_DELETE_ROUNDS,
   ORPHAN_SWEEP_MS,
   CLOSED_RECHECK_MS,
   EXPORT_RETRY_MS,
@@ -1571,7 +1572,8 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
 
       let deletedChunks = 0;
       let deletedPacks = 0;
-      for (;;) {
+      let deferred = false;
+      for (let round = 0; ; round++) {
         const rows = this.sql
           .exec("SELECT hash, incarnation FROM chunks WHERE state = 3 LIMIT ?", R2_DELETE_BATCH)
           .toArray()
@@ -1585,6 +1587,10 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
           .toArray()
           .map((row) => String(row.pack_id));
         if (rows.length + orphans.length + packs.length === 0) break;
+        if (round === R2_DELETE_ROUNDS) {
+          deferred = true;
+          break;
+        }
         const objects = [
           ...rows.flatMap(({ hash, incarnation }) => (incarnation === null ? [] : [{ hashHex: toHex(hash), incarnation }])),
           ...orphans.map(({ hash, incarnation }) => ({ hashHex: toHex(hash), incarnation })),
@@ -1615,7 +1621,7 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
         sweptChunks,
         deletedPacks,
         sweptPacks,
-        more: expiredVersions === GC_BATCH || purgedNodes === GC_BATCH || full || marked === GC_BATCH || sweeping,
+        more: expiredVersions === GC_BATCH || purgedNodes === GC_BATCH || full || marked === GC_BATCH || sweeping || deferred,
       };
     }
 

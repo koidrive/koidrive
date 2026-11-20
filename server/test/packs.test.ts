@@ -9,7 +9,7 @@ import type { RpcResponse } from "../src/gen/koidrive/v1/messages_pb";
 import { ChunkPlan_Action, Error_Code } from "../src/gen/koidrive/v1/rpc_pb";
 import { toHex, uuidv7 } from "../src/ids";
 import { HOLD_MS, SpaceDO } from "../src/space-do";
-import { GC_BATCH } from "../src/space/limits";
+import { GC_BATCH, R2_DELETE_BATCH, R2_DELETE_ROUNDS } from "../src/space/limits";
 import { ChunkState, PackState } from "../src/space/schema";
 import { chunkKey, getMeta, packKey, setMeta } from "../src/space/store";
 import { content, op, packFixture, spaceKeyOf, targetIncarnation, TestClient } from "./helpers";
@@ -379,6 +379,21 @@ describe("chunk packs: pack GC (RFC 0032 section 6)", () => {
       }
     });
     expect(await gc(space, Date.now())).toMatchObject({ deletedPacks: GC_BATCH, more: true });
+    expect(await gc(space, Date.now())).toMatchObject({ deletedPacks: 1 });
+  });
+
+  it("deletes at most four batches of a deleting backlog per pass and reports more work", async () => {
+    const space = await packedSpace();
+    const backlog = R2_DELETE_ROUNDS * R2_DELETE_BATCH + 1;
+    await runInDurableObject(space.stub, (_instance, state) => {
+      for (let i = 0; i < backlog; i++) {
+        state.storage.sql.exec("INSERT INTO packs (pack_id, size, state, live_count, live_bytes, hold_until_ms) VALUES (?, 1, ?, 0, 0, 0)", uuidv7(), PackState.DELETING);
+      }
+    });
+    failRetirePacks(async () => ({ ok: false, code: Error_Code.RETRY_LATER, message: "refused" }));
+    await expect(gc(space, Date.now())).rejects.toThrow();
+    vi.restoreAllMocks();
+    expect(await gc(space, Date.now())).toMatchObject({ deletedPacks: backlog - 1, more: true });
     expect(await gc(space, Date.now())).toMatchObject({ deletedPacks: 1 });
   });
 

@@ -27,6 +27,7 @@ export const GC_BATCH = 1000;
 export const PURGE_BYTES = MAX_SERVER_FRAME - 64 * 1024;
 export const GC_RETRY_MS = 10 * 60_000;
 export const R2_DELETE_BATCH = 1000;
+export const R2_DELETE_ROUNDS = 4;
 export const ORPHAN_SWEEP_MS = 7 * DAY_MS;
 export const CLOSED_RECHECK_MS = 10 * 60_000;
 export const EXPORT_RETRY_MS = 60_000;
