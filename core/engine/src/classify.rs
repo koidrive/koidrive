@@ -2,6 +2,7 @@
 
 //! Classifying a node (docs/design/sync-engine.md section 2.3) and the dirty set the planner reads.
 
+use std::borrow::Cow;
 use std::cell::{Cell, OnceCell, RefCell};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
@@ -12,6 +13,7 @@ use siphasher::sip::SipHasher13;
 use crate::first_link;
 use crate::ignore::{Key, LocalRules, Matcher, RuleFile, is_rules_file};
 use crate::names::{name_key, nfc, same_name};
+use crate::provenance::Provenances;
 use crate::question::Frozen;
 use crate::state::{
     Agreed, ContentProvenance, ContentValue, ContentVersion, FinishOrigin, KeptCause, KeptEntries,
@@ -666,7 +668,7 @@ pub struct Trees {
     kept_nodes: TrackedMap<NodeId, Option<KeptCause>>,
     unseen_changes: TrackedSet<NodeId>,
     replaced_versions: TrackedMap<NodeId, Vec<String>>,
-    content_provenance: TrackedMap<NodeId, ContentProvenance>,
+    content_provenance: Provenances,
     resends: TrackedSet<NodeId>,
     local_changes: TrackedSet<NodeId>,
     lost_positions: TrackedMap<NodeId, LostPosition>,
@@ -793,7 +795,7 @@ impl Trees {
             kept_nodes: TrackedMap::default(),
             unseen_changes: TrackedSet::default(),
             replaced_versions: TrackedMap::default(),
-            content_provenance: TrackedMap::default(),
+            content_provenance: Provenances::default(),
             resends: TrackedSet::default(),
             local_changes: TrackedSet::default(),
             lost_positions: TrackedMap::default(),
@@ -1366,7 +1368,7 @@ impl Trees {
         let changed_after_loss = !made_here
             && sent_again
             && (self.source_version_id(&id))
-                .is_some_and(|source| !node.trashed && made_over(&node.made_over, source));
+                .is_some_and(|source| !node.trashed && made_over(&node.made_over, &source));
         let sent_by_another = !(made_here && self.lost_positions.contains_key(&id))
             && !node.trashed
             && sent_again
@@ -1475,6 +1477,8 @@ impl Trees {
         self.moved |= (self.r.get(&id)).is_some_and(|old| {
             repositioned(&old.shape, &node.shape) || old.trashed != node.trashed
         });
+        self.content_provenance
+            .remote_changing(&id, &self.r, Some(&node));
         let old = self.r.insert(id.clone(), node);
         self.index_remote(&id, old.as_ref());
         self.count_held_trash(&id, true);
@@ -1495,7 +1499,10 @@ impl Trees {
     }
 
     pub(crate) fn made_over_remote(&self, id: &NodeId) -> bool {
-        let Some(source) = (self.content_provenance.get(id)).and_then(|p| p.local.as_ref()) else {
+        let Some(provenance) = self.provenance(id) else {
+            return false;
+        };
+        let Some(source) = provenance.local.as_ref() else {
             return false;
         };
         let Some(remote) = self.r.get(id).filter(|remote| !remote.trashed) else {
@@ -1536,31 +1543,31 @@ impl Trees {
             (Some(synced), Some(remote)) => same_content(synced, remote),
             (synced, remote) => synced.is_none() && remote.is_none(),
         };
-        same || (self.content_provenance.get(id))
-            .and_then(|p| p.synced.as_ref())
-            .is_some_and(|version| {
+        same || (self.provenance(id)).is_some_and(|p| {
+            p.synced.as_ref().is_some_and(|version| {
                 !remote.version_id.is_empty() && version.bases().contains(&remote.version_id)
             })
+        })
     }
 
-    pub(crate) fn synced_version_id(&self, id: &NodeId) -> Option<&str> {
-        (self.content_provenance.get(id)?.synced.as_ref())
-            .map(|synced| synced.version_id.as_str())
+    fn provenance(&self, id: &NodeId) -> Option<Cow<'_, ContentProvenance>> {
+        self.content_provenance.get(id, &self.r)
+    }
+
+    pub(crate) fn synced_version_id(&self, id: &NodeId) -> Option<String> {
+        (self.provenance(id)?.synced.as_ref())
+            .map(|synced| synced.version_id.clone())
             .filter(|id| !id.is_empty())
     }
 
-    pub(crate) fn source_version_id(&self, id: &NodeId) -> Option<&str> {
-        self.content_provenance
-            .get(id)?
-            .local
-            .as_ref()
-            .map(|source| source.version_id.as_str())
+    pub(crate) fn source_version_id(&self, id: &NodeId) -> Option<String> {
+        (self.provenance(id)?.local.as_ref())
+            .map(|source| source.version_id.clone())
             .filter(|id| !id.is_empty())
     }
 
     pub(crate) fn edit_bases(&self, id: &NodeId) -> Vec<String> {
-        self.content_provenance
-            .get(id)
+        self.provenance(id)
             .map(|provenance| {
                 if !provenance.edit_bases.is_empty() {
                     provenance.edit_bases.clone()
@@ -1573,17 +1580,6 @@ impl Trees {
                 }
             })
             .unwrap_or_default()
-    }
-
-    fn prune_content_provenance(&mut self, id: &NodeId) {
-        if self.content_provenance.get(id).is_some_and(|provenance| {
-            provenance.synced.is_none()
-                && provenance.local.is_none()
-                && provenance.edit_bases.is_empty()
-                && provenance.unversioned_bases.is_empty()
-        }) {
-            self.content_provenance.remove(id);
-        }
     }
 
     fn hold_own_version(&mut self, id: &NodeId, node: &RemoteNode) {
@@ -1600,29 +1596,27 @@ impl Trees {
             .and_then(|local| local.shape.content.as_ref())
             .is_some_and(|local| same_content(local, content));
         if !local_holds
-            && !self
-                .content_provenance
-                .get(id)
+            && !(self.provenance(id))
                 .is_some_and(|provenance| provenance.unversioned_bases.contains(&value))
         {
             return;
         }
-        let provenance = self
-            .content_provenance
-            .get_or_insert_with(id.to_owned(), ContentProvenance::default);
-        if local_holds {
-            provenance.local = Some(version);
-            provenance.edit_bases.clear();
-            provenance.unversioned_bases.clear();
-        } else if provenance.unversioned_bases.contains(&value) {
-            provenance.edit_bases = crate::state::content_chain(
-                version
-                    .bases()
-                    .into_iter()
-                    .chain(provenance.edit_bases.iter().cloned()),
-            );
-            provenance.unversioned_bases.retain(|base| base != &value);
-        }
+        self.content_provenance
+            .update(id, &self.r, true, |provenance| {
+                if local_holds {
+                    provenance.local = Some(version.clone());
+                    provenance.edit_bases.clear();
+                    provenance.unversioned_bases.clear();
+                } else if provenance.unversioned_bases.contains(&value) {
+                    provenance.edit_bases = crate::state::content_chain(
+                        version
+                            .bases()
+                            .into_iter()
+                            .chain(provenance.edit_bases.iter().cloned()),
+                    );
+                    provenance.unversioned_bases.retain(|base| base != &value);
+                }
+            });
     }
 
     pub(crate) fn lost_position(&self, id: &NodeId) -> Option<&LostPosition> {
@@ -1810,6 +1804,7 @@ impl Trees {
         self.moved_here.remove(id);
         self.past_positions.remove(id);
         self.synced_positions.remove(id);
+        self.content_provenance.remote_changing(id, &self.r, None);
         if let Some(old) = self.r.remove(id) {
             self.index_remote(id, Some(&old));
             self.mark(id);
@@ -2104,10 +2099,13 @@ impl Trees {
             (self.l.get(&id).and_then(|old| old.shape.content.as_ref()), node.shape.content.as_ref()),
             (Some(old), Some(new)) if same_content(old, new)
         );
-        if content_changed && let Some(provenance) = self.content_provenance.get_mut(&id) {
-            provenance.local = None;
-            provenance.edit_bases.clear();
-            provenance.unversioned_bases.clear();
+        if content_changed {
+            self.content_provenance
+                .update(&id, &self.r, false, |provenance| {
+                    provenance.local = None;
+                    provenance.edit_bases.clear();
+                    provenance.unversioned_bases.clear();
+                });
         }
         let left_kept_name = (self.l.get(&id))
             .filter(|old| !old.shape.same_position(&node.shape))
@@ -2247,9 +2245,8 @@ impl Trees {
         });
         let provenance = edit.map(|old| {
             let mut provenance = self
-                .content_provenance
-                .get(&id)
-                .cloned()
+                .provenance(&id)
+                .map(Cow::into_owned)
                 .unwrap_or_default();
             provenance.edit(
                 old.shape
@@ -2289,7 +2286,8 @@ impl Trees {
         }
         self.set_local(id.clone(), node);
         if let Some(provenance) = provenance {
-            self.content_provenance.insert(id.clone(), provenance);
+            self.content_provenance
+                .insert(id.clone(), &self.r, provenance);
         }
         if placed {
             let left_out = self.excluded(&id);
@@ -2310,11 +2308,12 @@ impl Trees {
                     matches!((&local.shape.content, &synced.content),
                     (Some(local), Some(synced)) if same_content(local, synced))
                 });
-            if let Some(provenance) = self.content_provenance.get_mut(id) {
-                provenance.local = agrees.then(|| provenance.synced.clone()).flatten();
-                provenance.edit_bases.clear();
-                provenance.unversioned_bases.clear();
-            }
+            self.content_provenance
+                .update(id, &self.r, false, |provenance| {
+                    provenance.local = agrees.then(|| provenance.synced.clone()).flatten();
+                    provenance.edit_bases.clear();
+                    provenance.unversioned_bases.clear();
+                });
         }
         self.l
             .update(id, |node| node.content_from_server = from_server);
@@ -2375,12 +2374,13 @@ impl Trees {
     }
 
     fn forget_local(&mut self, id: &NodeId) {
-        if let Some(provenance) = self.content_provenance.get_mut(id) {
-            provenance.local = None;
-            provenance.edit_bases.clear();
-            provenance.unversioned_bases.clear();
-        }
-        self.prune_content_provenance(id);
+        self.content_provenance
+            .update(id, &self.r, false, |provenance| {
+                provenance.local = None;
+                provenance.edit_bases.clear();
+                provenance.unversioned_bases.clear();
+            });
+        self.content_provenance.prune(id, &self.r);
         let left_out = self.rules_known
             && !self.rules_changed.is_empty()
             && !self.unobserved.contains(id)
@@ -2429,7 +2429,7 @@ impl Trees {
     }
 
     pub(crate) fn rekey_local(&mut self, from: &NodeId, to: &NodeId, node: LocalNode) {
-        let provenance = self.content_provenance.get(from).cloned();
+        let provenance = self.provenance(from).map(Cow::into_owned);
         let kept = self.kept_nodes.remove(from);
         self.forget_local(from);
         self.set_local_changed(to.to_owned(), node);
@@ -2437,12 +2437,10 @@ impl Trees {
             self.kept_nodes.insert(to.to_owned(), cause);
         }
         if let Some(mut provenance) = provenance {
-            provenance.synced = self
-                .content_provenance
-                .get(to)
-                .and_then(|held| held.synced.clone());
-            self.content_provenance.insert(to.to_owned(), provenance);
-            self.prune_content_provenance(to);
+            provenance.synced = self.provenance(to).and_then(|held| held.synced.clone());
+            self.content_provenance
+                .insert(to.to_owned(), &self.r, provenance);
+            self.content_provenance.prune(to, &self.r);
         }
     }
 
@@ -5413,9 +5411,9 @@ impl Trees {
                         (held, synced) => held.is_none() && synced.is_none(),
                     })
                 };
-                let others = (self.content_provenance.get(*id))
-                    .and_then(|provenance| provenance.local.as_ref())
-                    .is_some_and(|version| !version.own);
+                let others = (self.provenance(id)).is_some_and(|provenance| {
+                    (provenance.local.as_ref()).is_some_and(|version| !version.own)
+                });
                 let remote = (self.r.get(id)).filter(|remote| {
                     !lost_here(remote.edit_rev) || (remote.content_rev > remote.edit_rev && others)
                 });
@@ -5485,7 +5483,7 @@ impl Trees {
             .map(|(id, remote)| {
                 let record = RemoteRecord {
                     node: remote.clone(),
-                    source_version_id: self.source_version_id(id).map(str::to_owned),
+                    source_version_id: self.source_version_id(id),
                     moved_in_lost_commit: lost_here(remote.meta_rev),
                     move_bases: self
                         .moved_here
@@ -5682,12 +5680,11 @@ impl Trees {
     ) {
         let older_bases: BTreeSet<NodeId> = (records.iter())
             .filter(|(id, record)| {
-                (self.content_provenance.get(*id))
-                    .and_then(|provenance| provenance.local.as_ref())
-                    .is_some_and(|source| {
+                (self.provenance(id)).is_some_and(|provenance| {
+                    (provenance.local.as_ref()).is_some_and(|source| {
                         record.source_version_id.as_ref() == Some(&source.version_id)
                     })
-                    && self.made_over_remote(id)
+                }) && self.made_over_remote(id)
             })
             .map(|(id, _)| id.clone())
             .collect();
@@ -6274,14 +6271,14 @@ impl Trees {
             .zip(sent)
             .is_some_and(|(local, sent)| same_content(local, sent))
         {
-            let provenance = self
-                .content_provenance
-                .get_or_insert_with(id.to_owned(), ContentProvenance::default);
-            if provenance.local.is_none() {
-                provenance.local = ContentVersion::remote(&remote, false);
-            }
-            provenance.edit_bases.clear();
-            provenance.unversioned_bases.clear();
+            self.content_provenance
+                .update(id, &self.r, true, |provenance| {
+                    if provenance.local.is_none() {
+                        provenance.local = ContentVersion::remote(&remote, false);
+                    }
+                    provenance.edit_bases.clear();
+                    provenance.unversioned_bases.clear();
+                });
         }
     }
 
@@ -7112,19 +7109,27 @@ impl Trees {
             .as_ref()
             .and_then(|shape| shape.content.as_ref())
             .and_then(|content| {
-                let provenance = self.content_provenance.get(id);
+                let provenance = self.provenance(id);
                 let same_value = |held: Option<&ContentKey>| {
                     held.is_some_and(|held| same_content(held, content))
                 };
                 let old = same_value(self.s.get(id).and_then(|old| old.content.as_ref()))
-                    .then(|| provenance.and_then(|provenance| provenance.synced.clone()))
+                    .then(|| {
+                        provenance
+                            .as_ref()
+                            .and_then(|provenance| provenance.synced.clone())
+                    })
                     .flatten();
                 let local = same_value(
                     self.l
                         .get(id)
                         .and_then(|local| local.shape.content.as_ref()),
                 )
-                .then(|| provenance.and_then(|provenance| provenance.local.clone()))
+                .then(|| {
+                    provenance
+                        .as_ref()
+                        .and_then(|provenance| provenance.local.clone())
+                })
                 .flatten();
                 old.or(local).or_else(|| {
                     self.r
@@ -7133,16 +7138,19 @@ impl Trees {
                         .and_then(|remote| ContentVersion::remote(remote, false))
                 })
             });
-        if source.is_some() || self.content_provenance.contains_key(id) {
-            let provenance = self
-                .content_provenance
-                .get_or_insert_with(id.to_owned(), ContentProvenance::default);
-            if agreed_local && provenance.local.is_none() && provenance.edit_bases.is_empty() {
-                provenance.local = source.clone();
-            }
-            provenance.synced = source;
+        if source.is_some() || self.provenance(id).is_some() {
+            self.content_provenance
+                .update(id, &self.r, true, |provenance| {
+                    if agreed_local
+                        && provenance.local.is_none()
+                        && provenance.edit_bases.is_empty()
+                    {
+                        provenance.local = source.clone();
+                    }
+                    provenance.synced = source.clone();
+                });
         }
-        self.prune_content_provenance(id);
+        self.content_provenance.prune(id, &self.r);
         if shape.is_none() && self.l.get(id).is_none() {
             self.clear_unobserved(id);
         }
@@ -7410,7 +7418,7 @@ impl Trees {
             kept_nodes: self.kept_nodes.to_map(),
             unseen_changes: self.unseen_changes.to_set(),
             replaced_versions: self.replaced_versions.to_map(),
-            content_provenance: self.content_provenance.to_map(),
+            content_provenance: self.content_provenance.state(&self.r),
             resends: self.resends.to_set(),
             local_changes: self.local_changes.to_set(),
             lost_positions: self.lost_positions.to_map(),
@@ -7424,7 +7432,7 @@ impl Trees {
     /// What changed in [`Trees::state`] since the last call, for the store to write.
     pub fn take_changes(&mut self) -> TreesChanges {
         let Self {
-            r: _,
+            r,
             place_ids: _,
             l: _,
             s: _,
@@ -7548,7 +7556,7 @@ impl Trees {
             kept_nodes: kept_nodes.take_changes(),
             unseen_changes: unseen_changes.take_changes(),
             replaced_versions: replaced_versions.take_changes(),
-            content_provenance: content_provenance.take_changes(),
+            content_provenance: content_provenance.take_changes(r),
             resends: resends.take_changes(),
             local_changes: local_changes.take_changes(),
             lost_positions: lost_positions.take_changes(),
@@ -7849,7 +7857,7 @@ impl Trees {
         self.kept_nodes = kept_nodes.into();
         self.unseen_changes = unseen_changes.into();
         self.replaced_versions = replaced_versions.into();
-        self.content_provenance = content_provenance.into();
+        self.content_provenance = Provenances::restored(content_provenance, &self.r);
         self.resends = resends.into();
         self.local_changes = local_changes.into();
         self.lost_positions = lost_positions.into();

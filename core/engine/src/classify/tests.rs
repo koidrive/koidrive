@@ -188,7 +188,10 @@ fn ancestry_record_give_way_uses_the_resent_value_not_an_older_listing() {
         ancestry_remote(2, "unrelated", &["older-listing"]),
     );
     assert!(trees.resends.contains(&"f".into()));
-    assert_eq!(trees.source_version_id(&"f".into()), Some("held"));
+    assert_eq!(
+        trees.source_version_id(&"f".into()).as_deref(),
+        Some("held")
+    );
     trees.set_remote("f".into(), ancestry_remote(3, "continuation", &["held"]));
     assert!(!trees.resends.contains(&"f".into()));
     assert_eq!(trees.s.get(&"f".into()), Some(&ancestry_file(1)));
@@ -218,7 +221,10 @@ fn ancestry_listing_give_way_uses_the_snapshot_source() {
             0,
         );
         assert_eq!(trees.s.get(&"f".into()).is_some(), carries_source);
-        assert_eq!(trees.source_version_id(&"f".into()), Some("held"));
+        assert_eq!(
+            trees.source_version_id(&"f".into()).as_deref(),
+            Some("held")
+        );
     }
 }
 
@@ -326,6 +332,32 @@ fn ancestry_of_an_own_version_is_the_chain_r_reported_for_it() {
         trees.edit_bases(&"f".into()),
         ["own-2", "held", "foreign-base", "expanded"]
     );
+}
+
+#[test]
+fn ancestry_of_an_uploaded_version_stays_once_another_device_replaces_it() {
+    let mut trees = ancestry_tree();
+    let id = NodeId::from("f");
+    ancestry_write(&mut trees, 2);
+    let uploaded = ancestry_remote(2, "own-2", &["held"]);
+    trees.set_remote_edited_here(id.clone(), uploaded.clone());
+    trees.sent_version(&id, uploaded.shape.content.as_ref(), 10, true);
+    trees.set_synced(id.clone(), Some(ancestry_file(2)));
+    let own = ContentVersion {
+        version_id: "own-2".into(),
+        made_over: vec!["held".into()],
+        own: true,
+    };
+    let record = ContentProvenance {
+        synced: Some(own.clone()),
+        local: Some(own),
+        ..ContentProvenance::default()
+    };
+    assert_eq!(trees.state().content_provenance[&id], record);
+    assert!(!trees.content_provenance.holds(&id));
+    trees.set_remote(id.clone(), ancestry_remote(3, "theirs", &["own-2", "held"]));
+    assert_eq!(trees.state().content_provenance[&id], record);
+    assert_eq!(trees.source_version_id(&id).as_deref(), Some("own-2"));
 }
 
 #[test]

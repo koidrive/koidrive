@@ -4384,7 +4384,7 @@ fn expanded_ancestry_cost(bases: &[String], source: Option<&str>) -> usize {
 fn edited_ancestry_cost(trees: &Trees, id: &NodeId) -> usize {
     let bases = trees.edit_bases(id);
     let source = trees.source_version_id(id);
-    let expanded = expanded_ancestry_cost(&bases, source);
+    let expanded = expanded_ancestry_cost(&bases, source.as_deref());
     if source.is_some()
         && bases.is_empty()
         && trees
@@ -4998,10 +4998,7 @@ fn plan(
                     Kind::File => op::Op::CreateFile(proto::CreateFile {
                         content: (trees.local().get(&id)).and_then(LocalNode::content),
                         made_over: trees.edit_bases(&id),
-                        source_version_id: trees
-                            .source_version_id(&id)
-                            .unwrap_or_default()
-                            .to_owned(),
+                        source_version_id: trees.source_version_id(&id).unwrap_or_default(),
                         node_id: id.into(),
                         parent_id: shape.parent.into(),
                         name: shape.name,
@@ -5049,7 +5046,7 @@ fn plan(
                 op::Op::UpdateContent(proto::UpdateContent {
                     resend: trees.resends().contains(&id),
                     made_over: trees.edit_bases(&id),
-                    source_version_id: trees.source_version_id(&id).unwrap_or_default().to_owned(),
+                    source_version_id: trees.source_version_id(&id).unwrap_or_default(),
                     node_id: id.into(),
                     content: Some(content),
                 })
