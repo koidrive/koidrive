@@ -1,1 +1,2 @@
+-- requires: unread_folders
 CREATE TABLE owed_deletes (node_id TEXT PRIMARY KEY) STRICT, WITHOUT ROWID;
