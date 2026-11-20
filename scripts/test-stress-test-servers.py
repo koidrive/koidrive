@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -32,24 +33,50 @@ class StressTests(unittest.TestCase):
         self.bin = self.root / "bin"
         self.bin.mkdir()
         self.executable(self.bin / "cargo", r'''
+import os, subprocess, sys
+from pathlib import Path
+probes = Path(os.environ['PROBES'])
+if 'STRESS_TEST_CAPTURE' not in os.environ:
+    (probes / 'cargo.called').write_text(' '.join(sys.argv[1:]))
+    sys.exit(99)
+(probes / 'cargo.capture').write_text(' '.join(sys.argv[1:]))
+runner = os.environ['CARGO_TARGET_AARCH64_APPLE_DARWIN_RUNNER']
+package = os.environ['FAKE_PACKAGE']
+environment = dict(os.environ, CARGO_MANIFEST_DIR=package)
+for test in filter(None, os.environ['FAKE_TESTS'].split(os.pathsep)):
+    subprocess.check_call([runner, test], cwd=package, env=environment)
+    capture = Path(os.environ['STRESS_TEST_CAPTURE'])
+    if capture.exists():
+        (probes / 'capture.jsonl').write_text(capture.read_text())
+''')
+        self.executable(self.bin / "rustc", "print('rustc 1.99.0\\nhost: aarch64-apple-darwin')\n")
+        (self.root / ".cargo").mkdir()
+        (self.root / ".cargo/config.toml").write_text("[registry]\nglobal-min-publish-age = '3 days'\n")
+        (self.root / "cargo-home").mkdir()
+        (self.root / "cargo-home/config.toml").write_text("[net]\nretry = 3\n")
+        self.package = self.root / "crate"
+        self.package.mkdir()
+        self.probe = r'''
 import json, os, sys, time
 from pathlib import Path
 probe = Path(os.environ['PROBES'])
 seed = os.environ['PROPTEST_RNG_SEED']
+second = Path(sys.argv[0]).name.startswith('second-')
 record = dict(pid=os.getpid(), args=sys.argv[1:], cwd=os.getcwd(),
               seed=seed, ordinary=os.environ.get('PROPTEST_CASES'),
               cases=os.environ.get('KOIDRIVE_BATTERY_CASES'),
-              server=os.environ.get('KOIDRIVE_TEST_SERVER'))
-(probe / (seed + '.start')).write_text(json.dumps(record))
+              server=os.environ.get('KOIDRIVE_TEST_SERVER'),
+              manifest=os.environ.get('CARGO_MANIFEST_DIR'),
+              capture=os.environ.get('STRESS_TEST_CAPTURE'))
+(probe / (seed + ('-2' if second else '') + '.start')).write_text(json.dumps(record))
 deadline = time.monotonic() + 5
 while len(list(probe.glob('*.start'))) < int(os.environ.get('BARRIER', '1')):
     if time.monotonic() > deadline:
         sys.exit(24)
     time.sleep(0.01)
-mode = os.environ.get('PROBE_MODE', 'pass')
+mode = os.environ.get('PROBE_MODE_2' if second else 'PROBE_MODE', 'pass')
 if mode == 'hang':
     time.sleep(60)
-print('     Running tests/probe.rs (target/debug/deps/probe)')
 if mode == 'zero':
     print('test result: ok. 0 passed; 0 failed; 3 ignored; 0 measured; 0 filtered out')
 elif mode == 'fail':
@@ -61,9 +88,18 @@ elif mode == 'startup':
 else:
     print('test probe ... ok')
     print('test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out')
-''')
+'''
         self.environment = dict(os.environ, PATH=str(self.bin) + os.pathsep + os.environ["PATH"],
-                                PROBES=str(self.probes), PROPTEST_CASES="999", KOIDRIVE_BATTERY_CASES="888")
+                                PROBES=str(self.probes), PROPTEST_CASES="999", KOIDRIVE_BATTERY_CASES="888",
+                                FAKE_PACKAGE=str(self.package), CARGO_HOME=str(self.root / "cargo-home"),
+                                REVIEW_CANARY_TOKEN="synthetic", CARGO_REGISTRY_TOKEN="synthetic")
+        self.build("server")
+
+    def build(self, *names):
+        tests = [self.root / f"target/debug/deps/{name}-{index:016x}" for index, name in enumerate(names)]
+        for test in tests:
+            self.executable(test, self.probe)
+        self.environment["FAKE_TESTS"] = os.pathsep.join(map(str, tests))
 
     def executable(self, path, code):
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -151,9 +187,98 @@ while True:
         for probe in probes:
             self.assertIsNone(probe["ordinary"])
             self.assertEqual(probe["cases"], "0")
-            self.assertEqual(probe["args"], stress.cargo_command(args)[1:])
-            self.assertIn("two words", probe["args"])
-            self.assertNotIn("--no-run", probe["args"])
+            self.assertEqual(probe["args"], ["two words", "--include-ignored"])
+            self.assertEqual(probe["cwd"], str(self.package))
+            self.assertEqual((probe["manifest"], probe["capture"]), (str(self.package), None))
+        self.assertEqual((self.probes / "cargo.capture").read_text(), "test --locked -p koidrive-net --features serde --test send")
+        self.assertFalse((self.probes / "cargo.called").exists())
+        for path in [*(self.root / "out").rglob("*"), self.probes / "capture.jsonl"]:
+            for secret in (b"REVIEW_CANARY_TOKEN", b"CARGO_REGISTRY_TOKEN"):
+                self.assertNotIn(secret, path.read_bytes() if path.is_file() else b"", path)
+        self.assertIn(b"CARGO_MANIFEST_DIR", (self.probes / "capture.jsonl").read_bytes())
+
+    def test_each_repetition_runs_every_built_test_executable_in_turn(self):
+        self.build("server", "second")
+        for mode, expected, code in (("pass", "pass", 0), ("fail", "fail", 101)):
+            with self.subTest(mode=mode):
+                for path in self.probes.iterdir():
+                    path.unlink()
+                record = self.run_tests(self.args(), PROBE_MODE=mode)[0]
+                self.assertEqual((record["result"], record["exit_code"]), (expected, code))
+                self.assertEqual((record["test_binaries"], record["finished_binaries"]), (2, 2))
+                first, second = (json.loads((self.probes / name).read_text()) for name in ("17.start", "17-2.start"))
+                self.assertNotEqual(first["pid"], second["pid"])
+                self.assertFalse((self.probes / "cargo.called").exists())
+
+    def test_the_recorder_writes_only_allowed_variables(self):
+        recorder = self.root / "record-test"
+        self.executable(recorder, stress.RECORDER)
+        capture = self.root / "capture.jsonl"
+        environment = dict(PATH=os.environ["PATH"], REVIEW_CANARY_TOKEN="synthetic", CARGO_REGISTRY_TOKEN="synthetic",
+                           STRESS_TEST_CAPTURE=str(capture),
+                           CARGO_PKG_NAME="probe", STRESS_TEST_ALLOWED=json.dumps(stress.CARGO_SETS))
+        subprocess.check_call([str(recorder), "/bin/test-executable"], cwd=self.package, env=environment)
+        record = json.loads(capture.read_text())
+        self.assertEqual(record["environment"], {"CARGO_PKG_NAME": "probe"})
+        self.assertNotIn("REVIEW_CANARY_TOKEN", capture.read_text())
+        self.assertNotIn("CARGO_REGISTRY_TOKEN", capture.read_text())
+
+    def test_a_build_without_test_executables_is_refused(self):
+        self.build()
+        with self.assertRaisesRegex(RuntimeError, "ran 0 test executables"):
+            self.run_tests(self.args())
+        self.assertEqual((self.probes / "cargo.capture").read_text(), "test --locked -p koidrive-net --tests")
+
+    def refused(self, message, args=None):
+        with self.assertRaisesRegex(RuntimeError, message):
+            self.run_tests(args or self.args())
+        self.assertFalse((self.probes / "cargo.capture").exists())
+
+    def test_a_target_runner_is_refused(self):
+        with (self.root / ".cargo/config.toml").open("a") as config:
+            config.write("[target.aarch64-apple-darwin]\nrunner = 'qemu'\n")
+        self.refused("config.toml sets a target runner")
+
+    def test_a_target_runner_variable_is_refused(self):
+        with patch.dict(self.environment, CARGO_TARGET_AARCH64_APPLE_DARWIN_RUNNER="qemu"):
+            self.refused("CARGO_TARGET_AARCH64_APPLE_DARWIN_RUNNER is set")
+
+    def test_a_build_target_variable_is_refused(self):
+        with patch.dict(self.environment, CARGO_BUILD_TARGET="x86_64-unknown-linux-gnu"):
+            self.refused("CARGO_BUILD_TARGET is set")
+
+    def test_a_build_target_is_refused(self):
+        with (self.root / ".cargo/config.toml").open("a") as config:
+            config.write("[build]\ntarget = 'x86_64-unknown-linux-gnu'\n")
+        self.refused(r"config\.toml sets build\.target")
+
+    def test_an_include_is_refused(self):
+        config = self.root / ".cargo/config.toml"
+        config.write_text("include = ['env.toml']\n" + config.read_text())
+        self.refused(r"config\.toml includes other configs")
+
+    def test_an_env_table_is_refused(self):
+        with (self.root / ".cargo/config.toml").open("a") as config:
+            config.write("[env]\nPROPTEST_RNG_SEED = '42'\n")
+        self.refused(r"\.cargo/config\.toml sets \[env\]")
+
+    def test_an_env_table_in_cargo_home_is_refused(self):
+        (self.root / "cargo-home/config.toml").write_text("[env]\nX = { value = 'y', force = true }\n")
+        self.refused(r"cargo-home/config\.toml sets \[env\]")
+
+    def test_a_legacy_config_is_refused(self):
+        (self.root / ".cargo/config").write_text("[net]\nretry = 3\n")
+        self.refused(r"\.cargo/config is a legacy Cargo config")
+
+    def test_a_legacy_config_in_cargo_home_is_refused(self):
+        (self.root / "cargo-home/config").write_text("[net]\nretry = 3\n")
+        self.refused("cargo-home/config is a legacy Cargo config")
+
+    def test_a_config_above_the_repository_is_refused(self):
+        (self.root / "repo").mkdir()
+        args = stress.parse_args(["--root", str(self.root / "repo"), "--out", str(self.root / "out"),
+                                  "--crate", "koidrive-net", "--seed", "17"])
+        self.refused("is a Cargo config above the repository", args)
 
     def test_optional_budget_is_unset_and_zero_tests_and_startup_fail_closed(self):
         for mode, expected, code in (("pass", "pass", 0), ("zero", "error", 0),
@@ -178,6 +303,7 @@ while True:
                 for path in self.probes.iterdir():
                     path.unlink()
                 self.worker_fixture(crate)
+                self.build(stress.WORKERS[crate][1])
                 args = self.args("--mode", "worker", "--crate", crate, "--repeat", "3", "--parallel", "3",
                                  "--features", "serde", "--filter", "selected test")
                 records = self.run_tests(args, BARRIER="3", KOIDRIVE_TEST_PORT="1234")
@@ -192,13 +318,36 @@ while True:
                     self.assertFalse(Path(worker["state"]).exists())
                 for path in self.probes.glob("*.start"):
                     probe = json.loads(path.read_text())
-                    self.assertEqual(probe["cwd"], str(self.root))
-                    self.assertIn("--ignored", probe["args"])
-                    self.assertEqual(probe["args"][-2:], ["--ignored", "selected test"])
-                    self.assertEqual(probe["args"][probe["args"].index("--features") + 1], "serde")
-                    self.assertEqual(probe["args"][probe["args"].index("--test") + 1], stress.WORKERS[crate][1])
-                    self.assertIn("selected test", probe["args"])
-                    self.assertIn("--test", probe["args"])
+                    self.assertEqual(probe["cwd"], str(self.package))
+                    self.assertEqual(probe["args"], ["--ignored", "selected test"])
+                    self.assertEqual(probe["manifest"], str(self.package))
+                    self.assertTrue(probe["server"].startswith("http://127.0.0.1:"), probe["server"])
+                self.assertFalse((self.probes / "cargo.called").exists())
+
+    def test_worker_repetitions_run_the_target_the_launcher_asks_for(self):
+        self.worker_fixture("koidrive-driver")
+        self.build("first_sync_bench")
+        with patch.dict(os.environ, KOIDRIVE_DRIVER_TEST="first_sync_bench"):
+            args = self.args("--mode", "worker", "--crate", "koidrive-driver")
+        self.assertEqual(args.test, "first_sync_bench")
+        record = self.run_tests(args, KOIDRIVE_DRIVER_TEST="first_sync_bench")[0]
+        self.assertEqual(record["result"], "pass")
+        self.assertIn("--test first_sync_bench", (self.probes / "cargo.capture").read_text())
+        for path in self.probes.iterdir():
+            path.unlink()
+        self.build("sync")
+        record = self.run_tests(self.args("--mode", "worker", "--crate", "koidrive-driver"),
+                                KOIDRIVE_DRIVER_TEST="first_sync_bench")[0]
+        self.assertEqual(record["result"], "error")
+        self.assertFalse(list(self.probes.glob("*.start")))
+        self.assertIn("no prebuilt test target first_sync_bench", (self.root / "out/logs/run-1.log").read_text())
+
+    def test_worker_repetitions_run_every_executable_after_a_failure(self):
+        self.worker_fixture()
+        self.build("server", "server")
+        record = self.run_tests(self.args("--mode", "worker"), PROBE_MODE="fail", BARRIER="1")[0]
+        self.assertEqual((record["result"], record["exit_code"]), ("fail", 101))
+        self.assertEqual((record["test_binaries"], record["finished_binaries"]), (2, 2))
 
     def test_timeout_kills_processes(self):
         record = self.run_tests(self.args("--timeout-seconds", "1"), PROBE_MODE="hang")[0]

@@ -14,22 +14,42 @@ import subprocess
 import sys
 import tempfile
 import time
+import tomllib
 
 
 WORKERS = {
-    "koidrive-net": ("core/net/scripts/integration-test.sh", "server"),
-    "koidrive-driver": ("core/driver/scripts/integration-test.sh", "sync"),
+    "koidrive-net": ("core/net/scripts/integration-test.sh", "server", None),
+    "koidrive-driver": ("core/driver/scripts/integration-test.sh", "sync", "KOIDRIVE_DRIVER_TEST"),
 }
+
+RECORDER = (
+    "import json, os, sys\n"
+    "allowed = set(json.loads(os.environ['STRESS_TEST_ALLOWED']))\n"
+    "environment = {name: value for name, value in os.environ.items() if name in allowed}\n"
+    "with open(os.environ['STRESS_TEST_CAPTURE'], 'a') as capture:\n"
+    "    capture.write(json.dumps(dict(executable=sys.argv[1], directory=os.getcwd(),\n"
+    "                                  environment=environment)) + '\\n')\n"
+)
+
+CARGO_SETS = ("CARGO", "CARGO_MANIFEST_DIR", "CARGO_MANIFEST_PATH", "CARGO_CRATE_NAME", "CARGO_BIN_NAME",
+              "CARGO_PRIMARY_PACKAGE", "CARGO_PKG_NAME", "CARGO_PKG_VERSION", "CARGO_PKG_VERSION_MAJOR",
+              "CARGO_PKG_VERSION_MINOR", "CARGO_PKG_VERSION_PATCH", "CARGO_PKG_VERSION_PRE", "CARGO_PKG_AUTHORS",
+              "CARGO_PKG_DESCRIPTION", "CARGO_PKG_HOMEPAGE", "CARGO_PKG_REPOSITORY", "CARGO_PKG_LICENSE",
+              "CARGO_PKG_LICENSE_FILE", "CARGO_PKG_RUST_VERSION", "CARGO_PKG_README",
+              "LD_LIBRARY_PATH", "DYLD_LIBRARY_PATH", "DYLD_FALLBACK_LIBRARY_PATH")
 
 
 @dataclass
 class Run:
     number: int
     seed: int
-    process: subprocess.Popen
     started: float
     log: object
     sandbox: object
+    environment: dict
+    pending: list
+    process: subprocess.Popen = None
+    code: int = 0
 
 
 def parse_args(argv=None):
@@ -61,7 +81,8 @@ def parse_args(argv=None):
     if args.mode == "worker":
         if args.crate not in WORKERS:
             parser.error("worker mode supports koidrive-net and koidrive-driver")
-        target = WORKERS[args.crate][1]
+        _, default, variable = WORKERS[args.crate]
+        target = (variable and os.environ.get(variable)) or default
         if args.test and args.test != target:
             parser.error(f"{args.crate} worker launcher runs --test {target}")
         args.test = target
@@ -70,21 +91,76 @@ def parse_args(argv=None):
     return args
 
 
-def cargo_command(args):
-    command = ["cargo", "test", "--locked", "--no-fail-fast", "-p", args.crate]
-    if args.features:
-        command += ["--features", args.features]
-    if args.test:
-        command += ["--test", args.test]
-    command += ["--"]
-    if args.filter:
-        command += [args.filter]
+def unsupported_cargo_config(root, environment, runner):
+    home = Path(environment.get("CARGO_HOME", Path.home() / ".cargo")).resolve()
+    for name in (runner, "CARGO_BUILD_TARGET"):
+        if name in environment:
+            return f"{name} is set"
+    read = []
+    for directory, cargo in ((directory, directory / ".cargo") for directory in (root, *root.parents)):
+        if cargo.resolve() == home:
+            continue
+        if (cargo / "config").is_file():
+            return f"{cargo / 'config'} is a legacy Cargo config"
+        if (cargo / "config.toml").is_file():
+            if directory != root:
+                return f"{cargo / 'config.toml'} is a Cargo config above the repository"
+            read.append(cargo / "config.toml")
+    if (home / "config").is_file():
+        return f"{home / 'config'} is a legacy Cargo config"
+    if (home / "config.toml").is_file():
+        read.append(home / "config.toml")
+    for path in read:
+        config = tomllib.loads(path.read_text())
+        if "env" in config:
+            return f"{path} sets [env]"
+        if "include" in config:
+            return f"{path} includes other configs"
+        if "target" in config.get("build", {}):
+            return f"{path} sets build.target"
+        if any("runner" in table for table in config.get("target", {}).values() if isinstance(table, dict)):
+            return f"{path} sets a target runner"
+    return None
+
+
+def capture_tests(args, environment):
+    host = re.search(r"^host: (\S+)$", subprocess.check_output(["rustc", "-vV"], text=True), re.M)[1]
+    runner = "CARGO_TARGET_" + re.sub(r"[^A-Za-z0-9]", "_", host).upper() + "_RUNNER"
+    unsupported = unsupported_cargo_config(args.root, environment, runner)
+    if unsupported:
+        raise RuntimeError(f"Parallel and Worker repetitions support only a Cargo config at the repository root "
+                           f"without [env], include, build.target or a target runner, plus such a config in CARGO_HOME, but {unsupported}; "
+                           "run the repetitions serially with Cargo instead")
+    command = ["cargo", "test", "--locked", "-p", args.crate, *(["--features", args.features] if args.features else []),
+               *(["--test", args.test] if args.test else ["--tests"])]
+    with tempfile.TemporaryDirectory(prefix="heavy-capture-") as scratch:
+        recorder = Path(scratch) / "record-test"
+        recorder.write_text("#!" + sys.executable + "\n" + RECORDER)
+        recorder.chmod(0o755)
+        capture = Path(scratch) / "capture.jsonl"
+        with (args.out / "logs/capture.log").open("w") as log:
+            code = subprocess.call(command, cwd=args.root, stdout=log, stderr=subprocess.STDOUT,
+                                   env={**environment, runner: str(recorder), "STRESS_TEST_CAPTURE": str(capture),
+                                        "STRESS_TEST_ALLOWED": json.dumps(CARGO_SETS)})
+        records = [json.loads(line) for line in capture.read_text().splitlines()] if capture.exists() else []
+    if code or not records:
+        raise RuntimeError(f"{shlex.join(command)} exited {code} and ran {len(records)} test executables; "
+                           f"see {args.out / 'logs/capture.log'}")
+    return [dict(name=re.sub(r"-[0-9a-f]{16}$", "", Path(record["executable"]).name),
+                 executable=record["executable"], directory=record["directory"],
+                 environment={name: value for name, value in record["environment"].items()
+                              if environment.get(name) != value})
+            for record in records]
+
+
+def test_arguments(args):
+    arguments = [args.filter] if args.filter else []
     if args.ignored == "true":
-        command += ["--include-ignored"]
-    return command
+        arguments.append("--include-ignored")
+    return arguments
 
 
-def worker_sandbox(root, destination, crate, cargo, features):
+def worker_sandbox(root, destination, crate, tests):
     launcher = Path(WORKERS[crate][0])
     shutil.copytree(root / "server", destination / "server",
                     ignore=shutil.ignore_patterns("node_modules", ".wrangler", ".git"), symlinks=True)
@@ -112,14 +188,23 @@ def worker_sandbox(root, destination, crate, cargo, features):
     binary.parent.mkdir()
     binary.write_text(
         "#!" + sys.executable + "\n"
-        "import os, sys\n"
-        f"os.chdir({str(root)!r})\n"
+        "import os, subprocess, sys\n"
         "args = sys.argv[1:]\n"
-        f"features = {features!r}\n"
-        "if features:\n"
-        "    index = args.index('--') if '--' in args else len(args)\n"
-        "    args[index:index] = ['--features', features]\n"
-        f"os.execv({cargo!r}, [{cargo!r}, *args])\n"
+        "if args[:1] != ['test']:\n"
+        "    sys.exit('The stress sandbox runs only the prebuilt tests, not cargo ' + ' '.join(args))\n"
+        "split = args.index('--') if '--' in args else len(args)\n"
+        "head, tail = args[:split], args[split + 1:]\n"
+        "wanted = head[head.index('--test') + 1] if '--test' in head else None\n"
+        f"tests = [test for test in {tests!r} if wanted in (None, test['name'])]\n"
+        "if not tests:\n"
+        "    sys.exit(f'The stress sandbox has no prebuilt test target {wanted}')\n"
+        "code = 0\n"
+        "for test in tests:\n"
+        "    print('     Running ' + test['executable'], flush=True)\n"
+        "    status = subprocess.call([test['executable'], *tail], cwd=test['directory'],\n"
+        "                             env={**os.environ, **test['environment']})\n"
+        "    code = code or status\n"
+        "sys.exit(code)\n"
     )
     binary.chmod(0o755)
     return ["bash", str(destination / launcher)]
@@ -190,11 +275,22 @@ def save_regressions(root, out):
                 shutil.copyfile(source, target)
 
 
+def start_next(run):
+    command, directory, header, test = run.pending.pop(0)
+    if header:
+        run.log.write(header)
+        run.log.flush()
+    run.process = subprocess.Popen(command, cwd=directory,
+                                   env={**run.environment, **test.get("environment", {})},
+                                   stdout=run.log, stderr=subprocess.STDOUT, start_new_session=True)
+
+
 def run_tests(args):
     (args.out / "logs").mkdir(parents=True, exist_ok=True)
-    cargo = shutil.which("cargo")
-    if cargo is None:
-        raise RuntimeError("cargo is missing; build the tests before running this script")
+    environment = dict(os.environ)
+    for variable in ("PROPTEST_CASES", "KOIDRIVE_BATTERY_CASES"):
+        environment.pop(variable, None)
+    tests = capture_tests(args, environment)
     active = []
     results = []
     next_run = 1
@@ -210,23 +306,25 @@ def run_tests(args):
                 if args.cases:
                     environment["KOIDRIVE_BATTERY_CASES"] = args.cases
                 try:
-                    command = cargo_command(args)
+                    pending = [([test["executable"], *test_arguments(args)], test["directory"],
+                                f"     Running {test['executable']}\n", test) for test in tests]
                     if args.mode == "worker":
-                        command = worker_sandbox(args.root, Path(sandbox.name), args.crate, cargo, args.features)
+                        command = worker_sandbox(args.root, Path(sandbox.name), args.crate, tests)
                         if args.filter:
                             command += [args.filter]
+                        pending = [(command, args.root, "", {})]
                         environment["PATH"] = str(Path(sandbox.name) / "bin") + os.pathsep + environment["PATH"]
                         environment.pop("KOIDRIVE_TEST_PORT", None)
                         environment["WRANGLER_SEND_METRICS"] = "false"
                         environment["XDG_CONFIG_HOME"] = str(Path(sandbox.name) / "config")
-                    process = subprocess.Popen(command, cwd=args.root, env=environment,
-                                               stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+                    run = Run(next_run, seed, time.monotonic(), log, sandbox, environment, pending)
+                    start_next(run)
                 except Exception:
                     log.close()
                     sandbox.cleanup()
                     raise
-                active.append(Run(next_run, seed, process, time.monotonic(), log, sandbox))
-                print(f"Started run {next_run}/{args.repeat}, seed {seed}, PID {process.pid}", flush=True)
+                active.append(run)
+                print(f"Started run {next_run}/{args.repeat}, seed {seed}, PID {run.process.pid}", flush=True)
                 next_run += 1
             for run in active[:]:
                 elapsed = time.monotonic() - run.started
@@ -235,9 +333,13 @@ def run_tests(args):
                     terminate(run.process)
                 if run.process.poll() is None:
                     continue
+                run.code = run.code or run.process.returncode
+                if run.pending and not timed_out:
+                    start_next(run)
+                    continue
                 run.log.close()
                 text = (args.out / f"logs/run-{run.number}.log").read_text(errors="replace")
-                record = result(run.number, run.seed, run.process.returncode, text, elapsed, timed_out)
+                record = result(run.number, run.seed, run.code, text, elapsed, timed_out)
                 results.append(record)
                 (args.out / f"run-{run.number}.json").write_text(json.dumps(record, indent=2) + "\n")
                 print(f"Run {run.number}: {record['result']}, exit {record['exit_code']}, "
@@ -274,8 +376,8 @@ def main(argv=None):
              "--features", args.features, "--cases", args.cases, "--ignored", args.ignored,
              "--repeat", str(args.repeat), "--parallel", str(args.parallel), "--seed", str(args.seed)]
     rows += ["", f"**{green} of {args.repeat} runs passed.**", "",
-             "Cargo tests and web assets are built before repetitions. Worker runs use the target commit's launcher, copied web assets, and a fresh server copy with isolated Wrangler builds and local state.",
-             "Parallel Cargo runs share the target checkout. Saved regressions are collected after all runs and can affect other repetitions. Replay saved cases before relying on a seed alone.",
+             "Cargo tests and web assets are built before repetitions. Cargo runs the built test executables once through a recording runner, and each repetition then runs them with the directory and environment Cargo gave them, so doc-tests don't run. Worker runs use the target commit's launcher, copied web assets, and a fresh server copy with isolated Wrangler builds and local state.",
+             "Parallel runs share the target checkout. Saved regressions are collected after all runs and can affect other repetitions. Replay saved cases before relying on a seed alone.",
              "", "Keep the dispatch commit in .heavy-harness and check out the target commit at the repository root, then run:",
              "", "```sh", shlex.join(repro), "```", ""]
     summary = "\n".join(rows)
