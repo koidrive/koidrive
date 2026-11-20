@@ -921,6 +921,7 @@ fn the_discard_oracle_counts_a_removal_only_in_the_folder_the_user_removed_the_e
                 shape,
                 identity: identity(ino),
                 parked: false,
+                chunks: Box::default(),
             },
         );
     }
