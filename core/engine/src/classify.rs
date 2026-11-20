@@ -4919,17 +4919,20 @@ impl Trees {
             (self.r.get(&node.shape.parent)).is_some_and(|folder| folder.trashed)
         }) && ignored(self.sent_apart(id))
             && !ignored(path(&self.l, id))
-            && self.never_held_by_the_server(id)
+            && self.wholly_new_to_server(id)
     }
 
-    fn never_held_by_the_server(&self, id: &NodeId) -> bool {
+    /// The prospective-path rule in [§5.10](../../../docs/design/sync-engine/filesystem.md#510-koiignore-and-gitignore)
+    /// considers current evidence, since IDs can be reused ([RFC 0002 §7](../../../spec/rfc/0002-commit-outcomes-and-recovery.md#7-reusing-a-node_id-2-r11)).
+    fn wholly_new_to_server(&self, id: &NodeId) -> bool {
         let mut below = vec![id];
         let mut seen = BTreeSet::new();
         while let Some(current) = below.pop() {
             if !seen.insert(current) {
                 continue;
             }
-            if self.s.get(current).is_some()
+            if self.r.get(current).is_some()
+                || self.s.get(current).is_some()
                 || self.waiting.contains_key(current)
                 || self.watched_positions.contains_key(current)
             {
@@ -4987,7 +4990,7 @@ impl Trees {
             (Some(local), Some(synced)) => !local.shape.same_position(synced),
             _ => false,
         };
-        if ignored(self.sent_apart(id)) == Some(true) && self.never_held_by_the_server(id) {
+        if ignored(self.sent_apart(id)) == Some(true) && self.wholly_new_to_server(id) {
             return Some(true);
         }
         if local == Some(false) && moved {
