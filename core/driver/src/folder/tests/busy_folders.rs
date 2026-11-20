@@ -331,32 +331,13 @@ fn a_changed_upload_stays_held_while_a_scan_leaves_its_folder_unanswered() {
     let (site, mut b) = busy_logs(&mut remote, &SyncRules::default());
     changed_while_uploaded(&site, &mut b);
     let sections = b.folder.sections();
-    let (_, requests) = sections.take_resets();
-    let partial = Batch {
-        stamp: sections.stamp(),
-        unread: (0, 0),
-        answered: crate::disk::Answers {
-            through: requests,
-            open: vec![(requests, vec![PathBuf::from("logs")])],
-        },
-        observation: crate::observe::Observation {
-            changes: Vec::new(),
-            root: Ok(()),
-            unreadable: Vec::new(),
-            scanned: b.observer.scanned(),
-            busy: Vec::new(),
-            pending: Vec::new(),
-            waiting: Default::default(),
-            rules: Vec::new(),
-            read: Vec::new(),
-            all_rules: false,
-            tracked: Vec::new(),
-            mounts: BTreeMap::new(),
-            detached: BTreeMap::new(),
-            ctimes: BTreeMap::new(),
-        },
-    };
-    let step = b.folder.observed(partial, 1);
+    let mut partial = (0..100)
+        .find_map(|_| (sections.observe(&mut b.observer, Duration::from_millis(20))).unwrap())
+        .expect("the batch that answers the rescan");
+    let request = partial.answered.through;
+    partial.answered.open = vec![(request, vec![PathBuf::from("logs")])];
+    let entries = b.observer.snapshot().entries.len() as u64;
+    let step = b.folder.observed(partial, entries);
     b.take(step).unwrap();
     let local = b.folder.engine.trees.local();
     let logs = (local.iter())
