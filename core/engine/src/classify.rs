@@ -2741,13 +2741,6 @@ impl Trees {
             && self.keeps_the_synced_children(id, &BTreeSet::new(), seen)
     }
 
-    fn removal_stands(&self, id: &NodeId) -> bool {
-        self.removed_from.contains_key(id)
-            && self.l.get(id).is_none()
-            && self.r.live(id).is_some()
-            && !self.kept_back(id)
-    }
-
     pub(crate) fn keep_walk<'a>(
         &'a self,
         id: &'a NodeId,
@@ -3125,8 +3118,6 @@ impl Trees {
             Kind::Dir => {
                 let children: Vec<&NodeId> = self.local_children_placed_or_parked(id).collect();
                 self.keeps_the_synced_children(id, &landing.deleted, &mut BTreeSet::new())
-                    && !(self.s_children(id))
-                        .any(|child| !landing.deleted.contains(child) && self.removal_stands(child))
                     && children.into_iter().all(|child| {
                         shown.contains_key(child)
                             || self.kept_as_discarded_in(child, id)

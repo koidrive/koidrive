@@ -1454,8 +1454,7 @@ fn removed_by_user_from(device: &Device, id: &NodeId) -> bool {
     (device.removed_from.iter()).any(|(child, from)| {
         trees.remote().live(child).is_some()
             && trees.local().get(child).is_none()
-            && (from == id
-                || acknowledged_shape(trees, child).is_some_and(|agreed| agreed.parent == *id))
+            && from == id
             && (acknowledged_shape(trees, child).is_some() || trees.excluded(child))
             && !kept_by_r7(device, child)
     })
