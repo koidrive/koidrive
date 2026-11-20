@@ -5668,6 +5668,19 @@ mod a_server_file_moved_into_an_asked_folder {
     }
 
     #[test]
+    fn a_discard_records_only_when_the_rules_below_its_folders_are_known() {
+        for (unknown, recorded) in [("root", false), ("f", false), ("sf", false), ("sm", true)] {
+            let (mut c, mut t, mut i) = server_folder_moved_in_while_left_out();
+            on_the_server(&mut t, "sm", |node| node.shape = dir(ROOT, "unrelated"));
+            assert_eq!(settle(&mut c, &mut t, &mut i), []);
+            t.set_rules_unknown(&unknown.into());
+            assert!(t.rules_known());
+            assert!(c.decide(&mut t, &question(&c).id, Answer::Discard));
+            assert_eq!(question(&c).frozen.is_some(), recorded, "{unknown}");
+        }
+    }
+
+    #[test]
     fn a_discard_answered_before_a_download_into_its_server_folder_decides_at_the_build() {
         let (mut c, mut t, mut i) = server_folder_moved_in_while_left_out();
         on_the_server(&mut t, "sn", |node| node.shape = file("sf", "new", 5));
