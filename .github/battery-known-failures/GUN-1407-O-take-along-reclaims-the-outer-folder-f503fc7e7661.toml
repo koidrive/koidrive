@@ -6,5 +6,6 @@ examples = [
     "01a1c2c0-39a0-7d85-a9c3-a27688795369 was discarded and is created on the server with no later answer to publish it at core/sim/tests/engine_sync/common.rs:2632.",
 ]
 cases = [
+    "04624645da9f724185f6fe53a6fe30ec97a4d7926dbaf0e3dac6757dbd2f4d5f",
     "f503fc7e7661a1017cb43cbb7aa55b8b8133c4df87a1c02112816bb18b5d862d",
 ]
