@@ -5234,6 +5234,86 @@ fn a_discard_takes_along_a_server_file_the_rules_let_in_while_the_folder_was_ask
     );
 }
 
+fn discarded_after_another_device_purges_a_server_file_moved_in(
+    edited: bool,
+    restart: bool,
+) -> Vec<(&'static str, String)> {
+    let (mut commits, mut trees, mut ids, _) =
+        a_folder_with_a_server_file_the_user_moved_in_while_the_rules_left_it_out();
+    trees.remove_remote(&"x".into());
+    if edited {
+        let mut edited = trees.local().get(&"x".into()).unwrap().clone();
+        edited.shape.content = Some(content(8));
+        trees.set_local_changed("x".into(), edited);
+    }
+    trees.set_rules(&[] as &[&str], Source::Koiignore, None);
+    trees.settle(commits.aliases());
+    if restart {
+        trees = restarted(&trees);
+        commits = Commits::from_state(commits.state()).unwrap();
+    }
+    assert_eq!(
+        ops(&mut commits, &mut trees, &mut ids),
+        [],
+        "{edited} {restart}"
+    );
+    assert!(commits.decide(&mut trees, &question(&commits).id, Answer::Discard));
+    let mut sent = Vec::new();
+    let mut effects = Effects::default();
+    for ino in 100..160 {
+        trees.settle(commits.aliases());
+        sent.extend(ops(&mut commits, &mut trees, &mut ids));
+        let Some(record) =
+            (effects.plan(&trees, commits.in_flight(), &mut ids, NOW, BatchLimit::ONE))
+                .first()
+                .cloned()
+        else {
+            break;
+        };
+        let identity = FileIdentity {
+            ino,
+            birth_ns: Some(0),
+            handle: None,
+        };
+        (effects.done(
+            &mut trees,
+            commits.in_flight(),
+            &record.effect_id,
+            Some(identity),
+        ))
+        .unwrap();
+    }
+    assert_eq!(
+        ops(&mut commits, &mut trees, &mut ids),
+        [],
+        "{edited} {restart}"
+    );
+    if !edited {
+        assert!(trees.local().get(&"f".into()).is_none(), "{restart}");
+        assert!(trees.local().get(&"x".into()).is_none(), "{restart}");
+    }
+    sent
+}
+
+#[test]
+fn a_server_file_another_device_purges_after_the_user_moved_it_in_goes_with_its_discarded_folder() {
+    for restart in [false, true] {
+        assert_eq!(
+            discarded_after_another_device_purges_a_server_file_moved_in(false, restart),
+            [],
+            "{restart}"
+        );
+    }
+}
+
+#[test]
+fn a_server_file_the_user_edits_after_another_device_purges_it_makes_its_discarded_folder_the_users()
+ {
+    let sent = discarded_after_another_device_purges_a_server_file_moved_in(true, false);
+    assert!(sent.contains(&("create dir", "f".to_owned())), "{sent:?}");
+    assert!(sent.contains(&("create file", "x".to_owned())), "{sent:?}");
+}
+
 #[test]
 fn a_second_discard_takes_along_a_server_file_the_rules_let_in_while_the_folder_was_asked_about_again()
  {

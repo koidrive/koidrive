@@ -3258,6 +3258,12 @@ impl Trees {
         };
         let Some(remote) = (landing.contents.get(id).map(Option::as_ref))
             .or_else(|| Some(self.r.get(id)?.shape.content.as_ref()))
+            .or_else(|| {
+                let agreed = (self.acknowledged(id))
+                    .filter(|agreed| agreed.kind == local.shape.kind)
+                    .filter(|_| !self.discarded.contains_key(id))?;
+                Some(agreed.content.as_ref())
+            })
         else {
             return false;
         };
