@@ -119,19 +119,20 @@ describe("RFC 0029 section 3.4: a folder a commit revived only as an ancestor of
     expect((await laptop.tree()).get(d)?.parentId).toBe(space.spaceId);
   });
 
-  it("keeps the held another op of the commit merged into its group and takes the meta revision the merge gave the group", async () => {
+  it("keeps the held another op of the commit merged into its group and takes the meta revision the merge gave the group, keeping its deletion device", async () => {
     const space = await newSpace();
     const [laptop, desk] = [await client(space, "Laptop"), await client(space, "Desk")];
     const [x, d, f] = [uuidv7(), uuidv7(), uuidv7()];
     await laptop.commit([op.mkdir(x, space.spaceId, "x"), op.mkdir(d, x, "d"), op.mkdir(f, space.spaceId, "f")]);
     desk.baseSeq = laptop.baseSeq;
     const first = intentId();
-    await desk.commit([deleteHolding(x, desk.session.deviceId, [first])]);
+    const trashedX = await desk.commit([deleteHolding(x, desk.session.deviceId, [first])]);
     const before = await storedRow(space, x);
     const second = intentId();
     const result = await laptop.commit([op.move(f, x, "f"), deleteHolding(d, laptop.session.deviceId, [second]), op.move(f, space.spaceId, "f")]);
     const after = await storedRow(space, x);
-    expect(after.node).toEqual({ ...before.node, meta_rev: Number(result.seq), meta_dev: laptop.session.deviceId });
+    expect(after.node).toEqual({ ...before.node, meta_rev: Number(result.seq) });
+    expect(await trashEntry(laptop, x)).toMatchObject({ trashedAtMs: trashedX.committedAtMs, deviceId: desk.session.deviceId });
     expect(after.intents).toEqual(before.intents);
     expect(after.held.map((row) => row.intent_id)).toEqual([first, second].map(toHex).sort());
     expect((await storedRow(space, d)).node).toMatchObject({ trash_group: before.node.trash_group, meta_rev: Number(result.seq) });
