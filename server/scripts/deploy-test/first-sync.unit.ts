@@ -39,7 +39,7 @@ function status(remoteNodes: number, extra: Partial<Status> = {}): Status {
 }
 
 function samples(...statuses: (Status | null)[]): Sample[] {
-  return statuses.map((status, i) => ({ seconds: i * 2, status, cpuSeconds: i, rssBytes: 1 << 20 }));
+  return statuses.map((status, i) => ({ seconds: i * 2, status, cpuSeconds: i, rssBytes: 1 << 20, footprintBytes: 1 << 20 }));
 }
 
 const done = status(ENTRIES + 1, { state: "up_to_date", filesToUpload: 0 });
@@ -319,6 +319,8 @@ describe("summary", () => {
       timeouts: { didNotMove: 0, noCompleteAnswer: 0, keptFailing: 0 },
       cpuSeconds: 50,
       peakRssBytes: 100 << 20,
+      peakFootprintBytes: 150 << 20,
+      footprintBytesPerEntry: (150 << 20) / ENTRIES,
       storeBytes: 2 << 20,
       storeBytesPerEntry: 2000,
       samples: 50,
@@ -343,7 +345,7 @@ describe("summary", () => {
       result(3, "main", { ended: "capped", syncedSeconds: null, elapsedSeconds: 600, stalls: 4, stallSeconds: 90, longestStallSeconds: 40, timeouts: { didNotMove: 3, noCompleteAnswer: 1, keptFailing: 2 } }),
     ];
     const table = summary(builds, results, 4).split("\n");
-    expect(table[2]).toBe("| `main` (1111111111) | 1 of 2 | 4 s (4 s to 4 s) | ≥ 360 s (120 s to ≥ 600 s) | 60 s (30 s to 90 s) | 3 (2 to 4) | 30 s (20 s to 40 s) | 3 (0 to 6) | 50 s (50 s to 50 s) | 100 MiB (100 MiB to 100 MiB) | 2000 B (2000 B to 2000 B) |");
+    expect(table[2]).toBe("| `main` (1111111111) | 1 of 2 | 4 s (4 s to 4 s) | ≥ 360 s (120 s to ≥ 600 s) | 60 s (30 s to 90 s) | 3 (2 to 4) | 30 s (20 s to 40 s) | 3 (0 to 6) | 50 s (50 s to 50 s) | 100 MiB (100 MiB to 100 MiB) | 150 MiB (150 MiB to 150 MiB) | 157286 B (157286 B to 157286 B) | 2000 B (2000 B to 2000 B) |");
     expect(table[3]).toContain("| `fix` (2222222222) | 2 of 2 | 4 s (4 s to 4 s) | 250 s (200 s to 300 s) |");
   });
 
@@ -379,7 +381,7 @@ describe("summary", () => {
 
   it("lists every run in order", () => {
     const rows = runTable([result(1, "fix"), result(0, "main", { ended: "capped", syncedSeconds: null, elapsedSeconds: 600 })]).split("\n");
-    expect(rows[2]).toBe("| 1 | `main` | 1 | 1 | 4 s | capped at 600 s | 1000 of 1000 | 0 s | 0 | 0 s | 0, 0, 0 | 50 s | 100 MiB | 2 MiB | 2000 B |");
+    expect(rows[2]).toBe("| 1 | `main` | 1 | 1 | 4 s | capped at 600 s | 1000 of 1000 | 0 s | 0 | 0 s | 0, 0, 0 | 50 s | 100 MiB | 150 MiB | 157286 B | 2 MiB | 2000 B |");
     expect(rows[3]).toContain("| 2 | `fix` | 1 | 2 |");
   });
 });

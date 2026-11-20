@@ -206,6 +206,7 @@ export interface Sample {
   status: Status | null;
   cpuSeconds: number | null;
   rssBytes: number | null;
+  footprintBytes: number | null;
 }
 
 export function uploadedEntries(status: Status): number {
@@ -293,6 +294,8 @@ export interface RunResult extends Progress {
   timeouts: Record<TimeoutKind, number>;
   cpuSeconds: number | null;
   peakRssBytes: number | null;
+  peakFootprintBytes: number | null;
+  footprintBytesPerEntry: number | null;
   storeBytes: number;
   storeBytesPerEntry: number | null;
   samples: number;
@@ -334,7 +337,7 @@ const mib = (value: number) => Math.round(value / (1 << 20)) + " MiB";
 const bytes = (value: number) => Math.round(value) + " B";
 const plain = (value: number | null): Measured | null => (value === null ? null : { value, capped: false });
 
-export const SUMMARY_COLUMNS = ["Ref", "Synced", "First upload", "Fully synced", "Stall time", "Stalls ≥ 5 s", "Longest stall", "Timeouts", "Daemon CPU", "Peak RSS", "Store per entry"];
+export const SUMMARY_COLUMNS = ["Ref", "Synced", "First upload", "Fully synced", "Stall time", "Stalls ≥ 5 s", "Longest stall", "Timeouts", "Daemon CPU", "Peak RSS", "Peak footprint", "Footprint per entry", "Store per entry"];
 
 export function summary(builds: Build[], results: RunResult[], planned: number): string {
   const lines = ["| " + SUMMARY_COLUMNS.join(" | ") + " |", "|" + SUMMARY_COLUMNS.map(() => "---").join("|") + "|"];
@@ -358,6 +361,8 @@ export function summary(builds: Build[], results: RunResult[], planned: number):
           cell((run) => plain(run.timeouts.didNotMove + run.timeouts.noCompleteAnswer + run.timeouts.keptFailing), count),
           cell((run) => plain(run.cpuSeconds), seconds),
           cell((run) => plain(run.peakRssBytes), mib),
+          cell((run) => plain(run.peakFootprintBytes), mib),
+          cell((run) => plain(run.footprintBytesPerEntry), bytes),
           cell((run) => plain(run.storeBytesPerEntry), bytes),
         ].join(" | ") +
         " |",
@@ -366,7 +371,7 @@ export function summary(builds: Build[], results: RunResult[], planned: number):
   return lines.join("\n") + "\n";
 }
 
-export const RUN_COLUMNS = ["Run", "Ref", "Rep", "Order", "First upload", "Fully synced", "Entries synced", "Stall time", "Stalls", "Longest stall", "Timeouts (moved, answer, failing)", "CPU", "Peak RSS", "Store", "Store per entry"];
+export const RUN_COLUMNS = ["Run", "Ref", "Rep", "Order", "First upload", "Fully synced", "Entries synced", "Stall time", "Stalls", "Longest stall", "Timeouts (moved, answer, failing)", "CPU", "Peak RSS", "Peak footprint", "Footprint per entry", "Store", "Store per entry"];
 
 export function runTable(results: RunResult[]): string {
   const or = (value: number | null, unit: (value: number) => string) => (value === null ? "n/a" : unit(value));
@@ -388,6 +393,8 @@ export function runTable(results: RunResult[]): string {
           run.timeouts.didNotMove + ", " + run.timeouts.noCompleteAnswer + ", " + run.timeouts.keptFailing,
           or(run.cpuSeconds, seconds),
           or(run.peakRssBytes, mib),
+          or(run.peakFootprintBytes, mib),
+          or(run.footprintBytesPerEntry, bytes),
           mib(run.storeBytes),
           or(run.storeBytesPerEntry, bytes),
         ].join(" | ") +
