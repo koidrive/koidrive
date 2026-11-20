@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashMap, VecDeque};
 use koidrive_proto::v1::{self as proto, error, op, op_result};
 use prost::Message;
 
-use crate::classify::{Class, Origin, Trees, Waiting, path};
+use crate::classify::{Class, Landing, Origin, Trees, Waiting, path};
 use crate::effects;
 use crate::first_link::{self, History, Marks, PriorSync};
 use crate::guard::{self, Guard, RemoteRemoval};
@@ -531,6 +531,38 @@ impl Commits {
             .collect()
     }
 
+    fn landing(&self) -> Landing {
+        let mut landing = Landing::default();
+        let Some(flight) = self.in_flight.as_ref() else {
+            return landing;
+        };
+        for op in (flight.commit.ops.iter()).filter_map(|op| op.op.as_ref()) {
+            match op {
+                op::Op::CreateFile(create) => {
+                    (landing.contents)
+                        .insert(NodeId::from(&create.node_id), create.content.clone());
+                }
+                op::Op::CreateDir(create) => {
+                    landing.contents.insert(NodeId::from(&create.node_id), None);
+                }
+                op::Op::UpdateContent(update) => {
+                    (landing.contents)
+                        .insert(NodeId::from(&update.node_id), update.content.clone());
+                }
+                op::Op::Delete(delete) => {
+                    landing.deleted.insert(NodeId::from(&delete.node_id));
+                }
+                _ => {}
+            }
+        }
+        for (top, members) in &flight.deletes {
+            landing
+                .deleted
+                .extend(std::iter::once(top).chain(members).cloned());
+        }
+        landing
+    }
+
     /// Whether a listed node at revision `seq` was placed there by this device: by a commit of
     /// this device that the server kept, or by the commit in flight, whose result has that seq.
     pub fn listed_here(&self, seq: u64) -> bool {
@@ -776,6 +808,9 @@ impl Commits {
         ids: &mut IdGen,
         now_ms: u64,
     ) {
+        for question in self.questions.get_mut().iter_mut() {
+            question.frozen = None;
+        }
         self.halted.set(match *self.halted {
             Some(Halt::Recovery {
                 policy: Some(code), ..
@@ -898,7 +933,7 @@ impl Commits {
     /// An S update that would leave S invalid, such as for a folder whose child was moved out and
     /// is not acknowledged yet, waits ([`Trees::waiting`]). False, and nothing changes, when no
     /// open question has the ID, its kind does not take the answer, or it already took one.
-    pub fn decide(&mut self, id: &str, answer: Answer) -> bool {
+    pub fn decide(&mut self, trees: &mut Trees, id: &str, answer: Answer) -> bool {
         let Some(index) = (self.questions.iter()).position(|question| {
             question.id == id
                 && question.answer.is_none()
@@ -921,6 +956,18 @@ impl Commits {
             }
             QuestionKind::Conflict { .. } if answer == Answer::KeepBoth => {
                 self.questions.get_mut().remove(index);
+            }
+            _ if answer == Answer::Discard && first_link::asks(&self.questions[index]) => {
+                trees.settle(&self.aliases);
+                let question = &self.questions[index];
+                let settled = trees.rules_known()
+                    && !matches!(*self.halted, Some(Halt::Recovery { .. }))
+                    && first_link::still_shown(trees, question)
+                    && trees.settled_below(&question.shown);
+                let frozen = settled.then(|| trees.below(&question.shown, &self.landing()));
+                let question = &mut self.questions.get_mut()[index];
+                question.answer = Some(answer);
+                question.frozen = frozen;
             }
             _ => self.questions.get_mut()[index].answer = Some(answer),
         }
@@ -982,6 +1029,7 @@ impl Commits {
                 held: BTreeMap::new(),
                 answer: None,
                 shown: BTreeMap::new(),
+                frozen: None,
             }),
         }
     }
@@ -1043,6 +1091,7 @@ impl Commits {
                 held: open,
                 answer: None,
                 shown: BTreeMap::new(),
+                frozen: None,
             },
         );
     }
@@ -1076,9 +1125,30 @@ impl Commits {
                 Some(question) => {
                     self.questions.get_mut().remove(index);
                     if question.answer == Some(Answer::Discard) {
+                        let landing = self.landing();
+                        let taken = match &question.frozen {
+                            Some(frozen) => {
+                                trees.frozen_server_entries(&question.shown, frozen, &landing)
+                            }
+                            None => Some(trees.server_entries_below(&question.shown, &landing)),
+                        };
+                        let Some(taken) = taken else {
+                            self.questions.get_mut().insert(
+                                index,
+                                Question {
+                                    id: ids.uuid_v7(now_ms),
+                                    asked_at_ms: now_ms,
+                                    answer: None,
+                                    frozen: None,
+                                    ..question
+                                },
+                            );
+                            index += 1;
+                            continue;
+                        };
                         let shown: BTreeSet<NodeId> = question.shown.keys().cloned().collect();
                         trees.discard(shown.iter().cloned(), &question.shown);
-                        trees.discard_server_entries_below(&question.shown);
+                        trees.discard_taken(taken);
                         let updates = (question.shown.into_iter())
                             .map(|(id, shape)| (id, Some(shape)))
                             .collect();
@@ -2028,6 +2098,7 @@ impl Commits {
             held: BTreeMap::new(),
             answer: None,
             shown: BTreeMap::new(),
+            frozen: None,
         });
     }
 

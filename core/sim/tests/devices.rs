@@ -8571,14 +8571,15 @@ fn a_write_a_restore_took_is_not_sent_again_after_a_rewind_until_a_user_keeps_it
     world
         .run(1, &[(0, Step::Connect), (0, Step::Deliver(0))])
         .unwrap();
-    let commits = &mut world.devices[0].engine.commits;
+    let engine = &mut world.devices[0].engine;
+    let commits = &mut engine.commits;
     let asked = (commits.questions().iter())
         .find(|question| {
             matches!(question.kind, QuestionKind::Recovery { .. }) && question.answer.is_none()
         })
         .map(|question| question.id.clone())
         .expect("the rewind asks about the write the restore took");
-    assert!(commits.decide(&asked, Answer::Keep));
+    assert!(commits.decide(&mut engine.trees, &asked, Answer::Keep));
     let failure = world.phase(2, &[]).unwrap_err();
     assert!(
         failure.to_string().contains("sent write 1 again"),

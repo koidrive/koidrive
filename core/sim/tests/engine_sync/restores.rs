@@ -401,7 +401,7 @@ impl Bench {
                     .find(|question| matches!(question.kind, QuestionKind::MassDelete { .. }))
                     .map(|question| question.id.clone());
                 match asked {
-                    Some(id) => assert!(self.commits.decide(&id, Answer::Delete)),
+                    Some(id) => assert!(self.commits.decide(&mut self.trees, &id, Answer::Delete)),
                     None => return,
                 }
                 continue;

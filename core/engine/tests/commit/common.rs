@@ -1122,7 +1122,7 @@ fn answered_conflict(answer: Answer) -> (Commits, Trees, IdGen, Shape) {
     }
     trees.settle(commits.aliases());
     let question = commits.questions()[0].id.clone();
-    assert!(commits.decide(&question, answer));
+    assert!(commits.decide(&mut trees, &question, answer));
     (commits, trees, ids, copy)
 }
 

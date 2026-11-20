@@ -752,14 +752,15 @@ fn a_keep_the_engine_asks_again_after_a_refused_commit_no_longer_counts() {
         )
         .unwrap();
     assert!(world.seen.contains_key("commit refused, planned again"));
-    let commits = &mut world.devices[0].engine.commits;
+    let engine = &mut world.devices[0].engine;
+    let commits = &mut engine.commits;
     let asked = (commits.questions().iter())
         .find(|question| {
             matches!(question.kind, QuestionKind::Recovery { .. }) && question.answer.is_none()
         })
         .map(|question| question.id.clone())
         .expect("the refused answer is asked again");
-    assert!(commits.decide(&asked, Answer::Keep));
+    assert!(commits.decide(&mut engine.trees, &asked, Answer::Keep));
     let failure = world.phase(2, &[]).unwrap_err();
     assert!(
         failure.to_string().contains("sent write 1 again"),
@@ -3071,14 +3072,15 @@ fn a_keep_stops_counting_once_its_rekeyed_file_is_asked_again() {
             ],
         )
         .unwrap();
-    let commits = &mut world.devices[0].engine.commits;
+    let engine = &mut world.devices[0].engine;
+    let commits = &mut engine.commits;
     let question = (commits.questions().iter())
         .find(|question| {
             question.answer.is_none() && question.shown.contains_key(&NodeId::from(&new))
         })
         .unwrap()
         .clone();
-    assert!(commits.decide(&question.id, question.kind.answers()[0]));
+    assert!(commits.decide(&mut engine.trees, &question.id, question.kind.answers()[0]));
     let failure = world.run(3, &[(0, COMMIT), (0, COMMIT)]).unwrap_err();
     assert!(
         failure.to_string().contains("sent write 1 again"),

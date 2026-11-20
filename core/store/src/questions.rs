@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 
 use koidrive_engine::guard::{Counted, GuardState, RemoteDeletion, Trash};
-use koidrive_engine::question::{Answer, Held, Limit, Question, QuestionKind, Revisions};
+use koidrive_engine::question::{Answer, Frozen, Held, Limit, Question, QuestionKind, Revisions};
 use koidrive_engine::state::GuardChanges;
 use koidrive_engine::tree::{Content, NodeId, Shape};
 use prost::Message;
@@ -35,8 +35,23 @@ impl Tx<'_> {
             (shown.entry(row.get(0)?).or_default())
                 .insert(NodeId::from(row.get::<_, String>(1)?), shape);
         }
+        let mut frozen: BTreeMap<String, BTreeMap<NodeId, Frozen>> = BTreeMap::new();
         let mut stmt = self.0.prepare_cached(
-            "SELECT question_id, asked_at_ms, kind, answer FROM open_questions ORDER BY position",
+            "SELECT question_id, node_id, parent_id, name, taken FROM open_question_frozen",
+        )?;
+        let mut rows = stmt.query([])?;
+        while let Some(row) = rows.next()? {
+            let node = Frozen {
+                parent: NodeId::from(row.get::<_, String>(2)?),
+                name: row.get(3)?,
+                taken: row.get(4)?,
+            };
+            (frozen.entry(row.get(0)?).or_default())
+                .insert(NodeId::from(row.get::<_, String>(1)?), node);
+        }
+        let mut stmt = self.0.prepare_cached(
+            "SELECT question_id, asked_at_ms, kind, answer, frozen FROM open_questions
+             ORDER BY position",
         )?;
         let mut rows = stmt.query([])?;
         let mut questions = Vec::new();
@@ -53,16 +68,18 @@ impl Tx<'_> {
                 .map(|answer| answer.parse::<Answer>())
                 .transpose()
                 .map_err(Error::InvalidEngineState)?;
+            let is_frozen: bool = row.get(4)?;
             questions.push(Question {
                 held: held.remove(&id).unwrap_or_default(),
                 shown: shown.remove(&id).unwrap_or_default(),
+                frozen: is_frozen.then(|| frozen.remove(&id).unwrap_or_default()),
                 id,
                 asked_at_ms: row.get(1)?,
                 kind,
                 answer,
             });
         }
-        if let Some(id) = held.keys().chain(shown.keys()).next() {
+        if let Some(id) = held.keys().chain(shown.keys()).chain(frozen.keys()).next() {
             return Err(Error::InvalidEngineState(format!(
                 "items held by an unknown question {id:?}"
             )));
@@ -72,6 +89,7 @@ impl Tx<'_> {
 
     pub(crate) fn set_open_questions(&self, questions: &[Question]) -> Result<()> {
         for table in [
+            "open_question_frozen",
             "open_question_shapes",
             "open_question_members",
             "open_question_items",
@@ -80,7 +98,11 @@ impl Tx<'_> {
             self.0.execute(&format!("DELETE FROM {table}"), [])?;
         }
         let mut stmt = self.0.prepare_cached(
-            "INSERT INTO open_questions (question_id, position, asked_at_ms, kind, answer)
+            "INSERT INTO open_questions (question_id, position, asked_at_ms, kind, answer, frozen)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        )?;
+        let mut frozen = self.0.prepare_cached(
+            "INSERT INTO open_question_frozen (question_id, node_id, parent_id, name, taken)
              VALUES (?1, ?2, ?3, ?4, ?5)",
         )?;
         let mut items = self.0.prepare_cached(
@@ -102,7 +124,17 @@ impl Tx<'_> {
                 question.asked_at_ms,
                 kind,
                 question.answer.map(Answer::as_str),
+                question.frozen.is_some(),
             ])?;
+            for (node, below) in question.frozen.iter().flatten() {
+                frozen.execute(params![
+                    question.id,
+                    node.to_string(),
+                    below.parent.to_string(),
+                    below.name,
+                    below.taken
+                ])?;
+            }
             for (top, item) in &question.held {
                 items.execute(params![question.id, top.to_string(), item.files])?;
                 for (node, revisions) in &item.members {

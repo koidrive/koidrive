@@ -1070,7 +1070,7 @@ fn a_second_reset_keeps_the_restore_question_only_while_it_holds_the_same_restor
     reset.restore(id(101), second.clone());
     build(&mut reset, &mut trees, &mut ids).unwrap();
     let asked = reset.questions()[0].id.clone();
-    assert!(reset.decide(&asked, Answer::Cancel));
+    assert!(reset.decide(&mut trees, &asked, Answer::Cancel));
 
     let mut again = Commits::default();
     again.restore(id(100), first.clone());
@@ -1112,7 +1112,7 @@ fn a_second_reset_keeps_a_repeat_whose_commit_carried_none_of_its_restores() {
     build(&mut reset, &mut edited, &mut ids).unwrap();
     acknowledge(&mut reset, &mut edited, vec![rejected("LATER_REASON")]);
     let asked = reset.questions()[0].id.clone();
-    assert!(reset.decide(&asked, Answer::Repeat));
+    assert!(reset.decide(&mut edited, &asked, Answer::Repeat));
     let mut unrelated = trees(&[row(&n, "f", 3, 2), row(&m, "g", 5, 4)]);
     let commit = build(&mut reset, &mut unrelated, &mut ids).unwrap();
     assert_eq!(ops(&commit), [update(&m, 5)]);

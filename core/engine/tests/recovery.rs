@@ -260,7 +260,7 @@ fn a_node_changed_on_this_device_is_held_until_it_is_published() {
     assert!(trees.held(&"n".into()));
     assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
     assert_eq!(effects(&mut trees, &mut ids), []);
-    assert!(commits.decide(&question.id, Answer::Publish));
+    assert!(commits.decide(&mut trees, &question.id, Answer::Publish));
     assert_eq!(
         ops(&mut commits, &mut trees, &mut ids),
         [("update", "n".into())]
@@ -302,7 +302,7 @@ fn a_restored_older_value_holds_the_value_made_over_it_until_it_is_published() {
     let question = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["n"]);
     assert!(trees.held(&"n".into()));
     assert_eq!(effects(&mut trees, &mut ids), []);
-    assert!(commits.decide(&question.id, Answer::Publish));
+    assert!(commits.decide(&mut trees, &question.id, Answer::Publish));
     assert_eq!(
         ops(&mut commits, &mut trees, &mut ids),
         [("update", "n".into())]
@@ -449,7 +449,7 @@ fn a_published_rename_after_a_store_rollback_keeps_another_devices_later_edit() 
         RecoveryGroup::ChangedOnThisDevice,
     );
     let question = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["n"]);
-    assert!(commits.decide(&question.id, Answer::Publish));
+    assert!(commits.decide(&mut trees, &question.id, Answer::Publish));
     assert_eq!(
         ops(&mut commits, &mut trees, &mut ids),
         [("move", "n".into())]
@@ -475,7 +475,7 @@ fn a_published_offline_edit_after_a_store_rollback_keeps_the_other_devices_later
         RecoveryGroup::ChangedOnThisDevice,
     );
     let question = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["n"]);
-    assert!(commits.decide(&question.id, Answer::Publish));
+    assert!(commits.decide(&mut trees, &question.id, Answer::Publish));
     let sent = ops(&mut commits, &mut trees, &mut ids);
     let [("create file", copy)] = &sent[..] else {
         panic!("{sent:?}");
@@ -514,7 +514,7 @@ fn a_published_rename_of_a_file_s_does_not_hold_keeps_another_devices_later_edit
         RecoveryGroup::ChangedOnThisDevice,
     );
     let question = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["n"]);
-    assert!(commits.decide(&question.id, Answer::Publish));
+    assert!(commits.decide(&mut trees, &question.id, Answer::Publish));
     assert_eq!(
         ops(&mut commits, &mut trees, &mut ids),
         [("move", "n".into())]
@@ -548,7 +548,7 @@ fn a_published_offline_edit_while_an_update_of_s_waits_keeps_the_other_devices_l
     );
     assert!(trees.waiting().contains_key(&"n".into()));
     let question = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["n"]);
-    assert!(commits.decide(&question.id, Answer::Publish));
+    assert!(commits.decide(&mut trees, &question.id, Answer::Publish));
     let sent = ops(&mut commits, &mut trees, &mut ids);
     let [("create file", copy)] = &sent[..] else {
         panic!("{sent:?}");
@@ -584,7 +584,7 @@ fn a_published_write_another_device_wrote_over_is_followed_without_a_copy() {
         RecoveryGroup::ChangedOnThisDevice,
     );
     let question = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["n"]);
-    assert!(commits.decide(&question.id, Answer::Publish));
+    assert!(commits.decide(&mut trees, &question.id, Answer::Publish));
     assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
     let done = effects(&mut trees, &mut ids);
     assert!(
@@ -603,7 +603,7 @@ fn a_delete_answered_after_a_store_rollback_keeps_another_devices_later_edit() {
     let (mut trees, mut commits, mut ids) =
         held_under_a_later_edit(&[], RecoveryGroup::DeletedOnThisDevice);
     let question = asked(&commits, RecoveryGroup::DeletedOnThisDevice, &["n"]);
-    assert!(commits.decide(&question.id, Answer::Delete));
+    assert!(commits.decide(&mut trees, &question.id, Answer::Delete));
     assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
     let done = effects(&mut trees, &mut ids);
     assert!(
@@ -625,7 +625,7 @@ fn an_answer_whose_commit_finds_the_head_moved_is_asked_again() {
     );
     let (mut commits, mut ids) = recovered(&mut trees, 0);
     let question = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["n"]);
-    assert!(commits.decide(&question.id, Answer::Publish));
+    assert!(commits.decide(&mut trees, &question.id, Answer::Publish));
     assert_eq!(
         ops(&mut commits, &mut trees, &mut ids),
         [("update", "n".into())]
@@ -657,7 +657,7 @@ fn an_answer_whose_commit_finds_the_head_moved_is_asked_again() {
     assert_ne!(again.id, question.id);
     assert_eq!(again.answer, None);
     assert!(trees.held(&"n".into()));
-    assert!(commits.decide(&again.id, Answer::Discard));
+    assert!(commits.decide(&mut trees, &again.id, Answer::Discard));
     assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
     let done = effects(&mut trees, &mut ids);
     assert!(
@@ -680,7 +680,7 @@ fn a_question_asked_again_names_the_cause_of_its_recovery() {
     let (mut commits, mut ids) = recovered(&mut trees, 0);
     let question = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["n"]);
     assert_eq!(question.cause(), Some(&rewind()));
-    assert!(commits.decide(&question.id, Answer::Publish));
+    assert!(commits.decide(&mut trees, &question.id, Answer::Publish));
     ops(&mut commits, &mut trees, &mut ids);
     let moved = Error {
         code: error::Code::HeadMoved as i32,
@@ -719,7 +719,7 @@ fn discarding_a_changed_node_downloads_the_server_version() {
     );
     let (mut commits, mut ids) = recovered(&mut trees, 0);
     let question = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["n"]);
-    assert!(commits.decide(&question.id, Answer::Discard));
+    assert!(commits.decide(&mut trees, &question.id, Answer::Discard));
     assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
     let done = effects(&mut trees, &mut ids);
     assert!(
@@ -741,7 +741,7 @@ fn keeping_a_file_the_rewind_removed_creates_it_under_its_own_id() {
     );
     let (mut commits, mut ids) = recovered(&mut trees, 0);
     let question = asked(&commits, RecoveryGroup::CreatedAfterRestorePoint, &["new"]);
-    assert!(commits.decide(&question.id, Answer::Keep));
+    assert!(commits.decide(&mut trees, &question.id, Answer::Keep));
     assert_eq!(
         ops(&mut commits, &mut trees, &mut ids),
         [("create file", "new".into())]
@@ -775,7 +775,7 @@ fn keeping_a_folder_sends_a_file_renamed_in_it_that_the_rewind_moved_out() {
         file("a", "c.txt", 1),
     );
     let question = asked(&commits, RecoveryGroup::CreatedAfterRestorePoint, &["a"]);
-    assert!(commits.decide(&question.id, Answer::Keep));
+    assert!(commits.decide(&mut trees, &question.id, Answer::Keep));
     assert_eq!(
         ops(&mut commits, &mut trees, &mut ids),
         [("create dir", "a".into()), ("move", "f".into())]
@@ -790,7 +790,7 @@ fn keeping_a_folder_sends_a_file_renamed_in_it_that_the_rewind_trashed() {
         file("a", "c.txt", 1),
     );
     let question = asked(&commits, RecoveryGroup::CreatedAfterRestorePoint, &["a"]);
-    assert!(commits.decide(&question.id, Answer::Keep));
+    assert!(commits.decide(&mut trees, &question.id, Answer::Keep));
     assert_eq!(
         ops(&mut commits, &mut trees, &mut ids),
         [("create dir", "a".into()), ("move", "f".into())]
@@ -805,7 +805,7 @@ fn publishing_a_folder_the_rewind_removed_sends_a_file_renamed_in_it() {
         file("a", "c.txt", 1),
     );
     let question = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["a"]);
-    assert!(commits.decide(&question.id, Answer::Publish));
+    assert!(commits.decide(&mut trees, &question.id, Answer::Publish));
     assert_eq!(
         ops(&mut commits, &mut trees, &mut ids),
         [("create dir", "a".into()), ("move", "f".into())]
@@ -820,7 +820,7 @@ fn keeping_a_folder_sends_an_edit_in_it_and_still_moves_the_file_where_the_rewin
         file("a", "A", 2),
     );
     let question = asked(&commits, RecoveryGroup::CreatedAfterRestorePoint, &["a"]);
-    assert!(commits.decide(&question.id, Answer::Keep));
+    assert!(commits.decide(&mut trees, &question.id, Answer::Keep));
     assert_eq!(
         ops(&mut commits, &mut trees, &mut ids),
         [("update", "f".into())]
@@ -875,7 +875,7 @@ fn keeping_a_folder_still_moves_out_an_unchanged_file_the_rewind_moved_out() {
         file("a", "A", 1),
     );
     let question = asked(&commits, RecoveryGroup::CreatedAfterRestorePoint, &["a"]);
-    assert!(commits.decide(&question.id, Answer::Keep));
+    assert!(commits.decide(&mut trees, &question.id, Answer::Keep));
     assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
     let done = effects(&mut trees, &mut ids);
     assert!(
@@ -897,11 +897,11 @@ fn keeping_a_folder_leaves_a_child_another_question_holds_held() {
     );
     let (mut commits, mut ids) = recovered(&mut trees, 0);
     let parent = asked(&commits, RecoveryGroup::CreatedAfterRestorePoint, &["a"]);
-    assert!(commits.decide(&parent.id, Answer::Keep));
+    assert!(commits.decide(&mut trees, &parent.id, Answer::Keep));
     assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
     assert!(trees.held(&"f".into()));
     let child = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["f"]);
-    assert!(commits.decide(&child.id, Answer::Publish));
+    assert!(commits.decide(&mut trees, &child.id, Answer::Publish));
     assert_eq!(
         ops(&mut commits, &mut trees, &mut ids),
         [("create dir", "a".into()), ("update", "f".into())]
@@ -918,8 +918,8 @@ fn discarding_a_file_moved_out_of_a_folder_restored_in_the_same_pass_sends_nothi
     let (mut commits, mut ids) = recovered(&mut trees, 0);
     let deleted = asked(&commits, RecoveryGroup::DeletedOnThisDevice, &["d"]);
     let changed = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["c"]);
-    assert!(commits.decide(&deleted.id, Answer::Restore));
-    assert!(commits.decide(&changed.id, Answer::Discard));
+    assert!(commits.decide(&mut trees, &deleted.id, Answer::Restore));
+    assert!(commits.decide(&mut trees, &changed.id, Answer::Discard));
     assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
 }
 
@@ -933,8 +933,8 @@ fn publishing_a_file_moved_out_of_a_folder_restored_in_the_same_pass_sends_its_c
     let (mut commits, mut ids) = recovered(&mut trees, 0);
     let deleted = asked(&commits, RecoveryGroup::DeletedOnThisDevice, &["d"]);
     let changed = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["c"]);
-    assert!(commits.decide(&deleted.id, Answer::Restore));
-    assert!(commits.decide(&changed.id, Answer::Publish));
+    assert!(commits.decide(&mut trees, &deleted.id, Answer::Restore));
+    assert!(commits.decide(&mut trees, &changed.id, Answer::Publish));
     assert_eq!(
         ops(&mut commits, &mut trees, &mut ids),
         [("move", "c".into()), ("update", "c".into())]
@@ -980,7 +980,7 @@ fn discarding_a_file_the_rewind_removed_moves_it_to_the_local_trash() {
     );
     let (mut commits, mut ids) = recovered(&mut trees, 0);
     let question = asked(&commits, RecoveryGroup::CreatedAfterRestorePoint, &["new"]);
-    assert!(commits.decide(&question.id, Answer::Discard));
+    assert!(commits.decide(&mut trees, &question.id, Answer::Discard));
     assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
     let done = effects(&mut trees, &mut ids);
     assert!(
@@ -1005,7 +1005,7 @@ fn a_node_deleted_on_this_device_is_held_until_the_delete_is_confirmed() {
         let question = asked(&commits, RecoveryGroup::DeletedOnThisDevice, &["f"]);
         assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
         assert_eq!(effects(&mut trees, &mut ids), [], "{answer:?}");
-        assert!(commits.decide(&question.id, answer));
+        assert!(commits.decide(&mut trees, &question.id, answer));
         assert_eq!(ops(&mut commits, &mut trees, &mut ids), expected);
         if answer == Answer::Restore {
             let done = effects(&mut trees, &mut ids);
@@ -1041,7 +1041,7 @@ fn a_file_deleted_on_this_device_stays_held_when_the_rewind_lost_its_rename() {
     }
     let question = asked(&commits, RecoveryGroup::DeletedOnThisDevice, &["n"]);
     assert_eq!(trees.synced().live(&"n".into()), Some(&file(ROOT, "a", 1)));
-    assert!(commits.decide(&question.id, Answer::Delete));
+    assert!(commits.decide(&mut trees, &question.id, Answer::Delete));
     assert_eq!(
         ops(&mut commits, &mut trees, &mut ids),
         [("delete", "n".to_owned())]
@@ -1064,7 +1064,7 @@ fn a_folder_deleted_on_this_device_stays_held_while_a_file_in_it_lost_its_rename
     }
     let question = asked(&commits, RecoveryGroup::DeletedOnThisDevice, &["c", "d"]);
     assert_eq!(trees.synced().live(&"d".into()), Some(&dir(ROOT, "d")));
-    assert!(commits.decide(&question.id, Answer::Delete));
+    assert!(commits.decide(&mut trees, &question.id, Answer::Delete));
     assert_eq!(
         ops(&mut commits, &mut trees, &mut ids),
         [("delete", "d".to_owned())]
@@ -1092,7 +1092,7 @@ fn a_delete_answered_after_a_rewind_to_an_older_version_deletes_it() {
     let (mut trees, mut commits, mut ids) = deleted_after_a_rewind_to_an_older_version();
     assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
     let question = asked(&commits, RecoveryGroup::DeletedOnThisDevice, &["n"]);
-    assert!(commits.decide(&question.id, Answer::Delete));
+    assert!(commits.decide(&mut trees, &question.id, Answer::Delete));
     assert_eq!(
         ops(&mut commits, &mut trees, &mut ids),
         [("delete", "n".to_owned())]
@@ -1111,7 +1111,7 @@ fn a_delete_answered_after_a_rewind_keeps_another_devices_edit_of_either_version
         trees.settle(commits.aliases());
         assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
         let question = asked(&commits, RecoveryGroup::DeletedOnThisDevice, &["n"]);
-        assert!(commits.decide(&question.id, Answer::Delete));
+        assert!(commits.decide(&mut trees, &question.id, Answer::Delete));
         assert_eq!(ops(&mut commits, &mut trees, &mut ids), [], "{over}");
         let done = effects(&mut trees, &mut ids);
         assert!(
@@ -1148,7 +1148,7 @@ fn a_delete_answered_while_an_update_of_s_waits_deletes_only_a_version_s_held() 
         let (mut commits, mut ids) = recovered(&mut trees, 0);
         let question = asked(&commits, RecoveryGroup::DeletedOnThisDevice, &["n"]);
         assert!(trees.waiting().contains_key(&"n".into()), "{deleted}");
-        assert!(commits.decide(&question.id, Answer::Delete));
+        assert!(commits.decide(&mut trees, &question.id, Answer::Delete));
         let sent = ops(&mut commits, &mut trees, &mut ids);
         let done: Vec<Effect> = (effects(&mut trees, &mut ids).into_iter())
             .filter(|(node, _)| node == "n")
@@ -1186,7 +1186,7 @@ fn a_delete_answered_after_another_device_moved_the_file_downloads_it_where_it_w
         }
         assert_eq!(ops(&mut commits, &mut trees, &mut ids), [], "{moves:?}");
         let question = asked(&commits, RecoveryGroup::DeletedOnThisDevice, &["n"]);
-        assert!(commits.decide(&question.id, Answer::Delete));
+        assert!(commits.decide(&mut trees, &question.id, Answer::Delete));
         assert_eq!(ops(&mut commits, &mut trees, &mut ids), [], "{moves:?}");
         let done = effects(&mut trees, &mut ids);
         assert!(
@@ -1216,7 +1216,7 @@ fn a_delete_answered_after_a_rewind_past_two_renames_deletes_it_once_r_forgot_th
     let (mut commits, mut ids) = recovered(&mut trees, 0);
     assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
     let question = asked(&commits, RecoveryGroup::DeletedOnThisDevice, &["n"]);
-    assert!(commits.decide(&question.id, Answer::Delete));
+    assert!(commits.decide(&mut trees, &question.id, Answer::Delete));
     assert_eq!(
         ops(&mut commits, &mut trees, &mut ids),
         [("delete", "n".to_owned())]
@@ -1270,7 +1270,7 @@ fn an_entry_new_on_this_device_is_held_as_created_on_this_device() {
         &["inside", "mine"],
     );
     assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
-    assert!(commits.decide(&question.id, Answer::Publish));
+    assert!(commits.decide(&mut trees, &question.id, Answer::Publish));
     assert_eq!(
         ops(&mut commits, &mut trees, &mut ids),
         [
@@ -1426,7 +1426,7 @@ fn an_answer_to_a_node_that_changed_since_is_not_taken() {
     );
     let (mut commits, mut ids) = recovered(&mut trees, 0);
     let question = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["n"]);
-    assert!(commits.decide(&question.id, Answer::Publish));
+    assert!(commits.decide(&mut trees, &question.id, Answer::Publish));
     let mut edited = trees.local().get(&"n".into()).unwrap().clone();
     edited.shape.content = Some(content(4));
     trees.set_local("n".into(), edited);
@@ -1469,7 +1469,7 @@ fn the_commit_in_flight_before_the_reset_is_never_sent_again() {
     assert_eq!(commits.in_flight(), None);
     assert_eq!(commits.accepted(), 4);
     let question = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["n"]);
-    assert!(commits.decide(&question.id, Answer::Publish));
+    assert!(commits.decide(&mut trees, &question.id, Answer::Publish));
     let commit = commits.build(&mut trees, &mut ids, NOW, NEW, "me", Base::default());
     let commit = commit.expect("the published edit");
     assert_eq!(commit.device_seq, 5);
@@ -1549,7 +1549,7 @@ fn a_restore_asked_for_before_the_reset_is_held_until_it_is_answered() {
             1,
             "the request is kept until answered"
         );
-        assert!(commits.decide(&question.id, answer));
+        assert!(commits.decide(&mut trees, &question.id, answer));
         let ops = ops(&mut commits, &mut trees, &mut ids);
         if answer == Answer::Repeat {
             assert_eq!(ops, [("restore", NODE.to_owned())]);
@@ -1590,7 +1590,7 @@ fn a_restore_asked_for_again_after_the_reset_waits_for_the_answer_about_the_firs
     let question = asked(&commits, RecoveryGroup::RequestedBeforeReset, &["before"]);
     assert!(commits.restore("later".into(), intent));
     assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
-    assert!(commits.decide(&question.id, Answer::Repeat));
+    assert!(commits.decide(&mut trees, &question.id, Answer::Repeat));
     let sent = ops(&mut commits, &mut trees, &mut ids);
     assert_eq!(
         sent,
@@ -1655,7 +1655,7 @@ fn a_folder_the_server_renamed_before_the_rewind_is_created_again_where_l_holds_
     trees.revert("d".into());
     let (mut commits, mut ids) = recovered(&mut trees, 0);
     for question in commits.questions().to_vec() {
-        assert!(commits.decide(&question.id, question.kind.answers()[0]));
+        assert!(commits.decide(&mut trees, &question.id, question.kind.answers()[0]));
     }
     let mut sent = ops(&mut commits, &mut trees, &mut ids);
     sent.sort();
@@ -1675,10 +1675,10 @@ fn a_reverted_folder_published_over_the_servers_name_is_moved_to_the_name_l_hold
     trees.revert("d".into());
     let (mut commits, mut ids) = recovered(&mut trees, 0);
     let changed = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["d"]);
-    assert!(commits.decide(&changed.id, Answer::Publish));
+    assert!(commits.decide(&mut trees, &changed.id, Answer::Publish));
     for question in commits.questions().to_vec() {
         if question.answer.is_none() {
-            assert!(commits.decide(&question.id, question.kind.answers()[0]));
+            assert!(commits.decide(&mut trees, &question.id, question.kind.answers()[0]));
         }
     }
     let mut sent = ops(&mut commits, &mut trees, &mut ids);
@@ -1712,8 +1712,8 @@ fn a_discarded_file_in_a_kept_folder_the_server_merged_stays_discarded() {
     let (mut commits, mut ids) = recovered(&mut trees, 0);
     let kept = asked(&commits, RecoveryGroup::CreatedAfterRestorePoint, &["d"]);
     let discarded = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["f"]);
-    assert!(commits.decide(&kept.id, Answer::Keep));
-    assert!(commits.decide(&discarded.id, Answer::Discard));
+    assert!(commits.decide(&mut trees, &kept.id, Answer::Keep));
+    assert!(commits.decide(&mut trees, &discarded.id, Answer::Discard));
     assert_eq!(
         ops(&mut commits, &mut trees, &mut ids),
         [("create dir", "d".into())]
@@ -1762,8 +1762,8 @@ fn a_discarded_file_in_a_kept_folder_the_server_merged_is_not_moved_back_over_an
     let (mut commits, mut ids) = recovered(&mut trees, 0);
     let kept = asked(&commits, RecoveryGroup::CreatedAfterRestorePoint, &["d"]);
     let discarded = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["f"]);
-    assert!(commits.decide(&kept.id, Answer::Keep));
-    assert!(commits.decide(&discarded.id, Answer::Discard));
+    assert!(commits.decide(&mut trees, &kept.id, Answer::Keep));
+    assert!(commits.decide(&mut trees, &discarded.id, Answer::Discard));
     assert_eq!(
         ops(&mut commits, &mut trees, &mut ids),
         [("create dir", "d".into())]
@@ -1860,7 +1860,7 @@ fn a_discarded_file_the_user_moves_before_it_leaves_the_disk_is_asked_about_agai
     );
     let (mut commits, mut ids) = recovered(&mut trees, 0);
     let question = asked(&commits, RecoveryGroup::CreatedOnThisDevice, &["d", "f"]);
-    assert!(commits.decide(&question.id, Answer::Discard));
+    assert!(commits.decide(&mut trees, &question.id, Answer::Discard));
     assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
     let mut moved = trees.local().get(&"f".into()).unwrap().clone();
     moved.shape = file("d", "a", 1);
@@ -1882,7 +1882,7 @@ fn discarding_an_edit_of_a_file_the_rewind_trashed_sends_nothing() {
     );
     let (mut commits, mut ids) = recovered(&mut trees, 0);
     let question = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["n"]);
-    assert!(commits.decide(&question.id, Answer::Discard));
+    assert!(commits.decide(&mut trees, &question.id, Answer::Discard));
     assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
     let done = effects(&mut trees, &mut ids);
     assert!(
@@ -1904,7 +1904,7 @@ fn an_edit_of_a_trashed_file_whose_sent_revival_the_rewind_took_is_held_and_not_
     let (mut commits, mut ids) = recovered(&mut trees, 0);
     let question = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["n"]);
     assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
-    assert!(commits.decide(&question.id, Answer::Publish));
+    assert!(commits.decide(&mut trees, &question.id, Answer::Publish));
     assert_eq!(
         ops(&mut commits, &mut trees, &mut ids),
         [("update", "n".to_owned())]
@@ -1950,7 +1950,7 @@ fn a_discard_answer_does_not_send_another_discarded_file_the_user_changed() {
     let mut ids = IdGen::new(7);
     commits.first_link(&mut trees, &mut ids, NOW, PriorSync::Shown);
     let first = asked(&commits, RecoveryGroup::CreatedOnThisDevice, &["f", "g"]);
-    assert!(commits.decide(&first.id, Answer::Discard));
+    assert!(commits.decide(&mut trees, &first.id, Answer::Discard));
     assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
     let mut moved = trees.local().get(&"f".into()).unwrap().clone();
     moved.shape.name = "f-new".into();
@@ -1962,7 +1962,7 @@ fn a_discard_answer_does_not_send_another_discarded_file_the_user_changed() {
     moved.shape.name = "g-new".into();
     trees.set_local("g".into(), moved);
     trees.settle(commits.aliases());
-    assert!(commits.decide(&next.id, Answer::Discard));
+    assert!(commits.decide(&mut trees, &next.id, Answer::Discard));
     assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
     asked(&commits, RecoveryGroup::CreatedOnThisDevice, &["g"]);
 }
@@ -1978,7 +1978,7 @@ fn an_answer_to_a_later_first_link_question_is_taken_while_an_earlier_one_waits(
     let mut ids = IdGen::new(7);
     commits.first_link(&mut trees, &mut ids, NOW, PriorSync::Shown);
     let first = asked(&commits, RecoveryGroup::CreatedOnThisDevice, &["f", "g"]);
-    assert!(commits.decide(&first.id, Answer::Discard));
+    assert!(commits.decide(&mut trees, &first.id, Answer::Discard));
     assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
     for (id, name) in [("f", "f-new"), ("g", "g-new")] {
         let mut moved = trees.local().get(&NodeId::from(id)).unwrap().clone();
@@ -1992,7 +1992,7 @@ fn an_answer_to_a_later_first_link_question_is_taken_while_an_earlier_one_waits(
         .find(|question| question.holds().any(|id| id == "g"))
         .unwrap()
         .clone();
-    assert!(commits.decide(&later.id, Answer::Publish));
+    assert!(commits.decide(&mut trees, &later.id, Answer::Publish));
     assert_eq!(
         ops(&mut commits, &mut trees, &mut ids),
         [("create file", "g".to_owned())]
@@ -2034,7 +2034,7 @@ fn a_repeated_restore_is_sent_only_against_the_head_it_was_answered_at() {
         NOW,
     );
     let question = asked(&commits, RecoveryGroup::RequestedBeforeReset, &["request"]);
-    assert!(commits.decide(&question.id, Answer::Repeat));
+    assert!(commits.decide(&mut trees, &question.id, Answer::Repeat));
     assert_eq!(
         ops(&mut commits, &mut trees, &mut ids),
         [("restore", NODE.to_owned())]
@@ -2063,7 +2063,7 @@ fn publishing_a_folder_keeps_the_child_the_rewind_trashed_with_it_trashed() {
     );
     let (mut commits, mut ids) = recovered(&mut trees, 0);
     let question = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["d"]);
-    assert!(commits.decide(&question.id, Answer::Publish));
+    assert!(commits.decide(&mut trees, &question.id, Answer::Publish));
     assert_eq!(
         ops(&mut commits, &mut trees, &mut ids),
         [
@@ -2126,7 +2126,7 @@ fn an_answer_whose_trash_again_does_not_fit_goes_first_and_the_trash_again_follo
     );
     let (mut commits, mut ids) = recovered(&mut trees, 0);
     let question = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["d"]);
-    assert!(commits.decide(&question.id, Answer::Publish));
+    assert!(commits.decide(&mut trees, &question.id, Answer::Publish));
     assert_eq!(
         ops(&mut commits, &mut trees, &mut ids),
         [
@@ -2185,7 +2185,7 @@ fn an_answer_split_by_the_op_limit_sends_the_rest_after_its_own_revival_without_
     );
     let (mut commits, mut ids) = recovered(&mut trees, 0);
     let question = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["d", "f"]);
-    assert!(commits.decide(&question.id, Answer::Publish));
+    assert!(commits.decide(&mut trees, &question.id, Answer::Publish));
     assert_eq!(
         ops(&mut commits, &mut trees, &mut ids),
         [("move", "d".into()), ("move", "f".into())]
@@ -2231,8 +2231,8 @@ fn discarding_a_folder_moved_into_a_new_folder_at_its_old_name_does_not_create_t
     let (mut commits, mut ids) = recovered(&mut trees, 0);
     let created = asked(&commits, RecoveryGroup::CreatedOnThisDevice, &["n"]);
     let changed = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["b"]);
-    assert!(commits.decide(&created.id, Answer::Discard));
-    assert!(commits.decide(&changed.id, Answer::Discard));
+    assert!(commits.decide(&mut trees, &created.id, Answer::Discard));
+    assert!(commits.decide(&mut trees, &changed.id, Answer::Discard));
     assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
     effects(&mut trees, &mut ids);
     assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
@@ -2250,7 +2250,7 @@ fn a_child_an_answer_trashes_again_leaves_the_disk_and_is_not_sent_again() {
     );
     let (mut commits, mut ids) = recovered(&mut trees, 0);
     let question = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["d"]);
-    assert!(commits.decide(&question.id, Answer::Publish));
+    assert!(commits.decide(&mut trees, &question.id, Answer::Publish));
     let sent = ops(&mut commits, &mut trees, &mut ids);
     assert_eq!(
         sent,
@@ -2312,7 +2312,7 @@ fn an_edit_sent_after_its_folder_is_published_is_not_trashed_again() {
     );
     let (mut commits, mut ids) = recovered(&mut trees, 0);
     let question = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["d"]);
-    assert!(commits.decide(&question.id, Answer::Publish));
+    assert!(commits.decide(&mut trees, &question.id, Answer::Publish));
     let mut edited = trees.local().get(&"c".into()).unwrap().clone();
     edited.shape = file("d", "child", 2);
     trees.set_local("c".into(), edited);
@@ -2346,7 +2346,7 @@ fn a_restore_of_a_child_an_answer_trashes_again_waits_while_the_child_is_unsettl
     let intent = RestoreIntent::version(NODE.into(), NODE.into()).unwrap();
     assert!(commits.restore("request".into(), intent));
     let question = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["d"]);
-    assert!(commits.decide(&question.id, Answer::Publish));
+    assert!(commits.decide(&mut trees, &question.id, Answer::Publish));
     let sent = ops(&mut commits, &mut trees, &mut ids);
     assert!(!sent.iter().any(|(kind, _)| *kind == "restore"), "{sent:?}");
 }
@@ -2417,7 +2417,7 @@ fn a_commit_counts_the_nodes_a_published_folder_brings_back_from_the_trash() {
         panic!("{:?}", commits.questions());
     };
     assert_eq!(question.holds().count(), 1 + folders.len());
-    assert!(commits.decide(&question.id.clone(), Answer::Publish));
+    assert!(commits.decide(&mut trees, &question.id.clone(), Answer::Publish));
     let sent = ops(&mut commits, &mut trees, &mut ids);
     assert_eq!(sent, [("move", "d".to_owned())]);
 }
@@ -2443,7 +2443,7 @@ fn publishing_a_folder_and_a_file_in_its_unchanged_subfolder_keeps_the_subfolder
     );
     let (mut commits, mut ids) = recovered(&mut trees, 0);
     let question = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["a", "c"]);
-    assert!(commits.decide(&question.id, Answer::Publish));
+    assert!(commits.decide(&mut trees, &question.id, Answer::Publish));
     let mut sent = ops(&mut commits, &mut trees, &mut ids);
     sent.sort();
     assert_eq!(sent, [("move", "a".into()), ("update", "c".into())]);
@@ -2468,7 +2468,7 @@ fn publishing_a_folder_and_a_file_moved_out_of_its_deleted_subfolder_leaves_the_
     );
     let (mut commits, mut ids) = recovered(&mut trees, 0);
     let question = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["a", "c"]);
-    assert!(commits.decide(&question.id, Answer::Publish));
+    assert!(commits.decide(&mut trees, &question.id, Answer::Publish));
     assert_eq!(
         ops(&mut commits, &mut trees, &mut ids),
         [
@@ -2587,7 +2587,7 @@ fn an_answer_split_across_commits_keeps_its_approval_only_for_what_it_showed() {
     );
     let (mut commits, mut ids) = recovered(&mut trees, 0);
     let question = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["a", "b"]);
-    assert!(commits.decide(&question.id, Answer::Publish));
+    assert!(commits.decide(&mut trees, &question.id, Answer::Publish));
     assert_eq!(ops(&mut commits, &mut trees, &mut ids).len(), 2);
     assert_eq!(
         commits.failed(&mut trees, &limit_exceeded()),
@@ -2629,7 +2629,7 @@ fn an_answer_split_across_commits_keeps_its_approval_only_for_what_it_showed() {
     assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
     let again = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &[rest]);
     assert_eq!(again.answer, None);
-    assert!(commits.decide(&again.id, Answer::Publish));
+    assert!(commits.decide(&mut trees, &again.id, Answer::Publish));
     assert_eq!(
         ops(&mut commits, &mut trees, &mut ids),
         [("update", rest.to_owned())]
@@ -2721,7 +2721,7 @@ fn a_folder_kept_after_a_rewind_is_created_again_pending_for_the_name_s_marked()
     let mut trees = rewound_folder(Some("A"));
     let (mut commits, mut ids) = recovered(&mut trees, 0);
     let question = asked(&commits, RecoveryGroup::CreatedAfterRestorePoint, &["p"]);
-    assert!(commits.decide(&question.id, Answer::Keep));
+    assert!(commits.decide(&mut trees, &question.id, Answer::Keep));
     assert_eq!(
         created_dirs(&mut commits, &mut trees, &mut ids),
         [("A (pending)".into(), "A".into())]
@@ -2733,7 +2733,7 @@ fn a_folder_a_user_named_like_a_pending_name_is_created_again_unmarked_after_a_r
     let mut trees = rewound_folder(None);
     let (mut commits, mut ids) = recovered(&mut trees, 0);
     let question = asked(&commits, RecoveryGroup::CreatedAfterRestorePoint, &["p"]);
-    assert!(commits.decide(&question.id, Answer::Keep));
+    assert!(commits.decide(&mut trees, &question.id, Answer::Keep));
     assert_eq!(
         created_dirs(&mut commits, &mut trees, &mut ids),
         [("A (pending)".into(), String::new())]
@@ -2850,7 +2850,11 @@ fn a_removal_planned_before_a_rewind_leaves_a_kept_file_while_its_create_is_in_f
         RecoveryGroup::CreatedAfterRestorePoint,
         &["x"],
     );
-    assert!(stale.commits.decide(&question.id, Answer::Keep));
+    assert!(
+        stale
+            .commits
+            .decide(&mut stale.trees, &question.id, Answer::Keep)
+    );
     let Stale {
         trees,
         ids,
@@ -2869,7 +2873,11 @@ fn a_removal_planned_before_a_rewind_leaves_a_kept_file_once_the_server_has_it()
         RecoveryGroup::CreatedAfterRestorePoint,
         &["x"],
     );
-    assert!(stale.commits.decide(&question.id, Answer::Keep));
+    assert!(
+        stale
+            .commits
+            .decide(&mut stale.trees, &question.id, Answer::Keep)
+    );
     let Stale {
         trees,
         ids,
@@ -3338,7 +3346,7 @@ fn a_marked_entry_the_user_renamed_is_its_node_and_the_rename_is_committed() {
     assert_eq!(trees.synced().live(&"n".into()), Some(&file(ROOT, "a", 1)));
     assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
     let question = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["n"]);
-    assert!(commits.decide(&question.id, Answer::Publish));
+    assert!(commits.decide(&mut trees, &question.id, Answer::Publish));
     assert_eq!(
         ops(&mut commits, &mut trees, &mut ids),
         [("move", "n".to_owned())]
@@ -3495,7 +3503,7 @@ fn a_marked_file_the_user_moved_out_of_its_marked_folder_follows_once_the_folder
     assert_eq!(local_shape(&trees, "n"), Some(&file(ROOT, "f", 1)));
     assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
     let question = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["n"]);
-    assert!(commits.decide(&question.id, Answer::Publish));
+    assert!(commits.decide(&mut trees, &question.id, Answer::Publish));
     assert_eq!(
         ops(&mut commits, &mut trees, &mut ids),
         [("move", "n".to_owned())]
@@ -3519,7 +3527,7 @@ fn a_marked_file_the_user_renamed_in_an_unmarked_folder_follows_once_the_folder_
     assert_eq!(local_shape(&trees, "n"), Some(&file("d", "g", 1)));
     assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
     let question = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["n"]);
-    assert!(commits.decide(&question.id, Answer::Publish));
+    assert!(commits.decide(&mut trees, &question.id, Answer::Publish));
     assert_eq!(
         ops(&mut commits, &mut trees, &mut ids),
         [("move", "n".to_owned())]
@@ -3544,7 +3552,7 @@ fn a_copy_at_the_old_name_in_an_unmarked_folder_leaves_the_node_to_the_renamed_o
     assert_eq!(local_shape(&trees, "n"), Some(&file("d", "g", 1)));
     assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
     let question = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["n"]);
-    assert!(commits.decide(&question.id, Answer::Publish));
+    assert!(commits.decide(&mut trees, &question.id, Answer::Publish));
     assert_eq!(
         ops(&mut commits, &mut trees, &mut ids),
         [("move", "n".to_owned())]
@@ -3608,7 +3616,7 @@ fn a_marked_entry_the_user_renamed_by_case_only_commits_the_rename() {
     assert_eq!(local_shape(&trees, "n"), Some(&file(ROOT, "Cafe", 1)));
     assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
     let question = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["n"]);
-    assert!(commits.decide(&question.id, Answer::Publish));
+    assert!(commits.decide(&mut trees, &question.id, Answer::Publish));
     assert_eq!(
         ops(&mut commits, &mut trees, &mut ids),
         [("move", "n".to_owned())]
@@ -3633,7 +3641,7 @@ fn a_mark_whose_node_another_mark_frees_follows_before_place_adoption() {
     assert_eq!(local_shape(&trees, "n"), Some(&file(ROOT, "b", 2)));
     assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
     let question = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["n"]);
-    assert!(commits.decide(&question.id, Answer::Publish));
+    assert!(commits.decide(&mut trees, &question.id, Answer::Publish));
     assert_eq!(
         ops(&mut commits, &mut trees, &mut ids),
         [("move", "n".to_owned())]
@@ -3847,7 +3855,7 @@ fn a_file_in_a_marked_folder_that_cannot_follow_waits_with_it() {
         .expect("a question about the folder")
         .clone();
     assert!(question.holds().any(|id| id == "entry"));
-    assert!(commits.decide(&question.id, Answer::Publish));
+    assert!(commits.decide(&mut trees, &question.id, Answer::Publish));
     let sent = ops(&mut commits, &mut trees, &mut ids);
     assert!(!sent.iter().any(|(kind, id)| *kind == "move" && id == "n"));
 }
@@ -4378,7 +4386,7 @@ fn a_file_whose_mark_claims_once_its_folder_is_adopted_gives_up_another_nodes_id
         .map(|question| question.id.clone())
         .collect();
     for id in asked {
-        commits.decide(&id, Answer::Publish);
+        commits.decide(&mut trees, &id, Answer::Publish);
     }
     let sent = ops(&mut commits, &mut trees, &mut ids);
     assert!(!sent.contains(&("move", "n0".to_owned())), "{sent:?}");
@@ -4454,7 +4462,7 @@ fn publish_moves_no_server_file_out_of_a_folder_whose_mark_names_a_trashed_node(
         .map(|question| question.id.clone())
         .collect();
     for id in asked {
-        commits.decide(&id, Answer::Publish);
+        commits.decide(&mut trees, &id, Answer::Publish);
     }
     let sent = ops(&mut commits, &mut trees, &mut ids);
     assert!(!sent.contains(&("move", "n1".to_owned())), "{sent:?}");
@@ -4502,7 +4510,7 @@ fn a_recovery_discard_takes_along_a_server_file_the_rules_let_in_while_the_folde
     trees.settle(commits.aliases());
     assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
     let question = asked(&commits, RecoveryGroup::CreatedOnThisDevice, &["f"]);
-    assert!(commits.decide(&question.id, Answer::Discard));
+    assert!(commits.decide(&mut trees, &question.id, Answer::Discard));
     assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
     let done = effects(&mut trees, &mut ids);
     assert!(trees.local().get(&"f".into()).is_none(), "{done:?}");
@@ -4551,7 +4559,7 @@ fn a_file_recovered_by_its_mark_and_moved_in_while_left_out_is_taken_along_with_
         .find(|asked| asked.holds().any(|id| id == "new"))
         .unwrap_or_else(|| panic!("{question:?} {:?}", commits.questions()))
         .clone();
-    assert!(commits.decide(&question.id, Answer::Discard));
+    assert!(commits.decide(&mut trees, &question.id, Answer::Discard));
     assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
     effects(&mut trees, &mut ids);
     trees.settle(commits.aliases());
@@ -4602,7 +4610,7 @@ fn a_file_a_rewind_finds_with_the_server_s_bytes_and_moved_in_while_left_out_is_
         .find(|asked| asked.holds().any(|id| id == "new"))
         .unwrap_or_else(|| panic!("{question:?} {:?}", commits.questions()))
         .clone();
-    assert!(commits.decide(&question.id, Answer::Discard));
+    assert!(commits.decide(&mut trees, &question.id, Answer::Discard));
     assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
     effects(&mut trees, &mut ids);
     trees.settle(commits.aliases());
@@ -4628,7 +4636,7 @@ fn a_new_folder_at_the_name_of_a_folder_this_device_deleted_is_created_beside_th
     let (mut commits, mut ids) = recovered(&mut trees, 0);
     for question in commits.questions().to_vec() {
         assert!(
-            commits.decide(&question.id, Answer::Publish),
+            commits.decide(&mut trees, &question.id, Answer::Publish),
             "{question:?}"
         );
     }
@@ -4661,7 +4669,7 @@ fn a_new_folder_at_the_name_of_a_folder_this_device_is_deleting_is_created_besid
     let (mut commits, mut ids) = recovered(&mut trees, 0);
     for question in commits.questions().to_vec() {
         assert!(
-            commits.decide(&question.id, Answer::Publish),
+            commits.decide(&mut trees, &question.id, Answer::Publish),
             "{question:?}"
         );
     }
@@ -4699,7 +4707,7 @@ fn recovered_with_history(trees: &mut Trees, history: &[(&str, Shape)]) -> (Comm
     trees.settle(commits.aliases());
     for question in commits.questions().to_vec() {
         assert!(
-            commits.decide(&question.id, Answer::Publish),
+            commits.decide(trees, &question.id, Answer::Publish),
             "{question:?}"
         );
     }
@@ -4773,7 +4781,7 @@ fn an_edit_below_an_unchanged_folder_of_a_published_trash_group_keeps_the_folder
     );
     let (mut commits, mut ids) = recovered(&mut trees, 0);
     let question = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["a"]);
-    assert!(commits.decide(&question.id, Answer::Publish));
+    assert!(commits.decide(&mut trees, &question.id, Answer::Publish));
     let mut edited = trees.local().get(&"b".into()).unwrap().clone();
     edited.shape = file("c", "child", 2);
     trees.set_local("b".into(), edited);
@@ -4805,7 +4813,7 @@ fn a_move_out_of_a_published_trash_group_trashes_its_old_folder_again() {
     );
     let (mut commits, mut ids) = recovered(&mut trees, 0);
     let question = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["a"]);
-    assert!(commits.decide(&question.id, Answer::Publish));
+    assert!(commits.decide(&mut trees, &question.id, Answer::Publish));
     let mut moved = trees.local().get(&"b".into()).unwrap().clone();
     moved.shape = file(ROOT, "child", 1);
     trees.set_local("b".into(), moved);
@@ -4835,7 +4843,7 @@ fn a_move_into_the_answered_folder_out_of_its_trash_group_still_goes() {
     );
     let (mut commits, mut ids) = recovered(&mut trees, 0);
     let question = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["a"]);
-    assert!(commits.decide(&question.id, Answer::Publish));
+    assert!(commits.decide(&mut trees, &question.id, Answer::Publish));
     let mut moved = trees.local().get(&"b".into()).unwrap().clone();
     moved.shape = file("a", "child", 1);
     trees.set_local("b".into(), moved);
@@ -4868,7 +4876,7 @@ fn publishing_a_renamed_folder_and_a_folder_moved_into_it_out_of_its_subfolder_s
     );
     let (mut commits, mut ids) = recovered(&mut trees, 0);
     let question = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["a", "c"]);
-    assert!(commits.decide(&question.id, Answer::Publish));
+    assert!(commits.decide(&mut trees, &question.id, Answer::Publish));
     assert_eq!(
         ops(&mut commits, &mut trees, &mut ids),
         [
@@ -4902,7 +4910,7 @@ fn publishing_a_folder_that_takes_the_name_of_the_folder_moving_into_it_sends_th
     );
     let (mut commits, mut ids) = recovered(&mut trees, 0);
     let question = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["a", "b"]);
-    assert!(commits.decide(&question.id, Answer::Publish));
+    assert!(commits.decide(&mut trees, &question.id, Answer::Publish));
     assert_eq!(
         ops(&mut commits, &mut trees, &mut ids),
         [
@@ -4938,9 +4946,9 @@ fn publishing_a_folder_whose_subfolder_a_move_leaves_for_a_new_folder_inside_it_
     );
     let (mut commits, mut ids) = recovered(&mut trees, 0);
     let created = asked(&commits, RecoveryGroup::CreatedOnThisDevice, &["n"]);
-    assert!(commits.decide(&created.id, Answer::Publish));
+    assert!(commits.decide(&mut trees, &created.id, Answer::Publish));
     let changed = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["a", "c"]);
-    assert!(commits.decide(&changed.id, Answer::Publish));
+    assert!(commits.decide(&mut trees, &changed.id, Answer::Publish));
     assert_eq!(
         ops(&mut commits, &mut trees, &mut ids),
         [
@@ -4982,7 +4990,7 @@ fn a_folder_moved_out_after_a_publish_answer_trashes_again_what_this_device_dele
     );
     let (mut commits, mut ids) = recovered(&mut trees, 0);
     let question = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["a"]);
-    assert!(commits.decide(&question.id, Answer::Publish));
+    assert!(commits.decide(&mut trees, &question.id, Answer::Publish));
     moved_here(&mut trees, "b", dir(ROOT, "b"));
     let sent = ops(&mut commits, &mut trees, &mut ids);
     assert!(sent.contains(&("delete", "c".into())), "{sent:?}");
@@ -5017,7 +5025,7 @@ fn a_folder_renamed_after_a_publish_answer_trashes_again_the_folder_whose_name_a
     let (mut commits, mut ids) = recovered(&mut trees, 0);
     for question in commits.questions().to_vec() {
         assert!(
-            commits.decide(&question.id, Answer::Publish),
+            commits.decide(&mut trees, &question.id, Answer::Publish),
             "{question:?}"
         );
     }
@@ -5073,7 +5081,7 @@ fn answer_sent_alone(local: &[(&str, Shape)]) -> (Trees, Commits, IdGen) {
     );
     let (mut commits, mut ids) = recovered(&mut trees, 0);
     let question = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["d"]);
-    assert!(commits.decide(&question.id, Answer::Publish));
+    assert!(commits.decide(&mut trees, &question.id, Answer::Publish));
     ops(&mut commits, &mut trees, &mut ids);
     assert_eq!(
         commits.failed(&mut trees, &limit_exceeded()),
@@ -5242,7 +5250,7 @@ fn given_up_with_a_restore(queued_before_the_answer: bool) -> (Trees, Commits, I
     );
     let (mut commits, mut ids) = recovered(&mut trees, 0);
     let question = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &[D]);
-    assert!(commits.decide(&question.id, Answer::Publish));
+    assert!(commits.decide(&mut trees, &question.id, Answer::Publish));
     ops(&mut commits, &mut trees, &mut ids);
     assert_eq!(
         commits.failed(&mut trees, &limit_exceeded()),
@@ -5319,7 +5327,7 @@ fn a_move_out_of_an_answers_trash_group_to_the_root_goes_there_directly() {
     );
     let (mut commits, mut ids) = recovered(&mut trees, 0);
     let question = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["a"]);
-    assert!(commits.decide(&question.id, Answer::Publish));
+    assert!(commits.decide(&mut trees, &question.id, Answer::Publish));
     moved_here(&mut trees, "b", dir(ROOT, "b"));
     trees.remove_local(&"p".into());
     trees.settle(commits.aliases());
@@ -5366,7 +5374,7 @@ fn a_given_up_file_this_device_holds_keeps_the_version_its_user_restores() {
     );
     let (mut commits, mut ids) = recovered(&mut trees, 0);
     let question = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &[D]);
-    assert!(commits.decide(&question.id, Answer::Publish));
+    assert!(commits.decide(&mut trees, &question.id, Answer::Publish));
     ops(&mut commits, &mut trees, &mut ids);
     assert_eq!(
         commits.failed(&mut trees, &limit_exceeded()),
@@ -5406,7 +5414,7 @@ fn files_an_answer_brings_back_beyond_one_commit_are_trashed_again_without_a_mas
     let mut trees = trees(&[("d", dir(ROOT, "new"))], &synced, &remote);
     let (mut commits, mut ids) = recovered(&mut trees, 0);
     let question = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["d"]);
-    assert!(commits.decide(&question.id, Answer::Publish));
+    assert!(commits.decide(&mut trees, &question.id, Answer::Publish));
     assert_eq!(
         ops(&mut commits, &mut trees, &mut ids),
         [("move", "d".into())]
@@ -5454,7 +5462,7 @@ fn a_mass_delete_beside_given_up_members_is_still_asked() {
     let mut trees = trees(&local, &synced, &remote);
     let (mut commits, mut ids) = recovered(&mut trees, 0);
     let question = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["d"]);
-    assert!(commits.decide(&question.id, Answer::Publish));
+    assert!(commits.decide(&mut trees, &question.id, Answer::Publish));
     assert_eq!(
         ops(&mut commits, &mut trees, &mut ids),
         [("move", "d".into())]
@@ -5505,7 +5513,7 @@ fn removal_beside_revived_files_is_asked(count: usize, rounds_before: Option<usi
     let mut trees = trees(&local, &all, &remote);
     let (mut commits, mut ids) = recovered(&mut trees, 0);
     let question = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["d"]);
-    assert!(commits.decide(&question.id, Answer::Publish));
+    assert!(commits.decide(&mut trees, &question.id, Answer::Publish));
     assert_eq!(
         ops(&mut commits, &mut trees, &mut ids),
         [("move", "d".into())]
@@ -5579,7 +5587,7 @@ fn files_another_device_changes_after_an_answer_gave_them_up_count_in_the_space_
     let mut trees = trees(&local, &synced, &remote);
     let (mut commits, mut ids) = recovered(&mut trees, 0);
     let question = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["d"]);
-    assert!(commits.decide(&question.id, Answer::Publish));
+    assert!(commits.decide(&mut trees, &question.id, Answer::Publish));
     assert_eq!(
         ops(&mut commits, &mut trees, &mut ids),
         [("move", "d".into())]
@@ -5654,7 +5662,7 @@ fn system_files_an_answer_gave_up_are_not_counted_again_when_their_folder_is_del
     let mut trees = trees(&local, &synced, &remote);
     let (mut commits, mut ids) = recovered(&mut trees, 0);
     let question = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["d"]);
-    assert!(commits.decide(&question.id, Answer::Publish));
+    assert!(commits.decide(&mut trees, &question.id, Answer::Publish));
     assert_eq!(
         ops(&mut commits, &mut trees, &mut ids),
         [("move", "d".into())]
@@ -5694,7 +5702,7 @@ fn a_folder_answered_delete_with_an_excluded_file_in_it_stays_deleted() {
         trees.settle(&Default::default());
         let (mut commits, mut ids) = recovered(&mut trees, 0);
         let question = asked(&commits, RecoveryGroup::DeletedOnThisDevice, &["c", "d"]);
-        assert!(commits.decide(&question.id, Answer::Delete));
+        assert!(commits.decide(&mut trees, &question.id, Answer::Delete));
         assert_eq!(
             ops(&mut commits, &mut trees, &mut ids),
             [("delete", "c".to_owned())]

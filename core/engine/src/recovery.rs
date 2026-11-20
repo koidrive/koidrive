@@ -166,6 +166,7 @@ pub(crate) fn ask(
         held,
         shown,
         answer: None,
+        frozen: None,
     })
 }
 
@@ -248,6 +249,7 @@ pub(crate) fn ask_intents<'a>(
         held,
         shown: BTreeMap::new(),
         answer: None,
+        frozen: None,
     })
 }
 

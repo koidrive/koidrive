@@ -163,6 +163,7 @@ async fn the_same_answer_again_changes_nothing_after_the_folder_took_it() {
                 held: BTreeMap::new(),
                 answer: None,
                 shown: BTreeMap::new(),
+                frozen: None,
             }];
             tx.set_engine_state(&state)?;
             tx.put_question(&StoredQuestion {

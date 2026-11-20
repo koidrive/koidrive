@@ -115,7 +115,7 @@ fn discarded_server_folder_let_in(files: usize, budget: u64) -> u64 {
     moved.shape.name = "ignored".into();
     trees.set_local_changed("x".into(), moved);
     trees.settle(commits.aliases());
-    assert!(commits.decide(&asked, Answer::Discard));
+    assert!(commits.decide(&mut trees, &asked, Answer::Discard));
     assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
     trees.set_rules(&[] as &[&str], Source::Koiignore, None);
     trees.settle(commits.aliases());

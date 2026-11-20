@@ -27,6 +27,19 @@ pub struct Question {
     /// The shape L had for each held node R does not hold, when the question was asked. A change
     /// to any of them replaces the question.
     pub shown: BTreeMap<NodeId, Shape>,
+    /// What was below a first-link question's folders when the person answered Discard, apart
+    /// from what it shows, and which of it the Discard takes along. `None` until then, and when
+    /// the build decides instead.
+    pub frozen: Option<BTreeMap<NodeId, Frozen>>,
+}
+
+/// A node below a first-link question's folders when the person answered: where L held it then,
+/// and whether the Discard takes it along as a server entry.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Frozen {
+    pub parent: NodeId,
+    pub name: String,
+    pub taken: bool,
 }
 
 impl Question {

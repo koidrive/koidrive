@@ -2565,7 +2565,10 @@ fn tell(world: &World, space: &SpaceDo, story: Story) -> Option<Report> {
                 else {
                     continue;
                 };
-                if !planner.commits.decide(&question.id, reply) {
+                if !planner
+                    .commits
+                    .decide(&mut planner.trees, &question.id, reply)
+                {
                     continue;
                 }
                 shown.extend(question.holds().cloned());
@@ -3204,7 +3207,11 @@ fn moved_after_a_publish_answer(world: &World, moved: usize, to: Spot) -> (World
         .unwrap()
         .clone();
     assert_eq!(question.holds().cloned().collect::<Vec<_>>(), [world.id(0)]);
-    assert!(planner.commits.decide(&question.id, Answer::Publish));
+    assert!(
+        planner
+            .commits
+            .decide(&mut planner.trees, &question.id, Answer::Publish)
+    );
     let mut told = world.clone();
     told.local[moved] = Local::Into(to);
     let mut node = planner

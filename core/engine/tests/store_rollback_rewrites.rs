@@ -126,7 +126,7 @@ fn a_file_written_again_with_the_bytes_s_holds_before_a_store_rollback_is_sent_w
     ));
     assert!(trees.held(&"n".into()));
     assert!(effects(&mut trees, &mut ids).is_empty());
-    assert!(commits.decide(&question.id, Answer::Publish));
+    assert!(commits.decide(&mut trees, &question.id, Answer::Publish));
     let commit = commits
         .build(&mut trees, &mut ids, NOW, "new", "me", 1)
         .unwrap();

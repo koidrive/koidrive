@@ -703,6 +703,33 @@ pub(crate) fn ask(
     ids: &mut IdGen,
     now_ms: u64,
 ) -> Option<Question> {
+    let (held, shown) = held_now(trees, tops)?;
+    if let Some(asked) = asked.filter(|asked| asked.held == held && asked.shown == shown) {
+        return Some(asked.clone());
+    }
+    Some(Question {
+        id: ids.uuid_v7(now_ms),
+        asked_at_ms: now_ms,
+        kind: QuestionKind::Recovery {
+            group: RecoveryGroup::CreatedOnThisDevice,
+            sent_in: None,
+            cause: cause.cloned(),
+        },
+        held,
+        shown,
+        answer: None,
+        frozen: None,
+    })
+}
+
+pub(crate) fn still_shown(trees: &Trees, question: &Question) -> bool {
+    held_now(trees, question.holds().cloned())
+        .is_some_and(|(held, shown)| question.held == held && question.shown == shown)
+}
+
+type HeldNow = (BTreeMap<NodeId, Held>, BTreeMap<NodeId, Shape>);
+
+fn held_now(trees: &Trees, tops: impl IntoIterator<Item = NodeId>) -> Option<HeldNow> {
     let mut held = BTreeMap::new();
     let mut shown = BTreeMap::new();
     for top in tops {
@@ -728,24 +755,7 @@ pub(crate) fn ask(
         .cloned()
         .collect();
     held.retain(|top, _| !inner.contains(top));
-    if held.is_empty() {
-        return None;
-    }
-    if let Some(asked) = asked.filter(|asked| asked.held == held && asked.shown == shown) {
-        return Some(asked.clone());
-    }
-    Some(Question {
-        id: ids.uuid_v7(now_ms),
-        asked_at_ms: now_ms,
-        kind: QuestionKind::Recovery {
-            group: RecoveryGroup::CreatedOnThisDevice,
-            sent_in: None,
-            cause: cause.cloned(),
-        },
-        held,
-        shown,
-        answer: None,
-    })
+    (!held.is_empty()).then_some((held, shown))
 }
 
 fn unsynced(trees: &Trees, top: &NodeId) -> BTreeMap<NodeId, Shape> {

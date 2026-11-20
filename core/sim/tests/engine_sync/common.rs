@@ -178,7 +178,9 @@ fn remote_action(space: &mut SpaceDo, ids: &mut IdGen, device: u8, action: &Acti
             name,
             pending_for: String::new(),
         }),
-        1 => op::Op::CreateFile(CreateFile { made_over: Vec::new(), source_version_id: String::new(),
+        1 => op::Op::CreateFile(CreateFile {
+            made_over: Vec::new(),
+            source_version_id: String::new(),
             node_id: ids.uuid_v7(NOW as u64),
             parent_id: parent,
             name,
@@ -186,7 +188,9 @@ fn remote_action(space: &mut SpaceDo, ids: &mut IdGen, device: u8, action: &Acti
             ..Default::default()
         }),
         2 => match target(&files) {
-            Some(node_id) => op::Op::UpdateContent(UpdateContent { made_over: Vec::new(), source_version_id: String::new(),
+            Some(node_id) => op::Op::UpdateContent(UpdateContent {
+                made_over: Vec::new(),
+                source_version_id: String::new(),
                 node_id,
                 content: Some(content(device, action.text)),
                 resend: false,
@@ -248,7 +252,10 @@ fn remote_action(space: &mut SpaceDo, ids: &mut IdGen, device: u8, action: &Acti
         },
     };
     let session = session("other");
-    let ops = vec![Op { op: Some(body), ..Default::default() }];
+    let ops = vec![Op {
+        op: Some(body),
+        ..Default::default()
+    }];
     let receipts = upload(space, &session, &ops);
     let commit = Commit {
         commit_id: ids.uuid_v7(NOW as u64),
@@ -590,7 +597,8 @@ impl Device {
             .map_or_else(|| before.clone(), |moved| moved.from);
         if !from.same_position(after) {
             let to = after.clone();
-            self.relocated.insert(id.to_owned(), Relocation { from, to });
+            self.relocated
+                .insert(id.to_owned(), Relocation { from, to });
         }
     }
 
@@ -802,7 +810,8 @@ impl Device {
                 }
                 for other in doomed.into_iter().rev() {
                     if let Some(node) = self.trees.local().get(&other) {
-                        self.removed_from.insert(other.clone(), node.shape.parent.clone());
+                        self.removed_from
+                            .insert(other.clone(), node.shape.parent.clone());
                     }
                     self.kept_back.remove(&other);
                     self.relocated.remove(&other);
@@ -862,7 +871,10 @@ fn aim(
         let mut parents = Vec::new();
         let mut current = trees.local().get(id).map(|node| node.shape.parent.clone());
         while let Some(parent) = current.filter(|_| parents.len() <= trees.local().len()) {
-            current = trees.local().get(&parent).map(|node| node.shape.parent.clone());
+            current = trees
+                .local()
+                .get(&parent)
+                .map(|node| node.shape.parent.clone());
             parents.push(parent);
         }
         parents
@@ -1247,6 +1259,52 @@ fn server_copy(
     copy
 }
 
+fn taken_along(
+    device: &Device,
+    shown: &BTreeMap<NodeId, koidrive_engine::tree::Shape>,
+    (from_server, placed_left_out): (&BTreeSet<NodeId>, &BTreeSet<NodeId>),
+    discarded: &BTreeMap<NodeId, koidrive_engine::tree::Shape>,
+) -> BTreeMap<NodeId, koidrive_engine::tree::Shape> {
+    let mut taken = BTreeMap::new();
+    for folder in shown.keys() {
+        for child in device.trees.local_children(folder) {
+            if !shown.contains_key(child)
+                && (device.trees.excluded(child) || placed_left_out.contains(child))
+            {
+                server_copy(device, child, shown, from_server, discarded, &mut taken);
+            }
+        }
+    }
+    taken
+}
+
+fn only_server_copies_below(
+    device: &Device,
+    folder: &NodeId,
+    shown: &BTreeMap<NodeId, koidrive_engine::tree::Shape>,
+    (from_server, placed_left_out): (&BTreeSet<NodeId>, &BTreeSet<NodeId>),
+    discarded: &BTreeMap<NodeId, koidrive_engine::tree::Shape>,
+) -> bool {
+    let sets = (from_server, placed_left_out);
+    (device.trees.local_children(folder)).all(|child| match shown.get(child) {
+        Some(shape) => {
+            shape.kind == Kind::File
+                || only_server_copies_below(device, child, shown, sets, discarded)
+        }
+        None => {
+            (device.trees.excluded(child) || placed_left_out.contains(child))
+                && server_copy(
+                    device,
+                    child,
+                    shown,
+                    from_server,
+                    discarded,
+                    &mut BTreeMap::new(),
+                )
+        }
+    })
+}
+
 fn revive(
     device: &Device,
     discarded: &BTreeMap<NodeId, koidrive_engine::tree::Shape>,
@@ -1260,14 +1318,16 @@ fn revive(
         let changed = device.touched.contains(*id)
             && !asked.contains(*id)
             && !trees.excluded(id)
-            && (trees.local().get(id))
-                .is_some_and(|local| !discarded.get(*id).is_some_and(|shown| local.shape.same(shown)));
+            && (trees.local().get(id)).is_some_and(|local| {
+                !discarded
+                    .get(*id)
+                    .is_some_and(|shown| local.shape.same(shown))
+            });
         changed
             || (trees.local_children(id)).any(|child| {
                 !trees.excluded(child)
                     && !asked.contains(child)
-                    && (!kept_with.contains_key(child)
-                        || acted_below(device, child, kept_with))
+                    && (!kept_with.contains_key(child) || acted_below(device, child, kept_with))
                     && discarded
                         .get(child)
                         .is_none_or(|shown| &shown.parent != *id)
@@ -1327,8 +1387,11 @@ fn closes_a_cycle(trees: &Trees, id: &NodeId, parent: &NodeId) -> bool {
         match folder {
             Some(at) if at == *id => return true,
             Some(at) => {
-                folder = (trees.remote().get(&at).map(|node| node.shape.parent.clone()))
-                    .or_else(|| trees.local().get(&at).map(|node| node.shape.parent.clone()))
+                folder = (trees
+                    .remote()
+                    .get(&at)
+                    .map(|node| node.shape.parent.clone()))
+                .or_else(|| trees.local().get(&at).map(|node| node.shape.parent.clone()))
             }
             None => return false,
         }
@@ -1395,9 +1458,10 @@ fn placement_check(
         &record.after,
         device.trees.local().get(&record.node),
     ) {
-        let mut chain =
-            std::iter::successors(kept_with.get(&record.node), |kept| kept_with.get(&kept.parent))
-                .take(kept_with.len() + 1);
+        let mut chain = std::iter::successors(kept_with.get(&record.node), |kept| {
+            kept_with.get(&kept.parent)
+        })
+        .take(kept_with.len() + 1);
         let taken_along = kept_with.contains_key(&record.node)
             && chain.all(|kept| !revived.contains(&kept.parent))
             && !acted_below(device, &record.node, kept_with);
@@ -1466,16 +1530,15 @@ fn acted_below(
     };
     (device.acted.iter())
         .filter(|entry| !as_agreed(entry) && !kept_by_r7(device, entry) && !kept_back(entry))
-        .any(|entry| {
-            reaches(entry, &in_local) || reaches(entry, &removed_from)
-        })
+        .any(|entry| reaches(entry, &in_local) || reaches(entry, &removed_from))
 }
 
 fn kept_by_r7(device: &Device, entry: &NodeId) -> bool {
     let trees = &device.trees;
     let server_changed = |node: &NodeId| {
-        (acknowledged_shape(trees, node))
-            .is_some_and(|agreed| (trees.remote().live(node)).is_some_and(|remote| !remote.same(agreed)))
+        (acknowledged_shape(trees, node)).is_some_and(|agreed| {
+            (trees.remote().live(node)).is_some_and(|remote| !remote.same(agreed))
+        })
     };
     let moved_by_the_user = |node: &NodeId| {
         (trees.local().get(node)).is_some_and(|local| {
@@ -1485,7 +1548,10 @@ fn kept_by_r7(device: &Device, entry: &NodeId) -> bool {
         })
     };
     let below_in_r = |node: &NodeId| {
-        let mut current = trees.remote().live(node).map(|remote| remote.parent.clone());
+        let mut current = trees
+            .remote()
+            .live(node)
+            .map(|remote| remote.parent.clone());
         for _ in 0..=trees.remote().len() {
             match current {
                 Some(at) if at == *entry => return true,
@@ -1537,7 +1603,8 @@ fn note_agreements(
         if !koidrive_engine::tree::same_content(content, remote) {
             continue;
         }
-        let agreed_now = (agreed.get(id)).is_none_or(|was| !koidrive_engine::tree::same_content(was, content));
+        let agreed_now =
+            (agreed.get(id)).is_none_or(|was| !koidrive_engine::tree::same_content(was, content));
         if agreed_now && !sent_since.contains(id) {
             from_server.insert(id.clone());
         }
@@ -1669,12 +1736,7 @@ fn run_ignoring_answering_after(
                 let asked = request_restore(&space, &mut commits, &mut device.ids, action);
                 requested += usize::from(asked);
             }
-            _ => act_tracked(
-                &mut device,
-                action,
-                &mut placed_left_out,
-                &mut from_server,
-            ),
+            _ => act_tracked(&mut device, action, &mut placed_left_out, &mut from_server),
         }
     }
     if let Some(prior) = first_link {
@@ -1718,6 +1780,7 @@ fn run_ignoring_answering_after(
     let (mut steps, mut quiet, mut due, mut parked_reverted) = (0, false, false, 0);
     let (mut deletes, mut removals) = (0, 0);
     let (mut asked, mut held_once, mut confirmed) = (0, BTreeSet::new(), BTreeSet::new());
+    let mut discarded_folders = BTreeSet::new();
     let mut discarded: BTreeMap<NodeId, koidrive_engine::tree::Shape> = BTreeMap::new();
     let mut kept_with: BTreeMap<NodeId, koidrive_engine::tree::Shape> = BTreeMap::new();
     let mut placed: BTreeMap<NodeId, Position> = BTreeMap::new();
@@ -1728,7 +1791,7 @@ fn run_ignoring_answering_after(
     let mut revived_once: BTreeSet<NodeId> = BTreeSet::new();
     let mut freed: BTreeSet<NodeId> = BTreeSet::new();
     let mut sent_nodes: BTreeSet<NodeId> = BTreeSet::new();
-    let mut pending: Option<Question> = None;
+    let mut pending: Option<(Question, BTreeMap<NodeId, koidrive_engine::tree::Shape>)> = None;
     let mut during = during.iter();
     while !quiet {
         steps += 1;
@@ -1841,7 +1904,9 @@ fn run_ignoring_answering_after(
             let held = device.trees.remote().get(&record.node).is_some();
             let as_discarded = (device.trees.local().get(&record.node))
                 .zip(discarded.get(&record.node))
-                .is_some_and(|(local, shown)| local.shape.kind == Kind::File && local.shape.same(shown));
+                .is_some_and(|(local, shown)| {
+                    local.shape.kind == Kind::File && local.shape.same(shown)
+                });
             let users = revived.contains(&record.node)
                 && !held
                 && !sent_nodes.contains(&record.node)
@@ -1851,7 +1916,14 @@ fn run_ignoring_answering_after(
                 "{} is the user's again after the Discard, but the effects remove it",
                 record.node
             );
-            placement_check(&device, &record, &kept_with, &placed, &revived, &merged_into)?;
+            placement_check(
+                &device,
+                &record,
+                &kept_with,
+                &placed,
+                &revived,
+                &merged_into,
+            )?;
             if let Some(local) = (device.trees.local().get(&record.node))
                 .filter(|local| local.parked || device.trees.ignored(&record.node))
             {
@@ -1971,7 +2043,7 @@ fn run_ignoring_answering_after(
             "S is not a valid tree"
         );
         let open = |question: &Question| commits.questions().iter().any(|o| o.id == question.id);
-        if let Some(question) = pending.take_if(|question| !open(question)) {
+        if let Some((question, at_answer)) = pending.take_if(|(question, _)| !open(question)) {
             let asked_again: BTreeSet<&NodeId> =
                 (commits.questions().iter().flat_map(Question::holds)).collect();
             let shown: BTreeMap<NodeId, koidrive_engine::tree::Shape> = (question.shown)
@@ -1988,15 +2060,25 @@ fn run_ignoring_answering_after(
                 freed.remove(id);
                 sent_nodes.remove(id);
             }
-            let mut taken = BTreeMap::new();
             std::mem::swap(&mut device.trees, &mut before.0);
-            for folder in shown.keys() {
-                for child in device.trees.local_children(folder) {
-                    if !shown.contains_key(child)
-                        && (device.trees.excluded(child) || placed_left_out.contains(child))
-                    {
-                        server_copy(&device, child, &shown, &from_server, &discarded, &mut taken);
+            let sets = (&from_server, &placed_left_out);
+            let mut taken = taken_along(&device, &shown, sets, &discarded);
+            for id in at_answer.keys() {
+                let Some(local) = device.trees.local().get(id) else {
+                    continue;
+                };
+                let mut at = local.shape.parent.clone();
+                let inside = loop {
+                    if shown.contains_key(&at) || at_answer.contains_key(&at) {
+                        break true;
                     }
+                    match device.trees.local().get(&at) {
+                        Some(node) => at = node.shape.parent.clone(),
+                        None => break false,
+                    }
+                };
+                if inside {
+                    taken.entry(id.clone()).or_insert(local.shape.clone());
                 }
             }
             std::mem::swap(&mut device.trees, &mut before.0);
@@ -2004,7 +2086,12 @@ fn run_ignoring_answering_after(
             kept_with.append(&mut taken);
             discarded.extend(shown);
         }
-        let revived = revive(&device, &discarded, &kept_with, &held_by(commits.questions()));
+        let revived = revive(
+            &device,
+            &discarded,
+            &kept_with,
+            &held_by(commits.questions()),
+        );
         revived_once.extend(revived);
         let guarded = (commits.questions().iter())
             .find(|question| !matches!(question.kind, QuestionKind::Conflict { .. }))
@@ -2019,10 +2106,34 @@ fn run_ignoring_answering_after(
                 }
                 if matches!(answer, Answer::Delete | Answer::Publish) {
                     confirmed.extend(members(&question));
+                    discarded_folders.retain(|id| !members(&question).any(|held| held == *id));
                 }
-                prop_assert!(commits.decide(&question.id, answer));
+                prop_assert!(commits.decide(&mut device.trees, &question.id, answer));
                 if answer == Answer::Discard {
-                    pending = Some(question.clone());
+                    for (folder, shape) in &question.shown {
+                        if shape.kind == Kind::Dir
+                            && only_server_copies_below(
+                                &device,
+                                folder,
+                                &question.shown,
+                                (&from_server, &placed_left_out),
+                                &discarded,
+                            )
+                        {
+                            discarded_folders.insert(folder.clone());
+                        } else {
+                            discarded_folders.remove(folder);
+                        }
+                    }
+                    let frozen = (commits.questions().iter())
+                        .any(|asked| asked.id == question.id && asked.frozen.is_some());
+                    let sets = (&from_server, &placed_left_out);
+                    let at_answer = if frozen {
+                        taken_along(&device, &question.shown, sets, &discarded)
+                    } else {
+                        BTreeMap::new()
+                    };
+                    pending = Some((question.clone(), at_answer));
                 }
                 asked += 1;
                 continue;
@@ -2042,6 +2153,13 @@ fn run_ignoring_answering_after(
                 Some(op::Op::UpdateContent(update)) => &update.node_id,
                 _ => continue,
             });
+            prop_assert!(
+                !matches!(op.op, Some(op::Op::CreateDir(_)))
+                    || !discarded_folders.contains(id)
+                    || revived_once.contains(id),
+                "{} was discarded and is created on the server with no later answer to publish it",
+                id
+            );
             if let Some(op::Op::CreateDir(_)) = &op.op
                 && let Some(into) = merged_into.remove(id)
             {
@@ -2392,9 +2510,7 @@ fn act_tracked(
         let same = (written_before.get(id)).is_some_and(|was| {
             was.identity == now.identity
                 && match (&was.shape.content, &now.shape.content) {
-                    (Some(was), Some(now)) => {
-                        koidrive_engine::tree::same_content(was, now)
-                    }
+                    (Some(was), Some(now)) => koidrive_engine::tree::same_content(was, now),
                     (was, now) => was.is_none() && now.is_none(),
                 }
         });
@@ -2403,8 +2519,7 @@ fn act_tracked(
         }
     }
     for (id, at) in positions(&device.trees) {
-        let parked = (device.trees.local().get(&id))
-            .is_some_and(|node| node.parked);
+        let parked = (device.trees.local().get(&id)).is_some_and(|node| node.parked);
         if before_action.get(&id) == Some(&at) || parked {
             continue;
         }
