@@ -54,7 +54,7 @@ pub struct SyncedPosition {
     pub name: String,
 }
 
-/// A position a create or a move of this device set, with any verified move history.
+/// A position a move of this device set, with any verified move history.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MovedHere {
     pub seq: u64,
@@ -291,7 +291,7 @@ pub struct TreesState {
     /// The files whose content an edit of this device set, each with the seq of its commit, while
     /// R holds that content.
     pub edited_here: BTreeMap<NodeId, u64>,
-    /// The nodes whose position a create or a move of this device set, while R holds them at that
+    /// The nodes whose position a move of this device set, while R holds them at that
     /// position, also after a delete and a restore of the node.
     pub moved_here: BTreeMap<NodeId, MovedHere>,
     /// The earlier live records R held of each node, and each trashed one that a record this

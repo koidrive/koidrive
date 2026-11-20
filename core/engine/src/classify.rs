@@ -5289,7 +5289,7 @@ impl Trees {
         Some(bases)
     }
 
-    /// Records that a create or a move of this device, in the commit at `seq`, set the position of
+    /// Records that a move of this device, in the commit at `seq`, set the position of
     /// `id`, if R holds the position of that commit, or held it and holds the same position again.
     pub fn record_moved(&mut self, id: &NodeId, seq: u64, bases: Option<&[MovePosition]>) {
         let held = |remote: &RemoteNode| {
@@ -5357,8 +5357,7 @@ impl Trees {
     }
 
     /// The nodes whose position a move of this device set, and whose position S and R still hold,
-    /// R live or in the trash, for [`Trees::forget_lost`] once a bootstrap has replaced R. A
-    /// position a create of this device set is not listed: R held no record of the node before it.
+    /// R live or in the trash, for [`Trees::forget_lost`] once a bootstrap has replaced R.
     pub fn moved_here(&self) -> Vec<(NodeId, MovedHere)> {
         (self.moved_here.iter())
             .filter(|(id, moved)| {

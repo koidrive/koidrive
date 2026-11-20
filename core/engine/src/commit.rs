@@ -2256,7 +2256,7 @@ impl Commits {
     ///
     /// Once R holds the record of the commit in flight and its result has not arrived
     /// ([`Commits::own_record`]), what the record shows of the commit is recorded as the result
-    /// would record it: the nodes its deletes trashed and the positions its creates and moves set,
+    /// would record it: the nodes its deletes trashed and the positions its moves set,
     /// as its edits are recorded when the record arrives ([`Commits::edits_in_flight`]). A loss
     /// that drops the commit before its result then sends those changes again as this device's own
     /// ([`Trees::forget_lost`]).
@@ -2304,11 +2304,15 @@ impl Commits {
                         trees.record_trashed(id, seq, None);
                     }
                 }
-                op::Op::CreateDir(_) | op::Op::CreateFile(_) | op::Op::Move(_) => {
+                op::Op::Move(_) => {
                     let node = op_node(op);
                     trees.record_moved(&node, seq, flight.move_bases.get(&node).map(Vec::as_slice));
                 }
-                op::Op::UpdateContent(_) | op::Op::Restore(_) | op::Op::MarkGitTracked(_) => {}
+                op::Op::CreateDir(_)
+                | op::Op::CreateFile(_)
+                | op::Op::UpdateContent(_)
+                | op::Op::Restore(_)
+                | op::Op::MarkGitTracked(_) => {}
             }
         }
     }
@@ -2709,14 +2713,14 @@ impl Commits {
                 _ => continue,
             };
             let node = &node;
-            if applied && sent.is_some() {
+            let created = matches!(&op.op, Some(op::Op::CreateDir(_) | op::Op::CreateFile(_)));
+            if applied && sent.is_some() && !created {
                 trees.record_moved(
                     node,
                     result.seq,
                     flight.move_bases.get(node).map(Vec::as_slice),
                 );
             }
-            let created = matches!(&op.op, Some(op::Op::CreateDir(_) | op::Op::CreateFile(_)));
             if created && done {
                 trees.sent_create(node);
             }

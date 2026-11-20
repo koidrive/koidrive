@@ -561,3 +561,24 @@ fn a_late_acknowledgement_keeps_the_sent_content_when_s_cannot_hold_the_agreed_p
     };
     assert!(ops(&commit).iter().any(uploaded), "{:?}", ops(&commit));
 }
+
+#[test]
+fn a_create_of_this_device_keeps_no_move_record_and_a_later_move_of_it_does() {
+    let mut trees = trees(&[("n", Some(file(ROOT, "x", 1)), None, None)]);
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
+    assert!(matches!(&ops(&commit)[..], [op::Op::CreateFile(c)] if c.node_id == "n"));
+    trees.set_remote("n".into(), remote_at(file(ROOT, "x", 1), 2));
+    commits
+        .received(result(2, vec![outcome(op_result::Code::Applied)]))
+        .unwrap();
+    assert!(commits.acknowledge(&mut trees, 2));
+    trees.settle(commits.aliases());
+    assert_eq!(trees.synced().live(&"n".into()), Some(&file(ROOT, "x", 1)));
+    assert_eq!(trees.state().moved_here, BTreeMap::new());
+    move_n_to_y_at(3, &mut trees, &mut commits, &mut ids);
+    let moved: Vec<(NodeId, u64)> = (trees.state().moved_here.iter())
+        .map(|(id, moved)| (id.clone(), moved.seq))
+        .collect();
+    assert_eq!(moved, [("n".into(), 3)]);
+}
