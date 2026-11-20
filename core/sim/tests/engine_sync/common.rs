@@ -704,6 +704,7 @@ impl Device {
         let (id, identity) = original
             .unwrap_or_else(|| (NodeId::from(self.ids.uuid_v7(NOW as u64)), self.identity()));
         let old = self.trees.local().get(&id);
+        let left = old.map(|node| node.shape.parent.clone());
         let node = LocalNode {
             left_out_when_placed: old.is_some_and(|node| node.left_out_when_placed),
             content_from_server: old.is_some_and(|node| node.content_from_server)
@@ -720,6 +721,20 @@ impl Device {
         self.acted.insert(id.clone());
         self.off_disk.remove(&id);
         self.trees.set_local_changed(id.clone(), node);
+        let mut above = left;
+        while let Some(folder) = above.filter(|folder| {
+            self.trees.lost_local().contains(folder)
+                && self.trees.local_children(folder).next().is_none()
+        }) {
+            above = (self.trees.local().get(&folder)).map(|node| node.shape.parent.clone());
+            self.off_disk.remove(&folder);
+            self.removed_from
+                .insert(folder.clone(), above.clone().expect("lost folder in L"));
+            self.kept_back.remove(&folder);
+            self.relocated.remove(&folder);
+            self.acted.insert(folder.clone());
+            self.trees.remove_local(&folder);
+        }
         id
     }
 
@@ -969,9 +984,13 @@ impl Device {
                 self.ignored.retain(|(holder, _), _| {
                     !doomed.contains(holder) && !only_in_l.contains(holder)
                 });
-                for folder in kept.iter().chain(&only_in_l) {
+                for folder in &kept {
                     self.acted.insert(folder.clone());
                     self.trees.ignore_local(folder);
+                }
+                for folder in &only_in_l {
+                    self.acted.insert(folder.clone());
+                    self.trees.keep_lost_local(folder);
                 }
                 self.off_disk.extend(only_in_l);
                 for other in doomed.into_iter().rev() {

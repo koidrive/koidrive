@@ -871,4 +871,7 @@ fn a_folder_deleted_around_only_a_moved_away_entry_leaves_nothing_on_disk() {
     device.act(&act(4, 0, 0, 0, 0));
     assert!(device.trees.local().get(&a).is_some() && !device.on_disk(&a));
     assert!(!device.ignored.keys().any(|(holder, _)| *holder == a));
+    device.rule(&Ruling::File(vec![]));
+    assert_eq!(local_path(&device.trees, &"c".into()), ["p", "b", "c.txt"]);
+    assert!(device.trees.local().get(&a).is_none());
 }
