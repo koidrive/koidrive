@@ -2571,7 +2571,7 @@ impl World {
                             });
                             if error.code == error::Code::MissingChunks as i32 && gone {
                                 note(&mut self.seen, "commit abandoned, its bytes are gone");
-                                device.engine.commits.abandon();
+                                device.engine.commits.abandon(&mut device.engine.trees);
                                 device.engine.scan(&device.disk);
                             } else {
                                 note(&mut self.seen, "commit refused, sent again");

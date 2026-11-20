@@ -245,7 +245,7 @@ impl Folder {
         self.disk.rescan(&mut self.engine, scope);
         self.commit_ended();
         if changed && failures < LEFT_OUT_AFTER {
-            self.step(|engine, _| Ok(engine.commits.abandon()))?;
+            self.step(|engine, _| Ok(engine.commits.abandon(&mut engine.trees)))?;
             self.unreadable.insert(
                 node,
                 Unreadable {
@@ -259,7 +259,7 @@ impl Folder {
             return Ok(());
         }
         let wait = PERMISSION_RETRY.delay(failures.saturating_sub(LEFT_OUT_AFTER));
-        self.step(|engine, _| Ok(engine.commits.leave_out(&node)))?;
+        self.step(|engine, _| Ok(engine.commits.leave_out(&mut engine.trees, &node)))?;
         let at = clock::instant() + wait;
         let seen = self.engine.trees.local().get(&node).cloned();
         self.unreadable.insert(

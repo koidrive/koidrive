@@ -43,6 +43,7 @@ impl Engine {
     /// Records that the server lost commits of this device, with the edits of the commit in flight
     /// and `dropped`, those of one the loss already dropped.
     pub fn server_behind(&mut self, dropped: Vec<NodeId>) {
+        self.commits.clear_position_watches_if_idle(&mut self.trees);
         let in_flight = self.commits.edited_in_flight();
         self.trees
             .record_dropped_edits(dropped.into_iter().chain(in_flight));

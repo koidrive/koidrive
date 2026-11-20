@@ -61,7 +61,7 @@ fn a_result_is_acknowledged_only_once_r_holds_its_records() {
         Reconnect::Idle,
         "accepted, nothing to resend"
     );
-    assert!(!commits.abandon(), "an accepted commit is never forgotten");
+    assert!(!commits.abandon(&mut trees), "an accepted commit is never forgotten");
     assert!(commits.acknowledge(&mut trees, 5));
     assert_eq!(trees.synced().live(&"a".into()), Some(&file(ROOT, "x", 1)));
     assert_eq!((commits.accepted(), commits.in_flight()), (1, None));
@@ -109,7 +109,7 @@ fn a_policy_refusal_keeps_the_commit_and_outlasts_any_welcome() {
             assert_eq!(commits.connected(&welcome), Reconnect::Idle, "{error:?}");
             assert_eq!(commits.halted(), Some(halt), "{error:?}");
         }
-        assert!(!commits.abandon(), "{error:?}");
+        assert!(!commits.abandon(&mut trees), "{error:?}");
         assert_eq!(commits.in_flight().unwrap().commit, sent, "{error:?}");
         assert_eq!(build(&mut commits, &mut trees, &mut ids), None, "{error:?}");
     }
@@ -523,7 +523,7 @@ fn a_file_left_out_of_a_commit_holds_back_no_other_change() {
         ops(&commit),
         [update("a", 2), update("b", 2), update("c", 2)]
     );
-    assert!(commits.leave_out(&"b".into()));
+    assert!(commits.leave_out(&mut trees, &"b".into()));
     assert_eq!(commits.in_flight(), None);
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
     assert_eq!(ops(&commit), [update("a", 2), update("c", 2)]);
@@ -532,7 +532,7 @@ fn a_file_left_out_of_a_commit_holds_back_no_other_change() {
         &mut trees,
         vec![outcome(op_result::Code::Applied); 2],
     );
-    assert!(!commits.leave_out(&"a".into()), "no commit in flight");
+    assert!(!commits.leave_out(&mut trees, &"a".into()), "no commit in flight");
     assert_eq!(commits.problems().iter().collect::<Vec<_>>(), ["b"]);
     assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
     assert!(commits.clear_problem(&"b".into()));

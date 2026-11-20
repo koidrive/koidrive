@@ -4929,7 +4929,10 @@ impl Trees {
             if !seen.insert(current) {
                 continue;
             }
-            if self.s.get(current).is_some() || self.waiting.contains_key(current) {
+            if self.s.get(current).is_some()
+                || self.waiting.contains_key(current)
+                || self.watched_positions.contains_key(current)
+            {
                 return false;
             }
             below.extend(self.local_children_placed_or_parked(current));
@@ -5054,18 +5057,31 @@ impl Trees {
     }
 
     fn unwatch_positions(&mut self) {
-        let abandoned: Vec<NodeId> = (self.watched_positions.keys())
-            .filter(|id| {
-                self.unobserved.contains(*id)
-                    && self.l.get(id).is_none()
-                    && self.s.get(id).is_none()
-            })
+        let unheld: Vec<NodeId> = (self.watched_positions.keys())
+            .filter(|id| self.s.get(id).is_none())
             .cloned()
             .collect();
-        for id in abandoned {
-            self.clear_unobserved(&id);
-        }
         self.watched_positions.clear();
+        for id in unheld {
+            if self.l.get(&id).is_none() {
+                if self.unobserved.contains(&id) {
+                    self.clear_unobserved(&id);
+                }
+            } else {
+                let affected: Vec<NodeId> = self
+                    .local_chain(&id)
+                    .take_while(|id| {
+                        **id != self.l.root
+                            && self.s.get(id).is_none()
+                            && !self.waiting.contains_key(id)
+                    })
+                    .cloned()
+                    .collect();
+                for id in affected {
+                    self.mark(&id);
+                }
+            }
+        }
     }
 
     /// The latest position of `id` that L and R agreed on since [`Trees::watch_positions`] started

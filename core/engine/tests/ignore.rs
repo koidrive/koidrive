@@ -3009,6 +3009,99 @@ fn a_purged_folder_kept_for_an_excluded_file_sends_nothing_after_rename_or_resta
     }
 }
 
+fn unanswered_create_in_a_folder_the_server_renamed() -> (Trees, Commits) {
+    let mut trees = trees(&[
+        synced("a", dir(ROOT, "a")),
+        ("f", Some(file("a", "f", 1)), None, None),
+    ]);
+    trees.set_rules(&AT_ROOT, Source::Koiignore, rules("/ignored/\n"));
+    trees.settle(&Default::default());
+    let mut commits = Commits::default();
+    let sent = commits
+        .build(&mut trees, &mut IdGen::new(1), NOW, HISTORY, "me", 7)
+        .unwrap();
+    assert!(
+        matches!(&sent.ops[..], [proto::Op { op: Some(op::Op::CreateFile(create)), .. }]
+        if create.node_id == "f" && create.parent_id == "a")
+    );
+    trees.set_remote(
+        "a".into(),
+        RemoteNode {
+            meta_rev: 8,
+            meta_edit_rev: 8,
+            ..remote(dir(ROOT, "ignored"))
+        },
+    );
+    trees.settle(&Default::default());
+    (trees, commits)
+}
+
+#[test]
+fn deleting_a_sent_create_before_its_answer_is_observed_after_a_remote_folder_rename() {
+    let (mut trees, mut commits) = unanswered_create_in_a_folder_the_server_renamed();
+    let f = NodeId::from("f");
+    assert!(commits.in_flight().unwrap().result.is_none());
+    assert!(trees.remote().get(&f).is_none() && trees.synced().get(&f).is_none());
+    trees.remove_local(&f);
+    let unobserved = trees.unobserved(&f);
+    trees.set_remote_made_here(
+        f,
+        RemoteNode {
+            content_rev: 9,
+            meta_rev: 9,
+            edit_rev: 9,
+            meta_edit_rev: 9,
+            ..remote(file("a", "f", 1))
+        },
+    );
+    commits
+        .received(proto::CommitResult {
+            seq: 9,
+            results: vec![proto::OpResult {
+                code: proto::op_result::Code::Applied as i32,
+                ..Default::default()
+            }],
+            ..Default::default()
+        })
+        .unwrap();
+    assert!(commits.acknowledge(&mut trees, 9));
+    assert_eq!(ops(&mut trees), []);
+    trees.set_rules(&AT_ROOT, Source::Koiignore, None);
+    assert_eq!(ops(&mut trees), [delete("f")], "unobserved: {unobserved}");
+    assert!(!unobserved);
+}
+
+#[test]
+fn abandoning_a_sent_create_lets_its_new_server_path_exclude_it() {
+    use koidrive_engine::commit::Failure;
+    use proto::error::Code;
+
+    for with_error in [false, true] {
+        let (mut trees, mut commits) = unanswered_create_in_a_folder_the_server_renamed();
+        let f = NodeId::from("f");
+        let error = |code: Code| proto::Error {
+            code: code as i32,
+            ..Default::default()
+        };
+        assert_eq!(
+            commits.failed(&mut trees, &error(Code::RetryLater)),
+            Ok(Failure::Resend)
+        );
+        assert!(!trees.excluded(&f));
+        if with_error {
+            assert_eq!(
+                commits.failed(&mut trees, &error(Code::HeadMoved)),
+                Ok(Failure::Abandoned)
+            );
+        } else {
+            assert!(commits.abandon(&mut trees));
+        }
+        trees.settle(commits.aliases());
+        assert!(trees.excluded(&f) && trees.unobserved(&f));
+        assert_eq!(ops(&mut trees), []);
+    }
+}
+
 #[test]
 fn a_new_folder_whose_synced_child_is_parked_is_not_held_back_by_its_server_path() {
     let mut trees = trees(&[

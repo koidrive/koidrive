@@ -894,7 +894,7 @@ fn an_abandoned_commit_sends_its_restores_again() {
         |commits: &mut Commits, trees: &mut Trees| {
             refuse(commits, trees, error::Code::AheadOfServer) == Failure::Resync
         },
-        |commits: &mut Commits, _: &mut Trees| commits.abandon(),
+        |commits: &mut Commits, trees: &mut Trees| commits.abandon(trees),
     ] {
         let n = id(1);
         let mut trees = trees(&[in_trash(n.clone(), file(&root(), "f", 1))]);

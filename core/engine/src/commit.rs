@@ -1350,6 +1350,7 @@ impl Commits {
     /// [`Trees::set_asked`]). The planner does whenever its questions change; a caller that
     /// restores it from a state calls this.
     pub fn hold(&self, trees: &mut Trees) {
+        self.clear_position_watches_if_idle(trees);
         let shown = (self.questions.iter()).flat_map(|question| {
             let held = recovery::asks(question).then(|| question.holds());
             question.shown.keys().chain(held.into_iter().flatten())
@@ -1530,6 +1531,7 @@ impl Commits {
             return None;
         }
         trees.end_unheld_displacements();
+        trees.watch_positions([]);
         if self.halted.is_none() {
             trees.resend_folders_of_changes();
         }
@@ -3170,6 +3172,7 @@ impl Commits {
             }
         }
         if self.in_flight.is_none() {
+            trees.watch_positions([]);
             trees.unsend_finishes(head_moved);
             trees.unsend_left_out_renames();
         }
@@ -3192,7 +3195,7 @@ impl Commits {
     /// Forgets the commit in flight when the driver knows it was not applied: after
     /// `MISSING_CHUNKS` when the file changed since it was chunked (section 4.2). False when no
     /// commit is in flight, its result has arrived, or a policy halt keeps it.
-    pub fn abandon(&mut self) -> bool {
+    pub fn abandon(&mut self, trees: &mut Trees) -> bool {
         if matches!(*self.halted, Some(Halt::Policy { .. })) {
             return false;
         }
@@ -3200,6 +3203,7 @@ impl Commits {
             return false;
         };
         self.give_up(flight.commit.device_seq, flight.commit.commit_id);
+        trees.watch_positions([]);
         true
     }
 
@@ -3207,12 +3211,18 @@ impl Commits {
     /// `node` could not be read for its upload, and leaves `node` out of planning until
     /// [`Commits::clear_problem`], so that the next commit carries every other change. False, and
     /// nothing changes, when [`Commits::abandon`] would refuse.
-    pub fn leave_out(&mut self, node: &NodeId) -> bool {
-        if !self.abandon() {
+    pub fn leave_out(&mut self, trees: &mut Trees, node: &NodeId) -> bool {
+        if !self.abandon(trees) {
             return false;
         }
         self.problems.insert(node.to_owned());
         true
+    }
+
+    pub fn clear_position_watches_if_idle(&self, trees: &mut Trees) {
+        if self.in_flight.is_none() {
+            trees.watch_positions([]);
+        }
     }
 
     /// Compares the `Welcome` with the commit in flight and the accepted counter *a* (section

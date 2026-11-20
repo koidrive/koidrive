@@ -377,7 +377,7 @@ fn a_remote_move_waits_exactly_while_a_commit_in_flight_moves_the_node() {
         (
             "abandoned",
             true,
-            Box::new(|commits, _| assert!(commits.abandon())),
+            Box::new(|commits, trees| assert!(commits.abandon(trees))),
         ),
         (
             "lifted to resend",

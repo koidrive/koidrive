@@ -601,6 +601,7 @@ impl Engine {
     /// with the cursor until a bootstrap replaces R, also when the server's head catches up first or the task
     /// restarts.
     pub fn server_behind(&mut self, tx: &Tx<'_>, dropped: Vec<NodeId>) -> Result<(), Stop> {
+        self.commits.clear_position_watches_if_idle(&mut self.trees);
         let Some(cursor) = &mut self.cursor else {
             return Ok(());
         };
