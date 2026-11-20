@@ -20,8 +20,8 @@ use crate::state::{
 };
 use crate::tracked::{TrackedMap, TrackedSet};
 use crate::tree::{
-    Content, CountedMap, FileIdentity, Kind, LocalNode, Names, Node, NodeId, RemoteNode, Shape,
-    TrackedTree, Tree, TreeError, counted, read_entries, same, same_content,
+    Content, CountedMap, CountedSet, FileIdentity, Kind, LocalNode, Names, Node, NodeId,
+    RemoteNode, Shape, TrackedTree, Tree, TreeError, counted, read_entries, same, same_content,
 };
 
 use release::Released;
@@ -123,7 +123,7 @@ pub fn classify(l: Option<&Shape>, s: Option<&Shape>, r: Option<&Shape>) -> Clas
 }
 
 /// Whether `tree` holds `id` live and placed below one of `folders`, through live, placed folders.
-fn below<N: Node>(tree: &Tree<N>, id: &NodeId, folders: &BTreeSet<NodeId>) -> bool {
+fn below<N: Node>(tree: &Tree<N>, id: &NodeId, folders: &CountedSet<NodeId>) -> bool {
     let held = |id: &NodeId| {
         tree.get(id)
             .filter(|node| node.is_live() && node.is_placed())
@@ -301,8 +301,7 @@ impl<V> ByParent<V> {
     where
         V: Clone,
     {
-        read_entries(self.entries.len());
-        (*self.entries).clone()
+        self.entries.to_map()
     }
 }
 
@@ -316,7 +315,7 @@ impl<V> std::ops::Index<&NodeId> for ByParent<V> {
 
 impl<V: PartialEq> PartialEq for ByParent<V> {
     fn eq(&self, other: &Self) -> bool {
-        *self.entries == *other.entries
+        self.entries == other.entries
     }
 }
 
@@ -655,7 +654,7 @@ pub struct Trees {
     rules_known: bool,
     /// The folders whose rules the last scan of each could not read, by node: a folder renamed is the same folder,
     /// and two folders whose names differ only in case are two folders.
-    unknown_rules: BTreeSet<NodeId>,
+    unknown_rules: CountedSet<NodeId>,
     /// The local entries the open questions hold ([`Trees::set_asked`]).
     asked: BTreeSet<NodeId>,
     /// Dirty nodes marked since the last settle, the only ones whose class can have changed.
@@ -676,9 +675,9 @@ pub struct Trees {
     s_marks: BTreeMap<NodeId, String>,
     r_names: ByName,
     r_trashed: BTreeMap<NodeId, BTreeSet<NodeId>>,
-    creates: BTreeSet<NodeId>,
-    ready: BTreeSet<NodeId>,
-    others: BTreeSet<NodeId>,
+    creates: CountedSet<NodeId>,
+    ready: CountedSet<NodeId>,
+    others: CountedSet<NodeId>,
     keeping: RefCell<Keeping>,
     letting_go: Cell<bool>,
     reclaimed_this_pass: RefCell<Option<HashMap<NodeId, bool>>>,
@@ -686,13 +685,10 @@ pub struct Trees {
     /// release every time, since whether it may depends on the rules and on other nodes.
     orphaned: BTreeSet<NodeId>,
     /// The live files of R that are rules files.
-    remote_rules_files: BTreeSet<NodeId>,
-    marked: BTreeSet<NodeId>,
-    /// The unobserved nodes L does not hold, where [`Trees::settle`] looks for the copies that vanished.
+    remote_rules_files: CountedSet<NodeId>,
+    marked: CountedSet<NodeId>,
     copies_gone: BTreeSet<NodeId>,
-    /// The nodes of [`Trees::copies_gone`] whose folder in S is not one of them, where a release starts.
     gone_tops: BTreeSet<NodeId>,
-    /// Whether anything changed since the last settle looked for vanished copies.
     release_due: bool,
     pending: Unsettled,
     held_for_scan: BTreeSet<NodeId>,
@@ -774,7 +770,7 @@ impl Trees {
             displaced: TrackedMap::default(),
             missing: TrackedSet::default(),
             rules_known: true,
-            unknown_rules: BTreeSet::new(),
+            unknown_rules: CountedSet::default(),
             asked: BTreeSet::new(),
             unsettled: BTreeSet::new(),
             relink: false,
@@ -789,15 +785,15 @@ impl Trees {
             s_marks: BTreeMap::new(),
             r_names: ByName::default(),
             r_trashed: BTreeMap::new(),
-            creates: BTreeSet::new(),
-            ready: BTreeSet::new(),
-            others: BTreeSet::new(),
+            creates: CountedSet::default(),
+            ready: CountedSet::default(),
+            others: CountedSet::default(),
             keeping: RefCell::default(),
             letting_go: Cell::default(),
             reclaimed_this_pass: RefCell::default(),
             orphaned: BTreeSet::new(),
-            remote_rules_files: BTreeSet::new(),
-            marked: BTreeSet::new(),
+            remote_rules_files: CountedSet::default(),
+            marked: CountedSet::default(),
             copies_gone: BTreeSet::new(),
             gone_tops: BTreeSet::new(),
             release_due: true,
@@ -881,7 +877,7 @@ impl Trees {
         count_group(&mut self.trashed, group, add);
     }
 
-    pub fn dirty(&self) -> &BTreeSet<NodeId> {
+    pub fn dirty(&self) -> &TrackedSet<NodeId> {
         &self.dirty
     }
 
@@ -952,15 +948,15 @@ impl Trees {
         }
     }
 
-    pub(crate) fn dirty_creates(&self) -> &BTreeSet<NodeId> {
+    pub(crate) fn dirty_creates(&self) -> &CountedSet<NodeId> {
         &self.creates
     }
 
-    pub(crate) fn ready_creates(&self) -> &BTreeSet<NodeId> {
+    pub(crate) fn ready_creates(&self) -> &CountedSet<NodeId> {
         &self.ready
     }
 
-    pub(crate) fn dirty_others(&self) -> &BTreeSet<NodeId> {
+    pub(crate) fn dirty_others(&self) -> &CountedSet<NodeId> {
         &self.others
     }
 
@@ -1447,7 +1443,7 @@ impl Trees {
         }
     }
 
-    pub(crate) fn resends(&self) -> &BTreeSet<NodeId> {
+    pub(crate) fn resends(&self) -> &TrackedSet<NodeId> {
         &self.resends
     }
 
@@ -1796,15 +1792,15 @@ impl Trees {
     }
 
     /// The live files of R that are rules files ([`is_rules_file`]).
-    pub fn remote_rules_files(&self) -> &BTreeSet<NodeId> {
+    pub fn remote_rules_files(&self) -> &CountedSet<NodeId> {
         &self.remote_rules_files
     }
 
-    pub(crate) fn marked(&self) -> &BTreeSet<NodeId> {
+    pub(crate) fn marked(&self) -> &CountedSet<NodeId> {
         &self.marked
     }
 
-    pub(crate) fn pending_finishes(&self) -> &BTreeMap<NodeId, PendingFinish> {
+    pub(crate) fn pending_finishes(&self) -> &TrackedMap<NodeId, PendingFinish> {
         &self.pending_finishes
     }
 
@@ -2442,7 +2438,7 @@ impl Trees {
     }
 
     /// The folders whose rules are unknown ([`Trees::set_rules_unknown`]).
-    pub fn unknown_rules(&self) -> &BTreeSet<NodeId> {
+    pub fn unknown_rules(&self) -> &CountedSet<NodeId> {
         &self.unknown_rules
     }
 
@@ -3294,7 +3290,7 @@ impl Trees {
     }
 
     /// The folders [`Trees::keep_lost_local`] recorded that no observation has placed or removed since.
-    pub fn lost_local(&self) -> &BTreeSet<NodeId> {
+    pub fn lost_local(&self) -> &TrackedSet<NodeId> {
         &self.lost
     }
 
@@ -3307,7 +3303,7 @@ impl Trees {
     }
 
     /// Where [`Trees::find_local`] last found each recorded node.
-    pub fn found_local(&self) -> &BTreeMap<NodeId, PathBuf> {
+    pub fn found_local(&self) -> &TrackedMap<NodeId, PathBuf> {
         &self.found
     }
 
@@ -3357,7 +3353,7 @@ impl Trees {
     }
 
     /// The nodes [`Trees::miss_local`] took out of L that it still holds.
-    pub fn missing(&self) -> &BTreeSet<NodeId> {
+    pub fn missing(&self) -> &TrackedSet<NodeId> {
         &self.missing
     }
 
@@ -3369,7 +3365,7 @@ impl Trees {
     }
 
     /// The nodes [`Trees::displace_local`] took out of L, each with the identity L held for it.
-    pub fn displaced_local(&self) -> &BTreeMap<NodeId, FileIdentity> {
+    pub fn displaced_local(&self) -> &TrackedMap<NodeId, FileIdentity> {
         &self.displaced
     }
 
@@ -3962,7 +3958,7 @@ impl Trees {
 
     /// The nodes recorded by [`Trees::ignore_local`] that no observation has placed or removed
     /// since.
-    pub fn ignored_local(&self) -> &BTreeSet<NodeId> {
+    pub fn ignored_local(&self) -> &TrackedSet<NodeId> {
         &self.outside
     }
 
@@ -4225,7 +4221,7 @@ impl Trees {
                 .all(|child| self.kept_folder(child) || self.carried(child))
     }
 
-    pub(crate) fn kept_folders(&self) -> &BTreeSet<NodeId> {
+    pub(crate) fn kept_folders(&self) -> &TrackedSet<NodeId> {
         &self.kept_folders
     }
 
@@ -4823,7 +4819,7 @@ impl Trees {
     }
 
     pub fn removed_here(&self) -> BTreeMap<NodeId, u64> {
-        (*self.removed_here).clone()
+        self.removed_here.to_map()
     }
 
     /// After a listing replaces R, makes each node of `removed` that R now holds live and L
@@ -5269,7 +5265,7 @@ impl Trees {
         moved: Vec<(NodeId, MovedHere)>,
         untaken: Vec<(NodeId, Untaken)>,
         records: BTreeMap<NodeId, RemoteRecord>,
-        merged: &BTreeMap<NodeId, NodeId>,
+        merged: &TrackedMap<NodeId, NodeId>,
         held_through: u64,
         accepted: u64,
     ) {
@@ -5763,11 +5759,11 @@ impl Trees {
     /// L no longer holds the file. A later edit in L does not end it,
     /// since the server holds none of them until one is acknowledged, and neither does R dropping
     /// the file: the edit beats the removal and the file is created again, as for any edit L holds.
-    pub fn unsent_edits(&self) -> &BTreeSet<NodeId> {
+    pub fn unsent_edits(&self) -> &TrackedSet<NodeId> {
         &self.unsent_edits
     }
 
-    pub(crate) fn unsent_moves(&self) -> &BTreeSet<NodeId> {
+    pub(crate) fn unsent_moves(&self) -> &TrackedSet<NodeId> {
         &self.unsent_moves
     }
 
@@ -5881,7 +5877,7 @@ impl Trees {
         }
     }
 
-    pub(crate) fn lost_shapes(&self) -> &BTreeMap<NodeId, Shape> {
+    pub(crate) fn lost_shapes(&self) -> &TrackedMap<NodeId, Shape> {
         &self.lost_shapes
     }
 
@@ -5946,7 +5942,7 @@ impl Trees {
     /// [`Trees::unsearched`] lists them. A [`Class::Same`] node whose update is left still takes R's
     /// content into S, unless an acknowledged update of the node waits, since content never breaks S, so a later change on either side is compared
     /// with the content both sides already hold. [`Trees::work`] gives the dirty nodes that are left.
-    pub fn settle(&mut self, merged: &BTreeMap<NodeId, NodeId>) {
+    pub fn settle(&mut self, merged: &TrackedMap<NodeId, NodeId>) {
         self.settle_unless(merged, &|| false)
             .expect("a settle nobody abandons ends settled");
     }
@@ -5955,7 +5951,7 @@ impl Trees {
     /// [`CHECK_EVERY`] nodes. The trees it gives up on are half settled, fit only to be dropped.
     pub fn settle_unless(
         &mut self,
-        merged: &BTreeMap<NodeId, NodeId>,
+        merged: &TrackedMap<NodeId, NodeId>,
         abandoned: &dyn Fn() -> bool,
     ) -> Option<()> {
         self.release_kept_entries_the_person_let_in();
@@ -6255,7 +6251,7 @@ impl Trees {
     /// forgets it once L and S both have it there. A node the user moves anywhere else stops being reverted
     /// ([`Trees::set_local`]), and so does a create or move the server renamed when L has left the
     /// position the commit sent before the result arrives.
-    pub fn reverted(&self) -> &BTreeSet<NodeId> {
+    pub fn reverted(&self) -> &TrackedSet<NodeId> {
         &self.reverted
     }
 
@@ -6289,7 +6285,7 @@ impl Trees {
         self.l.get(id).is_some() && self.reverted.contains(id)
     }
 
-    fn release_cycle_reverts(&mut self, merged: &BTreeMap<NodeId, NodeId>) {
+    fn release_cycle_reverts(&mut self, merged: &TrackedMap<NodeId, NodeId>) {
         let released: Vec<NodeId> = (self.cycle_reverted.iter())
             .filter(|&id| {
                 !self.reverted.contains(id)
@@ -6327,7 +6323,7 @@ impl Trees {
 
     /// The [`Class::Same`] nodes the last [`Trees::settle`] left without searching, because the
     /// group of updates they belong to has more than [`SETTLE_GROUP_LIMIT`] members.
-    pub fn unsearched(&self) -> &BTreeSet<NodeId> {
+    pub fn unsearched(&self) -> &TrackedSet<NodeId> {
         &self.unsearched
     }
 
@@ -6929,47 +6925,47 @@ impl Trees {
     /// What the store keeps besides the nodes of R, L and S.
     pub fn state(&self) -> TreesState {
         TreesState {
-            dirty: (*self.dirty).clone(),
-            unsearched: (*self.unsearched).clone(),
-            reverted: (*self.reverted).clone(),
-            cycle_reverted: (*self.cycle_reverted).clone(),
-            unobserved: (*self.unobserved).clone(),
-            parked_as: (*self.parked_as).clone(),
+            dirty: self.dirty.to_set(),
+            unsearched: self.unsearched.to_set(),
+            reverted: self.reverted.to_set(),
+            cycle_reverted: self.cycle_reverted.to_set(),
+            unobserved: self.unobserved.to_set(),
+            parked_as: self.parked_as.to_map(),
             waiting: self.waiting.to_map(),
-            watched: (*self.watched).clone(),
-            watched_positions: (*self.watched_positions).clone(),
-            trashed_here: (*self.trashed_here).clone(),
-            removed_here: (*self.removed_here).clone(),
+            watched: self.watched.to_map(),
+            watched_positions: self.watched_positions.to_map(),
+            trashed_here: self.trashed_here.to_map(),
+            removed_here: self.removed_here.to_map(),
             discarded: self.discarded.to_map(),
-            removed_from: (*self.removed_from).clone(),
-            forgotten_shapes: (*self.forgotten_shapes).clone(),
-            lost_shapes: (*self.lost_shapes).clone(),
-            outside: (*self.outside).clone(),
-            lost: (*self.lost).clone(),
-            found: (*self.found).clone(),
-            displaced: (*self.displaced).clone(),
-            missing: (*self.missing).clone(),
-            edited_here: (*self.edited_here).clone(),
-            moved_here: (*self.moved_here).clone(),
-            past_positions: (*self.past_positions).clone(),
-            synced_positions: (*self.synced_positions).clone(),
-            unsent_edits: (*self.unsent_edits).clone(),
-            dropped_edits: (*self.dropped_edits).clone(),
-            unsent_moves: (*self.unsent_moves).clone(),
-            unsent_creates: (*self.unsent_creates).clone(),
-            kept_folders: (*self.kept_folders).clone(),
-            kept_entries: (*self.kept_entries).clone(),
-            kept_nodes: (*self.kept_nodes).clone(),
-            unseen_changes: (*self.unseen_changes).clone(),
-            replaced_versions: (*self.replaced_versions).clone(),
-            content_provenance: (*self.content_provenance).clone(),
-            resends: (*self.resends).clone(),
-            local_changes: (*self.local_changes).clone(),
-            lost_positions: (*self.lost_positions).clone(),
-            lost_creates: (*self.lost_creates).clone(),
-            kept_originals: (*self.kept_originals).clone(),
-            unsent_marks: (*self.unsent_marks).clone(),
-            pending_finishes: (*self.pending_finishes).clone(),
+            removed_from: self.removed_from.to_map(),
+            forgotten_shapes: self.forgotten_shapes.to_map(),
+            lost_shapes: self.lost_shapes.to_map(),
+            outside: self.outside.to_set(),
+            lost: self.lost.to_set(),
+            found: self.found.to_map(),
+            displaced: self.displaced.to_map(),
+            missing: self.missing.to_set(),
+            edited_here: self.edited_here.to_map(),
+            moved_here: self.moved_here.to_map(),
+            past_positions: self.past_positions.to_map(),
+            synced_positions: self.synced_positions.to_map(),
+            unsent_edits: self.unsent_edits.to_set(),
+            dropped_edits: self.dropped_edits.to_set(),
+            unsent_moves: self.unsent_moves.to_set(),
+            unsent_creates: self.unsent_creates.to_set(),
+            kept_folders: self.kept_folders.to_set(),
+            kept_entries: self.kept_entries.to_map(),
+            kept_nodes: self.kept_nodes.to_map(),
+            unseen_changes: self.unseen_changes.to_set(),
+            replaced_versions: self.replaced_versions.to_map(),
+            content_provenance: self.content_provenance.to_map(),
+            resends: self.resends.to_set(),
+            local_changes: self.local_changes.to_set(),
+            lost_positions: self.lost_positions.to_map(),
+            lost_creates: self.lost_creates.to_set(),
+            kept_originals: self.kept_originals.to_map(),
+            unsent_marks: self.unsent_marks.to_map(),
+            pending_finishes: self.pending_finishes.to_map(),
         }
     }
 
@@ -7348,7 +7344,7 @@ impl Trees {
         self.unsettled = dirty.clone();
         self.same.clear();
         self.orphaned.clear();
-        self.others = dirty.clone();
+        self.others = dirty.clone().into();
         self.creates.clear();
         self.ready.clear();
         self.dirty = dirty.into();

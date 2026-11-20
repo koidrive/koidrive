@@ -223,7 +223,7 @@ impl Effects {
         EffectsState {
             in_flight: (*self.in_flight).clone(),
             cleared: *self.cleared,
-            failed: (*self.failed).clone(),
+            failed: self.failed.to_map(),
         }
     }
 
@@ -296,7 +296,7 @@ impl Effects {
 
     /// The nodes whose last effect failed, with that effect. Each stays blocked until the effect
     /// planned for it differs, or until [`Effects::unblock`].
-    pub fn blocked(&self) -> &BTreeMap<NodeId, Effect> {
+    pub fn blocked(&self) -> &TrackedMap<NodeId, Effect> {
         &self.failed
     }
 
@@ -360,8 +360,7 @@ impl Effects {
         if !self.in_flight.is_empty() || !trees.rules_known() || limit.effects == 0 {
             return &[];
         }
-        let none = BTreeSet::new();
-        let finishing: BTreeSet<&NodeId> = (finishes(trees, &none, None))
+        let finishing: BTreeSet<&NodeId> = (finishes(trees, |_| false, None))
             .filter_map(|(id, .., free)| free.then_some(id))
             .collect();
         self.failed.retain(|id, _| {
@@ -495,8 +494,7 @@ impl Effects {
         if !chosen.is_empty() {
             return chosen;
         }
-        let none = BTreeSet::new();
-        let finish = (finishes(trees, &none, None))
+        let finish = (finishes(trees, |_| false, None))
             .filter(|(id, ..)| gates.is_empty() || !gated(id))
             .find_map(|(id, parent, name, free)| {
                 let local = (trees.local().get(id)).filter(|_| free && !disk_first(trees, id))?;

@@ -192,3 +192,24 @@ fn planning_below_a_folder_renamed_here_is_linear_in_its_files_and_at_most_quadr
     let half_as_deep = renamed_folder_above(30, 500, u64::MAX);
     renamed_folder_above(60, 500, half_as_deep * 4);
 }
+
+fn new_local_folder(files: usize, budget: u64) -> u64 {
+    let mut trees = Trees::new(ROOT);
+    trees.set_local("n".into(), local(dir(ROOT, "new"), 1));
+    for j in 0..files {
+        let leaf = file("n", &format!("f{j}.txt"), 1);
+        trees.set_local(format!("f{j}").into(), local(leaf, 2 + j as u128));
+    }
+    let (ops, read) = reads(budget, || {
+        trees.settle(&Default::default());
+        ops(&mut Commits::default(), &mut trees, &mut IdGen::new(1))
+    });
+    assert!(!ops.is_empty());
+    read
+}
+
+#[test]
+fn planning_a_new_folder_of_local_files_is_linear_in_its_files() {
+    let two_hundred = new_local_folder(200, u64::MAX);
+    new_local_folder(2000, two_hundred * 11);
+}

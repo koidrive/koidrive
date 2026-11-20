@@ -251,7 +251,7 @@ impl Folder {
             ),
         };
         failures::failed(counted);
-        for id in self.engine.commits.problems().difference(&before) {
+        for id in (self.engine.commits.problems().iter()).filter(|id| !before.contains(*id)) {
             failures::failed(node_counted);
             self.refused_nodes.insert(id.clone(), why.clone());
         }

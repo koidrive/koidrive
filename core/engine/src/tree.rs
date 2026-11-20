@@ -5,7 +5,8 @@
 
 use std::borrow::Borrow;
 use std::collections::btree_map::Entry;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, btree_set};
+use std::fmt;
 use std::ops::RangeBounds;
 use std::path::PathBuf;
 
@@ -36,14 +37,49 @@ pub(crate) fn read_entries(count: usize) {
 }
 
 #[cfg(test)]
-pub(crate) type Counting<I> = std::iter::Inspect<I, fn(&<I as Iterator>::Item)>;
+#[derive(Clone)]
+pub struct Counting<I>(I);
+
+#[cfg(test)]
+impl<I: Iterator> Iterator for Counting<I> {
+    type Item = I::Item;
+
+    fn next(&mut self) -> Option<I::Item> {
+        let entry = self.0.next();
+        if entry.is_some() {
+            read_entries(1);
+        }
+        entry
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.0.size_hint()
+    }
+}
+
+#[cfg(test)]
+impl<I: DoubleEndedIterator> DoubleEndedIterator for Counting<I> {
+    fn next_back(&mut self) -> Option<I::Item> {
+        let entry = self.0.next_back();
+        if entry.is_some() {
+            read_entries(1);
+        }
+        entry
+    }
+}
+
+#[cfg(test)]
+impl<I: ExactSizeIterator> ExactSizeIterator for Counting<I> {}
+
+#[cfg(test)]
+impl<I: std::iter::FusedIterator> std::iter::FusedIterator for Counting<I> {}
 
 #[cfg(not(test))]
 pub(crate) type Counting<I> = I;
 
 #[cfg(test)]
 pub(crate) fn counted<I: Iterator>(entries: I) -> Counting<I> {
-    entries.inspect(|_| read_entries(1))
+    Counting(entries)
 }
 
 #[cfg(not(test))]
@@ -51,8 +87,139 @@ pub(crate) fn counted<I: Iterator>(entries: I) -> Counting<I> {
     entries
 }
 
-#[derive(Clone, Debug, PartialEq)]
+/// A [`BTreeSet`] whose reads count as entries read.
+pub struct CountedSet<K>(BTreeSet<K>);
+
+impl<K> Default for CountedSet<K> {
+    fn default() -> Self {
+        Self(BTreeSet::new())
+    }
+}
+
+impl<K: Ord> CountedSet<K> {
+    pub(crate) fn insert(&mut self, key: K) -> bool {
+        self.0.insert(key)
+    }
+
+    pub(crate) fn remove<Q: Ord + ?Sized>(&mut self, key: &Q) -> bool
+    where
+        K: Borrow<Q>,
+    {
+        self.0.remove(key)
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.0.clear();
+    }
+
+    pub fn contains<Q: Ord + ?Sized>(&self, key: &Q) -> bool
+    where
+        K: Borrow<Q>,
+    {
+        read_entries(1);
+        self.0.contains(key)
+    }
+
+    pub fn iter(&self) -> Counting<btree_set::Iter<'_, K>> {
+        counted(self.0.iter())
+    }
+
+    pub fn first(&self) -> Option<&K> {
+        read_entries(1);
+        self.0.first()
+    }
+
+    pub fn last(&self) -> Option<&K> {
+        read_entries(1);
+        self.0.last()
+    }
+
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    pub fn is_subset(&self, other: &Self) -> bool {
+        read_entries(self.0.len());
+        self.0.is_subset(&other.0)
+    }
+
+    pub fn is_disjoint(&self, other: &Self) -> bool {
+        read_entries(self.0.len().min(other.0.len()));
+        self.0.is_disjoint(&other.0)
+    }
+}
+
+impl<K: Clone> Clone for CountedSet<K> {
+    fn clone(&self) -> Self {
+        read_entries(self.0.len());
+        Self(self.0.clone())
+    }
+}
+
+impl<'a, K: Ord> IntoIterator for &'a CountedSet<K> {
+    type Item = &'a K;
+    type IntoIter = Counting<btree_set::Iter<'a, K>>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
+}
+
+impl<K> From<BTreeSet<K>> for CountedSet<K> {
+    fn from(set: BTreeSet<K>) -> Self {
+        Self(set)
+    }
+}
+
+impl<K: PartialEq> PartialEq for CountedSet<K> {
+    fn eq(&self, other: &Self) -> bool {
+        read_entries(self.0.len().min(other.0.len()));
+        self.0 == other.0
+    }
+}
+
+impl<K: Eq> Eq for CountedSet<K> {}
+
+impl<K: PartialEq> PartialEq<BTreeSet<K>> for CountedSet<K> {
+    fn eq(&self, other: &BTreeSet<K>) -> bool {
+        read_entries(self.0.len().min(other.len()));
+        self.0 == *other
+    }
+}
+
+impl<K: fmt::Debug> fmt::Debug for CountedSet<K> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        read_entries(self.0.len());
+        self.0.fmt(f)
+    }
+}
+
 pub(crate) struct CountedMap<K, V>(BTreeMap<K, V>);
+
+impl<K: fmt::Debug, V: fmt::Debug> fmt::Debug for CountedMap<K, V> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        read_entries(self.0.len());
+        self.0.fmt(f)
+    }
+}
+
+impl<K: Clone, V: Clone> Clone for CountedMap<K, V> {
+    fn clone(&self) -> Self {
+        read_entries(self.0.len());
+        Self(self.0.clone())
+    }
+}
+
+impl<K: PartialEq, V: PartialEq> PartialEq for CountedMap<K, V> {
+    fn eq(&self, other: &Self) -> bool {
+        read_entries(self.0.len().min(other.0.len()));
+        self.0 == other.0
+    }
+}
 
 impl<K, V> Default for CountedMap<K, V> {
     fn default() -> Self {

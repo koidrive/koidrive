@@ -799,7 +799,7 @@ fn a_discard_check_over_a_deep_chain_of_kept_back_folders_finishes() {
         parent = c;
     }
     trees.set_remote("f".into(), remote(dir(&NodeId::from(&parent), "f")));
-    trees.others = BTreeSet::from(["f".into()]);
+    trees.others = BTreeSet::from(["f".into()]).into();
     assert!(trees.is_discarded(&"x0".into()));
 }
 
@@ -1208,14 +1208,14 @@ fn a_kept_node_renamed_to_an_included_name_while_an_unrelated_rule_changes_stays
     let mut trees = with_a_kept_env();
     let none: [&str; 0] = [];
     trees.set_local_rules(LocalRules::new(&none, &[".env", "*.tmp"]).unwrap());
-    trees.settle(&BTreeMap::new());
+    trees.settle(&TrackedMap::default());
 
     trees.set_local_rules(LocalRules::new(&none, &[".env", "*.log"]).unwrap());
     trees.set_local(
         "env".into(),
         kept_local(&"app".into(), "settings.txt", Kind::File, 2),
     );
-    trees.settle(&BTreeMap::new());
+    trees.settle(&TrackedMap::default());
 
     assert!(trees.kept_nodes.contains_key(&"env".into()));
     assert!(trees.ignored(&"env".into()));
@@ -1249,7 +1249,7 @@ fn a_kept_entry_stays_kept_when_another_device_lets_it_in_while_the_person_edits
         koidrive_ignore::Source::Koiignore,
         Some(RuleFile::parse(b".env\n")),
     );
-    trees.settle(&BTreeMap::new());
+    trees.settle(&TrackedMap::default());
 
     trees.set_local_changed("root-rules".into(), rules_file(&"root".into(), 1, 3));
     trees.set_rules(
@@ -1257,7 +1257,7 @@ fn a_kept_entry_stays_kept_when_another_device_lets_it_in_while_the_person_edits
         koidrive_ignore::Source::Koiignore,
         Some(RuleFile::parse(b".env\n*.tmp\n")),
     );
-    trees.settle(&BTreeMap::new());
+    trees.settle(&TrackedMap::default());
     trees.set_local("app-rules".into(), rules_file(&"app".into(), 2, 4));
     trees.set_synced(
         "app-rules".into(),
@@ -1268,7 +1268,7 @@ fn a_kept_entry_stays_kept_when_another_device_lets_it_in_while_the_person_edits
         koidrive_ignore::Source::Koiignore,
         Some(RuleFile::parse(b"!.env\n")),
     );
-    trees.settle(&BTreeMap::new());
+    trees.settle(&TrackedMap::default());
 
     assert!(!trees.ignores(&["app", ".env"], Kind::File));
     assert!(trees.kept_nodes.contains_key(&"env".into()));
@@ -1285,11 +1285,11 @@ fn a_kept_entry_is_released_when_the_person_deletes_the_rules_file_that_left_it_
         koidrive_ignore::Source::Koiignore,
         Some(RuleFile::parse(b".env\n")),
     );
-    trees.settle(&BTreeMap::new());
+    trees.settle(&TrackedMap::default());
 
     trees.remove_local(&"root-rules".into());
     trees.set_rules(&[] as &[&str], koidrive_ignore::Source::Koiignore, None);
-    trees.settle(&BTreeMap::new());
+    trees.settle(&TrackedMap::default());
 
     assert!(!trees.kept_nodes.contains_key(&"env".into()));
 }
@@ -1311,12 +1311,12 @@ fn a_kept_entry_stays_kept_when_the_server_drops_the_rules_file_that_left_it_out
         koidrive_ignore::Source::Koiignore,
         Some(RuleFile::parse(b".env\n")),
     );
-    trees.settle(&BTreeMap::new());
+    trees.settle(&TrackedMap::default());
 
     trees.remove_remote(&"root-rules".into());
     trees.remove_local(&"root-rules".into());
     trees.set_rules(&[] as &[&str], koidrive_ignore::Source::Koiignore, None);
-    trees.settle(&BTreeMap::new());
+    trees.settle(&TrackedMap::default());
 
     assert!(trees.kept_nodes.contains_key(&"env".into()));
 }
@@ -1334,12 +1334,12 @@ fn a_kept_entry_stays_kept_when_the_server_drops_the_gitignore_file_that_left_it
         koidrive_ignore::Source::Gitignore,
         Some(RuleFile::parse(b".env\n")),
     );
-    trees.settle(&BTreeMap::new());
+    trees.settle(&TrackedMap::default());
 
     trees.remove_remote(&"root-rules".into());
     trees.remove_local(&"root-rules".into());
     trees.set_rules(&[] as &[&str], koidrive_ignore::Source::Gitignore, None);
-    trees.settle(&BTreeMap::new());
+    trees.settle(&TrackedMap::default());
 
     assert!(trees.kept_nodes.contains_key(&"env".into()));
 }
@@ -1358,7 +1358,7 @@ fn a_kept_entry_stays_kept_when_another_devices_negation_lands_in_the_settle_the
         koidrive_ignore::Source::Koiignore,
         Some(RuleFile::parse(b".env\n")),
     );
-    trees.settle(&BTreeMap::new());
+    trees.settle(&TrackedMap::default());
 
     trees.set_local_changed("root-rules".into(), rules_file(&"root".into(), 1, 3));
     trees.set_rules(
@@ -1376,8 +1376,8 @@ fn a_kept_entry_stays_kept_when_another_devices_negation_lands_in_the_settle_the
         koidrive_ignore::Source::Koiignore,
         Some(RuleFile::parse(b"!.env\n")),
     );
-    trees.settle(&BTreeMap::new());
-    trees.settle(&BTreeMap::new());
+    trees.settle(&TrackedMap::default());
+    trees.settle(&TrackedMap::default());
 
     assert!(trees.kept_nodes.contains_key(&"env".into()));
 }

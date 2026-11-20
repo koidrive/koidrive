@@ -441,8 +441,8 @@ fn a_recorded_node_keeps_where_it_was_found_until_it_leaves_the_ignored_folder()
     assert!(trees.found_local().is_empty());
     trees.ignore_local(&a);
     trees.find_local(&a, "build/a.txt".into());
-    let found = [(a.clone(), "build/a.txt".into())].into();
-    assert_eq!(trees.found_local(), &found);
+    let found: BTreeMap<NodeId, std::path::PathBuf> = [(a.clone(), "build/a.txt".into())].into();
+    assert_eq!(trees.found_local().to_map(), found);
     trees.ignore_local(&a);
     assert!(trees.found_local().is_empty());
     trees.find_local(&a, "build/a.txt".into());
