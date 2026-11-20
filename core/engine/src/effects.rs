@@ -1220,9 +1220,8 @@ impl<'a> View<'a> {
                 }
                 return self.unpark(id, local, &local.shape);
             }
-            (Some(local), None)
-                if local.parked
-                    && self.trees.reverted().contains(id)
+            (Some(_), None)
+                if self.trees.reverted().contains(id)
                     && self.trees.unknown_folder_holds_nodes(id) =>
             {
                 return Step::Blocked(None);
