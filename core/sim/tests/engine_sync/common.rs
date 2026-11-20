@@ -20,7 +20,7 @@ use koidrive_engine::question::{Answer, Question, QuestionKind};
 
 use koidrive_engine::restore::{Outcome, Rejection, Resolved, RestoreIntent};
 
-use koidrive_engine::state::{RenamedOver, StateError};
+use koidrive_engine::state::{NameLeftOut, RenamedOver, StateError};
 
 use koidrive_engine::tree::{
     ContentKey, FileIdentity, Kind, LocalNode, Names, NodeId, RemoteNode, Shape, same,
@@ -1790,8 +1790,11 @@ fn position(shape: &koidrive_engine::tree::Shape) -> Position {
 }
 
 fn sent_move_refusal(before: &Trees, trees: &Trees, id: &NodeId) -> Option<RenamedOver> {
-    if trees.name_left_out(id) {
-        return trees.state().names_left_out.remove(id).flatten();
+    if before.name_left_out(id) {
+        return match trees.state().names_left_out.remove(id) {
+            Some(NameLeftOut::DiskRefusal(over)) => over,
+            _ => None,
+        };
     }
     let at = before.remote().live(id)?;
     let local = before.local().get(id)?;

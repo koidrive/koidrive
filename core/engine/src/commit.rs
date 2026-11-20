@@ -27,7 +27,7 @@ use crate::restore::{
 };
 use crate::state::{
     Agreed, CONTENT_ANCESTRY_LIMIT, CommitsChanges, CommitsState, FinishOrigin, GivenUp,
-    MovePosition, RenamedOver, StateError,
+    MovePosition, NameLeftOut, RenamedOver, StateError,
 };
 use crate::tracked::{Marked, TrackedMap, TrackedSet};
 use crate::tree::{
@@ -1895,19 +1895,24 @@ impl Commits {
             }
         }
         if ops.is_empty() && released.is_empty() {
-            ops.extend(displaced_renames(trees, &skip, &self.device_name.0, now_ms).take(cap));
+            let claimants = frozen_name_claimants(trees);
+            ops.extend(
+                displaced_renames(trees, &skip, &claimants, &self.device_name.0, now_ms).take(cap),
+            );
             for op in &ops {
                 if let Some(op::Op::Move(moved)) = &op.op
                     && let Some(from) = &moved.from
                 {
-                    let over = RenamedOver {
+                    let id = NodeId::from(&moved.node_id);
+                    let over = || RenamedOver {
                         parent: NodeId::from(&from.parent_id),
                         name: from.name.clone(),
                     };
-                    let id = NodeId::from(&moved.node_id);
-                    trees.send_left_out_rename(&id, over);
                     if claimants.contains(&id) {
-                        trees.revert(id);
+                        trees.revert(id.clone());
+                        trees.record_conflict_rename(id, NameLeftOut::FrozenHolder(over()));
+                    } else if trees.name_left_out(&id) {
+                        trees.record_conflict_rename(id, NameLeftOut::DiskRefusal(Some(over())));
                     }
                 }
             }
@@ -3893,11 +3898,12 @@ fn settle_kept_folders(trees: &mut Trees, ids: &mut IdGen, now_ms: u64) {
 fn displaced_renames<'a>(
     trees: &'a Trees,
     skip: &'a BTreeSet<NodeId>,
+    claimants: &'a BTreeSet<NodeId>,
     device_name: &'a str,
     now_ms: u64,
 ) -> impl Iterator<Item = proto::Op> + 'a {
     (effects::displaced_by_excluded(trees).into_iter())
-        .chain(frozen_name_claimants(trees))
+        .chain(claimants.iter().cloned())
         .filter(|id| !skip.contains(id))
         .filter_map(move |id| {
             let shape = trees.remote().live(&id)?;

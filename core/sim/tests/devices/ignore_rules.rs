@@ -1141,26 +1141,22 @@ fn a_node_whose_conflict_rename_is_in_flight_when_the_rules_let_the_kept_name_in
     let folder_with_a_file = vec![(1, folder("b")), (1, user(1, 0, 1, "a"))];
     let steps: Vec<(usize, Step)> = (0..3).flat_map(|_| commit(1)).collect();
     for made in [vec![(1, file("b"))], folder_with_a_file] {
-        let mut saw_unanswered = false;
+        let mut saw_while_disk_waited = [false; 2];
         for lift in 0..=steps.len() {
             let mut world = claimed_a_kept_name(made.clone(), 0);
             world.run(2, &steps[..lift]).unwrap();
             let sent = live_node_at(&world, &[CLAIMED]);
-            let trees = &world.devices[1].engine.trees;
+            let engine = &world.devices[1].engine;
+            let trees = &engine.trees;
             if let Some(id) = sent.as_ref().map(NodeId::from)
-                && world.devices[1]
-                    .link
-                    .as_ref()
-                    .is_some_and(|link| link.awaiting.is_some())
                 && (trees.local().get(&id)).is_some_and(|node| node.shape.name == "A")
             {
-                assert!(
-                    trees
-                        .synced()
-                        .live(&id)
-                        .is_none_or(|node| node.name != CLAIMED)
+                assert_eq!(
+                    trees.synced().live(&id).map(|node| node.name.as_str()),
+                    Some("b"),
+                    "{made:?}, {lift}"
                 );
-                saw_unanswered = true;
+                saw_while_disk_waited[usize::from(engine.commits.in_flight().is_none())] = true;
             }
             world.rule(1, &Ruling::Exclude(vec![])).unwrap();
             world.run(2, &steps[lift..]).unwrap();
@@ -1180,7 +1176,7 @@ fn a_node_whose_conflict_rename_is_in_flight_when_the_rules_let_the_kept_name_in
                 );
             }
         }
-        assert!(saw_unanswered, "{made:?}");
+        assert_eq!(saw_while_disk_waited, [true; 2], "{made:?}");
     }
 }
 
@@ -1224,4 +1220,83 @@ fn a_folder_renamed_to_the_name_an_excluded_folder_keeps_takes_a_conflict_name_w
         }
     }
     assert!(acknowledged_before_moved);
+}
+
+#[test]
+fn a_rejected_conflict_rename_over_a_frozen_name_does_not_record_a_disk_refusal() {
+    let mut world = claimed_a_kept_name(vec![(1, file("b"))], 5);
+    let id = NodeId::from(live_node_at(&world, &["A"]).unwrap());
+    let engine = &world.devices[1].engine;
+    assert!(engine.commits.in_flight().is_some());
+    assert!(
+        engine.trees.state().names_left_out.contains_key(&id),
+        "no sent conflict rename"
+    );
+    assert!(live_node_at(&world, &[CLAIMED]).is_none());
+
+    world
+        .rule(1, &Ruling::Exclude(vec!["*.txt", "A/", "ss"]))
+        .unwrap();
+    let claim = target(&world, 1, &["A"]);
+    world
+        .run(2, &[(1, rename(claim, 0, "ss")), (1, SCAN)])
+        .unwrap();
+    let engine = &world.devices[1].engine;
+    assert_eq!(engine.trees.local().get(&id).unwrap().shape.name, "ss");
+    assert_eq!(engine.trees.remote().live(&id).unwrap().name, "A");
+    let reject = (
+        1,
+        Step::Commit(Reply::Refused(error::Code::UnsupportedVersion)),
+    );
+    world.run(2, &[reject, (1, DELIVER)]).unwrap();
+    let engine = &world.devices[1].engine;
+    assert_eq!(world.seen.get("commit refused, planned again"), Some(&1));
+    assert!(engine.commits.in_flight().is_none());
+    assert_eq!(
+        engine.trees.state().names_left_out.get(&id),
+        None,
+        "a rejection is not a disk refusal"
+    );
+    assert_eq!(engine.trees.local().get(&id).unwrap().shape.name, "ss");
+    assert!(live_node_at(&world, &[CLAIMED]).is_none());
+}
+
+#[test]
+fn a_conflict_rename_over_a_frozen_name_replays_its_lost_answer_before_the_disk_rename() {
+    let mut world = claimed_a_kept_name(vec![(1, file("b"))], 0);
+    let steps: Vec<_> = (0..2).flat_map(|_| commit(1)).collect();
+    world.run(2, &steps[..7]).unwrap();
+    let id = NodeId::from(live_node_at(&world, &[CLAIMED]).unwrap());
+    let engine = &world.devices[1].engine;
+    let sent = engine.commits.in_flight().unwrap().commit.clone();
+    let record = engine.trees.state().names_left_out[&id].clone();
+    world
+        .run(
+            2,
+            &[
+                (1, Step::Drop),
+                (1, Step::Crash),
+                (1, Step::Work(0)),
+                (1, Step::Connect),
+                (1, DELIVER),
+            ],
+        )
+        .unwrap();
+    let engine = &world.devices[1].engine;
+    assert_eq!(
+        world
+            .seen
+            .get("reconnect resends a commit the server applied"),
+        Some(&1)
+    );
+    assert_eq!(engine.commits.in_flight().unwrap().commit, sent);
+    assert_eq!(engine.trees.state().names_left_out[&id], record);
+
+    world.run(2, &[(1, COMMIT), (1, DELIVER)]).unwrap();
+    let engine = &world.devices[1].engine;
+    assert!(engine.commits.in_flight().is_none());
+    assert!(!engine.trees.state().names_left_out.contains_key(&id));
+    assert_eq!(engine.trees.local().get(&id).unwrap().shape.name, "A");
+    assert_eq!(engine.trees.synced().get(&id).unwrap().name, "b");
+    settle_claim(&mut world);
 }

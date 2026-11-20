@@ -1176,7 +1176,15 @@ fn frozen_name_send(
         )));
     };
     prop_assert_eq!(&sent.new_name, &conflict_name(NAMES[claim], "", NOW, 1));
-    prop_assert!(!trees.name_left_out(id));
+    prop_assert!(!before.name_left_out(id));
+    let recorded = trees.state().names_left_out.remove(id);
+    prop_assert_eq!(
+        recorded,
+        Some(NameLeftOut::FrozenHolder(RenamedOver {
+            parent: NodeId::from(&sent.new_parent_id),
+            name: NAMES[claim].into(),
+        }))
+    );
     sent_move_check(
         sent,
         &trees.local().get(id).unwrap().shape,
