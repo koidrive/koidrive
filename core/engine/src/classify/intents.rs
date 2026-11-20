@@ -278,6 +278,9 @@ impl Trees {
             };
             let (node, fields, carried) = op_fields(kind);
             let node = &NodeId::from(node);
+            if self.local_kept_record(node) {
+                continue;
+            }
             let own = !carried
                 && (self.local_changes.contains(node)
                     || self.edited_here.contains_key(node)
@@ -306,6 +309,9 @@ impl Trees {
             .into_iter()
             .collect();
         for id in unsent_edits.into_iter().chain(changed) {
+            if self.local_kept_record(&id) {
+                continue;
+            }
             let Some(acknowledged) = self.acknowledged(&id).cloned() else {
                 continue;
             };
@@ -363,6 +369,9 @@ impl Trees {
             }))
             .collect();
         for (id, field, base) in held {
+            if self.local_kept_record(&id) {
+                continue;
+            }
             let Some(remote) = self.r.get(&id) else {
                 continue;
             };
@@ -431,6 +440,9 @@ impl Trees {
         let Some(local) = self.l.get(id) else {
             return Vec::new();
         };
+        if self.local_kept_record(id) || self.local_kept_record(&local.shape.parent) {
+            return Vec::new();
+        }
         (Field::ALL.into_iter())
             .filter_map(|field| Some((field, self.local_value(id, &local.shape, field)?)))
             .collect()
@@ -825,6 +837,15 @@ impl Trees {
 
     pub(super) fn record_user_change(&mut self, id: &NodeId, node: &LocalNode) {
         let old = self.l.get(id).map(|old| old.shape.clone());
+        if self.local_kept_record(id) {
+            if self.kept_rules_file(id) && old.as_ref().is_some_and(|old| !old.same(&node.shape)) {
+                self.give_up_kept_removal(id);
+            }
+            return;
+        }
+        if self.local_kept_record(&node.shape.parent) && self.s.get(id).is_none() {
+            return;
+        }
         let fields: &[Field] = match node.shape.kind {
             Kind::File => &[Field::Place, Field::Content],
             Kind::Dir => &[Field::Place],
@@ -877,11 +898,15 @@ impl Trees {
         }
     }
 
+    fn local_kept_record(&self, id: &NodeId) -> bool {
+        self.kept_folders.contains(id) && self.r.live(id).is_none()
+    }
+
     /// Takes a node its user deleted out of L. A node R or S holds, or one a sent or held row may have put on the
     /// server, gets a status row with the seen list of what L held for it and the nodes below it (RFC 0029 §5.1);
     /// the rows of any other node end, since no server ever held it.
     pub fn remove_local_by_user(&mut self, id: &NodeId) {
-        if self.l.get(id).is_some() {
+        if self.l.get(id).is_some() && !self.local_kept_record(id) {
             let sent = Field::ALL.into_iter().any(|field| {
                 (self.journal_row(id, field))
                     .is_some_and(|row| !matches!(row.state, RowState::Local { .. }))

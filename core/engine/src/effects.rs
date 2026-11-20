@@ -984,7 +984,10 @@ fn candidate(trees: &Trees, id: &NodeId) -> bool {
         || trees.left_behind(id);
     changed
         && !forgets
-        && (!trees.excluded(id) || trees.trashed_while_parked(id) || trees.left_behind(id))
+        && (!trees.excluded(id)
+            || trees.trashed_while_parked(id)
+            || trees.retrying_kept_removal(id)
+            || trees.left_behind(id))
         && !trees.reclaimed(id)
 }
 
@@ -1480,7 +1483,9 @@ impl<'a> View<'a> {
     }
 
     fn remove(&self, id: &NodeId, local: &LocalNode) -> Step {
-        if self.trees.carried(id) || self.trees.kept_folders().contains(id) {
+        if self.trees.carried(id)
+            || self.trees.kept_folders().contains(id) && !self.trees.retrying_kept_removal(id)
+        {
             return Step::Skip;
         }
         let children: Vec<&NodeId> = self.trees.local_children(id).collect();
