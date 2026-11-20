@@ -54,7 +54,7 @@ pub struct SyncedPosition {
     pub name: String,
 }
 
-/// A position a create or a move of this device set, with any verified move history.
+/// A position a move of this device set, with any verified move history.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MovedHere {
     pub seq: u64,

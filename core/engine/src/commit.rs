@@ -2228,7 +2228,7 @@ impl Commits {
     ///
     /// Once R holds the record of the commit in flight and its result has not arrived
     /// ([`Commits::own_record`]), what the record shows of the commit is recorded as the result
-    /// would record it: the nodes its deletes trashed and the positions its creates and moves set,
+    /// would record it: the nodes its deletes trashed and the positions its moves set,
     /// as its edits are recorded when the record arrives ([`Commits::edits_in_flight`]). A loss
     /// that drops the commit before its result then sends those changes again as this device's own
     /// ([`Trees::forget_lost`]).
