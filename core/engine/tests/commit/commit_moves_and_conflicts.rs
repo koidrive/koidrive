@@ -1859,6 +1859,70 @@ fn a_sent_conflict_rename_keeps_its_record_until_the_answer_even_if_r_or_l_chang
 }
 
 #[test]
+fn a_parked_file_waiting_for_its_synced_place_can_rename_over_a_recorded_refusal() {
+    for left_out in [false, true] {
+        let file_at_a = file(ROOT, "a", 1);
+        let mut trees = trees(&[
+            synced("holder", dir(ROOT, "a")),
+            ("n", None, None, Some(remote(file(ROOT, "ss", 1)))),
+        ]);
+        let id = NodeId::from("n");
+        trees.set_local(
+            id.clone(),
+            LocalNode {
+                parked: true,
+                ..local(file_at_a.clone(), 2)
+            },
+        );
+        let mut state = trees.state();
+        state.waiting.insert(
+            id.clone(),
+            Waiting {
+                shape: Some(file_at_a),
+                origin: Origin::Other,
+            },
+        );
+        trees.restore(state).unwrap();
+        trees.set_rules::<&str>(
+            &[],
+            koidrive_engine::ignore::Source::Koiignore,
+            Some(RuleFile::parse(b"ss/\n")),
+        );
+        trees.rules_scanned();
+        let (mut commits, mut effects, mut ids) =
+            (Commits::default(), Effects::default(), IdGen::new(1));
+        trees.settle(commits.aliases());
+        let refused = effects.plan(&trees, None, &mut ids, NOW, BatchLimit::ONE)[0]
+            .effect_id
+            .clone();
+        if left_out {
+            effects
+                .taken(&mut trees, &refused, Some(Kind::Dir))
+                .unwrap();
+        } else {
+            effects.failed(&mut trees, &refused).unwrap();
+        }
+        trees.settle(commits.aliases());
+        let built = build(&mut commits, &mut trees, &mut ids);
+        assert!(trees.waiting().contains_key(&id));
+        assert!(trees.synced().get(&id).is_none());
+        match (left_out, built) {
+            (false, None) => {}
+            (true, Some(commit)) => {
+                let sent = ops(&commit);
+                let [op::Op::Move(moved)] = sent.as_slice() else {
+                    panic!("{sent:?}");
+                };
+                assert_eq!(moved.node_id, "n");
+                assert_eq!(moved.from.as_ref().unwrap().name, "ss");
+                assert!(moved.new_name.starts_with("ss (conflict from "));
+            }
+            (left_out, built) => panic!("{left_out}: {built:?}"),
+        }
+    }
+}
+
+#[test]
 fn a_conflict_rename_dropped_unanswered_is_sent_again_only_while_r_holds_the_refused_name() {
     for remote_moved in [false, true] {
         let mut trees = trees(&[("n", None, None, Some(remote(file(ROOT, "ss", 1))))]);
