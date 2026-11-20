@@ -752,19 +752,12 @@ impl Effects {
                 Effect::WriteFile { .. } | Effect::Move { .. }
             )
             && (record.after.as_ref()).is_some_and(|after| {
-                let parent = match crate::classify::path(trees.local(), &after.parent) {
-                    Some((names, _)) => Some(names),
-                    None => (after.parent == trees.local().root).then(Vec::new),
-                };
                 trees
                     .local_holders(&after.parent, &after.name)
                     .next()
                     .is_none()
-                    && (trees.remote().live(&record.node))
-                        .is_some_and(|remote| remote.same_position(after))
-                    && parent.is_some_and(|mut names| {
-                        names.push(after.name.as_str());
-                        trees.ignores(&names, Kind::Dir)
+                    && (trees.remote().live(&record.node)).is_some_and(|remote| {
+                        remote.same_position(after) && trees.rules_leave_out_folder_at(remote)
                     })
             });
         let node = record.node.clone();

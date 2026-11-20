@@ -3485,6 +3485,18 @@ impl Trees {
         self.names_left_out.contains_key(id)
     }
 
+    pub(crate) fn rules_leave_out_folder_at(&self, at: &Shape) -> bool {
+        let mut names = if at.parent == self.l.root {
+            Vec::new()
+        } else if let Some((names, _)) = path(&self.l, &at.parent) {
+            names
+        } else {
+            return false;
+        };
+        names.push(&at.name);
+        self.ignores(&names, Kind::Dir)
+    }
+
     pub(crate) fn send_left_out_rename(&mut self, id: &NodeId, over: RenamedOver) {
         if let Some(sent) = self.names_left_out.get_mut(id) {
             *sent = Some(over);
@@ -3899,7 +3911,8 @@ impl Trees {
         let lifted: Vec<NodeId> = (self.names_left_out.keys())
             .filter(|id| {
                 !self.left_out_rename_sent(id)
-                    && !path(&self.r, id).is_some_and(|(names, _)| self.ignores(&names, Kind::Dir))
+                    && !(self.r.live(id))
+                        .is_some_and(|remote| self.rules_leave_out_folder_at(remote))
             })
             .cloned()
             .collect();
@@ -7133,8 +7146,7 @@ impl Trees {
                             .is_some_and(|local| !local.parked && local.shape.same_position(remote))
                             || self.rules_known
                                 && self.rules_changed.is_empty()
-                                && !path(&self.r, id)
-                                    .is_some_and(|(names, _)| self.ignores(&names, Kind::Dir))
+                                && !self.rules_leave_out_folder_at(remote)
                     }
                 })
                 .cloned(),
