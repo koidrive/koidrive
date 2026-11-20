@@ -84,7 +84,7 @@ async function bench({ kind, env: settings }: Inputs): Promise<void> {
       else reject(new Failed(status === null ? "cargo terminated without an exit status" : "cargo exited with status " + status));
     });
   });
-  if (kind === "small") await workerCpu(state.name, windows);
+  if (kind === "small") await workerCpu(state.name, windows, Number(settings.KOIDRIVE_BENCH_SMALL_FILES), state.features);
 }
 
 interface Window {
@@ -127,9 +127,10 @@ function missingScope(error: unknown): boolean {
   return error instanceof ApiError && (error.status === 403 || /not authorized|unauthori[sz]ed|permission|access denied/i.test(error.message));
 }
 
-async function workerCpu(script: string, path: string): Promise<void> {
+async function workerCpu(script: string, path: string, files: number, features: string | undefined): Promise<void> {
   const windows = JSON.parse(readFileSync(path, "utf8")) as Window[];
   emit("\n#### Worker CPU per request (Analytics API)\n");
+  emit("KOIDRIVE_FEATURES on this deployment: " + (features === undefined ? "none, so the release defaults apply" : "`" + features + "`") + ".\n");
   const account = accountFromEnv();
   if (!account) {
     emit("Worker CPU unavailable: CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID are not set. The sync times and request counts above are complete.");
@@ -144,7 +145,9 @@ async function workerCpu(script: string, path: string): Promise<void> {
   const ms = (us: number | undefined) => (us === undefined ? "n/a" : (us / 1000).toFixed(2));
   const row = (window: Window, seen: Invocations | undefined) => {
     const n = seen?.sum.requests ?? 0;
-    return "| " + window.side + " | " + window.requests + " | " + n + (n < window.requests ? " (partial)" : "") + " | " + ms(seen?.quantiles.cpuTimeP50) + " | " + ms(seen?.quantiles.cpuTimeP99) + " | " + (seen?.sum.errors ?? 0) + " |";
+    const p99 = seen?.quantiles.cpuTimeP99;
+    const perFile = p99 === undefined ? undefined : (p99 * window.requests) / files;
+    return "| " + window.side + " | " + window.requests + " | " + n + (n < window.requests ? " (partial)" : "") + " | " + ms(seen?.quantiles.cpuTimeP50) + " | " + ms(p99) + " | " + ms(perFile) + " | " + (seen?.sum.errors ?? 0) + " |";
   };
   const stop = (window: Window, why: string) => "Worker CPU unavailable" + (rows.length > 0 ? " from the " + window.side + " side on" : "") + ": " + why + ". The sync times and request counts above are complete.";
   for (const [i, window] of windows.entries()) {
@@ -167,8 +170,10 @@ async function workerCpu(script: string, path: string): Promise<void> {
   }
   if (unavailable) emit(unavailable);
   if (rows.length === 0) return;
-  emit("| Side | Client upload requests | Worker invocations | CPU p50 ms | CPU p99 ms | Errors |\n|---|---|---|---|---|---|\n" + rows.join("\n"));
-  emit("\nWorker invocations cover the side's whole timed window, so they include the session's WebSocket upgrade as well as the upload requests. On the bundles side, CPU per invocation is CPU per bundle.");
+  emit("| Side | Client upload requests | Worker invocations | CPU p50 ms | CPU p99 ms | CPU p99 ms per file | Errors |\n|---|---|---|---|---|---|---|\n" + rows.join("\n"));
+  emit(
+    "\nWorker invocations cover the side's whole timed window, so they include the session's WebSocket upgrade as well as the upload requests. On the bundles side, CPU per invocation is CPU per bundle, and a bundle is written as one pack while chunk_packs is on. CPU p99 per file is CPU p99 times client upload requests, divided by the " + files + " files of the side.",
+  );
 }
 
 try {

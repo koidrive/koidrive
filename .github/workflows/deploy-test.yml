@@ -20,6 +20,10 @@ on:
         description: "upgrade only: the commit or tag to upgrade from. Empty means the newest tag before this commit."
         type: string
         required: false
+      features:
+        description: "KOIDRIVE_FEATURES for this commit's deployment, for example chunk_packs. Empty keeps the release defaults. bench-small runs once with the defaults and again with these; upgrade turns them off again at the end and checks that packs stay readable."
+        type: string
+        default: ''
       bench_ns:
         description: "bench only: comma-separated unique concurrency values from 1,2,4,8, at most four."
         type: string
@@ -270,6 +274,7 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           REF: ${{ inputs.mode == 'upgrade' && steps.from.outputs.sha || github.sha }}
           KOIDRIVE_TRACE_SAMPLING: ${{ inputs.mode == 'first-sync' && '0.05' || '' }}
+          KOIDRIVE_FEATURES: ${{ (inputs.mode == 'upgrade' || inputs.mode == 'bench-small') && '' || inputs.features }}
         run: node scripts/deploy-test/run.ts deploy "$REF"
 
       - name: Claim it with the code from its own log
@@ -310,6 +315,24 @@ jobs:
           KOIDRIVE_BENCH_SMALL_KIB: ${{ inputs.bench_small_kib }}
           KOIDRIVE_BENCH_SMALL_RUNS: ${{ inputs.bench_small_runs }}
         run: node scripts/deploy-test/bench.ts small
+      - name: Deploy this commit again with KOIDRIVE_FEATURES
+        if: inputs.mode == 'bench-small' && inputs.features != ''
+        timeout-minutes: 15
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          KOIDRIVE_FEATURES: ${{ inputs.features }}
+        run: node scripts/deploy-test/run.ts deploy "$GITHUB_SHA"
+      - name: Benchmark small-file uploads again with KOIDRIVE_FEATURES
+        if: inputs.mode == 'bench-small' && inputs.features != ''
+        timeout-minutes: 120
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          KOIDRIVE_BENCH_SMALL_FILES: ${{ inputs.bench_small_files }}
+          KOIDRIVE_BENCH_SMALL_KIB: ${{ inputs.bench_small_kib }}
+          KOIDRIVE_BENCH_SMALL_RUNS: ${{ inputs.bench_small_runs }}
+        run: node scripts/deploy-test/bench.ts small
 
       - name: Write data on the earlier release
         if: inputs.mode == 'upgrade'
@@ -322,12 +345,26 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          KOIDRIVE_FEATURES: ${{ inputs.features }}
         run: node scripts/deploy-test/run.ts deploy "$GITHUB_SHA"
 
       - name: Check that the data survived the upgrade
         if: inputs.mode == 'upgrade'
         timeout-minutes: 10
         run: pnpm exec vitest run --config scripts/deploy-test/vitest.config.ts --reporter=verbose upgrade-verify
+
+      - name: Deploy this commit again with chunk_packs off
+        if: inputs.mode == 'upgrade' && contains(inputs.features, 'chunk_packs')
+        timeout-minutes: 15
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: node scripts/deploy-test/run.ts deploy "$GITHUB_SHA"
+
+      - name: Check that packs stay readable with chunk_packs off
+        if: inputs.mode == 'upgrade' && contains(inputs.features, 'chunk_packs')
+        timeout-minutes: 10
+        run: pnpm exec vitest run --config scripts/deploy-test/vitest.config.ts --reporter=verbose upgrade-packs-off
 
       - name: "e2e: pair the Linux device and seal a pairing code for the macOS device"
         if: inputs.mode == 'e2e'

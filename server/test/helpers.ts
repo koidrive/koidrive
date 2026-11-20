@@ -8,8 +8,8 @@ import { type CommitResult, type Op, OpSchema, UploadReceiptSchema, type UploadR
 import { type RpcRequest, RpcRequestSchema, type RpcResponse, RpcResponseSchema } from "../src/gen/koidrive/v1/messages_pb";
 import { type ChunkRef, ChunkRefSchema, type Content, ContentSchema, type NodeState } from "../src/gen/koidrive/v1/model_pb";
 import { ChunkPlan_Action, type Error as RpcError } from "../src/gen/koidrive/v1/rpc_pb";
-import { encodePack } from "../src/chunk-pack";
-import { sha256, signChunkGrant, signPackedReceipt } from "../src/crypto";
+import { sealPack } from "../src/chunk-pack";
+import { sha256, signChunkGrant } from "../src/crypto";
 import { toHex, uuidv7 } from "../src/ids";
 import type { Session, SpaceDO } from "../src/space-do";
 import { MIGRATIONS } from "../src/space/schema";
@@ -86,16 +86,8 @@ export async function packFixture(
 ): Promise<{ packId: string; key: string; bytes: Uint8Array; receipts: UploadReceipt[] }> {
   const packId = init.packId ?? uuidv7();
   const expiresAtMs = init.expiresAtMs ?? Date.now() + GRANT_MS;
-  const hashed = await Promise.all(chunks.map(async (chunk) => ({ ...chunk, hash: await sha256(chunk.bytes) })));
-  const bytes = encodePack(hashed.map(({ hash, bytes }) => ({ hash, data: bytes })));
-  const receipts: UploadReceipt[] = [];
-  let offset = 0;
-  for (const { incarnation, bytes: data, hash } of hashed) {
-    const at = { packId, offset, packSize: bytes.length };
-    const token = await signPackedReceipt(spaceKey, { spaceId, hashHex: toHex(hash), incarnation }, data.length, at, expiresAtMs);
-    receipts.push(create(UploadReceiptSchema, { hash, size: data.length, token }));
-    offset += data.length;
-  }
+  const members = await Promise.all(chunks.map(async ({ incarnation, bytes }) => ({ incarnation, hash: await sha256(bytes), data: bytes })));
+  const { bytes, receipts } = await sealPack(spaceKey, spaceId, packId, members, expiresAtMs);
   return { packId, key: packKey(spaceId, packId), bytes, receipts };
 }
 

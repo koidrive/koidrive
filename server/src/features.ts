@@ -3,12 +3,14 @@
 export const COMMIT_TOKENS = "commit_tokens";
 export const CHUNK_BUNDLES = "chunk_bundles";
 export const GIT_TRACKED = "git_tracked";
+export const CHUNK_PACKS = "chunk_packs";
 
 export const REQUIRED: readonly string[] = [COMMIT_TOKENS];
-export const IMPLEMENTED: readonly string[] = [...REQUIRED, CHUNK_BUNDLES, GIT_TRACKED];
+export const ON_BY_DEFAULT: readonly string[] = [...REQUIRED, CHUNK_BUNDLES, GIT_TRACKED];
+export const IMPLEMENTED: readonly string[] = [...ON_BY_DEFAULT, CHUNK_PACKS];
 
 export function configuredFeatures(variable: string | undefined): Set<string> {
-  const configured = new Set(IMPLEMENTED);
+  const configured = new Set(ON_BY_DEFAULT);
   for (const entry of (variable ?? "").split(",").map((each) => each.trim())) {
     const name = entry.startsWith("-") ? entry.slice(1) : entry;
     if (!IMPLEMENTED.includes(name) || REQUIRED.includes(name)) continue;

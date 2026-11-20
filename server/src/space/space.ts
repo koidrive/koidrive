@@ -61,7 +61,7 @@ import { type ChunkObject, type PackLocation, type PackedRead, signChunkGrant, s
 import { errorText } from "../errors";
 import type { Database, ObjectState, ObjectStore, Socket, Sql, SqlRow } from "../host";
 import { fromHex, isUuidV7, toHex, uuidv7, uuidv7Ms, uuidv7Prefix } from "../ids";
-import { GIT_TRACKED } from "../features";
+import { CHUNK_PACKS, GIT_TRACKED } from "../features";
 import { policy } from "../policy";
 import { causeOf } from "../cause";
 import { platformFailure, quotaRefusal } from "../quota";
@@ -1296,6 +1296,7 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
       });
       const expiresAtMs = nowMs + GRANT_MS;
       const spaceId = this.spaceId;
+      const packs = this.features().has(CHUNK_PACKS);
       const plans = [];
       for (const [i, chunk] of chunks.entries()) {
         const { action, incarnation } = actions[i]!;
@@ -1303,8 +1304,8 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
         if (action === ChunkPlan_Action.RETRY_LATER) plan.retryAfterMs = BigInt(RETRY_LATER_MS);
         if (incarnation !== undefined) {
           const object = { spaceId, hashHex: toHex(chunk.hash), incarnation };
-          const ticket = await signChunkGrant(this.spaceKey, "put", object, chunk.size, expiresAtMs);
-          plan.target = create(TargetSchema, { url: this.chunkUrl(session, object, ticket), method: "PUT", expiresAtMs: BigInt(expiresAtMs) });
+          const url = this.chunkUrl(session, object, await signChunkGrant(this.spaceKey, "put", object, chunk.size, expiresAtMs));
+          plan.target = create(TargetSchema, { url: packs ? `${url}&pack=1` : url, method: "PUT", expiresAtMs: BigInt(expiresAtMs) });
         }
         plans.push(plan);
       }
