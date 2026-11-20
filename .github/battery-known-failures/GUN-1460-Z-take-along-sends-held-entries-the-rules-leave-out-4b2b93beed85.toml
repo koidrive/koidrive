@@ -1,11 +1,10 @@
 class = "Z"
 issue = "GUN-1460"
-tests = ["a_first_link_discard_takes_along_only_the_server_entries_the_user_leaves_alone", "a_first_link_sends_nothing_the_rules_leave_out_for_a_while_until_the_person_publishes_it"]
+tests = ["a_first_link_discard_takes_along_only_the_server_entries_the_user_leaves_alone"]
 message = '''assertion failed: `\(left == right\)` left: `\[("<id>"(, )?)+\]`, right: `\[\]` at \S+\.rs:<line>\.'''
 examples = [
     "assertion failed: `(left == right)`\n  left: `[\"01a1c2c0-39a0-779a-8c5c-906b1aeb85f8\", \"01a1c2c0-39a0-7abd-938c-6a0cda7326c7\"]`,\n right: `[]` at core/sim/tests/engine_sync/common.rs:2888.",
 ]
 cases = [
     "4b2b93beed85f8ce33d97a12fdb28a63ef2a23c96ad2efbcc99cbb547d4fca3a",
-    "e7125441d2e56da6293006cc1f5fff368ad900945a1f77cca78794ed4403e7a2",
 ]
