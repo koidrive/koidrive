@@ -761,6 +761,19 @@ fn a_server_folder_holding_a_file_another_device_purged_since_is_still_a_server_
 }
 
 #[test]
+fn a_removal_counts_against_a_folder_only_when_the_server_holds_the_entry_inside_it() {
+    for (r_parent_of_p, r_parent_of_s, counts) in [("s", "root", true), ("root", "p", false)] {
+        let mut device = Device::new(Trees::new("root"));
+        place_dir(&mut device, "s", Some(("root", "s")), Some((r_parent_of_s, "s")));
+        place_dir(&mut device, "p", None, Some((r_parent_of_p, "p")));
+        let shape = device.trees.remote().get(&"p".into()).unwrap().shape.clone();
+        device.trees.set_synced("p".into(), Some(shape));
+        device.removed_from.insert("p".into(), "s".into());
+        assert_eq!(removed_by_user_from(&device, &"s".into()), counts, "{r_parent_of_p}");
+    }
+}
+
+#[test]
 fn renaming_away_from_a_conflict_name_the_device_applied_is_acted_below_the_folder() {
     let (mut device, mut kept_with, discarded) = a_file_in_a_taken_along_server_folder();
     let f: NodeId = "f".into();

@@ -1617,10 +1617,22 @@ fn still_discarded_in(
 
 fn removed_by_user_from(device: &Device, id: &NodeId) -> bool {
     let trees = &device.trees;
+    let held_by_r = |child: &NodeId| {
+        let mut seen = BTreeSet::new();
+        let mut at = trees.remote().live(child).map(|shape| shape.parent.clone());
+        while let Some(parent) = at.filter(|parent| seen.insert(parent.clone())) {
+            if parent == *id {
+                return true;
+            }
+            at = trees.remote().get(&parent).map(|node| node.shape.parent.clone());
+        }
+        false
+    };
     (device.removed_from.iter()).any(|(child, from)| {
         trees.remote().live(child).is_some()
             && trees.local().get(child).is_none()
             && from == id
+            && held_by_r(child)
             && (acknowledged_shape(trees, child).is_some() || trees.excluded(child))
             && !kept_by_r7(device, child)
     })
