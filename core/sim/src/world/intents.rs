@@ -1836,7 +1836,7 @@ mod tests {
         let mut intents = Intents::new(2);
         for (ino, id) in [(1, "n"), (2, "p"), (3, "q")] {
             for device in &mut intents.nodes {
-                device.insert(ino, BTreeSet::from([id.to_owned()]));
+                device.insert(ino, BTreeSet::from([NodeId::from(id)]));
             }
         }
         let place = Value::Place {
@@ -1882,7 +1882,7 @@ mod tests {
     fn renamed_before_a_restore_that_kept_a() -> Intents {
         let mut intents = Intents::new(2);
         for device in &mut intents.nodes {
-            device.insert(1, BTreeSet::from(["n".to_owned()]));
+            device.insert(1, BTreeSet::from(["n".into()]));
         }
         let place = Value::Place {
             parent: None,
@@ -1923,7 +1923,7 @@ mod tests {
 
     fn a_write_whose_file_is_trashed_beside_a_file_of_its_bytes() -> (Intents, Server) {
         let mut intents = Intents::new(1);
-        intents.nodes[0].insert(1, BTreeSet::from(["n".to_owned()]));
+        intents.nodes[0].insert(1, BTreeSet::from(["n".into()]));
         let write = Value::Content {
             write: 4,
             digest: vec![4],
@@ -1949,7 +1949,7 @@ mod tests {
     #[test]
     fn a_write_stays_on_the_copy_the_server_made_of_it() {
         let (mut intents, server) = a_write_whose_file_is_trashed_beside_a_file_of_its_bytes();
-        intents.copied("n", "c");
+        intents.copied(&"n".into(), &"c".into());
         assert_eq!(intents.check(&server, |_| false, |_, _| false), Ok(()));
     }
 

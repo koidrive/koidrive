@@ -24,7 +24,7 @@ impl SeenLists {
         self.lists.insert(node, entries);
     }
 
-    pub fn remove(&mut self, node: &str) {
+    pub fn remove(&mut self, node: &NodeId) {
         self.unindex(node);
         self.lists.remove(node);
     }
@@ -38,7 +38,7 @@ impl SeenLists {
         self.lists.take_changes()
     }
 
-    fn unindex(&mut self, node: &str) {
+    fn unindex(&mut self, node: &NodeId) {
         let Some(entries) = self.lists.get(node) else {
             return;
         };

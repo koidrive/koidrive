@@ -2828,9 +2828,9 @@ impl World {
                         for (from, write, copy) in copies {
                             let kept = self.kept[d].get_mut(&write);
                             if let Some(nodes) = kept
-                                && let Some(ino) = nodes.get(from).copied()
+                                && let Some(ino) = nodes.get(&NodeId::from(from)).copied()
                             {
-                                nodes.insert(copy.clone(), ino);
+                                nodes.insert(NodeId::from(copy), ino);
                             }
                         }
                         if let Some(record) = committed.record {
@@ -3058,7 +3058,10 @@ impl World {
                                     };
                                     for copy in &changed {
                                         if live(copy) && content(copy).as_ref() == Some(&intent) {
-                                            self.intents.copied(&trashed.node_id, &copy.node_id);
+                                            self.intents.copied(
+                                                &NodeId::from(&trashed.node_id),
+                                                &NodeId::from(&copy.node_id),
+                                            );
                                         }
                                     }
                                 }

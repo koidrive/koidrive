@@ -44,7 +44,7 @@ impl Tx<'_> {
         )?;
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
-            let node: NodeId = row.get(0)?;
+            let node = NodeId::from(row.get::<_, String>(0)?);
             let field = field(&row.get::<_, String>(1)?)?;
             let state_name: String = row.get(7)?;
             let row_state = match state_name.as_str() {
@@ -90,7 +90,10 @@ impl Tx<'_> {
         )?;
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
-            let key = (row.get(0)?, field(&row.get::<_, String>(1)?)?);
+            let key = (
+                NodeId::from(row.get::<_, String>(0)?),
+                field(&row.get::<_, String>(1)?)?,
+            );
             state.history.entry(key).or_default().push(HistoryEntry {
                 intent: intent(&row.get::<_, Vec<u8>>(2)?)?,
                 applied_at_ms: row.get(3)?,
@@ -102,9 +105,9 @@ impl Tx<'_> {
         )?;
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
-            let node: NodeId = row.get(0)?;
+            let node = NodeId::from(row.get::<_, String>(0)?);
             state.seen.entry(node).or_default().push(Seen {
-                node: row.get(1)?,
+                node: NodeId::from(row.get::<_, String>(1)?),
                 field: field(&row.get::<_, String>(2)?)?,
                 intent: intent(&row.get::<_, Vec<u8>>(3)?)?,
                 value: (row.get::<_, Option<String>>(4)?)
@@ -117,7 +120,9 @@ impl Tx<'_> {
             .prepare_cached("SELECT node_id, since_ms FROM journal_absent")?;
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
-            state.absent.insert(row.get(0)?, row.get(1)?);
+            state
+                .absent
+                .insert(NodeId::from(row.get::<_, String>(0)?), row.get(1)?);
         }
         if let Some(listed) = self
             .0
@@ -148,6 +153,7 @@ impl Tx<'_> {
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
         )?;
         for ((node, field), row) in rows {
+            let node = node.to_string();
             let Some(row) = row else {
                 remove.execute(params![node, field.as_str()])?;
                 continue;
@@ -194,6 +200,7 @@ impl Tx<'_> {
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
         )?;
         for ((node, field), entries) in history {
+            let node = node.to_string();
             remove.execute(params![node, field.as_str()])?;
             for (ord, entry) in entries.iter().flatten().enumerate() {
                 put.execute(params![
@@ -214,12 +221,13 @@ impl Tx<'_> {
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
         )?;
         for (node, entries) in seen {
-            remove.execute([node])?;
+            let node = node.to_string();
+            remove.execute([&node])?;
             for (ord, entry) in entries.iter().flatten().enumerate() {
                 put.execute(params![
                     node,
                     ord,
-                    entry.node,
+                    entry.node.to_string(),
                     entry.field.as_str(),
                     entry.intent.as_bytes().to_vec(),
                     entry.value.as_ref().map(json).transpose()?,
@@ -234,6 +242,7 @@ impl Tx<'_> {
              ON CONFLICT (node_id) DO UPDATE SET since_ms = excluded.since_ms",
         )?;
         for (node, since) in absent {
+            let node = node.to_string();
             match since {
                 Some(since) => put.execute(params![node, since])?,
                 None => remove.execute([node])?,
@@ -293,7 +302,10 @@ impl Tx<'_> {
             "SELECT node_id, intents FROM synced_nodes WHERE intents IS NOT NULL",
         )?;
         let rows = stmt.query_map([], |row| {
-            Ok((row.get::<_, NodeId>(0)?, row.get::<_, Vec<u8>>(1)?))
+            Ok((
+                NodeId::from(row.get::<_, String>(0)?),
+                row.get::<_, Vec<u8>>(1)?,
+            ))
         })?;
         rows.map(|row| {
             let (node, bytes) = row?;

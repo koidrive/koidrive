@@ -661,13 +661,13 @@ impl Journal {
             .collect()
     }
 
-    pub fn r_lacks(&mut self, node: &str) {
+    pub fn r_lacks(&mut self, node: &NodeId) {
         if self.absent.get(node).is_none() {
             self.absent.insert(node.to_owned(), self.now_ms as i64);
         }
     }
 
-    pub fn r_holds(&mut self, node: &str) {
+    pub fn r_holds(&mut self, node: &NodeId) {
         self.absent.remove(node);
     }
 
@@ -683,7 +683,7 @@ impl Journal {
         self.listed = listed;
     }
 
-    pub(crate) fn row(&self, node: &str, field: Field) -> Option<&Row> {
+    pub(crate) fn row(&self, node: &NodeId, field: Field) -> Option<&Row> {
         self.rows.get(&(node.to_owned(), field))
     }
 
@@ -691,7 +691,7 @@ impl Journal {
         self.rows.iter()
     }
 
-    pub fn compact_row(&self, node: &str, field: Field) -> Option<HeldRow> {
+    pub fn compact_row(&self, node: &NodeId, field: Field) -> Option<HeldRow> {
         self.rows.get_compact(&(node.to_owned(), field))
     }
 
@@ -719,21 +719,21 @@ impl Journal {
         self.rows.insert_quietly(key, row);
     }
 
-    pub fn history(&self, node: &str, field: Field) -> &[HistoryEntry] {
+    pub fn history(&self, node: &NodeId, field: Field) -> &[HistoryEntry] {
         (self.history.get(&(node.to_owned(), field))).map_or(&[], Vec::as_slice)
     }
 
-    pub fn placed_under(&self, parent: &str) -> impl Iterator<Item = NodeId> {
+    pub fn placed_under(&self, parent: &NodeId) -> impl Iterator<Item = NodeId> {
         self.rows.under(parent).into_iter().map(|(node, _)| node)
     }
 
-    pub fn seen(&self, node: &str) -> &[Seen] {
+    pub fn seen(&self, node: &NodeId) -> &[Seen] {
         self.seen.get(node).map_or(&[], Vec::as_slice)
     }
 
     pub fn user_change(
         &mut self,
-        node: &str,
+        node: &NodeId,
         value: Value,
         wire_base: WireBase,
         seen: Option<IntentId>,
@@ -781,7 +781,7 @@ impl Journal {
 
     pub fn user_delete(
         &mut self,
-        node: &str,
+        node: &NodeId,
         seen_list: Vec<Seen>,
         seen: Option<IntentId>,
     ) -> IntentId {
@@ -798,7 +798,7 @@ impl Journal {
         self.user_change(node, Value::Status { live: false }, WireBase::None, seen)
     }
 
-    pub fn user_revived(&mut self, node: &str) {
+    pub fn user_revived(&mut self, node: &NodeId) {
         if (self.row(node, Field::Status))
             .is_some_and(|row| row.value == Value::Status { live: false })
         {
@@ -806,7 +806,7 @@ impl Journal {
         }
     }
 
-    pub fn insert_if_absent(&mut self, node: &str, row: Row) -> bool {
+    pub fn insert_if_absent(&mut self, node: &NodeId, row: Row) -> bool {
         let key = (node.to_owned(), row.value.field());
         if self.rows.get(&key).is_some() || self.rows.get_compact(&key).is_some() {
             return false;
@@ -815,7 +815,7 @@ impl Journal {
         true
     }
 
-    pub fn replace(&mut self, node: &str, row: Row) {
+    pub fn replace(&mut self, node: &NodeId, row: Row) {
         let key = (node.to_owned(), row.value.field());
         if self.rows.remove_compact(&key).is_some() {
             self.held_changed.insert(key.clone());
@@ -823,11 +823,11 @@ impl Journal {
         self.rows.insert(key, row);
     }
 
-    pub fn set_seen(&mut self, node: &str, seen: Vec<Seen>) {
+    pub fn set_seen(&mut self, node: &NodeId, seen: Vec<Seen>) {
         self.seen.insert(node.to_owned(), seen);
     }
 
-    pub fn end_unsent_carried(&mut self, node: &str) {
+    pub fn end_unsent_carried(&mut self, node: &NodeId) {
         for field in Field::ALL {
             let unsent = (self.rows.get(&(node.to_owned(), field))).is_some_and(|row| {
                 matches!(row.author, Author::Carried(_))
@@ -839,7 +839,7 @@ impl Journal {
         }
     }
 
-    pub fn end(&mut self, node: &str, field: Field) -> Option<Row> {
+    pub fn end(&mut self, node: &NodeId, field: Field) -> Option<Row> {
         if field == Field::Status {
             self.seen.remove(node);
         }
@@ -850,7 +850,7 @@ impl Journal {
         self.rows.remove(&key)
     }
 
-    pub fn send(&mut self, node: &str, field: Field, head_time_ms: i64) -> Option<&Row> {
+    pub fn send(&mut self, node: &NodeId, field: Field, head_time_ms: i64) -> Option<&Row> {
         let key = (node.to_owned(), field);
         self.rows.update(&key, |row| {
             if matches!(row.state, RowState::Local { .. }) {
@@ -863,7 +863,7 @@ impl Journal {
 
     pub fn send_unrecorded(
         &mut self,
-        node: &str,
+        node: &NodeId,
         value: Value,
         wire_base: WireBase,
         base: Option<IntentId>,
@@ -884,7 +884,7 @@ impl Journal {
         self.rows.get(&key).expect("the row was just written")
     }
 
-    pub fn unsend(&mut self, node: &str, field: Field) {
+    pub fn unsend(&mut self, node: &NodeId, field: Field) {
         self.rows.update(&(node.to_owned(), field), |row| {
             if row.state == RowState::Sent {
                 row.state = RowState::Local { flight: None };
@@ -894,7 +894,7 @@ impl Journal {
 
     pub fn applied(
         &mut self,
-        node: &str,
+        node: &NodeId,
         field: Field,
         sent: IntentId,
         held: &FieldIntent,
@@ -940,7 +940,7 @@ impl Journal {
 
     pub fn superseded(
         &mut self,
-        node: &str,
+        node: &NodeId,
         field: Field,
         sent: IntentId,
         reported: Option<IntentId>,
@@ -961,10 +961,10 @@ impl Journal {
 
     pub fn held_elsewhere(
         &mut self,
-        node: &str,
+        node: &NodeId,
         field: Field,
         sent: IntentId,
-        target: &str,
+        target: &NodeId,
         version_id: Option<String>,
         at_ms: i64,
     ) {
@@ -999,13 +999,13 @@ impl Journal {
         self.push_history(target, field, sent, at_ms, true);
     }
 
-    pub fn sent_intent(&self, node: &str, field: Field) -> Option<IntentId> {
+    pub fn sent_intent(&self, node: &NodeId, field: Field) -> Option<IntentId> {
         self.row(node, field)?
             .in_flight()
             .map(|flight| flight.intent)
     }
 
-    pub fn merged_into(&mut self, node: &str, target: &str, children_moved: bool) {
+    pub fn merged_into(&mut self, node: &NodeId, target: &NodeId, children_moved: bool) {
         self.end(node, Field::Place);
         self.end(node, Field::Status);
         if let Some(row) = self.rows.remove(&(node.to_owned(), Field::Content)) {
@@ -1047,7 +1047,13 @@ impl Journal {
         }
     }
 
-    pub fn remote_holds(&mut self, node: &str, field: Field, intent: &FieldIntent, in_local: bool) {
+    pub fn remote_holds(
+        &mut self,
+        node: &NodeId,
+        field: Field,
+        intent: &FieldIntent,
+        in_local: bool,
+    ) {
         self.push_history(node, field, intent.id, intent.applied_at_ms, in_local);
         let held_as = match (self.row(node, field), self.compact_row(node, field)) {
             (Some(row), _) => match row.state {
@@ -1063,7 +1069,7 @@ impl Journal {
         }
     }
 
-    pub fn local_holds(&mut self, node: &str, field: Field, intent: IntentId) {
+    pub fn local_holds(&mut self, node: &NodeId, field: Field, intent: IntentId) {
         let key = (node.to_owned(), field);
         let held = (self.history.get(&key)).is_some_and(|entries| {
             entries
@@ -1080,7 +1086,7 @@ impl Journal {
 
     pub fn places_after(
         &self,
-        node: &str,
+        node: &NodeId,
         field: Field,
         later: IntentId,
         earlier: IntentId,
@@ -1098,7 +1104,7 @@ impl Journal {
 
     fn push_history(
         &mut self,
-        node: &str,
+        node: &NodeId,
         field: Field,
         intent: IntentId,
         applied_at_ms: i64,
@@ -1131,7 +1137,7 @@ impl Journal {
         }
     }
 
-    pub(crate) fn trim_history(&mut self, node: &str, field: Field, implied: &HistoryEntry) {
+    pub(crate) fn trim_history(&mut self, node: &NodeId, field: Field, implied: &HistoryEntry) {
         let key = (node.to_owned(), field);
         if self.history.get(&key).and_then(|entries| entries.last()) != Some(implied) {
             return;
@@ -1148,7 +1154,7 @@ impl Journal {
         }
     }
 
-    pub fn forget_history(&mut self, node: &str) {
+    pub fn forget_history(&mut self, node: &NodeId) {
         for field in Field::ALL {
             self.history.remove(&(node.to_owned(), field));
         }

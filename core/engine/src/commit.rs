@@ -2558,8 +2558,8 @@ impl Commits {
                 Some(op::Op::Move(moved)) => Some(&moved.node_id),
                 _ => None,
             };
-            let superseded =
-                code == Code::Superseded && target.is_some_and(|id| !sent_again.contains(&NodeId::from(id)));
+            let superseded = code == Code::Superseded
+                && target.is_some_and(|id| !sent_again.contains(&NodeId::from(id)));
             let (node, done) = match &op.op {
                 Some(op::Op::CreateDir(create)) => {
                     let create_id = NodeId::from(&create.node_id);
@@ -2780,7 +2780,10 @@ impl Commits {
                     if code == Code::ConflictCopy {
                         conflicts.push((index, id.clone(), outcome_id.clone()));
                     }
-                    (id.clone(), applied || superseded || code == Code::ConflictCopy)
+                    (
+                        id.clone(),
+                        applied || superseded || code == Code::ConflictCopy,
+                    )
                 }
                 Some(op::Op::Move(moved)) => {
                     let id = &NodeId::from(&moved.node_id);

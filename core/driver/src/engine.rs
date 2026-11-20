@@ -192,7 +192,7 @@ impl Engine {
                     })?;
                     let intents = (self.trees.synced_intents_apart_from_remote(id))
                         .map(NodeIntents::to_proto);
-                    tx.set_synced_intents(id, intents.as_ref())?;
+                    tx.set_synced_intents(&id.to_string(), intents.as_ref())?;
                 }
                 None => {
                     tx.remove_synced_node(&id.to_string())?;
@@ -201,7 +201,7 @@ impl Engine {
             if let Some(intents) =
                 (self.trees.remote().get(id)).and_then(|node| node.intents.as_ref())
             {
-                tx.set_remote_intents(id, Some(&intents.to_proto()))?;
+                tx.set_remote_intents(&id.to_string(), Some(&intents.to_proto()))?;
             }
         }
         let changes = EngineChanges {
@@ -5129,7 +5129,7 @@ mod tests {
         let mut first = store.transaction(|tx| Engine::load(tx, ROOT)).unwrap();
         let backfilled = first
             .trees
-            .journal_row("d", koidrive_engine::journal::Field::Place)
+            .journal_row(&"d".into(), koidrive_engine::journal::Field::Place)
             .unwrap()
             .intent;
         assert_ne!(
