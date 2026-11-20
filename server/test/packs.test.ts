@@ -346,11 +346,11 @@ describe("chunk packs: pack GC (RFC 0032 section 6)", () => {
 
   it("lowers a pack's counts in the same pass that deletes one of its rows", async () => {
     const space = await packedSpace();
-    const file = await space.prepare("gc-counts-kept", "gc-counts-dropped");
-    const [kept, dropped] = file.chunks as [Planned, Planned];
-    const pack = await storedPack(space, [kept, dropped]);
+    const { packed, pack } = await refusedPack(space, ["gc-counts-kept", "gc-counts-dropped"]);
+    const [kept, dropped] = packed as [Planned, Planned];
+    expect(await packsOf(space)).toMatchObject([{ pack_id: pack.packId, live_count: 2 }]);
     const keep = await space.prepare("gc-counts-kept");
-    expect(outcome(await space.commit(keep, pack.receipts))).toBe("commit");
+    expect(outcome(await space.commit(keep, []))).toBe("commit");
     await gc(space, Date.now() + 40 * DAY);
     expect(await chunkRow(space, dropped)).toBeUndefined();
     expect(await packsOf(space)).toMatchObject([{ pack_id: pack.packId, state: PackState.LIVE, live_count: 1, live_bytes: kept.bytes.length }]);
