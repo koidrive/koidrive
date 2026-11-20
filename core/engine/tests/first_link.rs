@@ -5880,7 +5880,7 @@ mod a_server_file_moved_into_an_asked_folder {
     }
 
     #[test]
-    fn a_server_file_deleted_before_a_scan_sees_it_is_asked_about_again_and_comes_back_with_its_taken_along_folder()
+    fn a_server_file_deleted_before_a_scan_sees_it_is_not_asked_about_again_and_comes_back_with_its_taken_along_folder()
      {
         let (mut c, mut t, mut i) = server_folder_moved_in_while_left_out();
         let asked = question(&c).id;
@@ -5888,11 +5888,11 @@ mod a_server_file_moved_into_an_asked_folder {
         t.remove_local(&"sc".into());
         t.settle(&Default::default());
         assert_eq!(settle(&mut c, &mut t, &mut i), []);
-        let again = question(&c);
-        assert_ne!(again.id, asked);
-        assert_eq!(again.answer, None);
-        assert!(c.decide(&mut t, &again.id, Answer::Discard));
-        assert_eq!(settle(&mut c, &mut t, &mut i), []);
+        assert!(
+            c.questions().iter().all(|open| open.answer.is_some()),
+            "{:?}",
+            c.questions()
+        );
         assert!(
             t.remote()
                 .get(&"sc".into())
@@ -6769,4 +6769,81 @@ fn deleting_only_the_discarded_note_while_stopped_keeps_its_server_folder_taken_
             .is_some_and(|node| !node.trashed)
     );
     assert_eq!(local(&trees), [("x".into(), ROOT.into(), "server".into())]);
+}
+
+#[test]
+fn a_server_folder_whose_unobserved_delete_reverts_is_taken_along_before_its_entries_download_again()
+ {
+    for unobserved in [true, false] {
+        let mut trees = trees(
+            &[
+                ("f", dir(ROOT, "new")),
+                ("x", dir(ROOT, "server")),
+                ("y", dir("x", "y")),
+                ("c", file("y", "c", 5)),
+            ],
+            &[
+                ("x", dir(ROOT, "server")),
+                ("y", dir("x", "y")),
+                ("c", file("y", "c", 5)),
+            ],
+        );
+        let (mut commits, mut ids) = (Commits::default(), IdGen::new(7));
+        commits.first_link(&mut trees, &mut ids, NOW, PriorSync::Shown);
+        let asked = question(&commits);
+        trees.set_rules(
+            &[] as &[&str],
+            Source::Koiignore,
+            Some(RuleFile::parse(b"ignored\n")),
+        );
+        if unobserved {
+            let mut renamed = trees.local().get(&"y".into()).unwrap().clone();
+            renamed.shape.name = "ignored".into();
+            trees.set_local_changed("y".into(), renamed);
+            trees.settle(commits.aliases());
+            assert!(trees.unobserved(&"c".into()));
+            trees.remove_local(&"c".into());
+            trees.remove_local(&"y".into());
+        } else {
+            trees.remove_local(&"c".into());
+        }
+        trees.settle(commits.aliases());
+        let mut moved = trees.local().get(&"x".into()).unwrap().clone();
+        moved.shape.parent = "f".into();
+        moved.shape.name = "ignored".into();
+        trees.set_local_changed("x".into(), moved);
+        trees.settle(commits.aliases());
+        assert!(commits.decide(&mut trees, &asked.id, Answer::Discard));
+        assert!(
+            ops(&mut commits, &mut trees, &mut ids).is_empty(),
+            "{unobserved}"
+        );
+        trees.set_rules(&[] as &[&str], Source::Koiignore, None);
+        let sent = drive_until_quiet(&mut commits, &mut trees, &mut ids);
+        if !unobserved {
+            assert_eq!(
+                sent,
+                [
+                    ("create dir", "f".to_owned()),
+                    ("move", "x".to_owned()),
+                    ("delete", "c".to_owned())
+                ]
+            );
+            assert_eq!(
+                trees.local().get(&"x".into()).unwrap().shape,
+                dir("f", "ignored")
+            );
+            continue;
+        }
+        assert!(sent.is_empty(), "{sent:?}");
+        assert!(drive_until_quiet(&mut commits, &mut trees, &mut ids).is_empty());
+        assert_eq!(
+            local(&trees),
+            [
+                ("c".into(), "y".into(), "c".into()),
+                ("x".into(), ROOT.into(), "server".into()),
+                ("y".into(), "x".into(), "y".into())
+            ]
+        );
+    }
 }

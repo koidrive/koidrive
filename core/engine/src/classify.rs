@@ -3848,6 +3848,7 @@ impl Trees {
         self.held_for_scan = held_for_scan;
         for released in groups {
             for id in self.take_released(released).into_iter().rev() {
+                self.removed_from.remove(&id);
                 self.mark(&id);
                 self.released.push(id);
             }
