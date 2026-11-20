@@ -332,10 +332,8 @@ impl Trees {
                 continue;
             };
             if self.l.get(&id).is_none() {
-                if self.journal_row(&id, Field::Status).is_none() {
-                    let seen_list = self.acknowledged_seen_list(&id);
-                    let base = self.acknowledged_intent(&id, Field::Status);
-                    self.journal.user_delete(&id, seen_list, base);
+                if self.user_deleted(&id) {
+                    self.delete_acknowledged(&id);
                 }
                 continue;
             }
@@ -499,6 +497,15 @@ impl Trees {
     fn acknowledged_intent(&self, id: &NodeId, field: Field) -> Option<IntentId> {
         let value = self.acknowledged_value(id, field)?;
         Some(self.legacy_intent(id, field, &value))
+    }
+
+    pub(crate) fn delete_acknowledged(&mut self, id: &NodeId) {
+        if self.acknowledged(id).is_none() || self.journal_row(id, Field::Status).is_some() {
+            return;
+        }
+        let seen_list = self.acknowledged_seen_list(id);
+        let base = self.acknowledged_intent(id, Field::Status);
+        self.journal.user_delete(id, seen_list, base);
     }
 
     fn acknowledged_seen_list(&self, id: &NodeId) -> Vec<Seen> {
@@ -941,8 +948,13 @@ impl Trees {
         self.kept_folders.contains(id) && self.r.live(id).is_none()
     }
 
+    fn user_deleted(&self, id: &NodeId) -> bool {
+        !self.unobserved(id) && !self.asked.contains(id)
+    }
+
     /// Takes a node its user deleted out of L. A node R or S holds, or one a sent or held row may have put on the
-    /// server, gets a status row with the seen list of what L held for it and the nodes below it (RFC 0029 §5.1);
+    /// server, gets a status row with the seen list of what L held for it and the nodes below it (RFC 0029 §5.1),
+    /// unless the rules leave it out or an open question holds it, since the device then saw no delete of the user;
     /// the rows of any other node end, since no server ever held it.
     pub fn remove_local_by_user(&mut self, id: &NodeId) {
         if self.l.get(id).is_some() && !self.local_kept_record(id) {
@@ -954,7 +966,7 @@ impl Trees {
                 for field in Field::ALL {
                     self.journal.end(id, field);
                 }
-            } else {
+            } else if self.user_deleted(id) {
                 let seen_list = self.seen_list(id);
                 let base = (self.r.live(id).and(self.r.get(id)))
                     .and_then(|remote| remote_intent_of(remote, Field::Status))

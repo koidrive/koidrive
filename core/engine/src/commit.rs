@@ -1485,6 +1485,9 @@ impl Commits {
         for (id, shape) in update_synced(trees, updates) {
             trees.wait(id, shape, Origin::Other);
         }
+        for id in &recovery_deletes {
+            trees.delete_acknowledged(id);
+        }
         self.hold(trees);
         (released, recovery_deletes)
     }
