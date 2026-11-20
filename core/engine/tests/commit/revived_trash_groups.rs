@@ -1004,3 +1004,39 @@ fn a_lost_folder_restore_yields_to_a_later_trash_of_a_member_this_device_had_not
     trees.settle(commits.aliases());
     assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
 }
+
+fn renamed_back_over_a_fresh_trash(moves_upgraded: bool) -> (Option<Vec<op::Op>>, Vec<Effect>) {
+    let (mut trees, mut commits, mut ids) = renamed_in_place_out_of_the_trash();
+    trees.set_local_changed("f".into(), local(file("p", "a", 1), 2));
+    trees.settle(commits.aliases());
+    let mut state = trees.state();
+    if moves_upgraded {
+        for moved in state.moved_here.values_mut() {
+            moved.upgraded = true;
+        }
+        state.past_positions.clear();
+    }
+    trees.restore(state).unwrap();
+    trees.rules_scanned();
+    let fresh = RemoteNode {
+        trash_group: "commit-of-z:0".into(),
+        ..trashed_at(file("p", "a", 1), 2)
+    };
+    lose_and_list(&mut trees, &mut commits, &[("f", fresh)]);
+    let effects = effects_for(&mut trees, &mut ids, "f");
+    (build(&mut commits, &mut trees, &mut ids).map(|c| ops(&c)), effects)
+}
+
+#[test]
+fn a_rename_back_over_a_fresh_trash_at_the_reused_seq_is_sent() {
+    let (commit, effects) = renamed_back_over_a_fresh_trash(false);
+    assert_eq!(effects, []);
+    assert_eq!(commit, Some(vec![mv("f", "p", "a")]));
+}
+
+#[test]
+fn a_rename_back_over_a_fresh_trash_at_the_reused_seq_is_sent_from_a_store_with_upgraded_moves() {
+    let (commit, effects) = renamed_back_over_a_fresh_trash(true);
+    assert_eq!(effects, []);
+    assert_eq!(commit, Some(vec![mv("f", "p", "a")]));
+}
