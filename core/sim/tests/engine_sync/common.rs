@@ -2013,7 +2013,7 @@ fn run_ignoring_answering_after(
     let mut sent_since: BTreeSet<NodeId> = BTreeSet::new();
     note_agreements(&device, &mut sent_since, &mut agreed, &mut from_server);
     let mut merged_into: BTreeMap<NodeId, NodeId> = BTreeMap::new();
-    let mut failed_on_ignored: BTreeMap<NodeId, Effect> = BTreeMap::new();
+    let mut failed_on_ignored: BTreeMap<NodeId, (Effect, Shape)> = BTreeMap::new();
     let mut revived_once: BTreeSet<NodeId> = BTreeSet::new();
     let mut freed: BTreeSet<NodeId> = BTreeSet::new();
     let mut sent_nodes: BTreeSet<NodeId> = BTreeSet::new();
@@ -2271,11 +2271,14 @@ fn run_ignoring_answering_after(
                 } => record.after.as_ref(),
                 _ => None,
             };
-            if placed_at.is_some_and(|at| device.disk_name_taken(&at.parent, &[], &at.name)) {
+            if let Some(at) =
+                placed_at.filter(|at| device.disk_name_taken(&at.parent, &[], &at.name))
+            {
+                let target = (record.effect.clone(), at.clone());
                 effects
                     .failed(&mut device.trees, &record.effect_id)
                     .unwrap();
-                failed_on_ignored.insert(record.node.clone(), record.effect.clone());
+                failed_on_ignored.insert(record.node.clone(), target);
                 continue;
             }
             let identity = device.identity();
@@ -2608,9 +2611,20 @@ fn run_ignoring_answering_after(
             .then(|| id.clone())
         })
         .collect();
-    let blocked_by_ignored = |id: &NodeId| {
-        (effects.blocked().get(id)).is_some_and(|effect| failed_on_ignored.get(id) == Some(effect))
+    let failed_here = |id: &NodeId| {
+        (effects.blocked().get(id))
+            .zip(failed_on_ignored.get(id))
+            .filter(|(effect, (failed, _))| failed == *effect)
+            .map(|(_, (_, at))| at)
     };
+    for id in effects.blocked().keys() {
+        prop_assert!(
+            failed_here(id).is_none_or(|at| device.disk_name_taken(&at.parent, &[], &at.name)),
+            "the blocked placement of {} outlived the ignored entry that took its name",
+            id
+        );
+    }
+    let blocked_by_ignored = |id: &NodeId| failed_here(id).is_some();
     let mut waiting = refused_merges.clone();
     loop {
         let more: Vec<NodeId> = (unsettled.iter())

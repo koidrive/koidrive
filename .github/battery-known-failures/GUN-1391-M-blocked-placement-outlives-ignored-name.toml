@@ -1,0 +1,21 @@
+class = "M"
+issue = "GUN-1391"
+tests = [
+  "a_first_link_discard_takes_along_only_the_server_entries_the_user_leaves_alone",
+  "a_first_link_sends_nothing_the_rules_leave_out_for_a_while_until_the_person_publishes_it",
+]
+message = '''the blocked placement of <id> outlived the ignored entry that took its name at \S+\.rs:<line>\.'''
+examples = [
+  "the blocked placement of 01a1c2c0-39a0-7c9f-92dd-37ded7172a70 outlived the ignored entry that took its name at core/sim/tests/engine_sync/common.rs:2594.",
+  "the blocked placement of 01a1c2c0-39a0-7001-b241-9db23951df99 outlived the ignored entry that took its name at core/sim/tests/engine_sync/common.rs:2594.",
+]
+cases = [
+  "16d2acb03364de5b073ba7e02984c44ad1072409f173a1b73e28d5f7020be1dd",
+  "1fc46600680beee54e3aa292e91bf2d5a21ad2e325a08c3c86bf7dcd299e420c",
+  "396aff993a182dd174cde047532610b0f37dd260bef0d90780930647d808b56a",
+  "4af912fc141bf55790a6a28a6c2049b788c3dee07f298013e6a7e837f67ea581",
+  "4d62be76baa130803cf61f1cf5e543313e23ca466753cea96663e9aa0a31e626",
+  "732e5b05f6428d31344c1b2ca8314a4ff86d4f8986a69554672c0deb76160c08",
+  "8bd4cdfecd015572a6d26a0a6acd2c86a4dacac86746491021b60111bd74e79a",
+  "b97038a3f91e07ff2be22979b08f5990a5b73ec73f6122c38baf08709efe55b8",
+]
