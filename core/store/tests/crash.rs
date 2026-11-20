@@ -55,6 +55,7 @@ fn engine(seq: u64, taken: Vec<(RestoreId, RestoreIntent)>) -> EngineState {
     EngineState {
         commits: CommitsState {
             in_flight: Some(InFlight {
+                move_bases: BTreeMap::new(),
                 commit: Commit {
                     commit_id: format!("commit-{seq}"),
                     base_seq: seq,

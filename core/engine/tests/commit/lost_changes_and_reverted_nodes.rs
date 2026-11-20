@@ -1571,6 +1571,7 @@ fn a_move_recorded_by_the_store_upgrade_is_not_sent_over_a_move_made_after_its_c
     move_n_to_y_at(9, &mut trees, &mut commits, &mut ids);
     let mut state = trees.state();
     let upgraded = MovedHere {
+        history: None,
         seq: 9,
         upgraded: true,
     };
@@ -1664,7 +1665,7 @@ fn sent_after_losing_a_move(age: impl FnOnce(&mut Trees)) -> Option<Vec<op::Op>>
     let mut trees = trees(&[synced("a", file(ROOT, "x", 1))]);
     trees.set_local("a".into(), local(file(ROOT, "y", 1), 1));
     trees.set_remote("a".into(), remote_at(file(ROOT, "y", 1), 2));
-    trees.record_moved(&"a".into(), 2);
+    trees.record_moved(&"a".into(), 2, None);
     trees.set_synced("a".into(), Some(file(ROOT, "y", 1)));
     age(&mut trees);
     let moved = trees.moved_here();

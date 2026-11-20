@@ -4,7 +4,7 @@ use std::collections::{BTreeSet, HashMap};
 
 use koidrive_engine::names::{conflict_name, is_reserved_at_root, name_key, normalize_name};
 use koidrive_proto::v1::{
-    ChangeRecord, ChunkRef, Content, CreateDir, CreateFile, Delete, Error, Move, NodeKind,
+    ChangeRecord, ChunkRef, Content, CreateDir, CreateFile, Delete, Error, Intent, Move, NodeKind,
     NodeStatus, Op, OpResult, Place, Restore, change_record, error, op, op_result,
 };
 
@@ -102,7 +102,7 @@ impl<'a> Applier<'a> {
                     &op.source_version_id,
                 )
             }
-            Some(op::Op::Move(op)) => self.move_node(op),
+            Some(op::Op::Move(moved)) => self.move_node(moved, op.intent.as_ref()),
             Some(op::Op::Delete(op)) => Ok(self.delete(op, index)),
             Some(op::Op::Restore(op)) => self.restore(op),
             Some(op::Op::MarkGitTracked(_)) | None => Err(fail(
@@ -267,6 +267,9 @@ impl<'a> Applier<'a> {
         let (name, renamed) = self.pick_name(parent_id, desired, node_id);
         let (seq, dev) = (self.ctx.seq, self.dev().to_string());
         let node = self.st.nodes.get_mut(node_id).expect("revived node exists");
+        if node.parent_id.as_deref() != Some(parent_id) || node.name != name {
+            node.place_id = Some(self.st.ids.uuid_v7_bytes(self.ctx.now_ms as u64));
+        }
         node.status = NodeStatus::Live;
         node.parent_id = Some(parent_id.to_string());
         node.parent_rev = seq;
@@ -351,6 +354,7 @@ impl<'a> Applier<'a> {
         let row = self.st.next_row();
         let node = Node {
             node_id: node_id.into(),
+            place_id: Some(self.st.ids.uuid_v7_bytes(self.ctx.now_ms as u64)),
             parent_id: Some(parent_id.into()),
             name: name.into(),
             name_key: name_key(name),
@@ -647,7 +651,7 @@ impl<'a> Applier<'a> {
         false
     }
 
-    fn move_node(&mut self, op: &Move) -> Result<OpResult, Error> {
+    fn move_node(&mut self, op: &Move, intent: Option<&Intent>) -> Result<OpResult, Error> {
         let Some(found) = self.node(&op.node_id) else {
             return Ok(rejected("NOT_FOUND"));
         };
@@ -687,6 +691,7 @@ impl<'a> Applier<'a> {
             let authored = found.meta_edit_rev < found.meta_rev;
             if authored || self.unseen_parent(&found) {
                 let (seq, dev) = (self.ctx.seq, self.dev().to_string());
+                let place_id = authored.then(|| self.move_place_id(intent));
                 let stored = self
                     .st
                     .nodes
@@ -695,6 +700,7 @@ impl<'a> Applier<'a> {
                 stored.parent_rev = seq;
                 stored.parent_dev = dev.clone();
                 if authored {
+                    stored.place_id = place_id;
                     stored.meta_edit_rev = seq;
                     stored.meta_edit_dev = dev;
                     self.touch(&found.node_id);
@@ -706,6 +712,7 @@ impl<'a> Applier<'a> {
             .parent_for(&target.node_id)?
             .expect("the target is an existing directory");
         self.check_subtree_depth(&found, &parent)?;
+        let place_id = self.move_place_id(intent);
         if found.status == NodeStatus::Trashed {
             let group = found
                 .trash_group
@@ -713,6 +720,7 @@ impl<'a> Applier<'a> {
                 .expect("a trashed node has a trash group");
             let dev = self.dev().to_string();
             let (name, renamed) = self.revive_one(&found.node_id, &parent.node_id, &name, &dev);
+            self.st.nodes.get_mut(&found.node_id).unwrap().place_id = Some(place_id);
             self.revive_group(&found.node_id, &group);
             self.mark(&found.node_id, pending_for);
             return Ok(applied(renamed, &name));
@@ -731,6 +739,7 @@ impl<'a> Applier<'a> {
             stored.parent_dev = dev.clone();
         }
         stored.parent_id = Some(parent.node_id.clone());
+        stored.place_id = Some(place_id);
         stored.name_key = name_key(&name);
         stored.name = name.clone();
         stored.meta_rev = seq;
@@ -742,6 +751,12 @@ impl<'a> Applier<'a> {
         self.mark(&found.node_id, pending_for);
         self.touch(&found.node_id);
         Ok(applied(renamed, &name))
+    }
+
+    fn move_place_id(&mut self, intent: Option<&Intent>) -> [u8; 16] {
+        intent
+            .and_then(|intent| intent.id.as_slice().try_into().ok())
+            .unwrap_or_else(|| self.st.ids.uuid_v7_bytes(self.ctx.now_ms as u64))
     }
 
     fn is_at(&self, node: &Node, from: &Place, target: &Node) -> bool {

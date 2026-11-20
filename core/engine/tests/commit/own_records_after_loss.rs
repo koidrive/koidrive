@@ -209,7 +209,7 @@ fn a_move_the_server_lost_is_sent_again_whether_or_not_its_result_arrived() {
 fn a_lost_own_move_the_server_holds_again_as_l_and_s_do_is_no_change() {
     let mut trees = trees(&[synced("n", file(ROOT, "a", 1))]);
     trees.set_remote("n".into(), remote_at(file(ROOT, "a", 1), 5));
-    trees.record_moved(&"n".into(), 5);
+    trees.record_moved(&"n".into(), 5, None);
     let moved = trees.moved_here();
     assert_eq!(moved.len(), 1);
     trees.set_remote("n".into(), remote_at(file(ROOT, "a", 1), 6));

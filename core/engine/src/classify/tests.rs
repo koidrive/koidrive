@@ -29,6 +29,43 @@ fn remote(shape: Shape) -> RemoteNode {
     }
 }
 
+#[test]
+fn a_listed_place_has_to_match_each_field_of_a_move_base() {
+    let mut trees = Trees::new("root");
+    let id = NodeId::from("n");
+    let place = crate::ids::IdGen::new(1).uuid_v7_bytes(1);
+    let old = remote(dir(&"root".into(), "b"));
+    trees.set_remote(id.clone(), old.clone());
+    assert!(trees.move_bases(&id).is_none());
+    trees.set_remote_place_id(&id, Some(place));
+    let base = trees.move_bases(&id).unwrap().pop().unwrap();
+    assert!(base.matches(&old, Some(place)));
+    assert!(!base.matches(&old, None));
+    assert!(!base.matches(
+        &RemoteNode {
+            trashed: true,
+            ..old.clone()
+        },
+        Some(place)
+    ));
+    assert!(!base.matches(
+        &RemoteNode {
+            meta_rev: 2,
+            ..old.clone()
+        },
+        Some(place)
+    ));
+    for shape in [dir(&"other".into(), "b"), dir(&"root".into(), "B")] {
+        assert!(!base.matches(
+            &RemoteNode {
+                shape,
+                ..old.clone()
+            },
+            Some(place)
+        ));
+    }
+}
+
 fn ancestry_file(value: u8) -> Shape {
     Shape {
         parent: "root".into(),

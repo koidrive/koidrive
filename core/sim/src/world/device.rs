@@ -69,6 +69,7 @@ impl Engine {
         let mut trees = Trees::new(self.trees.remote().root.clone());
         for (id, node) in self.trees.remote().iter() {
             trees.set_remote(id.clone(), node.clone());
+            trees.set_remote_place_id(id, self.trees.remote_place_id(id));
         }
         for (id, node) in self.trees.local().iter() {
             trees.set_local(id.clone(), node.clone());
@@ -115,16 +116,18 @@ impl Engine {
                     })?;
                     if made.is_some_and(|commit_id| self.commits.answers_in_flight(commit_id, &id))
                     {
-                        self.trees.set_remote_answered_here(id, node);
+                        self.trees.set_remote_answered_here(id.clone(), node);
                     } else if made
                         .is_some_and(|commit_id| self.commits.edits_in_flight(commit_id, &id))
                     {
-                        self.trees.set_remote_edited_here(id, node);
+                        self.trees.set_remote_edited_here(id.clone(), node);
                     } else if made.is_some() {
-                        self.trees.set_remote_made_here(id, node);
+                        self.trees.set_remote_made_here(id.clone(), node);
                     } else {
-                        self.trees.set_remote(id, node);
+                        self.trees.set_remote(id.clone(), node);
                     }
+                    self.trees
+                        .set_remote_place_id(&id, RemoteNode::place_id(state));
                 }
                 Some(change_record::Change::Purged(purged)) => {
                     self.trees.remove_remote(&NodeId::from(&purged.node_id))

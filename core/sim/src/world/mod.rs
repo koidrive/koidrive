@@ -2379,7 +2379,7 @@ impl World {
                     let (id, node) = RemoteNode::from_state(state).map_err(|error| {
                         Failure::Broken(format!("unreadable node state: {error:?}"))
                     })?;
-                    listed.insert(id, node);
+                    listed.insert(id, (node, RemoteNode::place_id(state)));
                 }
                 let gone: Vec<NodeId> = (trees.remote().iter())
                     .map(|(id, _)| id)
@@ -2389,10 +2389,11 @@ impl World {
                 for id in gone {
                     trees.remove_remote(&id);
                 }
-                for (id, node) in listed {
+                for (id, (node, place_id)) in listed {
                     if trees.remote().get(&id) != Some(&node) {
-                        trees.set_listed_remote(id, node);
+                        trees.set_listed_remote(id.clone(), node);
                     }
+                    trees.set_remote_place_id(&id, place_id);
                 }
                 if recovering.is_none() {
                     trees.listed_removals(removed, |seq| commits.listed_here(seq));

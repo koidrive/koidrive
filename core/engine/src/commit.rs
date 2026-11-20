@@ -26,7 +26,8 @@ use crate::restore::{
     Outcome, RESOLVED_KEPT, Rejection, Resolved, RestoreId, RestoreIntent, SplitRestore,
 };
 use crate::state::{
-    Agreed, CONTENT_ANCESTRY_LIMIT, CommitsChanges, CommitsState, FinishOrigin, GivenUp, StateError,
+    Agreed, CONTENT_ANCESTRY_LIMIT, CommitsChanges, CommitsState, FinishOrigin, GivenUp,
+    MovePosition, StateError,
 };
 use crate::tracked::{Marked, TrackedMap, TrackedSet};
 use crate::tree::{
@@ -87,6 +88,7 @@ impl From<u64> for Base {
 #[derive(Clone, Debug, PartialEq)]
 pub struct InFlight {
     pub commit: proto::Commit,
+    pub move_bases: BTreeMap<NodeId, Vec<MovePosition>>,
     /// For each `Delete` op, by its target, every node the client planned to delete with it.
     pub deletes: BTreeMap<NodeId, Vec<NodeId>>,
     /// For each `Restore` op, by its index in the commit, the nodes this device's user removed that
@@ -1927,7 +1929,18 @@ impl Commits {
                 *sent_in = Some(commit_id.clone());
             }
         }
+        let move_bases = (ops.iter())
+            .filter_map(|op| {
+                let Some(op::Op::Move(moved)) = &op.op else {
+                    return None;
+                };
+                let node = NodeId::from(&moved.node_id);
+                let bases = trees.move_bases(&node)?;
+                Some((node, bases))
+            })
+            .collect();
         self.in_flight.set(Some(InFlight {
+            move_bases,
             commit: proto::Commit {
                 commit_id,
                 base_seq: base.seq,
@@ -2245,7 +2258,8 @@ impl Commits {
                     }
                 }
                 op::Op::CreateDir(_) | op::Op::CreateFile(_) | op::Op::Move(_) => {
-                    trees.record_moved(&op_node(op), seq);
+                    let node = op_node(op);
+                    trees.record_moved(&node, seq, flight.move_bases.get(&node).map(Vec::as_slice));
                 }
                 op::Op::UpdateContent(_) | op::Op::Restore(_) | op::Op::MarkGitTracked(_) => {}
             }
@@ -2643,7 +2657,11 @@ impl Commits {
             };
             let node = &node;
             if applied && sent.is_some() {
-                trees.record_moved(node, result.seq);
+                trees.record_moved(
+                    node,
+                    result.seq,
+                    flight.move_bases.get(node).map(Vec::as_slice),
+                );
             }
             let created = matches!(&op.op, Some(op::Op::CreateDir(_) | op::Op::CreateFile(_)));
             if created && done {

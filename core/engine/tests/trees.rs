@@ -1072,6 +1072,7 @@ fn a_node_this_device_created_that_another_device_creates_again_after_a_loss_tak
 #[test]
 fn a_node_this_device_moved_that_another_device_creates_again_after_a_loss_keeps_its_position() {
     let moved = MovedHere {
+        history: None,
         seq: 2,
         upgraded: true,
     };

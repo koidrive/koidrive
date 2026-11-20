@@ -131,6 +131,7 @@ fn trees_state() -> TreesState {
         moved_here: [(
             "a".into(),
             MovedHere {
+                history: None,
                 seq: 1,
                 upgraded: false,
             },
@@ -348,6 +349,7 @@ fn commits_state() -> CommitsState {
     CommitsState {
         accepted: 5,
         in_flight: Some(InFlight {
+            move_bases: Default::default(),
             commit: Commit {
                 commit_id: "commit".into(),
                 device_seq: 6,
@@ -707,6 +709,7 @@ fn trees_restore_a_valid_state_and_refuse_each_broken_one() {
             trees(),
             broken(trees_state(), |state| {
                 let moved = MovedHere {
+                    history: None,
                     seq: 2,
                     upgraded: false,
                 };

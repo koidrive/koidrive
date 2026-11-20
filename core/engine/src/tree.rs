@@ -477,6 +477,20 @@ pub enum StateError {
 }
 
 impl RemoteNode {
+    /// Returns the current place intent when it carries a UUIDv7, not a synthesized legacy ID.
+    pub fn place_id(state: &proto::NodeState) -> Option<[u8; 16]> {
+        let id: [u8; 16] = state
+            .intents
+            .as_ref()?
+            .place
+            .as_ref()?
+            .id
+            .as_slice()
+            .try_into()
+            .ok()?;
+        (id[6] >> 4 == 7 && id[8] >> 6 == 2).then_some(id)
+    }
+
     /// Kinds other than directory and file are refused, since this version syncs neither symbolic links nor special files.
     pub fn from_state(state: &proto::NodeState) -> Result<(NodeId, RemoteNode), StateError> {
         let kind = match NodeKind::try_from(state.kind) {

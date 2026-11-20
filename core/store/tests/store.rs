@@ -392,6 +392,7 @@ fn a_store_written_by_alpha_1_upgrades_and_keeps_every_row() {
     expected.trees.replaced_versions.clear();
     expected.trees.discarded.clear();
     let upgraded = MovedHere {
+        history: None,
         seq: 9,
         upgraded: true,
     };
@@ -1387,6 +1388,7 @@ fn engine_state() -> EngineState {
                 (
                     "m".into(),
                     MovedHere {
+                        history: None,
                         seq: 7,
                         upgraded: false,
                     },
@@ -1394,6 +1396,7 @@ fn engine_state() -> EngineState {
                 (
                     "n".into(),
                     MovedHere {
+                        history: None,
                         seq: 8,
                         upgraded: true,
                     },
@@ -1484,6 +1487,7 @@ fn engine_state() -> EngineState {
         commits: CommitsState {
             accepted: 4,
             in_flight: Some(InFlight {
+                move_bases: BTreeMap::new(),
                 commit,
                 deletes: BTreeMap::from([
                     (
@@ -2012,6 +2016,7 @@ fn a_policy_halt_outlasts_a_restart_and_resends_nothing() {
         commits: CommitsState {
             accepted: 4,
             in_flight: Some(InFlight {
+                move_bases: BTreeMap::new(),
                 commit: Commit {
                     commit_id: "c1".into(),
                     history_id: "h1".into(),

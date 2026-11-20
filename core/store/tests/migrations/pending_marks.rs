@@ -87,6 +87,7 @@ fn a_store_that_recorded_pending_names_opens_owing_each_rename_r_and_s_still_hol
     assert_eq!(store.transaction(|tx| tx.engine_state()).unwrap(), state);
     state.trees.unsent_marks.insert("f".into(), "C".into());
     state.commits.in_flight = Some(InFlight {
+        move_bases: Default::default(),
         restores: Default::default(),
         owners: Default::default(),
         commit: Commit::default(),
@@ -224,6 +225,7 @@ fn a_store_that_recorded_a_pending_name_its_commit_in_flight_sends_opens_owing_t
     };
     let mut state = EngineState::default();
     state.commits.in_flight = Some(InFlight {
+        move_bases: Default::default(),
         restores: Default::default(),
         owners: Default::default(),
         commit: Commit {

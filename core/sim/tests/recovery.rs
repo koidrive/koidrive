@@ -3244,6 +3244,7 @@ fn a_keep_does_not_count_for_bringing_back_a_later_deletion() {
         pending_for: String::new(),
     };
     state.in_flight = Some(InFlight {
+        move_bases: Default::default(),
         commit: Commit {
             commit_id: engine.ids.uuid_v7(1_794_268_740_010),
             history_id: engine.history.clone(),
@@ -3380,6 +3381,7 @@ fn an_unseen_rename_of_its_folder_does_not_bring_back_a_deleted_file() {
         pending_for: String::new(),
     };
     state.in_flight = Some(InFlight {
+        move_bases: Default::default(),
         commit: Commit {
             commit_id: engine.ids.uuid_v7(1_794_268_740_010),
             history_id: engine.history.clone(),

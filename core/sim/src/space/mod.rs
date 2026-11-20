@@ -13,12 +13,12 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use koidrive_engine::ids::{IdGen, is_uuid_v7};
 use koidrive_proto::v1::{
     ChangeRecord, Changes, ChunkPlan, ChunkRef, ChunkTarget, Commit, CommitRecord, CommitResult,
-    Content, DownloadTargets, Error, GetDownloadTargets, GetVersionChunks, ListTrash, ListTree,
-    ListVersions, NodeKind, NodePurged, NodeState, NodeStatus, Op, PrepareUpload,
-    PrepareUploadResult, Resume, ResyncRequired, RpcRequest, RpcResponse, ServerMessage, Target,
-    TrashPage, TreePage, UploadReceipt, VersionChunks, VersionInfo, VersionList, Welcome,
-    change_record, chunk_plan, error, op, resync_required, rpc_request, rpc_response,
-    server_message,
+    Content, DownloadTargets, Error, FieldIntents, GetDownloadTargets, GetVersionChunks, Intent,
+    ListTrash, ListTree, ListVersions, NodeKind, NodePurged, NodeState, NodeStatus, Op,
+    PrepareUpload, PrepareUploadResult, Resume, ResyncRequired, RpcRequest, RpcResponse,
+    ServerMessage, Target, TrashPage, TreePage, UploadReceipt, VersionChunks, VersionInfo,
+    VersionList, Welcome, change_record, chunk_plan, error, op, resync_required, rpc_request,
+    rpc_response, server_message,
 };
 use prost::Message;
 use sha2::{Digest, Sha256};
@@ -73,6 +73,7 @@ pub(crate) struct ChunkRow {
 #[derive(Clone, Debug)]
 pub(crate) struct Node {
     node_id: String,
+    place_id: Option<[u8; 16]>,
     parent_id: Option<String>,
     name: String,
     name_key: String,
@@ -166,6 +167,13 @@ impl State {
             trash_group: node.trash_group.clone().unwrap_or_default(),
             pending_for: node.pending_for.clone().unwrap_or_default(),
             pending_by: node.pending_by.clone().unwrap_or_default(),
+            intents: node.place_id.map(|id| FieldIntents {
+                place: Some(Intent {
+                    id: id.to_vec(),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
             current: node
                 .cur_version_id
                 .as_ref()
@@ -432,6 +440,7 @@ impl SpaceDo {
         let history_id = ids.uuid_v7(now_ms as u64);
         let root = Node {
             node_id: space_id.clone(),
+            place_id: None,
             parent_id: None,
             name: String::new(),
             name_key: String::new(),
