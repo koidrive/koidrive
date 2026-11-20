@@ -3846,3 +3846,185 @@ fn a_held_file_stays_held_when_a_second_rewind_brings_back_another_devices_keep(
     world.phase(3, &[]).unwrap();
     assert_eq!(live_writes(&world), [1, 2]);
 }
+
+fn kept_copy_create_sent() -> (World, String, String) {
+    let mut world = synced(2, &[vec![(0, Step::Backup), (0, file("c.txt"))]]);
+    world
+        .run(
+            1,
+            &[
+                (1, overwrite(0)),
+                (1, SCAN),
+                (1, COMMIT),
+                (1, COMMIT),
+                (1, DELIVER),
+                (0, Step::Rewind),
+                (0, Step::Connect),
+                (0, DELIVER),
+                (1, Step::Connect),
+                (1, DELIVER),
+                (0, Step::Answer(0)),
+                (0, COMMIT),
+                (0, COMMIT),
+                (0, DELIVER),
+                (1, DELIVER),
+                (1, DELIVER),
+                (1, COMMIT),
+                (1, Step::Answer(0)),
+                (1, COMMIT),
+            ],
+        )
+        .unwrap();
+    let flight = world.devices[1]
+        .engine
+        .commits
+        .in_flight()
+        .expect("Keep built");
+    let [op] = &flight.commit.ops[..] else {
+        panic!("{:?}", flight.commit.ops)
+    };
+    let Some(op::Op::CreateFile(create)) = &op.op else {
+        panic!("{op:?}")
+    };
+    assert!(!create.source_version_id.is_empty());
+    let (node_id, inherited) = (create.node_id.clone(), create.source_version_id.clone());
+    world.run(2, &[(1, COMMIT)]).unwrap();
+    assert!(
+        world.devices[1]
+            .engine
+            .commits
+            .in_flight()
+            .unwrap()
+            .result
+            .is_none()
+    );
+    assert_ne!(live_version(&world, &node_id).version_id, inherited);
+    (world, node_id, inherited)
+}
+
+fn live_version(world: &World, id: &str) -> koidrive_proto::v1::VersionInfo {
+    world
+        .space()
+        .nodes()
+        .into_iter()
+        .find(|n| n.node_id == id)
+        .unwrap()
+        .current
+        .unwrap()
+}
+
+#[test]
+fn an_edit_before_a_kept_copys_create_result_is_made_over_the_created_version() {
+    for fault in [false, true] {
+        let (mut world, id, inherited) = kept_copy_create_sent();
+        let created = live_version(&world, &id).version_id;
+        world.run(3, &[(1, overwrite(0)), (1, SCAN)]).unwrap();
+        if fault {
+            world
+                .run(
+                    4,
+                    &[
+                        (1, Step::Crash),
+                        (1, Step::Connect),
+                        (1, DELIVER),
+                        (1, COMMIT),
+                    ],
+                )
+                .unwrap();
+        }
+        world.phase(5, &[]).unwrap();
+        let edited = live_version(&world, &id);
+        assert_eq!(edited.content.as_ref().map(tag), Some(3));
+        assert!(
+            edited.made_over.contains(&created),
+            "crash={fault}, create version {created}, inherited {inherited}, edit bases {:?}",
+            edited.made_over
+        );
+    }
+}
+
+fn slot_holding(world: &World, device: usize, write: i64) -> usize {
+    let disk = &world.devices[device].disk;
+    disk.visible()
+        .into_iter()
+        .position(|ino| disk.entries()[&ino].content.as_ref().map(tag) == Some(write))
+        .unwrap()
+}
+
+#[test]
+fn publishing_a_rename_does_not_overwrite_an_edit_made_before_the_create_result() {
+    let (mut world, id, _) = kept_copy_create_sent();
+    assert_eq!(live_version(&world, &id).content.as_ref().map(tag), Some(2));
+    world
+        .run(
+            3,
+            &[
+                (0, DELIVER),
+                (0, DELIVER),
+                (0, EFFECT),
+                (0, EFFECT),
+                (0, SCAN),
+            ],
+        )
+        .unwrap();
+    let position = slot_holding(&world, 0, 2);
+    world
+        .run(
+            3,
+            &[
+                (1, overwrite(0)),
+                (1, SCAN),
+                (1, DELIVER),
+                (1, EFFECT),
+                (1, EFFECT),
+                (1, SCAN),
+                (1, COMMIT),
+                (1, COMMIT),
+                (1, DELIVER),
+            ],
+        )
+        .unwrap();
+    assert_eq!(live_version(&world, &id).content.as_ref().map(tag), Some(3));
+    let disk = &world.devices[0].disk;
+    assert_eq!(
+        disk.entries()[&disk.visible()[position]]
+            .content
+            .as_ref()
+            .map(tag),
+        Some(2)
+    );
+    world
+        .run(
+            4,
+            &[
+                (0, Step::Backup),
+                (0, rename(position, "b")),
+                (0, SCAN),
+                (0, Step::Rewind),
+                (0, Step::Connect),
+                (0, DELIVER),
+            ],
+        )
+        .unwrap();
+    assert!(
+        world.devices[0]
+            .engine
+            .commits
+            .questions()
+            .iter()
+            .any(|q| q.answer.is_none() && matches!(q.kind, QuestionKind::Recovery { .. }))
+    );
+    world
+        .run(
+            4,
+            &[(0, Step::Answer(0)), (0, COMMIT), (0, COMMIT), (0, DELIVER)],
+        )
+        .unwrap();
+    assert!(
+        live_writes(&world).contains(&3),
+        "the Publish removed write 3, live writes: {:?}",
+        live_writes(&world)
+    );
+    world.phase(5, &[]).unwrap();
+    assert!(live_writes(&world).contains(&3));
+}
