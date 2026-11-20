@@ -19,7 +19,8 @@ use koidrive_engine::state::{
     KeptRulesFile, LostPosition, MovedHere, PendingFinish, SyncedPosition, TreesState,
 };
 use koidrive_engine::tree::{
-    FileIdentity, Kind, LocalNode as EngineLocalNode, NodeId, RemoteNode, Shape as EngineShape,
+    ContentKey, FileIdentity, Kind, LocalNode as EngineLocalNode, NodeId, RemoteNode,
+    Shape as EngineShape,
 };
 use koidrive_fs::{FileId, VolumeId};
 use koidrive_proto::v1::{
@@ -52,6 +53,22 @@ fn content(size: u64) -> Content {
         manifest_digest: vec![9; 32],
         chunker: "fastcdc2020-1m-4m-16m".into(),
     }
+}
+
+fn key(size: u64) -> ContentKey {
+    ContentKey::try_from(&content(size)).unwrap()
+}
+
+fn chunks(shape: &EngineShape) -> Box<[ChunkRef]> {
+    shape
+        .content
+        .map(|key| content(key.size).chunks)
+        .unwrap_or_default()
+        .into()
+}
+
+fn full(shape: &EngineShape) -> Option<Content> {
+    Some(shape.content?.content(&chunks(shape)))
 }
 
 fn file_shape(parent_id: &str, name: &str) -> Shape {
@@ -1152,7 +1169,7 @@ fn engine_shape(parent: &str, name: &str) -> EngineShape {
         parent: parent.into(),
         name: name.into(),
         kind: Kind::File,
-        content: Some(content(3)),
+        content: Some(key(3)),
     }
 }
 
@@ -1571,7 +1588,7 @@ fn engine_state() -> EngineState {
                             parent: "adopted".into(),
                             name: "draft.txt".into(),
                             kind: Kind::File,
-                            content: Some(content(9)),
+                            content: Some(key(9)),
                         },
                     )]),
                     frozen: None,
@@ -1648,6 +1665,7 @@ fn engine_state() -> EngineState {
                 after: Some(engine_shape("p", "inner.txt")),
                 recoveries: 0,
                 staged: Some(identity(9)),
+                after_chunks: chunks(&engine_shape("p", "inner.txt")),
             }],
             cleared: 2,
             failed: BTreeMap::from([
@@ -2932,6 +2950,33 @@ fn a_stored_restore_the_server_would_refuse_is_not_loaded() {
     assert!(
         matches!(taken, Err(Error::InvalidEngineState(_))),
         "{taken:?}"
+    );
+}
+
+#[test]
+fn a_stored_content_whose_digest_no_content_key_holds_is_not_loaded() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.db");
+    drop(Store::open(&path).unwrap());
+    let long = Content {
+        manifest_digest: vec![9; 33],
+        ..content(3)
+    };
+    let conn = Connection::open(&path).unwrap();
+    conn.execute(
+        "INSERT INTO lost_shapes (node_id, parent_id, name, kind, content)
+         VALUES ('n', 'root', 'f', ?1, ?2)",
+        rusqlite::params![NodeKind::File as i32, prost::Message::encode_to_vec(&long)],
+    )
+    .unwrap();
+    drop(conn);
+
+    let loaded = Store::open(&path)
+        .unwrap()
+        .transaction(|tx| tx.engine_state());
+    assert!(
+        matches!(loaded, Err(Error::InvalidEngineState(_))),
+        "{loaded:?}"
     );
 }
 

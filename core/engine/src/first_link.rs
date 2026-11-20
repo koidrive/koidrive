@@ -12,7 +12,7 @@ use crate::ids::IdGen;
 use crate::names::{name_key, nfc, same_name};
 use crate::question::{Held, Question, QuestionKind, RecoveryCause, RecoveryGroup};
 use crate::tree::{
-    Content, FileIdentity, Kind, Node, NodeId, RemoteNode, Shape, Tree, same, same_content,
+    ContentKey, FileIdentity, Kind, Node, NodeId, RemoteNode, Shape, Tree, same, same_content,
 };
 
 /// Each shape the server gave a node from the store's cursor on, so that a recovery finds a node at
@@ -607,14 +607,14 @@ pub fn time_tells_writes_apart(mtime_ns: i64) -> bool {
     mtime_ns % 10_000_000 != 0
 }
 
-fn same_write(remote: &Option<Content>, local: &Option<Content>) -> bool {
+fn same_write(remote: &Option<ContentKey>, local: &Option<ContentKey>) -> bool {
     remote
         .as_ref()
         .is_some_and(|remote| time_tells_writes_apart(remote.mtime_ns))
         && placed_here(remote, local)
 }
 
-pub(crate) fn placed_here(remote: &Option<Content>, local: &Option<Content>) -> bool {
+pub(crate) fn placed_here(remote: &Option<ContentKey>, local: &Option<ContentKey>) -> bool {
     match (remote, local) {
         (Some(remote), Some(local)) => {
             let unit = [
@@ -635,7 +635,7 @@ pub(crate) fn placed_here(remote: &Option<Content>, local: &Option<Content>) -> 
     }
 }
 
-fn same_bytes(a: &Option<Content>, b: &Option<Content>) -> bool {
+fn same_bytes(a: &Option<ContentKey>, b: &Option<ContentKey>) -> bool {
     match (a, b) {
         (Some(a), Some(b)) => same_content(a, b),
         (a, b) => a.is_none() && b.is_none(),

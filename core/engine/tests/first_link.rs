@@ -13,20 +13,21 @@ use koidrive_engine::names::conflict_name;
 use koidrive_engine::question::{Answer, Question, QuestionKind, RecoveryGroup};
 use koidrive_engine::state::CommitsState;
 use koidrive_engine::tree::{
-    Content, FileIdentity, Kind, LocalNode, Names, NodeId, RemoteNode, Shape,
+    Content, ContentKey, FileIdentity, Kind, LocalNode, Names, NodeId, RemoteNode, Shape,
 };
 use koidrive_proto::v1::{CommitResult, Error, OpResult, Welcome, error, op, op_result};
+use koidrive_sim::world::key;
 
 const ROOT: &str = "root";
 const NOW: u64 = 1_794_268_740_000;
 const HISTORY: &str = "history";
 
-fn content(digest: u8) -> Content {
-    Content {
+fn content(digest: u8) -> ContentKey {
+    key(&Content {
         size: 3,
         manifest_digest: vec![digest; 32],
         ..Default::default()
-    }
+    })
 }
 
 fn file(parent: &str, name: &str, digest: u8) -> Shape {
@@ -62,6 +63,7 @@ fn trees(local: &[(&str, Shape)], remote: &[(&str, Shape)]) -> Trees {
             shape: shape.clone(),
             identity,
             parked: false,
+            chunks: Box::default(),
         };
         trees.set_local((*id).into(), node);
     }
@@ -78,6 +80,7 @@ fn trees(local: &[(&str, Shape)], remote: &[(&str, Shape)]) -> Trees {
             edit_rev: 1,
             pending_for: None,
             pending_by: None,
+            chunks: Box::default(),
         };
         trees.set_remote((*id).into(), node);
     }
@@ -122,11 +125,10 @@ fn an_entry_a_store_lost_track_of_is_adopted_by_a_place_the_log_shows_its_node_l
 }
 
 fn written_at(name: &str, mtime_ns: i64) -> Shape {
+    let mut content = content(1);
+    content.mtime_ns = mtime_ns;
     Shape {
-        content: Some(Content {
-            mtime_ns,
-            ..content(1)
-        }),
+        content: Some(content),
         ..file(ROOT, name, 1)
     }
 }
@@ -248,6 +250,7 @@ fn a_first_link_holds_an_entry_like_one_in_the_servers_trash() {
         version_id: String::new(),
         pending_for: None,
         pending_by: None,
+        chunks: Box::default(),
     };
     trees.set_remote("r-a".into(), trashed);
     trees.settle(&Default::default());
@@ -531,6 +534,7 @@ fn a_first_link_to_a_space_listed_empty_holds_only_what_the_trash_names() {
         version_id: String::new(),
         pending_for: None,
         pending_by: None,
+        chunks: Box::default(),
     };
     trees.set_remote("r-slides".into(), trashed);
     let mut commits = Commits::default();
@@ -653,6 +657,7 @@ fn a_fresh_first_link_to_a_live_space_holds_only_what_the_trash_names() {
         version_id: String::new(),
         pending_for: None,
         pending_by: None,
+        chunks: Box::default(),
     };
     trees.set_remote("r-slides".into(), trashed);
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(7));
@@ -692,6 +697,7 @@ fn a_fresh_first_link_holds_a_folder_that_holds_an_entry_at_a_path_the_trash_hol
             version_id: String::new(),
             pending_for: None,
             pending_by: None,
+            chunks: Box::default(),
         };
         trees.set_remote("r-deleted".into(), trashed);
         trees.settle(&Default::default());
@@ -1242,6 +1248,7 @@ fn an_entry_created_after_the_first_link_is_sent_at_once() {
             handle: None,
         },
         parked: false,
+        chunks: Box::default(),
     };
     trees.set_local("l-later".into(), node);
     assert_eq!(
@@ -1294,6 +1301,7 @@ fn renamed_create(commits: &mut Commits, trees: &mut Trees, id: &str, name: &str
         edit_rev: seq,
         pending_for: None,
         pending_by: None,
+        chunks: Box::default(),
     };
     trees.set_remote(id.into(), node);
     let renamed = OpResult {
@@ -1351,6 +1359,7 @@ fn a_published_create_that_takes_a_conflict_name_asks_nothing_and_a_later_create
             handle: None,
         },
         parked: false,
+        chunks: Box::default(),
     };
     trees.set_local("l-later".into(), later);
     trees.settle(commits.aliases());
@@ -1370,6 +1379,7 @@ fn a_published_create_that_takes_a_conflict_name_asks_nothing_and_a_later_create
         edit_rev: 3,
         pending_for: None,
         pending_by: None,
+        chunks: Box::default(),
     };
     trees.set_remote("r-later".into(), theirs);
     renamed_create(&mut commits, &mut trees, "l-later", "later (conflict)", 3);
@@ -1787,6 +1797,7 @@ fn a_discarded_folder_the_user_puts_an_entry_in_is_asked_about_again() {
             handle: None,
         },
         parked: false,
+        chunks: Box::default(),
     };
     trees.set_local("l-later".into(), node);
     trees.settle(commits.aliases());
@@ -1892,6 +1903,7 @@ fn a_discarded_folder_the_user_moves_a_synced_entry_into_through_a_new_folder_is
             handle: None,
         },
         parked: false,
+        chunks: Box::default(),
     };
     trees.set_local("l-sub".into(), sub);
     let mut moved = trees.local().get(&"r-notes".into()).unwrap().clone();
@@ -2004,6 +2016,7 @@ fn a_discarded_folder_whose_subfolder_the_user_puts_an_entry_in_is_asked_about_a
             handle: None,
         },
         parked: false,
+        chunks: Box::default(),
     };
     trees.set_local("l-later".into(), node);
     trees.settle(commits.aliases());
@@ -2075,6 +2088,7 @@ fn a_discarded_file_the_user_edits_is_asked_about_again_with_its_folder() {
             handle: None,
         },
         parked: false,
+        chunks: Box::default(),
     };
     trees.set_local("l-inside".into(), node);
     trees.settle(commits.aliases());
@@ -2173,6 +2187,7 @@ fn a_discard_whose_s_update_waits_stays_after_a_server_loss() {
             handle: None,
         },
         parked: false,
+        chunks: Box::default(),
     };
     trees.set_local("pad".into(), pad);
     trees.settle(commits.aliases());
@@ -2190,6 +2205,7 @@ fn a_discard_whose_s_update_waits_stays_after_a_server_loss() {
         edit_rev: 2,
         pending_for: None,
         pending_by: None,
+        chunks: Box::default(),
     };
     trees.set_remote("pad".into(), pad);
     let applied = OpResult {
@@ -2250,6 +2266,7 @@ fn a_reclaimed_folder_that_cannot_leave_s_yet_keeps_its_childs_waiting_update() 
                     handle: None,
                 },
                 parked: false,
+                chunks: Box::default(),
             },
         );
     }
@@ -2265,6 +2282,7 @@ fn a_reclaimed_folder_that_cannot_leave_s_yet_keeps_its_childs_waiting_update() 
         version_id: String::new(),
         pending_for: None,
         pending_by: None,
+        chunks: Box::default(),
     };
     trees.set_remote("p".into(), remote(dir(ROOT, "a")));
     trees.set_remote("c".into(), remote(dir("p", "child")));
@@ -2309,6 +2327,7 @@ fn remote_node(shape: Shape) -> RemoteNode {
         version_id: String::new(),
         pending_for: None,
         pending_by: None,
+        chunks: Box::default(),
     }
 }
 
@@ -2400,6 +2419,7 @@ fn reclaim_with_waiting(
             shape: shape.clone(),
             identity,
             parked: false,
+            chunks: Box::default(),
         };
         trees.set_local((*id).into(), local);
     }
@@ -2416,6 +2436,7 @@ fn reclaim_with_waiting(
             version_id: String::new(),
             pending_for: None,
             pending_by: None,
+            chunks: Box::default(),
         };
         trees.set_remote((*id).into(), node);
     }
@@ -2674,6 +2695,7 @@ fn a_discarded_entry_stays_discarded_when_the_server_merges_its_folder_into_anot
         shape: file("l-new", "later", 6),
         identity,
         parked: false,
+        chunks: Box::default(),
     };
     trees.set_local("l-later".into(), later);
     let mut effects = Effects::default();
@@ -2720,6 +2742,7 @@ fn a_discarded_entry_stays_discarded_when_the_server_merges_its_folder_into_anot
         edit_rev: 2,
         pending_for: None,
         pending_by: None,
+        chunks: Box::default(),
     };
     trees.set_remote("r-new".into(), remote(dir(ROOT, "new")));
     trees.set_remote("l-later".into(), remote(file("r-new", "later", 6)));
@@ -2774,6 +2797,7 @@ fn a_file_the_user_took_back_from_a_discard_is_sent_again_once_the_server_loses_
             edit_rev: seq,
             pending_for: None,
             pending_by: None,
+            chunks: Box::default(),
         };
         trees.set_remote("l-b".into(), node);
         let applied = OpResult {
@@ -2852,6 +2876,7 @@ fn local_node(shape: Shape, ino: u128) -> LocalNode {
             handle: None,
         },
         parked: false,
+        chunks: Box::default(),
     }
 }
 
@@ -3977,6 +4002,7 @@ fn a_file_added_inside_a_server_folder_moved_into_a_discarded_folder_keeps_its_p
                 handle: None,
             },
             parked: false,
+            chunks: Box::default(),
         },
     );
     trees.set_rules(&[] as &[&str], Source::Koiignore, None);
@@ -5327,9 +5353,7 @@ mod a_server_file_moved_into_an_asked_folder {
             sent.extend(more);
             assert!(t.local().get(&"f".into()).is_some(), "{sent:?}");
             assert_eq!(
-                t.local()
-                    .get(&"x".into())
-                    .map(|node| node.shape.content.clone()),
+                t.local().get(&"x".into()).map(|node| node.shape.content),
                 Some(file(ROOT, "x", 11).content),
                 "{sent:?}"
             );
@@ -5417,6 +5441,7 @@ mod a_server_file_moved_into_an_asked_folder {
                 shape: copied.clone(),
                 identity,
                 parked: false,
+                chunks: Box::default(),
             },
         );
         t.set_remote(
@@ -5433,6 +5458,7 @@ mod a_server_file_moved_into_an_asked_folder {
                 edit_rev: 1,
                 pending_for: None,
                 pending_by: None,
+                chunks: Box::default(),
             },
         );
         t.settle(&Default::default());
@@ -6058,6 +6084,7 @@ fn a_server_folder_holding_an_entry_an_earlier_discard_dropped_goes_with_its_fol
             handle: None,
         },
         parked: false,
+        chunks: Box::default(),
     };
     trees.set_local_changed("m".into(), added);
     trees.settle(commits.aliases());

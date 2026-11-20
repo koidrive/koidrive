@@ -55,7 +55,7 @@ fn uuid_bytes(text: &str) -> Option<[u8; 16]> {
     Some(bytes)
 }
 
-fn intern(text: &str) -> [u8; 4] {
+pub(crate) fn intern(text: &str) -> [u8; 4] {
     if let Some(&at) = TEXTS.read().unwrap().index.get(text) {
         return at.to_ne_bytes();
     }
@@ -63,14 +63,14 @@ fn intern(text: &str) -> [u8; 4] {
     if let Some(&at) = texts.index.get(text) {
         return at.to_ne_bytes();
     }
-    let at = u32::try_from(texts.texts.len()).expect("fewer than 2^32 ids that are not UUIDs");
+    let at = u32::try_from(texts.texts.len()).expect("fewer than 2^32 interned texts");
     let text: &'static str = Box::leak(text.into());
     texts.texts.push(text);
     texts.index.insert(text, at);
     at.to_ne_bytes()
 }
 
-fn interned(at: [u8; 4]) -> &'static str {
+pub(crate) fn interned(at: [u8; 4]) -> &'static str {
     TEXTS.read().unwrap().texts[u32::from_ne_bytes(at) as usize]
 }
 

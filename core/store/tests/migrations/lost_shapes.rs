@@ -14,6 +14,7 @@ fn a_rename_pending_at_the_upgrade_to_lost_shapes_is_sent_as_a_create_beside_ano
     };
     let remote = RemoteNode {
         shape: shape.clone(),
+        chunks: chunks(&shape),
         trashed: false,
         content_rev: 1,
         meta_rev: 1,
@@ -37,6 +38,7 @@ fn a_rename_pending_at_the_upgrade_to_lost_shapes_is_sent_as_a_create_beside_ano
             left_out_when_placed: false,
             content_from_server: false,
             shape: shape.clone(),
+            chunks: chunks(&shape),
             identity,
             parked: false,
         },
@@ -49,6 +51,7 @@ fn a_rename_pending_at_the_upgrade_to_lost_shapes_is_sent_as_a_create_beside_ano
             left_out_when_placed: false,
             content_from_server: false,
             shape: renamed.clone(),
+            chunks: chunks(&renamed),
             identity,
             parked: false,
         },
@@ -86,7 +89,7 @@ fn a_rename_pending_at_the_upgrade_to_lost_shapes_is_sent_as_a_create_beside_ano
                     parent_id: "root".into(),
                     name: "g".into(),
                     kind: NodeKind::File as i32,
-                    content: shape.content.clone(),
+                    content: full(&shape),
                 },
                 identity: FileId::stored(1, Some(0), None),
                 parked: false,
@@ -125,7 +128,7 @@ fn a_rename_pending_at_the_upgrade_to_lost_shapes_is_sent_as_a_create_beside_ano
         sent.as_ref().is_some_and(|commit| {
             commit.ops.iter().any(|op| matches!(
             &op.op,
-            Some(op::Op::CreateFile(file)) if file.node_id == "f" && file.content == shape.content
+            Some(op::Op::CreateFile(file)) if file.node_id == "f" && file.content == full(&shape)
         ))
         }),
         "{sent:?}"

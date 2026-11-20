@@ -3018,7 +3018,7 @@ fn rekey_the_create_in_flight(world: &mut World, d: usize, another_file: bool) -
         .clone();
     if another_file {
         let ino = (device.disk)
-            .create(Place::Root, "b", local.shape.content.clone())
+            .create(Place::Root, "b", local.content())
             .unwrap();
         local.identity.ino = ino;
         local.shape.name = "b".into();
@@ -3485,6 +3485,7 @@ fn recovery_finds_no_folder_the_parked_directory_holds() {
             after: None,
             recoveries: 0,
             staged: None,
+            after_chunks: Box::default(),
         };
         disk.rename(folder, Place::Root, "moved").unwrap();
         assert_eq!(

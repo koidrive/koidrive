@@ -10,6 +10,7 @@ use koidrive_engine::ids::IdGen;
 use koidrive_engine::state::CommitsState;
 use koidrive_engine::tree::{Content, FileIdentity, Kind, LocalNode, NodeId, RemoteNode, Shape};
 use koidrive_proto::v1::{CommitResult, OpResult, op, op_result};
+use koidrive_sim::world::key;
 
 const ROOT: &str = "root";
 const NOW: u64 = 1_794_268_740_000;
@@ -53,10 +54,12 @@ fn allocated() -> u64 {
 }
 
 fn local(parent: String, name: String, kind: Kind, ino: u128) -> LocalNode {
-    let content = (kind == Kind::File).then(|| Content {
-        size: 3,
-        manifest_digest: vec![7; 32],
-        ..Default::default()
+    let content = (kind == Kind::File).then(|| {
+        key(&Content {
+            size: 3,
+            manifest_digest: vec![7; 32],
+            ..Default::default()
+        })
     });
     LocalNode {
         left_out_when_placed: false,
@@ -73,6 +76,7 @@ fn local(parent: String, name: String, kind: Kind, ino: u128) -> LocalNode {
             handle: None,
         },
         parked: false,
+        chunks: Box::default(),
     }
 }
 
@@ -93,7 +97,7 @@ fn created(op: &op::Op) -> (String, Shape) {
                 parent: NodeId::from(&create.parent_id),
                 name: create.name.clone(),
                 kind: Kind::File,
-                content: create.content.clone(),
+                content: create.content.as_ref().map(key),
             },
         ),
         op => panic!("a first upload only creates: {op:?}"),
@@ -210,6 +214,7 @@ fn first_upload(upload: Upload) -> u64 {
                 meta_edit_rev: seq,
                 pending_for: None,
                 pending_by: None,
+                chunks: Box::default(),
             };
             trees.set_remote_made_here(NodeId::from(id), node);
         }
@@ -266,10 +271,12 @@ fn a_first_upload_takes_work_in_proportion_to_its_files() {
 }
 
 fn remote(parent: String, name: String, kind: Kind) -> RemoteNode {
-    let content = (kind == Kind::File).then(|| Content {
-        size: 3,
-        manifest_digest: vec![7; 32],
-        ..Default::default()
+    let content = (kind == Kind::File).then(|| {
+        key(&Content {
+            size: 3,
+            manifest_digest: vec![7; 32],
+            ..Default::default()
+        })
     });
     RemoteNode {
         made_over: Vec::new(),
@@ -288,6 +295,7 @@ fn remote(parent: String, name: String, kind: Kind) -> RemoteNode {
         meta_edit_rev: 1,
         pending_for: None,
         pending_by: None,
+        chunks: Box::default(),
     }
 }
 

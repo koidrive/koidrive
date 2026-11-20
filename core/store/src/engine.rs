@@ -20,7 +20,7 @@ use koidrive_engine::state::{
     FinishOrigin, GivenUp, LostPosition, MapChanges, MovedHere, PendingFinish, SetChanges,
     SyncedPosition, TreesChanges, TreesState,
 };
-use koidrive_engine::tree::{FileIdentity, Kind, NodeId, Shape};
+use koidrive_engine::tree::{ContentKey, DigestTooLong, FileIdentity, Kind, NodeId, Shape};
 use koidrive_proto::v1::{Commit, CommitResult, Content, NodeKind};
 use prost::{Message, Oneof};
 use rusqlite::{CachedStatement, OptionalExtension, ToSql, params};
@@ -135,7 +135,7 @@ impl Tx<'_> {
                     parent: NodeId::from(row.get::<_, Option<String>>(1)?.unwrap_or_default()),
                     name,
                     kind: kind(row.get(3)?)?,
-                    content: decode(row.get(4)?)?,
+                    content: content_key(row.get(4)?)?,
                 }),
             };
             let origin = match (row.get::<_, Option<u64>>(5)?, row.get::<_, bool>(6)?) {
@@ -206,7 +206,7 @@ impl Tx<'_> {
                 parent: NodeId::from(row.get::<_, Option<String>>(1)?.unwrap_or_default()),
                 name: row.get(2)?,
                 kind: kind(row.get(3)?)?,
-                content: decode(row.get(4)?)?,
+                content: content_key(row.get(4)?)?,
             };
             state
                 .trees
@@ -232,7 +232,7 @@ impl Tx<'_> {
                 parent: NodeId::from(row.get::<_, Option<String>>(1)?.unwrap_or_default()),
                 name: row.get(2)?,
                 kind: kind(row.get(3)?)?,
-                content: decode(row.get(4)?)?,
+                content: content_key(row.get(4)?)?,
             };
             state
                 .trees
@@ -248,7 +248,7 @@ impl Tx<'_> {
                 parent: NodeId::from(row.get::<_, Option<String>>(1)?.unwrap_or_default()),
                 name: row.get(2)?,
                 kind: kind(row.get(3)?)?,
-                content: decode(row.get(4)?)?,
+                content: content_key(row.get(4)?)?,
             };
             state
                 .trees
@@ -855,7 +855,7 @@ impl Tx<'_> {
                     shape
                         .as_ref()
                         .and_then(|shape| shape.content.as_ref())
-                        .map(Content::encode_to_vec),
+                        .map(key_bytes),
                     slot,
                     *origin == Origin::Released,
                 ])
@@ -907,7 +907,7 @@ impl Tx<'_> {
                     non_empty(&shape.parent.to_string()),
                     shape.name,
                     node_kind(shape.kind),
-                    shape.content.as_ref().map(Content::encode_to_vec),
+                    shape.content.as_ref().map(key_bytes),
                 ])
             },
         )?;
@@ -928,7 +928,7 @@ impl Tx<'_> {
                     non_empty(&shape.parent.to_string()),
                     shape.name,
                     node_kind(shape.kind),
-                    shape.content.as_ref().map(Content::encode_to_vec),
+                    shape.content.as_ref().map(key_bytes),
                 ])
             },
         )?;
@@ -943,7 +943,7 @@ impl Tx<'_> {
                     non_empty(&shape.parent.to_string()),
                     shape.name,
                     node_kind(shape.kind),
-                    shape.content.as_ref().map(Content::encode_to_vec),
+                    shape.content.as_ref().map(key_bytes),
                 ])
             },
         )?;
@@ -1618,6 +1618,17 @@ pub(crate) fn node_kind(kind: Kind) -> i32 {
     }
 }
 
+pub(crate) fn content_key(bytes: Option<Vec<u8>>) -> Result<Option<ContentKey>> {
+    (decode::<Content>(bytes)?.as_ref())
+        .map(ContentKey::try_from)
+        .transpose()
+        .map_err(|DigestTooLong(len)| invalid(format!("a manifest digest of {len} bytes")))
+}
+
+pub(crate) fn key_bytes(key: &ContentKey) -> Vec<u8> {
+    key.content(&[]).encode_to_vec()
+}
+
 pub(crate) fn kind(value: i32) -> Result<Kind> {
     match NodeKind::try_from(value) {
         Ok(NodeKind::Dir) => Ok(Kind::Dir),
@@ -1778,7 +1789,7 @@ impl From<&EffectRecord> for StoredRecord {
                 parent: shape.parent.to_string(),
                 name: shape.name.clone(),
                 kind: node_kind(shape.kind),
-                content: shape.content.clone(),
+                content: shape.content.map(|key| key.content(&record.after_chunks)),
             }),
             staged: record.staged.as_ref().map(StoredIdentity::from),
         }
@@ -1789,14 +1800,27 @@ impl TryFrom<StoredRecord> for EffectRecord {
     type Error = Error;
 
     fn try_from(record: StoredRecord) -> Result<Self> {
-        let after = match record.after {
-            None => None,
-            Some(shape) => Some(Shape {
-                parent: NodeId::from(shape.parent),
-                name: shape.name,
-                kind: kind(shape.kind)?,
-                content: shape.content,
-            }),
+        let (after, after_chunks) = match record.after {
+            None => (None, Box::default()),
+            Some(shape) => {
+                let (content, chunks) = match shape.content {
+                    None => (None, Box::default()),
+                    Some(content) => {
+                        let (key, chunks) =
+                            ContentKey::split(content).map_err(|DigestTooLong(len)| {
+                                invalid(format!("a manifest digest of {len} bytes"))
+                            })?;
+                        (Some(key), chunks)
+                    }
+                };
+                let shape = Shape {
+                    parent: NodeId::from(shape.parent),
+                    name: shape.name,
+                    kind: kind(shape.kind)?,
+                    content,
+                };
+                (Some(shape), chunks)
+            }
         };
         Ok(Self {
             effect_id: record.effect_id,
@@ -1804,6 +1828,7 @@ impl TryFrom<StoredRecord> for EffectRecord {
             counter: record.counter,
             effect: required(record.effect, "the effect")?.try_into()?,
             after,
+            after_chunks,
             recoveries: 0,
             staged: record.staged.map(FileIdentity::from),
         })

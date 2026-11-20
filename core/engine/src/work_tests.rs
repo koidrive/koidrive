@@ -11,7 +11,8 @@ use crate::ids::IdGen;
 use crate::ignore::{RuleFile, Source};
 use crate::question::Answer;
 use crate::tree::{
-    Content, ENTRIES_BUDGET, ENTRIES_READ, FileIdentity, Kind, LocalNode, NodeId, RemoteNode, Shape,
+    Content, ENTRIES_BUDGET, ENTRIES_READ, FileIdentity, Kind, LocalNode, NodeId, RemoteNode,
+    Shape, key,
 };
 
 const ROOT: &str = "root";
@@ -30,11 +31,11 @@ fn file(parent: &str, name: &str, digest: u8) -> Shape {
         parent: parent.into(),
         name: name.into(),
         kind: Kind::File,
-        content: Some(Content {
+        content: Some(key(&Content {
             size: 3,
             manifest_digest: vec![digest; 32],
             ..Default::default()
-        }),
+        })),
     }
 }
 
@@ -58,6 +59,7 @@ fn local(shape: Shape, ino: u128) -> LocalNode {
             handle: None,
         },
         parked: false,
+        chunks: Box::default(),
     }
 }
 
@@ -74,6 +76,7 @@ fn remote(shape: Shape) -> RemoteNode {
         edit_rev: 1,
         pending_for: None,
         pending_by: None,
+        chunks: Box::default(),
     }
 }
 

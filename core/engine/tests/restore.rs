@@ -8,8 +8,11 @@ use koidrive_engine::question::Answer;
 use koidrive_engine::restore::{
     Malformed, Outcome, RESOLVED_KEPT, Rejection, Resolved, RestoreIntent,
 };
-use koidrive_engine::tree::{Content, FileIdentity, Kind, LocalNode, NodeId, RemoteNode, Shape};
+use koidrive_engine::tree::{
+    Content, ContentKey, FileIdentity, Kind, LocalNode, NodeId, RemoteNode, Shape,
+};
 use koidrive_proto::v1::{self as proto, CommitResult, OpResult, Welcome, error, op, op_result};
+use koidrive_sim::world::key;
 
 const NOW: u64 = 1_794_268_740_000;
 const HISTORY: &str = "history";
@@ -22,12 +25,12 @@ fn root() -> String {
     id(0)
 }
 
-fn content(digest: u8) -> Content {
-    Content {
+fn content(digest: u8) -> ContentKey {
+    key(&Content {
         size: 3,
         manifest_digest: vec![digest; 32],
         ..Default::default()
-    }
+    })
 }
 
 fn file(parent: &str, name: &str, digest: u8) -> Shape {
@@ -61,6 +64,7 @@ fn remote(shape: Shape) -> RemoteNode {
         edit_rev: 1,
         pending_for: None,
         pending_by: None,
+        chunks: Box::default(),
     }
 }
 
@@ -89,6 +93,7 @@ fn trees(nodes: &[Row]) -> Trees {
                 shape: shape.clone(),
                 identity,
                 parked: false,
+                chunks: Box::default(),
             };
             trees.set_local(NodeId::from(id), node);
         }
@@ -139,7 +144,7 @@ fn update(node: &str, digest: u8) -> op::Op {
         made_over: Vec::new(),
         source_version_id: String::new(),
         node_id: node.into(),
-        content: Some(content(digest)),
+        content: Some(content(digest).content(&[])),
         resend: false,
     })
 }
@@ -344,7 +349,7 @@ fn a_version_restore_leaves_s_and_l_alone_and_the_file_is_replaced() {
         commits.resolved(),
         [ended(&request, &intent, Outcome::Restored)]
     );
-    let held = |shape: Option<&Shape>| shape.unwrap().content.clone().unwrap();
+    let held = |shape: Option<&Shape>| shape.unwrap().content.unwrap();
     assert_eq!(held(trees.synced().live(&NodeId::from(&n))), content(2));
     assert_eq!(held(trees.local().live(&NodeId::from(&n))), content(2));
     assert_eq!(trees.class(&NodeId::from(&n)), Class::Remote);
@@ -362,7 +367,10 @@ fn a_version_restore_leaves_s_and_l_alone_and_the_file_is_replaced() {
     else {
         panic!("not a replacing write: {:?}", record.effect);
     };
-    assert_eq!((written, &replaced.content), (&content(1), &content(2)));
+    assert_eq!(
+        (key(written), key(&replaced.content)),
+        (content(1), content(2))
+    );
 }
 
 #[test]
@@ -521,6 +529,7 @@ fn a_restore_waits_while_s_lags_what_l_and_r_agree_on() {
             handle: None,
         },
         parked,
+        chunks: Box::default(),
     };
     trees.set_local(NodeId::from(&m), folder("g", true));
     trees.settle(&Default::default());
@@ -765,16 +774,23 @@ fn big_folder_in_trash(folder: u128, name: &str) -> Vec<Row> {
         size: 3,
         encoding: 0,
     };
-    let content = Some(Content {
+    let content = Content {
         chunks: vec![chunk; 4096],
         chunk_count: 4096,
-        ..content(1)
-    });
+        ..content(1).content(&[])
+    };
     let mut rows = vec![in_trash(id(folder), dir(&root(), name))];
     for n in 0..8 {
         let shape = file(&id(folder), &format!("f{n}"), 1);
-        let content = content.clone();
-        rows.push(in_trash(id(folder * 100 + n), Shape { content, ..shape }));
+        let mut row = in_trash(
+            id(folder * 100 + n),
+            Shape {
+                content: Some(key(&content)),
+                ..shape
+            },
+        );
+        row.3.as_mut().unwrap().chunks = content.chunks.clone().into();
+        rows.push(row);
     }
     rows
 }
@@ -1514,6 +1530,7 @@ fn a_restore_the_server_rejects_leaves_the_removal_a_later_move_out_of_the_trash
             handle: None,
         },
         parked: false,
+        chunks: Box::default(),
     };
     trees.set_local(NodeId::from(&a), renamed);
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();

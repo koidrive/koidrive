@@ -7,7 +7,7 @@ use std::os::unix::fs::MetadataExt;
 use std::path::{Component, Path, PathBuf};
 
 use koidrive_engine::names::name_key;
-use koidrive_engine::tree::{Kind, NodeId, RemoteNode, same_content};
+use koidrive_engine::tree::{ContentKey, Kind, NodeId, RemoteNode, same_content};
 use koidrive_fs::{EntryKind, ItemPath, RootAt, Snapshot, check_root};
 use koidrive_net::{ApiError, Auth, ServerError};
 use koidrive_proto::v1::{
@@ -436,7 +436,7 @@ fn verified(
                 else {
                     return Ok(false);
                 };
-                if !same_content(&content, expected) {
+                if !ContentKey::try_from(&content).is_ok_and(|held| same_content(&held, expected)) {
                     return Ok(false);
                 }
             }
@@ -1087,10 +1087,10 @@ mod tests {
                     let (_, remote) = RemoteNode::from_state(node).unwrap();
                     tx.put_remote_node(node)?;
                     let shape = koidrive_store::Shape {
+                        content: remote.content(),
                         parent_id: remote.shape.parent.into(),
                         name: remote.shape.name,
                         kind: node.kind,
-                        content: remote.shape.content,
                     };
                     tx.put_synced_node(&koidrive_store::SyncedNode {
                         node_id: node.node_id.clone().into(),

@@ -20,7 +20,7 @@ use koidrive_proto::v1::{
 };
 
 use super::disk::{Disk, Place, identity};
-use super::{Failure, NOW, RULES_FILE};
+use super::{Failure, NOW, RULES_FILE, split};
 use crate::space::Session;
 
 /// Everything the store keeps for a space (docs/design/sync-engine.md section 2.8).
@@ -219,15 +219,14 @@ impl Engine {
                 Place::In(parent) => nodes.get(parent).unwrap_or_else(|| &known[parent]).clone(),
                 Place::Parked(_) => {
                     let parked = self.trees.local().get(&id).cloned();
-                    if let Some(mut node) =
-                        parked.filter(|node| node.shape.content != entry.content)
-                    {
-                        node.shape.content = entry.content.clone();
+                    if let Some(mut node) = parked.filter(|node| node.content() != entry.content) {
+                        (node.shape.content, node.chunks) = split(entry.content.clone());
                         self.trees.set_local_changed(id, node);
                     }
                     continue;
                 }
             };
+            let (content, chunks) = split(entry.content.clone());
             let node = LocalNode {
                 left_out_when_placed: false,
                 content_from_server: false,
@@ -235,10 +234,11 @@ impl Engine {
                     parent,
                     name: entry.name.clone(),
                     kind,
-                    content: entry.content.clone(),
+                    content,
                 },
                 identity: identity(ino),
                 parked: false,
+                chunks,
             };
             self.trees.set_local_changed(id, node);
         }

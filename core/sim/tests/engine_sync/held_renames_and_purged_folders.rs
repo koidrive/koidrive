@@ -17,6 +17,7 @@ fn a_new_folder_takes_its_name_when_sync_drains_before_the_held_back_rename_clea
             shape: old.shape.clone(),
             identity: identity(1),
             parked: false,
+            chunks: Box::default(),
         },
     );
     trees.set_remote(NodeId::from(&holder), old);
@@ -61,6 +62,7 @@ fn a_new_folder_takes_its_name_when_sync_drains_before_the_held_back_rename_clea
             },
             identity: identity(2),
             parked: false,
+            chunks: Box::default(),
         },
     );
     trees.settle(commits.aliases());

@@ -8,6 +8,7 @@ fn a_resend_pending_at_the_upgrade_to_forgotten_shapes_is_kept_beside_another_de
     let shape = engine_shape("root", "f");
     let remote = RemoteNode {
         shape: shape.clone(),
+        chunks: chunks(&shape),
         trashed: false,
         content_rev: 1,
         meta_rev: 1,
@@ -26,6 +27,7 @@ fn a_resend_pending_at_the_upgrade_to_forgotten_shapes_is_kept_beside_another_de
             left_out_when_placed: false,
             content_from_server: false,
             shape: shape.clone(),
+            chunks: chunks(&shape),
             identity: FileIdentity {
                 ino: 1,
                 birth_ns: Some(0),
@@ -67,7 +69,7 @@ fn a_resend_pending_at_the_upgrade_to_forgotten_shapes_is_kept_beside_another_de
                     parent_id: "root".into(),
                     name: "f".into(),
                     kind: NodeKind::File as i32,
-                    content: shape.content.clone(),
+                    content: full(&shape),
                 },
                 identity: FileId::stored(1, Some(0), None),
                 parked: false,
@@ -83,7 +85,8 @@ fn a_resend_pending_at_the_upgrade_to_forgotten_shapes_is_kept_beside_another_de
     trees.restore(state.trees).unwrap();
     trees.rules_scanned();
     let mut edited = remote;
-    edited.shape.content = Some(content(4));
+    edited.shape.content = Some(key(4));
+    edited.chunks = chunks(&edited.shape);
     edited.version_id = "v2".into();
     edited.content_rev = 2;
     edited.edit_rev = 2;
@@ -101,7 +104,7 @@ fn a_resend_pending_at_the_upgrade_to_forgotten_shapes_is_kept_beside_another_de
         .cloned();
     assert!(
         sent.as_ref().is_some_and(|commit| commit.ops.iter().any(
-            |op| matches!(&op.op, Some(op::Op::CreateFile(file)) if file.content == shape.content)
+            |op| matches!(&op.op, Some(op::Op::CreateFile(file)) if file.content == full(&shape))
         )),
         "{sent:?}"
     );

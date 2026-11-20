@@ -14,6 +14,7 @@ use koidrive_engine::restore::RestoreIntent;
 use koidrive_engine::tree::{Content, FileIdentity, Kind, LocalNode, NodeId, RemoteNode, Shape};
 use koidrive_proto::v1::{self as proto, ChunkRef, NodeStatus, op, op_result};
 use koidrive_sim::space::{Role, Session, SpaceDo};
+use koidrive_sim::world::key;
 use sha2::{Digest, Sha256};
 
 const NOW: u64 = 1_794_268_740_000;
@@ -169,7 +170,7 @@ fn shape(world: &World, root: &str, kind: Kind, (spot, name): (Spot, String)) ->
         parent: world.spot_id(root, spot).into(),
         name,
         kind,
-        content: (kind == Kind::File).then(content),
+        content: (kind == Kind::File).then(|| key(&content())),
     }
 }
 
@@ -903,19 +904,24 @@ fn settle(planner: &mut Planner, commit_id: &str, result: &proto::CommitResult, 
     }
 }
 
-fn local_shape(world: &World, root: &str, i: usize) -> Option<Shape> {
+fn local_shape(world: &World, root: &str, i: usize) -> Option<(Shape, Box<[ChunkRef]>)> {
     let mut shape = shape(world, root, world.kind(i), world.local_place(i)?);
-    if world.local_of(i) == Local::Edited {
-        shape.content = Some(edited());
+    let held = match world.local_of(i) {
+        Local::Edited => edited(),
+        _ => content(),
+    };
+    if shape.kind == Kind::Dir {
+        return Some((shape, Box::default()));
     }
-    Some(shape)
+    shape.content = Some(key(&held));
+    Some((shape, held.chunks.into()))
 }
 
 fn trees(world: &World, space: &SpaceDo) -> Trees {
     let root = space.space_id().to_string();
     let mut trees = Trees::new(&root);
     for i in 0..world.len() {
-        if let Some(shape) = local_shape(world, &root, i) {
+        if let Some((shape, chunks)) = local_shape(world, &root, i) {
             let identity = FileIdentity {
                 ino: i as u128 + 1,
                 birth_ns: Some(0),
@@ -927,6 +933,7 @@ fn trees(world: &World, space: &SpaceDo) -> Trees {
                 parked: false,
                 left_out_when_placed: false,
                 content_from_server: false,
+                chunks,
             };
             trees.set_local(world.id(i).into(), node);
         }
@@ -2585,7 +2592,8 @@ fn tell(world: &World, space: &SpaceDo, story: Story) -> Option<Report> {
                 let mut node = (planner.trees.local().get(&NodeId::from(&told.id(i))))
                     .expect("the changed node is in L")
                     .clone();
-                node.shape = local_shape(&told, &root, i).expect("the changed node stays in L");
+                (node.shape, node.chunks) =
+                    local_shape(&told, &root, i).expect("the changed node stays in L");
                 planner.trees.set_local(told.id(i).into(), node);
                 planner.trees.settle(planner.commits.aliases());
             }

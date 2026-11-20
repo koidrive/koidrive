@@ -7,21 +7,22 @@ use koidrive_engine::ignore::{RuleFile, Source};
 use koidrive_engine::names::{name_key, nfc};
 use koidrive_engine::state::MovedHere;
 use koidrive_engine::tree::{
-    Content, FileIdentity, Kind, LocalNode, Names, NodeId, RemoteNode, Shape, StateError, Tree,
-    TreeError, same_content,
+    Content, ContentKey, FileIdentity, Kind, LocalNode, Names, NodeId, RemoteNode, Shape,
+    StateError, Tree, TreeError, same_content,
 };
-use koidrive_proto::v1::{NodeKind, NodeState, NodeStatus, VersionInfo};
+use koidrive_proto::v1::{ChunkRef, NodeKind, NodeState, NodeStatus, VersionInfo};
+use koidrive_sim::world::key;
 use proptest::prelude::*;
 
 const ROOT: &str = "root";
 
-fn content(digest: u8, size: u64) -> Content {
-    Content {
+fn content(digest: u8, size: u64) -> ContentKey {
+    key(&Content {
         size,
         manifest_digest: vec![digest; 32],
         mtime_ns: 1_794_268_740_123_456_789,
         ..Default::default()
-    }
+    })
 }
 
 fn file(parent: &str, name: &str, digest: u8) -> Shape {
@@ -55,6 +56,7 @@ fn remote(shape: Shape) -> RemoteNode {
         edit_rev: 1,
         pending_for: None,
         pending_by: None,
+        chunks: Box::default(),
     }
 }
 
@@ -69,16 +71,17 @@ fn local(shape: Shape, ino: u128) -> LocalNode {
             handle: None,
         },
         parked: false,
+        chunks: Box::default(),
     }
 }
 
 #[test]
 fn contents_compare_by_size_digest_and_executable_bit_but_not_mtime() {
     let a = content(1, 3);
-    let mut touched = a.clone();
+    let mut touched = a;
     touched.mtime_ns += 1;
     assert!(same_content(&a, &touched));
-    let mut executable = a.clone();
+    let mut executable = a;
     executable.executable = true;
     assert!(!same_content(&a, &executable));
     assert!(!same_content(&a, &content(2, 3)));
@@ -189,7 +192,7 @@ fn reads_node_states_and_refuses_kinds_this_version_does_not_sync() {
         meta_edit_rev: 0,
         trash_group: "g".into(),
         current: Some(VersionInfo {
-            content: Some(content(1, 3)),
+            content: Some(content(1, 3).content(&[])),
             ..Default::default()
         }),
         edit_rev: 0,
@@ -210,6 +213,47 @@ fn reads_node_states_and_refuses_kinds_this_version_does_not_sync() {
         ..state.clone()
     };
     assert_eq!(RemoteNode::from_state(&placed).unwrap().1.meta_edit_rev, 5);
+
+    let chunked = Content {
+        executable: true,
+        chunks: vec![ChunkRef {
+            hash: vec![7; 32],
+            size: 3,
+            encoding: 1,
+        }],
+        chunk_count: 1,
+        chunker: "fastcdc2020-1m-4m-16m".into(),
+        ..content(1, 3).content(&[])
+    };
+    let with_chunks = NodeState {
+        current: Some(VersionInfo {
+            content: Some(chunked.clone()),
+            ..Default::default()
+        }),
+        ..state.clone()
+    };
+    let node = RemoteNode::from_state(&with_chunks).unwrap().1;
+    assert_eq!(node.content(), Some(chunked.clone()));
+    let short = Content {
+        manifest_digest: vec![5; 3],
+        ..chunked.clone()
+    };
+    let (key, chunks) = ContentKey::split(short.clone()).unwrap();
+    assert_eq!(key.content(&chunks), short);
+    let long = NodeState {
+        current: Some(VersionInfo {
+            content: Some(Content {
+                manifest_digest: vec![1; 33],
+                ..chunked
+            }),
+            ..Default::default()
+        }),
+        ..state.clone()
+    };
+    assert_eq!(
+        RemoteNode::from_state(&long),
+        Err(StateError::DigestTooLong(33))
+    );
 
     let symlink = NodeState {
         kind: NodeKind::Symlink as i32,
@@ -691,7 +735,7 @@ fn equal(a: &Option<Shape>, b: &Option<Shape>) -> bool {
                     (None, None) => true,
                     (Some(x), Some(y)) => {
                         x.size == y.size
-                            && x.manifest_digest == y.manifest_digest
+                            && x.manifest_digest() == y.manifest_digest()
                             && x.executable == y.executable
                     }
                     _ => false,

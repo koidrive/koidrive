@@ -3,13 +3,13 @@
 use std::collections::{BTreeSet, HashMap};
 
 use koidrive_engine::names::{conflict_name, is_reserved_at_root, name_key, normalize_name};
-use koidrive_engine::tree::same_content;
 use koidrive_proto::v1::{
     ChangeRecord, ChunkRef, Content, CreateDir, CreateFile, Delete, Error, Move, NodeKind,
     NodeStatus, Op, OpResult, Place, Restore, change_record, error, op, op_result,
 };
 
 use super::{ChunkState, Node, Session, State, StoredResult, Version, fail};
+use crate::world::same_bytes;
 
 pub const MAX_DEPTH: usize = 256;
 
@@ -562,7 +562,7 @@ impl<'a> Applier<'a> {
         let ancestry = self.made_over(node_id, made_over, source);
         let current = (found.cur_version_id.as_ref()).map(|id| &self.st.versions[id].content);
         if self.unseen_content(&found)
-            && current.is_some_and(|current| same_content(current, content))
+            && current.is_some_and(|current| same_bytes(current, content))
         {
             if resend || found.edit_rev >= found.content_rev {
                 if resend

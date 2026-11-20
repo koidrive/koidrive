@@ -307,13 +307,13 @@ pub(crate) fn release(
         let on_disk = trees.local().get(id).map(|node| &node.shape);
         let synced = trees.synced().live(id);
         let content = if trees.made_over_remote(id) {
-            server.content.clone()
+            server.content
         } else if let Some(on_disk) = on_disk.filter(|_| newer_than(trees.source_version_id(id))) {
-            on_disk.content.clone()
+            on_disk.content
         } else if let Some(synced) = synced.filter(|_| newer_than(trees.synced_version_id(id))) {
-            synced.content.clone()
+            synced.content
         } else {
-            server.content.clone()
+            server.content
         };
         Some(Shape { content, ..server })
     };

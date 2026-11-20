@@ -12705,6 +12705,7 @@ mod planned_against_the_server {
             edit_rev: 1,
             pending_for: None,
             pending_by: None,
+            chunks: Box::default(),
         }
     }
 
@@ -12724,6 +12725,7 @@ mod planned_against_the_server {
                     parked: false,
                     left_out_when_placed: false,
                     content_from_server: false,
+                    chunks: Box::default(),
                 },
             );
             trees.set_synced(NodeId::from(id), synced);

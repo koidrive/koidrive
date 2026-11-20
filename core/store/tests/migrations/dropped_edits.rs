@@ -31,12 +31,13 @@ fn a_store_from_before_dropped_edits_were_recorded_opens_with_none_recorded() {
 fn an_edit_in_flight_in_a_store_from_before_dropped_edits_were_recorded_is_sent_again_after_a_loss()
 {
     let shape = |name: &str, size| EngineShape {
-        content: Some(content(size)),
+        content: Some(key(size)),
         ..engine_shape("root", name)
     };
     let remote = |shape, rev, version_id: &str| RemoteNode {
         pending_by: None,
         pending_for: None,
+        chunks: chunks(&shape),
         shape,
         trashed: false,
         content_rev: rev,
@@ -50,6 +51,7 @@ fn an_edit_in_flight_in_a_store_from_before_dropped_edits_were_recorded_is_sent_
     let local = |shape, ino| EngineLocalNode {
         left_out_when_placed: false,
         content_from_server: false,
+        chunks: chunks(&shape),
         shape,
         identity: FileIdentity {
             ino,

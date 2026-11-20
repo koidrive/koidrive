@@ -816,7 +816,7 @@ fn a_lost_update_is_not_the_effects_base_while_it_cannot_fit() {
             .local()
             .get(&"n".into())
             .map(|node| &node.shape.content),
-        Some(&Some(content(1)))
+        Some(&Some(key(&content(1))))
     );
 }
 

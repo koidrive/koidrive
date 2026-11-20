@@ -29,7 +29,9 @@ use crate::state::{
     Agreed, CONTENT_ANCESTRY_LIMIT, CommitsChanges, CommitsState, FinishOrigin, GivenUp, StateError,
 };
 use crate::tracked::{Marked, TrackedMap, TrackedSet};
-use crate::tree::{Content, Kind, NodeId, RemoteNode, Shape, same, same_content};
+use crate::tree::{
+    Content, ContentKey, Kind, LocalNode, NodeId, RemoteNode, Shape, same, same_content,
+};
 
 /// The most ops one commit holds (spec v0 section 13).
 pub const MAX_OPS: usize = 1000;
@@ -47,6 +49,7 @@ pub const MAX_COMMIT_BYTES: usize = 512 * 1024;
 /// What one change record costs besides the node's name and content: its IDs, revisions, version
 /// and framing.
 const RECORD_BYTES: usize = 256;
+const MAX_CHUNK_REF_BYTES: usize = 48;
 const MAX_CONFLICT_ATTEMPTS: u32 = 100;
 
 const MAX_ANCESTRY_BYTES: usize = CONTENT_ANCESTRY_LIMIT * (1 + 1 + 36);
@@ -367,6 +370,17 @@ impl Commits {
                 return Err(StateError::DeleteWithoutOp(id.clone()));
             }
             carried(&state.restores, flight).map_err(StateError::RestoreNotQueued)?;
+            let long = (ops.iter().filter_map(|op| op.op.as_ref())).find(|op| {
+                let content = match op {
+                    op::Op::CreateFile(create) => create.content.as_ref(),
+                    op::Op::UpdateContent(update) => update.content.as_ref(),
+                    _ => None,
+                };
+                content.is_some_and(|content| ContentKey::try_from(content).is_err())
+            });
+            if let Some(op) = long {
+                return Err(StateError::DigestTooLong(op_node(op)));
+            }
         }
         let mut ended = BTreeSet::new();
         for resolved in &state.resolved {
@@ -539,15 +553,19 @@ impl Commits {
         for op in (flight.commit.ops.iter()).filter_map(|op| op.op.as_ref()) {
             match op {
                 op::Op::CreateFile(create) => {
-                    (landing.contents)
-                        .insert(NodeId::from(&create.node_id), create.content.clone());
+                    (landing.contents).insert(
+                        NodeId::from(&create.node_id),
+                        create.content.as_ref().map(sent_key),
+                    );
                 }
                 op::Op::CreateDir(create) => {
                     landing.contents.insert(NodeId::from(&create.node_id), None);
                 }
                 op::Op::UpdateContent(update) => {
-                    (landing.contents)
-                        .insert(NodeId::from(&update.node_id), update.content.clone());
+                    (landing.contents).insert(
+                        NodeId::from(&update.node_id),
+                        update.content.as_ref().map(sent_key),
+                    );
                 }
                 op::Op::Delete(delete) => {
                     landing.deleted.insert(NodeId::from(&delete.node_id));
@@ -1795,7 +1813,9 @@ impl Commits {
                     .take(cap)
                     .take_while(|(id, _, name, _)| {
                         let shape = trees.remote().live(id).or(trees.synced().live(id));
-                        let cost = record_cost(shape) + held_ancestry_cost(trees, id) + name.len();
+                        let cost = record_cost(trees, id, shape)
+                            + held_ancestry_cost(trees, id)
+                            + name.len();
                         let fits = bytes == 0 || bytes + cost <= MAX_COMMIT_BYTES;
                         bytes += cost;
                         fits
@@ -1955,11 +1975,8 @@ impl Commits {
                 && !skip.contains(&original.node_id)
                 && !skip.contains(&copy.node_id);
             let free = !taken.contains(&original.node_id) && !taken.contains(&copy.node_id);
-            let content = |file: &ConflictFile| {
-                let remote = trees.remote().get(&file.node_id).expect("live in R");
-                remote.shape.content.clone()
-            };
             let held = trees.remote().get(&original.node_id).expect("live in R");
+            let copied = trees.remote().get(&copy.node_id).expect("live in R");
             let delete_copy = op::Op::Delete(proto::Delete {
                 node_id: copy.node_id.to_string(),
                 requires: Some(proto::NodeRevisions {
@@ -1971,16 +1988,12 @@ impl Commits {
             });
             let op = match question.answer {
                 Some(Answer::KeepOriginal) => Some(delete_copy),
-                Some(Answer::KeepCopy) => match (content(original), content(copy)) {
-                    (Some(current), Some(copied)) if same_content(&current, &copied) => {
-                        Some(delete_copy)
-                    }
-                    (Some(_), Some(copied))
-                        if copied.chunks.len() == copied.chunk_count as usize =>
-                    {
+                Some(Answer::KeepCopy) => match (held.shape.content, copied.shape.content) {
+                    (Some(current), Some(key)) if same_content(&current, &key) => Some(delete_copy),
+                    (Some(_), Some(key)) if copied.chunks.len() == key.chunk_count as usize => {
                         Some(op::Op::UpdateContent(proto::UpdateContent {
                             node_id: original.node_id.to_string(),
-                            content: Some(copied),
+                            content: Some(key.content(&copied.chunks)),
                             resend: false,
                             made_over: Vec::new(),
                             source_version_id: String::new(),
@@ -2415,7 +2428,7 @@ impl Commits {
                         parent: parent(&create.parent_id),
                         name: name(&create.name),
                         kind: Kind::File,
-                        content: create.content.clone(),
+                        content: create.content.as_ref().map(sent_key),
                     };
                     if applied {
                         let shape = created(trees, &synced, &create_id, shape);
@@ -2434,12 +2447,12 @@ impl Commits {
                         {
                             trees.sent_version(
                                 &create_id,
-                                create.content.as_ref(),
+                                create.content.as_ref().map(sent_key).as_ref(),
                                 result.seq,
                                 true,
                             );
                         }
-                        trees.sent_edit(&create_id, create.content.as_ref());
+                        trees.sent_edit(&create_id, create.content.as_ref().map(sent_key).as_ref());
                     } else if code == Code::ConflictCopy && trees.local().get(&outcome_id).is_some()
                     {
                         trees.revert(create_id.clone());
@@ -2447,23 +2460,25 @@ impl Commits {
                         synced.set(&outcome_id, Some(shape));
                         synced.set(&create_id, None);
                         rekey(trees, &create_id, &outcome_id);
-                        trees.sent_edit(&outcome_id, create.content.as_ref());
+                        trees
+                            .sent_edit(&outcome_id, create.content.as_ref().map(sent_key).as_ref());
                     }
                     let exists = taken && trees.remote().get(&create_id).is_some();
                     (create_id, applied || exists || code == Code::ConflictCopy)
                 }
                 Some(op::Op::UpdateContent(update)) => {
                     let id = &NodeId::from(&update.node_id);
+                    let sent = update.content.as_ref().map(sent_key);
                     let edited = synced.get(trees, id).map(|shape| Shape {
-                        content: update.content.clone(),
+                        content: sent,
                         ..shape
                     });
-                    let current = trees.synced().live(id).and_then(|s| s.content.as_ref());
+                    let current = trees.synced().live(id).and_then(|s| s.content);
                     let downloaded =
                         code == Code::ConflictCopy && trees.local().get(&outcome_id).is_some();
                     if applied && trees.took_content(id) {
                         let kept = synced.get(trees, id).map(|shape| Shape {
-                            content: current.cloned(),
+                            content: current,
                             ..shape
                         });
                         synced.set(id, kept);
@@ -2488,22 +2503,22 @@ impl Commits {
                                 parent: parent(&moved.new_parent_id),
                                 name: moved.new_name.clone(),
                                 kind: Kind::File,
-                                content: update.content.clone(),
+                                content: sent,
                             })
                         });
                         synced.set(&outcome_id, copied);
                         synced.set(id, None);
                         rekey(trees, id, &outcome_id);
-                        trees.sent_edit(&outcome_id, update.content.as_ref());
+                        trees.sent_edit(&outcome_id, sent.as_ref());
                     }
                     if applied && !update.resend {
-                        trees.record_edited(id, update.content.as_ref());
+                        trees.record_edited(id, sent.as_ref());
                     }
                     if applied {
-                        trees.sent_version(id, update.content.as_ref(), result.seq, !update.resend);
+                        trees.sent_version(id, sent.as_ref(), result.seq, !update.resend);
                     }
                     if applied || code == Code::ConflictCopy {
-                        trees.sent_edit(id, update.content.as_ref());
+                        trees.sent_edit(id, sent.as_ref());
                     }
                     if code == Code::ConflictCopy {
                         conflicts.push((index, id.clone(), outcome_id.clone()));
@@ -2628,7 +2643,7 @@ impl Commits {
                 trees.sent_create(node);
             }
             let at_lost_position = trees.lost_position(node).is_some();
-            let held_by_l = |content: Option<&Content>| {
+            let held_by_l = |content: Option<&ContentKey>| {
                 (trees.local().live(node)).is_some_and(|local| {
                     match (local.content.as_ref(), content) {
                         (Some(local), Some(remote)) => same_content(local, remote),
@@ -2659,10 +2674,10 @@ impl Commits {
                     synced.set(node, Some(shape));
                 }
                 let content = match &op.op {
-                    Some(op::Op::CreateFile(create)) => create.content.as_ref(),
+                    Some(op::Op::CreateFile(create)) => create.content.as_ref().map(sent_key),
                     _ => None,
                 };
-                trees.sent_edit(node, content);
+                trees.sent_edit(node, content.as_ref());
             }
             let published = created && done && self.published.remove(node);
             if renamed
@@ -2822,10 +2837,11 @@ impl Commits {
                     closed.insert(id);
                 }
                 (op::Op::UpdateContent(update), Code::Applied) => {
-                    trees.record_edited(&NodeId::from(&update.node_id), update.content.as_ref());
+                    let sent = update.content.as_ref().map(sent_key);
+                    trees.record_edited(&NodeId::from(&update.node_id), sent.as_ref());
                     let remote = trees.remote().get(&original.node_id);
                     let took = remote.filter(|node| {
-                        (node.shape.content.as_ref().zip(update.content.as_ref()))
+                        (node.shape.content.as_ref().zip(sent.as_ref()))
                             .is_some_and(|(now, sent)| same_content(now, sent))
                     });
                     if let Some(node) = took {
@@ -3376,7 +3392,9 @@ fn deleted_shape<'a>(trees: &'a Trees, id: &NodeId) -> Option<&'a Shape> {
 
 fn deleted_bytes<'a>(trees: &Trees, members: impl IntoIterator<Item = &'a NodeId>) -> usize {
     (members.into_iter())
-        .map(|node| record_cost(deleted_shape(trees, node)) + held_ancestry_cost(trees, node))
+        .map(|node| {
+            record_cost(trees, node, deleted_shape(trees, node)) + held_ancestry_cost(trees, node)
+        })
         .sum()
 }
 
@@ -3858,7 +3876,7 @@ fn take_agreed(trees: &Trees, id: &NodeId) -> Option<Shape> {
     if let (Some(l), Some(r)) = (&local.content, &remote.content)
         && same_content(l, r)
     {
-        next.content = Some(r.clone());
+        next.content = Some(*r);
     }
     (!next.same(synced)).then_some(next)
 }
@@ -3866,7 +3884,7 @@ fn take_agreed(trees: &Trees, id: &NodeId) -> Option<Shape> {
 /// A file whose content changed on both sides, each differently (R3). A file of
 /// [`Trees::unsent_edits`] changed locally even where L holds S's bytes.
 fn edited_on_both_sides(trees: &Trees, id: &NodeId) -> bool {
-    let content = |shape: Option<&Shape>| shape.and_then(|shape| shape.content.clone());
+    let content = |shape: Option<&Shape>| shape.and_then(|shape| shape.content);
     let (Some(l), Some(r)) = (
         content(trees.local().live(id)),
         content(trees.remote().live(id)),
@@ -3874,7 +3892,7 @@ fn edited_on_both_sides(trees: &Trees, id: &NodeId) -> bool {
         return false;
     };
     let s = content(trees.acknowledged(id));
-    let changed = |c: &Content| s.as_ref().is_none_or(|s| !same_content(c, s));
+    let changed = |c: &ContentKey| s.as_ref().is_none_or(|s| !same_content(c, s));
     (changed(&l) || trees.unsent_edits().contains(id)) && changed(&r) && !same_content(&l, &r)
 }
 
@@ -4126,11 +4144,29 @@ fn leaves_s(trees: &Trees, id: &NodeId) -> bool {
 }
 
 /// The bytes a change record of a node with this shape takes, roughly.
-fn record_cost(shape: Option<&Shape>) -> usize {
+fn record_cost(trees: &Trees, id: &NodeId, shape: Option<&Shape>) -> usize {
     RECORD_BYTES
         + shape.map_or(0, |shape| {
-            shape.name.len() + shape.content.as_ref().map_or(0, |c| c.encoded_len())
+            shape.name.len() + (shape.content).map_or(0, |key| content_len(trees, id, key))
         })
+}
+
+fn content_len(trees: &Trees, id: &NodeId, key: ContentKey) -> usize {
+    let remote = (trees.remote().get(id)).map(|node| (node.shape.content, &node.chunks));
+    let local = (trees.local().get(id)).map(|node| (node.shape.content, &node.chunks));
+    let chunks = match remote
+        .into_iter()
+        .chain(local)
+        .find(|(held, _)| *held == Some(key))
+    {
+        Some((_, chunks)) => prost::encoding::message::encoded_len_repeated(4, chunks),
+        None => key.chunk_count as usize * MAX_CHUNK_REF_BYTES,
+    };
+    key.content(&[]).encoded_len() + chunks
+}
+
+fn sent_key(content: &Content) -> ContentKey {
+    ContentKey::try_from(content).expect("a sent content has a digest a key holds")
 }
 
 fn made_over_cost(ids: &[String]) -> usize {
@@ -4172,8 +4208,11 @@ fn restored_costs<'a>(
     }
     let mut costs = BTreeMap::new();
     for &node in order.iter().rev() {
-        let own = record_cost(trees.remote().get(node).map(|node| &node.shape))
-            + held_ancestry_cost(trees, node);
+        let own = record_cost(
+            trees,
+            node,
+            trees.remote().get(node).map(|node| &node.shape),
+        ) + held_ancestry_cost(trees, node);
         let members: usize = below(node).map(|id| costs[*id]).sum();
         costs.insert(node, own + members);
     }
@@ -4270,15 +4309,22 @@ fn cost(trees: &Trees, want: &Want) -> usize {
             id,
             shape,
             pending_for,
-        } => record_cost(Some(shape)) + edited_ancestry_cost(trees, id) + marked(pending_for),
+        } => {
+            record_cost(trees, id, Some(shape))
+                + edited_ancestry_cost(trees, id)
+                + marked(pending_for)
+        }
         Want::Move {
             id,
             name,
             pending_for,
             ..
         } => {
-            record_cost(trees.remote().live(id).or(trees.synced().live(id)))
-                + held_ancestry_cost(trees, id)
+            record_cost(
+                trees,
+                id,
+                trees.remote().live(id).or(trees.synced().live(id)),
+            ) + held_ancestry_cost(trees, id)
                 + name.len()
                 + marked(pending_for)
         }
@@ -4289,8 +4335,11 @@ fn cost(trees: &Trees, want: &Want) -> usize {
         Want::Retrash { members, .. } => members
             .iter()
             .map(|node| {
-                2 * (record_cost(trees.remote().get(node).map(|node| &node.shape))
-                    + held_ancestry_cost(trees, node))
+                2 * (record_cost(
+                    trees,
+                    node,
+                    trees.remote().get(node).map(|node| &node.shape),
+                ) + held_ancestry_cost(trees, node))
             })
             .sum(),
         Want::Restore { cost, .. } => *cost,
@@ -4409,7 +4458,7 @@ fn plan(
         let mut groups: BTreeMap<&str, usize> = BTreeMap::new();
         for (id, node) in trees.remote().iter().filter(|(_, node)| node.trashed) {
             *groups.entry(&node.trash_group).or_default() +=
-                record_cost(Some(&node.shape)) + held_ancestry_cost(trees, id);
+                record_cost(trees, id, Some(&node.shape)) + held_ancestry_cost(trees, id);
         }
         let trashed = trashed(trees);
         let splitting: BTreeSet<NodeId> = (splits.keys())
@@ -4443,7 +4492,7 @@ fn plan(
                     groups[node.trash_group.as_str()]
                 }
                 node => {
-                    record_cost(node.map(|node| &node.shape))
+                    record_cost(trees, &intent.node(), node.map(|node| &node.shape))
                         + if intent.version_id().is_some() {
                             MAX_ANCESTRY_BYTES
                         } else {
@@ -4474,7 +4523,11 @@ fn plan(
             continue;
         }
         let synced = trees.acknowledged(id);
-        let Some(local) = trees.local().get(id).map(|node| &node.shape) else {
+        let Some((local, local_chunks)) = trees
+            .local()
+            .get(id)
+            .map(|node| (&node.shape, &node.chunks))
+        else {
             let kept_settled =
                 (trees.kept_original(id)).is_none_or(|kept| trees.class(kept) == Class::InSync);
             if kept_settled && deletes(trees, id, needed) {
@@ -4552,7 +4605,7 @@ fn plan(
                 pending_for: None,
             });
         }
-        let differs = |shape: Option<&Shape>, content: &Content| {
+        let differs = |shape: Option<&Shape>, content: &ContentKey| {
             shape
                 .and_then(|shape| shape.content.as_ref())
                 .is_none_or(|other| !same_content(other, content))
@@ -4563,7 +4616,7 @@ fn plan(
         {
             wants.push(Want::Content {
                 id: id.clone(),
-                content: content.clone(),
+                content: content.content(local_chunks),
             });
         }
     }
@@ -4797,6 +4850,7 @@ fn plan(
                         pending_for: pending_for.unwrap_or_default(),
                     }),
                     Kind::File => op::Op::CreateFile(proto::CreateFile {
+                        content: (trees.local().get(&id)).and_then(LocalNode::content),
                         made_over: trees.edit_bases(&id),
                         source_version_id: trees
                             .source_version_id(&id)
@@ -4805,7 +4859,6 @@ fn plan(
                         node_id: id.into(),
                         parent_id: shape.parent.into(),
                         name: shape.name,
-                        content: shape.content,
                         ..Default::default()
                     }),
                 }
@@ -4947,7 +5000,7 @@ fn plan(
                     )
             }
             op => {
-                record_cost(trees.synced().live(&op_node(op)))
+                record_cost(trees, &op_node(op), trees.synced().live(&op_node(op)))
                     + held_ancestry_cost(trees, &op_node(op))
             }
         })
@@ -6160,7 +6213,7 @@ impl<'a> Scratch<'a> {
 
     fn revival(&self, want: &Want, answers: &BTreeSet<NodeId>, trees: &Trees) -> usize {
         let record = |id: &NodeId| {
-            record_cost(trees.remote().get(id).map(|node| &node.shape))
+            record_cost(trees, id, trees.remote().get(id).map(|node| &node.shape))
                 + held_ancestry_cost(trees, id)
         };
         let (mut current, group) = match want {
@@ -6387,7 +6440,7 @@ impl<'a> Scratch<'a> {
 #[cfg(test)]
 mod ancestry_size_tests {
     use super::*;
-    use crate::tree::{FileIdentity, LocalNode, RemoteNode};
+    use crate::tree::{FileIdentity, LocalNode, RemoteNode, key};
 
     fn version(n: usize) -> String {
         format!("0190a6b2-0000-7000-8000-{n:012x}")
@@ -6413,10 +6466,10 @@ mod ancestry_size_tests {
                 parent: "root".into(),
                 name: format!("file-{n}"),
                 kind: Kind::File,
-                content: Some(Content {
+                content: Some(key(&Content {
                     manifest_digest: vec![1; 32],
                     ..Content::default()
-                }),
+                })),
             };
             trees.set_remote(
                 NodeId::from(&id),
@@ -6432,6 +6485,7 @@ mod ancestry_size_tests {
                     edit_rev: 1,
                     pending_for: None,
                     pending_by: None,
+                    chunks: Box::default(),
                 },
             );
             let mut local = LocalNode {
@@ -6444,10 +6498,14 @@ mod ancestry_size_tests {
                 parked: false,
                 left_out_when_placed: false,
                 content_from_server: true,
+                chunks: Box::default(),
             };
             trees.set_local(NodeId::from(&id), local.clone());
             trees.set_synced(NodeId::from(&id), Some(shape));
-            local.shape.content.as_mut().unwrap().manifest_digest = vec![2; 32];
+            local.shape.content = Some(key(&Content {
+                manifest_digest: vec![2; 32],
+                ..Content::default()
+            }));
             trees.set_local_changed(NodeId::from(id), local);
         }
         trees.settle(&Default::default());

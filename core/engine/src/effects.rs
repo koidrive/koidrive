@@ -15,7 +15,10 @@ use crate::ignore::is_rules_file;
 use crate::names::{name_key, same_name};
 use crate::state::{EffectsChanges, EffectsState, StateError};
 use crate::tracked::{Marked, TrackedMap};
-use crate::tree::{Content, FileIdentity, Kind, LocalNode, NodeId, Shape, same, same_content};
+use crate::tree::{
+    Content, FileIdentity, Kind, LocalNode, NodeId, RemoteNode, Shape, same, same_content,
+};
+use koidrive_proto::v1::ChunkRef;
 
 /// A directory on the way to an entry, with the identity L holds for it. The driver resolves a
 /// location one directory at a time and fails the effect when an identity differs (section 5.2).
@@ -101,6 +104,8 @@ pub struct EffectRecord {
     pub effect: Effect,
     /// L's shape for the node once the effect is done, or ⊥ for a removal.
     pub after: Option<Shape>,
+    /// The chunk list of `after`'s content.
+    pub after_chunks: Box<[ChunkRef]>,
     /// The recoveries [`Trees::recoveries`] counted when the effect was planned.
     pub recoveries: u64,
     /// The identity of a write's staged file, which the driver records before it places the file
@@ -116,18 +121,27 @@ impl PartialEq for EffectRecord {
             counter,
             effect,
             after,
+            after_chunks,
             recoveries: _,
             staged,
         } = self;
-        (effect_id, node, counter, effect, after, staged)
-            == (
-                &other.effect_id,
-                &other.node,
-                &other.counter,
-                &other.effect,
-                &other.after,
-                &other.staged,
-            )
+        (
+            effect_id,
+            node,
+            counter,
+            effect,
+            after,
+            after_chunks,
+            staged,
+        ) == (
+            &other.effect_id,
+            &other.node,
+            &other.counter,
+            &other.effect,
+            &other.after,
+            &other.after_chunks,
+            &other.staged,
+        )
     }
 }
 
@@ -382,6 +396,13 @@ impl Effects {
                 }),
                 (after, _) => after,
             };
+            let after_chunks = match &effect {
+                Effect::WriteFile { content, .. } => content.chunks.as_slice().into(),
+                Effect::Move { .. } => (trees.local().get(&node))
+                    .map(|local| local.chunks.clone())
+                    .unwrap_or_default(),
+                _ => Box::default(),
+            };
             self.failed.remove(&node);
             self.in_flight.get_mut().push(EffectRecord {
                 effect_id: ids.uuid_v7(now_ms),
@@ -389,6 +410,7 @@ impl Effects {
                 counter,
                 effect,
                 after,
+                after_chunks,
                 recoveries: trees.recoveries(),
                 staged: None,
             });
@@ -633,20 +655,25 @@ impl Effects {
                 trees.wait(record.node.clone(), synced, origin);
             }
         }
-        let content = (trees.local().get(&record.node)).map(|node| node.shape.content.clone());
-        match record.after {
+        let held = (trees.local().get(&record.node)).map(|node| (node.shape.content, &node.chunks));
+        let (shape, chunks) = match (&record.effect, record.after, held) {
+            (_, None, _) => (None, record.after_chunks),
+            (Effect::Move { .. }, Some(shape), Some((content, chunks))) => {
+                (Some(Shape { content, ..shape }), chunks.clone())
+            }
+            (_, Some(shape), _) => (Some(shape), record.after_chunks),
+        };
+        match shape {
             None => trees.drop_local(&record.node),
             Some(shape) => trees.place_local(
                 record.node.clone(),
                 LocalNode {
                     left_out_when_placed: false,
                     content_from_server: false,
-                    shape: match (&record.effect, content) {
-                        (Effect::Move { .. }, Some(content)) => Shape { content, ..shape },
-                        _ => shape,
-                    },
+                    shape,
                     identity,
                     parked,
+                    chunks,
                 },
             ),
         }
@@ -1127,11 +1154,11 @@ impl<'a> View<'a> {
                 let Some(at) = self.location_in(&remote.parent, &remote.name) else {
                     return Step::Skip;
                 };
-                let effect = match (&remote.kind, &remote.content) {
+                let effect = match (&remote.kind, self.remote_content(id)) {
                     (Kind::Dir, _) => Effect::CreateDir { at },
                     (Kind::File, Some(content)) => Effect::WriteFile {
                         at,
-                        content: content.clone(),
+                        content,
                         replaces: None,
                     },
                     (Kind::File, None) => return Step::Skip,
@@ -1162,11 +1189,11 @@ impl<'a> View<'a> {
                 return Step::Skip;
             }
             let displaced = self.displaced(here.clone(), local);
-            return match (displaced, &remote.content) {
+            return match (displaced, self.remote_content(id)) {
                 (Some(displaced), Some(content)) => Step::Apply(
                     Effect::WriteFile {
                         at: here,
-                        content: content.clone(),
+                        content,
                         replaces: Some(displaced),
                     },
                     Some(remote.clone()),
@@ -1194,11 +1221,11 @@ impl<'a> View<'a> {
         };
         if rewrite {
             let displaced = self.displaced(here, local);
-            return match (displaced, &remote.content) {
+            return match (displaced, self.remote_content(id)) {
                 (Some(displaced), Some(content)) => Step::Apply(
                     Effect::WriteFile {
                         at: to,
-                        content: content.clone(),
+                        content,
                         replaces: Some(displaced),
                     },
                     Some(remote.clone()),
@@ -1472,8 +1499,12 @@ impl<'a> View<'a> {
         Some(Displaced {
             at,
             identity: local.identity,
-            content: local.shape.content.clone()?,
+            content: local.content()?,
         })
+    }
+
+    fn remote_content(&self, id: &NodeId) -> Option<Content> {
+        self.trees.remote().get(id).and_then(RemoteNode::content)
     }
 
     fn location(&self, id: &NodeId) -> Option<Location> {

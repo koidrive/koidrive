@@ -10,6 +10,7 @@ use koidrive_engine::question::{
 };
 use koidrive_engine::tree::{Content, FileIdentity, Kind, LocalNode, NodeId, RemoteNode, Shape};
 use koidrive_proto::v1::op;
+use koidrive_sim::world::key;
 
 const ROOT: &str = "root";
 const NOW: u64 = 1_794_268_740_000;
@@ -20,12 +21,12 @@ fn file(digest: u8, mtime_ns: i64) -> Shape {
         parent: ROOT.into(),
         name: "a".into(),
         kind: Kind::File,
-        content: Some(Content {
+        content: Some(key(&Content {
             size: 3,
             mtime_ns,
             manifest_digest: vec![digest; 32],
             ..Default::default()
-        }),
+        })),
     }
 }
 
@@ -33,6 +34,7 @@ fn version(shape: Shape, version_id: &str, made_over: &[&str], rev: u64) -> Remo
     RemoteNode {
         made_over: made_over.iter().map(|id| (*id).into()).collect(),
         shape,
+        chunks: Box::default(),
         trashed: false,
         content_rev: rev,
         edit_rev: rev,
@@ -57,6 +59,7 @@ fn rolled_back_under_a_later_edit(on_disk_at: i64) -> (Trees, Commits, IdGen) {
             handle: None,
         },
         parked: false,
+        chunks: Box::default(),
     };
     trees.set_local("n".into(), local);
     trees.set_synced("n".into(), Some(file(4, WRITTEN_AT)));

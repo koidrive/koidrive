@@ -23,7 +23,7 @@ use koidrive_engine::restore::{Outcome, Rejection, Resolved, RestoreIntent};
 use koidrive_engine::state::StateError;
 
 use koidrive_engine::tree::{
-    FileIdentity, Kind, LocalNode, Names, NodeId, RemoteNode, Shape, same,
+    ContentKey, FileIdentity, Kind, LocalNode, Names, NodeId, RemoteNode, Shape, same,
 };
 
 use koidrive_proto::v1::{
@@ -33,6 +33,7 @@ use koidrive_proto::v1::{
 };
 
 use koidrive_sim::space::{Role, Session, SpaceDo};
+use koidrive_sim::world::{key, split};
 
 use proptest::prelude::*;
 
@@ -452,7 +453,7 @@ fn restored(
             let node = NodeId::from(if copied { &result.node_id } else { node });
             let on_disk = (trees.local().get(&node)).and_then(|n| n.shape.content.as_ref());
             let edited = from_trash
-                && on_disk.is_some_and(|c| c.manifest_digest != *digest)
+                && on_disk.is_some_and(|c| c.manifest_digest() != digest.as_slice())
                 && acknowledged(trees, &node).as_ref() == Some(digest);
             if after.contains(&(node.to_string(), digest.clone())) && !edited {
                 current.push(digest.clone());
@@ -587,7 +588,8 @@ type IgnoredDisk = BTreeMap<DiskPath, DiskEntry>;
 
 struct DiskEntry {
     kind: Kind,
-    content: Option<Content>,
+    content: Option<ContentKey>,
+    chunks: Box<[ChunkRef]>,
     original: Option<(NodeId, FileIdentity)>,
 }
 
@@ -718,6 +720,7 @@ impl Device {
             },
             identity,
             parked: false,
+            chunks: entry.chunks,
         };
         self.acted.insert(id.clone());
         self.off_disk.remove(&id);
@@ -886,6 +889,7 @@ impl Device {
                     0 => (Kind::Dir, None),
                     _ => (Kind::File, Some(content(1, action.text))),
                 };
+                let (content, chunks) = split(content);
                 if lands_unseen(kind) {
                     if kind == Kind::Dir && lands_unseen(Kind::File) {
                         self.ignored.insert(
@@ -893,6 +897,7 @@ impl Device {
                             DiskEntry {
                                 kind,
                                 content,
+                                chunks,
                                 original: None,
                             },
                         );
@@ -911,6 +916,7 @@ impl Device {
                     shape,
                     identity: self.identity(),
                     parked: false,
+                    chunks,
                 };
                 let id = NodeId::from(self.ids.uuid_v7(NOW as u64));
                 self.acted.insert(id.clone());
@@ -921,11 +927,11 @@ impl Device {
                     return;
                 }
                 let written = Some(content(1, action.text));
-                if node.shape.content != written {
+                if node.content() != written {
                     self.touched.insert(id.clone());
                     self.acted.insert(id.clone());
                 }
-                node.shape.content = written;
+                (node.shape.content, node.chunks) = split(written);
                 self.trees.set_local_changed(id, node);
             }
             (3, Some((id, mut node))) if !taken(Some(&id)) && !self.holds(&id, &parent) => {
@@ -1047,7 +1053,8 @@ impl Device {
                 (holder.clone(), below),
                 DiskEntry {
                     kind: node.shape.kind,
-                    content: node.shape.content.clone(),
+                    content: node.shape.content,
+                    chunks: node.chunks.clone(),
                     original: Some((id, node.identity)),
                 },
             );
@@ -1173,8 +1180,11 @@ fn aim(
     }
 }
 
-fn written(contents: impl Iterator<Item = Option<Content>>, device: u8) -> BTreeSet<Vec<u8>> {
-    own(contents.flatten().map(|c| c.manifest_digest), device)
+fn written(contents: impl Iterator<Item = Option<ContentKey>>, device: u8) -> BTreeSet<Vec<u8>> {
+    own(
+        contents.flatten().map(|c| c.manifest_digest().to_vec()),
+        device,
+    )
 }
 
 /// The digests among `digests` that `device` wrote.
@@ -1200,7 +1210,7 @@ fn stored(space: &SpaceDo) -> BTreeSet<(String, Vec<u8>)> {
 /// S's otherwise.
 fn acknowledged(trees: &Trees, id: &NodeId) -> Option<Vec<u8>> {
     let shape = acknowledged_shape(trees, id)?;
-    Some(shape.content.as_ref()?.manifest_digest.clone())
+    Some(shape.content.as_ref()?.manifest_digest().to_vec())
 }
 
 fn acknowledged_shape<'a>(trees: &'a Trees, id: &NodeId) -> Option<&'a Shape> {
@@ -1217,7 +1227,7 @@ fn held(trees: &Trees) -> BTreeSet<(String, Vec<u8>)> {
         .filter_map(|(id, node)| {
             Some((
                 id.to_string(),
-                node.shape.content.as_ref()?.manifest_digest.clone(),
+                node.shape.content.as_ref()?.manifest_digest().to_vec(),
             ))
         })
         .collect()
@@ -1821,7 +1831,7 @@ fn relocation_stands(trees: &Trees, id: &NodeId, to: &koidrive_engine::tree::Sha
 fn note_agreements(
     device: &Device,
     sent_since: &mut BTreeSet<NodeId>,
-    agreed: &mut BTreeMap<NodeId, Content>,
+    agreed: &mut BTreeMap<NodeId, ContentKey>,
     from_server: &mut BTreeSet<NodeId>,
 ) {
     for (id, local) in device.trees.local().iter() {
@@ -1840,7 +1850,7 @@ fn note_agreements(
             from_server.insert(id.clone());
         }
         sent_since.remove(id);
-        agreed.insert(id.clone(), content.clone());
+        agreed.insert(id.clone(), *content);
     }
 }
 
@@ -1936,6 +1946,7 @@ fn run_ignoring_answering_after(
                 shape: node.shape.clone(),
                 identity: device.identity(),
                 parked: false,
+                chunks: node.chunks.clone(),
             };
             device.trees.set_local(id.clone(), local);
         }
@@ -1964,14 +1975,7 @@ fn run_ignoring_answering_after(
         device.trees.settle(commits.aliases());
         commits.first_link(&mut device.trees, &mut device.ids, NOW as u64, prior);
     }
-    let mut local_writes = written(
-        device
-            .trees
-            .local()
-            .iter()
-            .map(|(_, n)| n.shape.content.clone()),
-        1,
-    );
+    let mut local_writes = written(device.trees.local().iter().map(|(_, n)| n.shape.content), 1);
     for action in remote {
         remote_action(&mut space, &mut other, 2, action);
     }
@@ -1980,7 +1984,7 @@ fn run_ignoring_answering_after(
             .nodes()
             .into_iter()
             .filter(|n| n.status == 1)
-            .map(|n| n.current.and_then(|v| v.content)),
+            .map(|n| n.current.and_then(|v| v.content).as_ref().map(key)),
         2,
     );
     let backlog = space
@@ -2005,7 +2009,7 @@ fn run_ignoring_answering_after(
     let mut discarded: BTreeMap<NodeId, koidrive_engine::tree::Shape> = BTreeMap::new();
     let mut kept_with: BTreeMap<NodeId, koidrive_engine::tree::Shape> = BTreeMap::new();
     let mut placed: BTreeMap<NodeId, Position> = BTreeMap::new();
-    let mut agreed: BTreeMap<NodeId, Content> = BTreeMap::new();
+    let mut agreed: BTreeMap<NodeId, ContentKey> = BTreeMap::new();
     let mut sent_since: BTreeSet<NodeId> = BTreeSet::new();
     note_agreements(&device, &mut sent_since, &mut agreed, &mut from_server);
     let mut merged_into: BTreeMap<NodeId, NodeId> = BTreeMap::new();
@@ -2277,7 +2281,7 @@ fn run_ignoring_answering_after(
                 .into_iter()
                 .filter(|(id, _)| !asked_again.contains(id))
                 .collect();
-            let contents = written(shown.values().map(|shape| shape.content.clone()), 1);
+            let contents = written(shown.values().map(|shape| shape.content), 1);
             local_writes.retain(|write| !contents.contains(write));
             for id in shown.keys() {
                 device.touched.remove(id);
@@ -2707,13 +2711,13 @@ fn local_writes_check(
 ) -> Result<(), TestCaseError> {
     let unsent = (device.trees.local().iter())
         .filter(|(id, _)| (device.trees.ignored(id) || waiting.contains(*id)) && device.on_disk(id))
-        .map(|(_, node)| node.shape.content.clone());
+        .map(|(_, node)| node.shape.content);
     let in_ignored_folders = (device.ignored.iter())
         .filter(|((holder, below), entry)| {
             (device.disk_path(holder, below))
                 .is_some_and(|path| device.trees.ignores(&path, entry.kind))
         })
-        .map(|(_, entry)| entry.content.clone());
+        .map(|(_, entry)| entry.content);
     let kept = written(
         server
             .iter()
