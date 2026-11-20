@@ -92,7 +92,7 @@ use self::deletes::{Deletion, live_nodes};
 use self::device::{Device, Engine, Link, Message, Rules};
 pub use self::disk::Cut;
 use self::disk::{Applied, Disk, Place, Precision, Refused};
-use self::intents::{Answered, Intents, RESTORE_ANSWER, Server, Value};
+use self::intents::{Answered, Intents, RESTORE, RESTORE_ANSWER, Server, Value};
 pub use self::intents::{Check, ExpectedRed, allow_red, expect_red};
 use self::rules::{LeftOutOnDisk, Unsynced, excluded_op};
 use crate::space::{Role, Session, SpaceDo};
@@ -1092,9 +1092,16 @@ impl World {
             }
             (Act::Delete, Some(ino)) => {
                 let gone = disk.subtree(ino);
+                let under = (gone.iter())
+                    .filter(|inner| **inner != ino)
+                    .filter_map(|inner| match disk.entries()[inner].place {
+                        Place::In(parent) => Some((*inner, parent)),
+                        _ => None,
+                    })
+                    .collect();
                 let deleted = disk.delete(ino);
                 self.removed[d].extend(deleted.iter().map(tag));
-                self.record_delete(d, ino, gone, &deleted, unsynced);
+                self.record_delete(d, ino, (gone, under), &deleted, unsynced);
                 return;
             }
             (Act::Copy, Some(ino)) => {
@@ -1119,6 +1126,7 @@ impl World {
                 let mut changes = made(new, parent, &entry.name, entry.content.as_ref());
                 let replaced = Value::Trashed {
                     subtree: vec![ino],
+                    under: BTreeMap::new(),
                     replaced_by: Some(new),
                 };
                 changes.push((ino, replaced));
@@ -1140,7 +1148,7 @@ impl World {
         self.observe(d);
         if let Some(ino) = self.intents.ino_of(d, &NodeId::from(node)) {
             self.intents
-                .record(d, self.moment, ino, "restore", Value::Live);
+                .record(d, self.moment, ino, RESTORE, Value::Live);
         }
     }
 
@@ -1548,6 +1556,7 @@ impl World {
                     if let Some(ino) = self.intents.ino_of(d, id) {
                         let value = Value::Trashed {
                             subtree: vec![ino],
+                            under: BTreeMap::new(),
                             replaced_by: None,
                         };
                         let intent = self.intents.record(d, self.moment, ino, "delete", value);
@@ -1577,7 +1586,7 @@ impl World {
                     (self.intents).record(d, self.moment, ino, RESTORE_ANSWER, Value::Live);
                 }
             }
-            self.forget_restored_deletes(d, question.holds());
+            self.forget_restored_deletes(d);
         }
         Ok(true)
     }

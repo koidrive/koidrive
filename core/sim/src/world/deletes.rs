@@ -123,6 +123,7 @@ impl Deletion {
         let Value::Trashed {
             subtree,
             replaced_by,
+            ..
         } = &delete.value
         else {
             return Vec::new();
@@ -180,7 +181,7 @@ impl World {
         &mut self,
         d: usize,
         ino: u128,
-        gone: BTreeSet<u128>,
+        (gone, under): (BTreeSet<u128>, BTreeMap<u128, u128>),
         deleted: &[Content],
         unsynced: Unsynced,
     ) {
@@ -278,6 +279,7 @@ impl World {
             .collect();
         let value = Value::Trashed {
             subtree: gone.into_iter().collect(),
+            under,
             replaced_by: None,
         };
         let mut deletion = Deletion {
@@ -296,14 +298,10 @@ impl World {
         self.deletions.push(deletion);
     }
 
-    pub(super) fn forget_restored_deletes<'a>(
-        &mut self,
-        d: usize,
-        restored: impl IntoIterator<Item = &'a NodeId>,
-    ) {
-        let restored: BTreeSet<&NodeId> = restored.into_iter().collect();
+    pub(super) fn forget_restored_deletes(&mut self, d: usize) {
         for deletion in (self.deletions.iter_mut()).filter(|deletion| deletion.device == d) {
-            (deletion.files).retain(|file| !restored.contains(&file.node));
+            let intent = deletion.intent;
+            (deletion.files).retain(|file| self.intents.took_back(intent, &file.node).is_empty());
             deletion.watched &= !deletion.files.is_empty();
         }
     }

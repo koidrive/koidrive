@@ -128,6 +128,7 @@ pub(super) fn expected(check: Check, why: &str) -> bool {
 }
 
 pub(super) const RESTORE_ANSWER: &str = "restore answer";
+pub(super) const RESTORE: &str = "restore";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Field {
@@ -149,6 +150,7 @@ pub(super) enum Value {
     Live,
     Trashed {
         subtree: Vec<u128>,
+        under: BTreeMap<u128, u128>,
         replaced_by: Option<u128>,
     },
 }
@@ -693,6 +695,33 @@ impl Intents {
         }
     }
 
+    pub(super) fn took_back(&self, j: usize, node: &NodeId) -> Vec<&Intent> {
+        let delete = &self.list[j];
+        let Value::Trashed { subtree, under, .. } = &delete.value else {
+            return Vec::new();
+        };
+        let (author, made) = (delete.author, delete.made);
+        let at = (subtree.iter().copied())
+            .find(|ino| self.nodes_of(author, *ino, made).any(|id| id == node));
+        let chain: Vec<u128> = std::iter::successors(at, |ino| under.get(ino).copied())
+            .chain([delete.ino])
+            .collect();
+        let above = |id: &NodeId| {
+            (chain.iter()).any(|ino| self.nodes_of(author, *ino, made).any(|there| there == id))
+        };
+        (self.list.iter().enumerate())
+            .skip(j + 1)
+            .filter(|(k, later)| {
+                let restores = later.restore_answer() || later.kind == RESTORE;
+                later.author == author
+                    && later.value == Value::Live
+                    && later.stands()
+                    && self.nodes(*k).any(|id| id == node || restores && above(id))
+            })
+            .map(|(_, later)| later)
+            .collect()
+    }
+
     pub(super) fn restore_deleted(&mut self, d: usize, nodes: &BTreeSet<NodeId>) {
         for i in 0..self.list.len() {
             let restored = self.list[i].author == d
@@ -808,7 +837,7 @@ impl Intents {
     fn settled(&self, i: usize, server: &Server) -> bool {
         let intent = &self.list[i];
         let field = intent.value.field();
-        let covers = |j: usize| {
+        let covers = |j: usize, copies: bool| {
             let Value::Trashed { subtree, .. } = &self.list[j].value else {
                 return false;
             };
@@ -816,9 +845,12 @@ impl Intents {
             let deleted: BTreeSet<&NodeId> = (subtree.iter())
                 .flat_map(|ino| self.nodes_of(author, *ino, made))
                 .collect();
-            self.holders(i).any(|id| {
-                deleted.contains(id) || (server.above(id).iter()).any(|above| self.on(j, above))
-            })
+            match copies {
+                true => self.holders(i).any(|id| {
+                    deleted.contains(id) || (server.above(id).iter()).any(|above| self.on(j, above))
+                }),
+                false => self.nodes(i).any(|id| deleted.contains(id)),
+            }
         };
         let into_itself = match intent.value {
             Value::Place {
@@ -836,7 +868,7 @@ impl Intents {
             || (0..self.list.len()).any(|j| {
                 let other = &self.list[j];
                 let removed_below = matches!(other.value, Value::Trashed { .. })
-                    && covers(j)
+                    && covers(j, true)
                     && !self.nodes(i).any(|id| self.on(j, id));
                 let dropped = !other.stands() && !removed_below;
                 if j == i || other.answer == Some(Answered::Settles) || dropped && !other.restored {
@@ -846,7 +878,8 @@ impl Intents {
                     && !self.saw(i, j)
                     && !(self.shown[intent.author].get(&j)).is_some_and(|at| *at <= intent.made)
                     && (other.applied > intent.applied || other.held);
-                let held_as = |k: usize| match (&intent.value, &self.list[k].value) {
+                let held_as = |a: usize, k: usize| match (&self.list[a].value, &self.list[k].value)
+                {
                     (
                         Value::Content { digest, write },
                         Value::Content {
@@ -854,11 +887,11 @@ impl Intents {
                             write: seen_write,
                         },
                     ) => {
-                        k != i
+                        k != a
                             && self.list[k].answer != Some(Answered::Settles)
-                            && (intent.applied > 0 && digest == seen
-                                || intent.answer.is_some() && write == seen_write)
-                            && self.nodes(i).any(|id| self.on(k, id))
+                            && (self.list[a].applied > 0 && digest == seen
+                                || self.list[a].answer.is_some() && write == seen_write)
+                            && self.nodes(a).any(|id| self.on(k, id))
                     }
                     _ => false,
                 };
@@ -872,8 +905,8 @@ impl Intents {
                     && (self.saw(j, i)
                         || answered_over
                         || later
-                        || !held_as(j)
-                            && (0..self.list.len()).any(|k| held_as(k) && self.saw(j, k)));
+                        || !held_as(i, j)
+                            && (0..self.list.len()).any(|k| held_as(i, k) && self.saw(j, k)));
                 let looped = later
                     && other.held
                     && self.nodes(i).any(|id| {
@@ -904,18 +937,46 @@ impl Intents {
                         && self.saw(j, k)
                         && self.same_value(i, k)
                 });
+                let took_back: Vec<&Intent> =
+                    self.nodes(i).flat_map(|id| self.took_back(j, id)).collect();
+                let undone = took_back.iter().any(|back| !back.restore_answer());
+                let answered_restore_first =
+                    (took_back.iter()).any(|back| back.restore_answer() && back.made < intent.made);
                 let merged = self.nodes(i).any(|id| {
                     self.merged.contains_key(id)
                         || (self.merged.iter()).any(|(from, into)| into == id && self.on(j, from))
                 });
+                let republished = intent.value == Value::Live
+                    && intent.answer.is_some()
+                    && (0..self.list.len()).all(|s| {
+                        let part = &self.list[s];
+                        s == i
+                            || part.answer.is_none()
+                            || (part.author, part.made, part.ino)
+                                != (intent.author, intent.made, intent.ino)
+                            || match part.value {
+                                Value::Content { .. } => {
+                                    (0..self.list.len()).any(|k| held_as(s, k) && self.saw(j, k))
+                                }
+                                Value::Place { .. } => (0..self.list.len())
+                                    .any(|k| k != s && self.saw(j, k) && self.same_value(s, k)),
+                                _ => true,
+                            }
+                    });
                 let deleted = matches!(other.value, Value::Trashed { .. })
-                    && covers(j)
-                    && (saw_the_action
-                        || saw_the_value
-                        || merged
-                        || field != Field::Content && intent.lost && other.made > intent.made
-                        || other.made > intent.made
-                            && (0..self.list.len()).any(|k| held_as(k) && self.saw(j, k))
+                    && covers(j, true)
+                    && (!undone
+                        && (saw_the_action
+                            || saw_the_value
+                            || merged
+                            || field != Field::Content && intent.lost && other.made > intent.made
+                            || !answered_restore_first
+                                && match intent.answer {
+                                    Some(_) => covers(j, false),
+                                    None => other.made > intent.made,
+                                }
+                                && (0..self.list.len()).any(|k| held_as(i, k) && self.saw(j, k))
+                            || !answered_restore_first && republished && covers(j, false))
                         || intent.restore_answer()
                             && other.author != intent.author
                             && (!other.lost || other.carried.is_some()));
@@ -1027,6 +1088,7 @@ mod tests {
         intents.seen[0].insert(write, 1);
         let deleted = Value::Trashed {
             subtree: vec![1],
+            under: BTreeMap::new(),
             replaced_by: None,
         };
         intents.record(0, 2, 1, "delete", deleted);
@@ -1162,6 +1224,363 @@ mod tests {
         intents.record(0, 1, 1, "write", content(1));
         intents.answered(0, 2, 1, content(2), Answered::Settles, false);
         assert!(intents.check(&holding(2), |_| false, |_, _| false).is_err());
+    }
+
+    #[test]
+    fn a_delete_settles_an_answer_that_republishes_the_write_it_saw_whichever_came_first() {
+        let settles = |republished: i64| {
+            let mut intents = Intents::new(2);
+            for nodes in &mut intents.nodes {
+                nodes.insert(1, [NodeId::from("n")].into());
+            }
+            let write = intents.record(0, 1, 1, "write", content(1));
+            intents.seen[0].insert(write, 1);
+            intents.seen[1].insert(write, 1);
+            let deleted = Value::Trashed {
+                subtree: vec![1],
+                under: BTreeMap::new(),
+                replaced_by: None,
+            };
+            intents.record(0, 2, 1, "delete", deleted);
+            intents.answered(1, 3, 1, content(republished), Answered::Owed, true);
+            intents.check(&Server::of("root", Vec::new()), |_| false, |_, _| false)
+        };
+        assert_eq!(settles(1), Ok(()));
+        let unseen = settles(2).expect_err("the deleting user never saw write 2");
+        assert!(unseen.0.contains("write 2 of the publish"), "{}", unseen.0);
+    }
+
+    fn node(id: &str, parent: &str, write: Option<u8>) -> NodeState {
+        NodeState {
+            node_id: id.into(),
+            parent_id: parent.into(),
+            name: id.into(),
+            status: NodeStatus::Live as i32,
+            current: write.map(|write| koidrive_proto::v1::VersionInfo {
+                content: Some(koidrive_proto::v1::Content {
+                    manifest_digest: vec![write],
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..NodeState::default()
+        }
+    }
+
+    #[test]
+    fn a_delete_settles_an_answer_that_republishes_the_write_it_saw_only_while_it_stands() {
+        let in_folder = Server::of(
+            "root",
+            vec![
+                node("f", "root", None),
+                node("n", "f", Some(0)),
+                node("m", "f", Some(0)),
+            ],
+        );
+        let moved_out = Server::of(
+            "root",
+            vec![
+                node("f", "root", None),
+                node("n", "root", Some(0)),
+                node("m", "f", Some(0)),
+            ],
+        );
+        let alone = holding(0);
+        let kept = |at: &Server, answered: u64, undo: &dyn Fn(&mut Intents, u128, u64)| {
+            let mut intents = Intents::new(2);
+            for nodes in &mut intents.nodes {
+                nodes.insert(10, [NodeId::from("f")].into());
+                nodes.insert(1, [NodeId::from("n")].into());
+                nodes.insert(2, [NodeId::from("m")].into());
+            }
+            let write = intents.record(1, 1, 1, "write", content(1));
+            intents.seen[0].insert(write, 1);
+            let folder = !std::ptr::eq(at, &alone);
+            intents.rewound(if folder { &in_folder } else { &alone }, 2);
+            let (deleted, subtree, under) = match folder {
+                true => (10, vec![10, 1, 2], [(1, 10), (2, 10)].into()),
+                false => (1, vec![1], BTreeMap::new()),
+            };
+            let trashed = Value::Trashed {
+                subtree,
+                under,
+                replaced_by: None,
+            };
+            for at in 2..=6 {
+                match at {
+                    3 => _ = intents.record(0, 3, deleted, "delete", trashed.clone()),
+                    5 => undo(&mut intents, deleted, 5),
+                    _ if at == answered => {
+                        intents.answered(1, at, 1, content(1), Answered::Owed, true);
+                    }
+                    _ => {}
+                }
+            }
+            intents.check(at, |_| false, |_, _| false)
+        };
+        let restore_answer = |intents: &mut Intents, deleted: u128, at| {
+            let node = intents.nodes[0][&deleted].clone();
+            intents.restore_deleted(0, &node);
+            intents.record(0, at, deleted, RESTORE_ANSWER, Value::Live);
+        };
+        let from_the_trash = |intents: &mut Intents, deleted: u128, at| {
+            intents.record(0, at, deleted, RESTORE, Value::Live);
+        };
+        let the_other_file = |intents: &mut Intents, _: u128, at| {
+            intents.record(0, at, 2, RESTORE, Value::Live);
+        };
+        let keeps_the_other_file = |intents: &mut Intents, _: u128, at| {
+            intents.answered(0, at, 2, Value::Live, Answered::Owed, true);
+            intents.answered(0, at, 10, Value::Live, Answered::Settles, false);
+        };
+        for (at, answered, undo) in [
+            (
+                &alone,
+                6,
+                &restore_answer as &dyn Fn(&mut Intents, u128, u64),
+            ),
+            (&in_folder, 6, &restore_answer),
+            (&alone, 6, &from_the_trash),
+            (&alone, 2, &from_the_trash),
+            (&moved_out, 6, &from_the_trash),
+        ] {
+            let lost = kept(at, answered, undo).expect_err("the user undid the delete");
+            assert!(lost.0.contains("write 1 of the publish"), "{}", lost.0);
+        }
+        assert_eq!(kept(&in_folder, 6, &the_other_file), Ok(()));
+        assert_eq!(kept(&in_folder, 6, &keeps_the_other_file), Ok(()));
+        assert_eq!(kept(&alone, 4, &restore_answer), Ok(()));
+    }
+
+    #[test]
+    fn a_delete_its_user_restored_from_the_trash_settles_nothing_it_saw() {
+        let at = |name: &str| Value::Place {
+            parent: None,
+            name: name.to_owned(),
+        };
+        let mut named = node("n", "root", Some(0));
+        named.name = "a".into();
+        let at_a = Server::of("root", vec![named.clone()]);
+        let kept = |change: &dyn Fn(&mut Intents)| {
+            let mut intents = Intents::new(2);
+            for nodes in &mut intents.nodes {
+                nodes.insert(1, [NodeId::from("n")].into());
+            }
+            change(&mut intents);
+            let trashed = Value::Trashed {
+                subtree: vec![1],
+                under: BTreeMap::new(),
+                replaced_by: None,
+            };
+            intents.record(0, 3, 1, "delete", trashed);
+            intents.record(0, 4, 1, RESTORE, Value::Live);
+            intents.check(&at_a, |_| false, |_, _| false)
+        };
+        let saw_the_answer = |intents: &mut Intents| {
+            intents.answered(1, 1, 1, content(1), Answered::Owed, true);
+            let answer = intents.len() - 1;
+            intents.sync(&holding(1), 2, None);
+            intents.seen[0].insert(answer, 2);
+        };
+        let saw_the_value = |intents: &mut Intents| {
+            let moved = intents.record(1, 1, 1, "move", at("b"));
+            intents.seen[0].insert(moved, 1);
+            intents.answered(1, 2, 1, at("b"), Answered::Owed, true);
+        };
+        let merged = |intents: &mut Intents| {
+            intents.record(1, 1, 1, "write", content(1));
+            intents.merged(&NodeId::from("n"), &NodeId::from("x"));
+        };
+        let lost = |intents: &mut Intents| {
+            intents.record(1, 1, 1, "move", at("b"));
+            let mut moved = named.clone();
+            moved.name = "b".into();
+            let at_b = Server::of("root", vec![moved]);
+            intents.sync(&at_b, 1, None);
+            intents.sync(&at_a, 2, Some(&at_b));
+        };
+        for change in [
+            &saw_the_answer as &dyn Fn(&mut Intents),
+            &saw_the_value,
+            &merged,
+            &lost,
+        ] {
+            assert!(kept(change).is_err());
+        }
+    }
+
+    #[test]
+    fn a_restore_from_the_trash_that_a_rewind_drops_leaves_the_delete_settling_what_it_saw() {
+        let kept = |rewind: bool| {
+            let mut intents = Intents::new(2);
+            for nodes in &mut intents.nodes {
+                nodes.insert(1, [NodeId::from("n")].into());
+            }
+            let write = intents.record(1, 1, 1, "write", content(1));
+            intents.seen[0].insert(write, 1);
+            let trashed = Value::Trashed {
+                subtree: vec![1],
+                under: BTreeMap::new(),
+                replaced_by: None,
+            };
+            intents.record(0, 3, 1, "delete", trashed);
+            intents.record(0, 5, 1, RESTORE, Value::Live);
+            let gone = Server::of("root", vec![]);
+            if rewind {
+                intents.rewound(&gone, 6);
+            }
+            intents.answered(1, 7, 1, content(1), Answered::Owed, true);
+            intents.check(&gone, |_| false, |_, _| false)
+        };
+        assert_eq!(kept(true), Ok(()));
+        assert!(kept(false).is_err());
+    }
+
+    #[test]
+    fn a_delete_settles_an_answer_that_brings_back_the_node_it_saw() {
+        let place = |parent: u128| Value::Place {
+            parent: Some(parent),
+            name: "n".into(),
+        };
+        let kept =
+            |deleted: u128, created: u128, parent: u128, write: i64, owed: bool, restored: bool| {
+                let mut intents = Intents::new(2);
+                for nodes in &mut intents.nodes {
+                    nodes.insert(10, [NodeId::from("f")].into());
+                    nodes.insert(11, [NodeId::from("g")].into());
+                    nodes.insert(1, [NodeId::from("n")].into());
+                    nodes.insert(2, [NodeId::from("m")].into());
+                }
+                for value in [place(created), content(1), Value::Live] {
+                    let created = intents.record(1, 1, 1, "create", value);
+                    intents.seen[0].insert(created, 1);
+                }
+                if created != 10 {
+                    let other = intents.record(1, 1, 2, "create", place(10));
+                    intents.seen[0].insert(other, 1);
+                }
+                if deleted == 2 {
+                    intents.copied(&NodeId::from("n"), &NodeId::from("m"));
+                }
+                let trashed = Value::Trashed {
+                    subtree: match deleted {
+                        10 => vec![10, 1],
+                        _ => vec![deleted],
+                    },
+                    under: (deleted == 10).then_some((1, 10)).into_iter().collect(),
+                    replaced_by: None,
+                };
+                intents.record(0, 3, deleted, "delete", trashed);
+                let gone = Server::of("root", vec![]);
+                intents.rewound(&gone, 4);
+                if restored {
+                    intents.record(0, 5, 1, RESTORE, Value::Live);
+                }
+                let settles = |owed| match owed {
+                    true => Answered::Owed,
+                    false => Answered::Settles,
+                };
+                intents.answered(1, 6, 1, place(parent), Answered::Settles, true);
+                intents.answered(1, 6, 1, content(write), settles(owed), true);
+                intents.answered(1, 6, 1, Value::Live, Answered::Owed, true);
+                intents.check(&gone, |d| restored && d == 0, |_, _| false)
+            };
+        assert_eq!(kept(1, 10, 10, 1, true, false), Ok(()));
+        assert_eq!(kept(10, 10, 10, 1, true, false), Ok(()));
+        for (deleted, created, parent, write, owed, restored, lost) in [
+            (1, 10, 11, 1, true, false, "node n of the publish"),
+            (1, 11, 10, 1, true, false, "node n of the publish"),
+            (1, 10, 10, 2, false, false, "node n of the publish"),
+            (1, 10, 10, 2, true, false, "write 2 of the publish"),
+            (1, 10, 10, 1, true, true, "write 1 of the publish"),
+            (1, 10, 10, 1, false, true, "node n of the publish"),
+            (2, 10, 10, 1, false, false, "node n of the publish"),
+            (2, 10, 10, 1, true, false, "write 1 of the publish"),
+        ] {
+            let kept = (kept(deleted, created, parent, write, owed, restored))
+                .expect_err("the delete did not see it");
+            assert!(kept.0.contains(lost), "{}", kept.0);
+        }
+    }
+
+    #[test]
+    fn a_folder_delete_settles_no_answer_for_a_node_moved_into_the_folder_after_it() {
+        let into_g = Value::Place {
+            parent: Some(20),
+            name: "n".into(),
+        };
+        let kept = |publish: bool| {
+            let mut intents = Intents::new(2);
+            for nodes in &mut intents.nodes {
+                nodes.insert(20, [NodeId::from("g")].into());
+                nodes.insert(1, [NodeId::from("n")].into());
+            }
+            let write = intents.record(1, 1, 1, "write", content(1));
+            intents.seen[0].insert(write, 1);
+            let at_root = Server::of(
+                "root",
+                vec![node("g", "root", None), node("n", "root", Some(0))],
+            );
+            intents.rewound(&at_root, 2);
+            let trashed = Value::Trashed {
+                subtree: vec![20],
+                under: BTreeMap::new(),
+                replaced_by: None,
+            };
+            intents.record(0, 3, 20, "delete", trashed);
+            if publish {
+                intents.answered(1, 5, 1, into_g.clone(), Answered::Settles, true);
+                intents.answered(1, 5, 1, content(1), Answered::Settles, true);
+                intents.answered(1, 5, 1, Value::Live, Answered::Owed, true);
+                let gone = Server::of("root", vec![node("g", "root", None)]);
+                return intents.check(&gone, |_| false, |_, _| false);
+            }
+            intents.record(1, 4, 1, "move", into_g.clone());
+            intents.answered(1, 5, 1, content(1), Answered::Owed, true);
+            let in_g = Server::of(
+                "root",
+                vec![node("g", "root", None), node("n", "g", Some(0))],
+            );
+            intents.check(&in_g, |_| false, |_, _| false)
+        };
+        for (publish, lost) in [
+            (false, "write 1 of the publish"),
+            (true, "node n of the publish"),
+        ] {
+            let kept = kept(publish).expect_err("the delete never held n");
+            assert!(kept.0.contains(lost), "{}", kept.0);
+        }
+    }
+
+    #[test]
+    fn an_answer_is_settled_only_by_a_delete_of_its_node_that_saw_its_write() {
+        let kept = |deleted: u128, delete: u64, answer: u64, write: i64| {
+            let mut intents = Intents::new(2);
+            for nodes in &mut intents.nodes {
+                nodes.insert(1, [NodeId::from("n")].into());
+                nodes.insert(2, [NodeId::from("m")].into());
+            }
+            let seen = intents.record(1, 1, 1, "write", content(1));
+            intents.seen[0].insert(seen, 1);
+            let old = Server::of("root", vec![node("n", "root", Some(0))]);
+            intents.rewound(&old, 2);
+            intents.copied(&NodeId::from("n"), &NodeId::from("m"));
+            intents.answered(1, answer, 1, content(write), Answered::Owed, true);
+            let trashed = Value::Trashed {
+                subtree: vec![deleted],
+                under: BTreeMap::new(),
+                replaced_by: None,
+            };
+            intents.record(0, delete, deleted, "delete", trashed);
+            intents.check(&old, |_| false, |_, _| false)
+        };
+        assert_eq!(kept(1, 5, 4, 1), Ok(()));
+        for (deleted, delete, answer, write) in [(2, 5, 4, 1), (1, 5, 6, 2)] {
+            let kept =
+                kept(deleted, delete, answer, write).expect_err("the delete settles nothing");
+            let lost = format!("write {write} of the publish");
+            assert!(kept.0.contains(&lost), "{}", kept.0);
+        }
     }
 
     #[test]
