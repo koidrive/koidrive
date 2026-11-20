@@ -1,14 +1,16 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use koidrive_engine::classify::{Origin, Trees, Waiting};
-use koidrive_engine::commit::{Base, Commits};
+use koidrive_engine::commit::{Base, Commits, InFlight};
 use koidrive_engine::effects::{BatchLimit, Effects};
 use koidrive_engine::ids::IdGen;
 use koidrive_engine::journal::{
     Author, Field, FieldIntent, HistoryEntry, IntentId, NodeIntents, OpsWithoutIntent, Place, Row,
     RowState, Value, Wire, WireBase,
 };
-use koidrive_engine::state::{Agreed, CommitsState, ContentValue};
+use koidrive_engine::state::{
+    Agreed, CommitsState, ContentValue, MoveHistory, MovePosition, MovedHere,
+};
 use koidrive_engine::tree::{
     ContentKey, FileIdentity, Kind, LocalNode, NodeId, RemoteNode, Shape, Tree,
 };
@@ -1445,6 +1447,141 @@ fn a_backfilled_lost_folder_whose_queued_removal_finishes_keeps_no_rows() {
         .map(|(_, row)| row.state)
         .collect();
     assert_eq!(states, [RowState::Sent, RowState::Sent]);
+}
+
+fn position(seed: u64, rev: u64, name: &str) -> MovePosition {
+    MovePosition {
+        place_id: IdGen::new(seed).uuid_v7_bytes(1),
+        record: Agreed {
+            rev,
+            parent: ROOT.into(),
+            name: name.into(),
+            trash_group: None,
+        },
+    }
+}
+
+fn place_history(trees: &Trees, node: &str) -> Vec<IntentId> {
+    (trees.remote_history(&node.into(), Field::Place).iter())
+        .map(|entry| entry.intent)
+        .collect()
+}
+
+fn base_id(position: &MovePosition) -> IntentId {
+    IntentId::from_bytes(&position.place_id).unwrap()
+}
+
+#[test]
+fn a_backfill_seeds_the_place_history_and_the_held_base_of_a_move_r_holds_exactly() {
+    let (result, newest, oldest) = (
+        position(1, 5, "c"),
+        position(2, 4, "b"),
+        position(3, 3, "a"),
+    );
+    for (rev, place_id, exact) in [
+        (5, result.place_id, true),
+        (6, result.place_id, false),
+        (5, newest.place_id, false),
+    ] {
+        let mut trees = Trees::new(ROOT, &IdGen::new(0));
+        let mut node = remote(file(ROOT, "c", 1), rev);
+        node.intents = Some(NodeIntents {
+            place: Some(FieldIntent {
+                id: IntentId::from_bytes(&place_id).unwrap(),
+                author: "me".into(),
+                replay: false,
+                applied_at_ms: 77,
+            }),
+            ..Default::default()
+        });
+        trees.set_remote("f".into(), node);
+        trees.set_synced("f".into(), Some(file(ROOT, "c", 1)));
+        trees.set_local("f".into(), local(file(ROOT, "c", 1)));
+        trees.set_remote_place_id(&"f".into(), Some(place_id));
+        let history = MoveHistory {
+            result: result.clone(),
+            bases: vec![newest.clone(), oldest.clone()],
+        };
+        let mut state = trees.state();
+        let moved = MovedHere {
+            seq: 5,
+            upgraded: false,
+            history: Some(Box::new(history)),
+        };
+        state.moved_here.insert("f".into(), moved);
+        trees.restore(state).unwrap();
+        trees.backfill(None, false, 1_000);
+        let row = trees.journal_row(&"f".into(), Field::Place).unwrap();
+        let seeded = place_history(&trees, "f");
+        match exact {
+            true => {
+                assert_eq!(row.base, Some(base_id(&newest)), "{rev}");
+                assert_eq!(
+                    seeded,
+                    [base_id(&oldest), base_id(&newest), base_id(&result)],
+                    "{rev}"
+                );
+            }
+            false => {
+                assert_eq!(row.base, None, "{rev}");
+                assert!(!seeded.contains(&base_id(&oldest)), "{rev}");
+                assert!(!seeded.contains(&base_id(&newest)) || rev == 5, "{rev}");
+            }
+        }
+        assert_eq!(row.time_ms, 77);
+    }
+}
+
+#[test]
+fn a_backfill_gives_the_newest_move_base_to_the_sent_row_or_to_the_flight_a_later_move_replaced() {
+    let (newest, oldest) = (position(2, 3, "a"), position(3, 2, "z"));
+    for later in [None, Some("c")] {
+        let mut trees = Trees::new(ROOT, &IdGen::new(0));
+        let mut node = remote(file(ROOT, "a", 1), 3);
+        node.intents = Some(NodeIntents {
+            place: Some(FieldIntent::legacy(base_id(&newest))),
+            ..Default::default()
+        });
+        trees.set_remote("f".into(), node);
+        trees.set_synced("f".into(), Some(file(ROOT, "a", 1)));
+        trees.set_local("f".into(), local(file(ROOT, later.unwrap_or("b"), 1)));
+        let commit = proto::Commit {
+            ops: vec![proto::Op {
+                op: Some(op::Op::Move(proto::Move {
+                    node_id: "f".into(),
+                    new_parent_id: ROOT.into(),
+                    new_name: "b".into(),
+                    ..Default::default()
+                })),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let flight = InFlight {
+            commit,
+            move_bases: [("f".into(), vec![newest.clone(), oldest.clone()])].into(),
+            deletes: Default::default(),
+            restores: Default::default(),
+            owners: Default::default(),
+            result: None,
+        };
+        trees.backfill(Some(&flight), false, 1_000);
+        let row = trees.journal_row(&"f".into(), Field::Place).unwrap();
+        let base = match &row.state {
+            RowState::Sent => row.base,
+            RowState::Local {
+                flight: Some(flight),
+            } => flight.base,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(base, Some(base_id(&newest)), "{later:?}");
+        assert_eq!(
+            place_history(&trees, "f"),
+            [base_id(&oldest), base_id(&newest)],
+            "{later:?}"
+        );
+        assert_eq!(matches!(row.state, RowState::Sent), later.is_none());
+    }
 }
 
 #[test]

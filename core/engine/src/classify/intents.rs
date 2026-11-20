@@ -5,13 +5,14 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use koidrive_proto::v1::{self as proto, change_record, op, op_result};
 
+use crate::commit::InFlight;
 use crate::journal::{
     Author, Field, FieldIntent, HeldRow, HistoryEntry, IntentId, Journal, NodeIntents,
     OpsWithoutIntent, Place, RemoteField, Row, RowKey, RowState, Seen, Value, Wire, WireBase,
     delete_view,
 };
 use crate::names::nfc;
-use crate::state::ContentValue;
+use crate::state::{ContentValue, MovePosition};
 use crate::tree::{Kind, LocalNode, NodeId, RemoteNode, Shape, Tree};
 
 use super::Trees;
@@ -246,7 +247,7 @@ impl Trees {
     /// Fills the journal of a store from an earlier release out of its legacy tables, in the order of RFC 0029 §7.1;
     /// a later step never replaces a row an earlier one wrote. `in_flight` is the commit in flight, `lost` whether
     /// the store records a loss, and `now_ms` the time the intents it mints carry.
-    pub fn backfill(&mut self, in_flight: Option<&proto::Commit>, lost: bool, now_ms: u64) {
+    pub fn backfill(&mut self, in_flight: Option<&InFlight>, lost: bool, now_ms: u64) {
         self.journal.set_clock(now_ms);
         let row = |intent, author, base, value, state, replay| Row {
             intent,
@@ -276,7 +277,8 @@ impl Trees {
                     .insert_if_absent(&id, row(intent, carried, None, value, local, replay));
             }
         }
-        for op in in_flight.into_iter().flat_map(|commit| &commit.ops) {
+        let move_bases = in_flight.map(|flight| &flight.move_bases);
+        for op in in_flight.into_iter().flat_map(|flight| &flight.commit.ops) {
             let Some(kind) = &op.op else {
                 continue;
             };
@@ -284,6 +286,13 @@ impl Trees {
             let node = &NodeId::from(node);
             if self.local_kept_record(node) {
                 continue;
+            }
+            let bases = match kind {
+                op::Op::Move(_) => move_bases.and_then(|bases| bases.get(node)),
+                _ => None,
+            };
+            if let Some((_, older)) = bases.and_then(|bases| bases.split_first()) {
+                self.seed_place_history(node, older);
             }
             let own = !carried
                 && (self.local_changes.contains(node)
@@ -297,7 +306,10 @@ impl Trees {
                     true => Author::Own,
                     false => Author::Carried(None),
                 };
-                let base = self.acknowledged_intent(node, field);
+                let base = match (field, bases.and_then(|bases| bases.first())) {
+                    (Field::Place, Some(newest)) => IntentId::from_bytes(&newest.place_id),
+                    _ => self.acknowledged_intent(node, field),
+                };
                 let intent = self.journal.mint();
                 (self.journal)
                     .insert_if_absent(node, row(intent, author, base, value, RowState::Sent, lost));
@@ -343,6 +355,17 @@ impl Trees {
                 self.journal.user_change(&id, value, WireBase::None, base);
             }
         }
+        let verified: BTreeMap<NodeId, Vec<MovePosition>> = (self.moved_here.iter())
+            .filter_map(|(id, moved)| {
+                let history = moved.history.as_ref()?;
+                let remote = self.r.get(id)?;
+                (history.result.matches(remote, self.remote_place_id(id)))
+                    .then(|| (id.clone(), history.bases.clone()))
+            })
+            .collect();
+        for (id, bases) in &verified {
+            self.seed_place_history(id, bases);
+        }
         let held: Vec<(NodeId, Field, Option<IntentId>)> = (self.edited_here.keys())
             .map(|id| {
                 let base = (self.replaced_versions.get(id))
@@ -351,16 +374,21 @@ impl Trees {
                 (id.clone(), Field::Content, base)
             })
             .chain(self.moved_here.keys().map(|id| {
-                let base = (self.past_positions.get(id))
-                    .and_then(|positions| positions.last())
-                    .map(|at| {
-                        IntentId::legacy_place(
-                            &id.to_string(),
-                            at.rev,
-                            &at.parent.to_string(),
-                            &at.name,
-                        )
-                    });
+                let base = match verified.get(id) {
+                    Some(bases) => {
+                        (bases.first()).and_then(|newest| IntentId::from_bytes(&newest.place_id))
+                    }
+                    None => (self.past_positions.get(id))
+                        .and_then(|positions| positions.last())
+                        .map(|at| {
+                            IntentId::legacy_place(
+                                &id.to_string(),
+                                at.rev,
+                                &at.parent.to_string(),
+                                &at.name,
+                            )
+                        }),
+                };
                 (id.clone(), Field::Place, base)
             }))
             .chain(self.trashed_here.keys().map(|id| {
@@ -429,6 +457,13 @@ impl Trees {
             self.compact_journal(&id, Compact::AfterChange);
         }
         self.listed_without_journal_nodes();
+    }
+
+    fn seed_place_history(&mut self, id: &NodeId, bases: &[MovePosition]) {
+        let older: Vec<IntentId> = (bases.iter().rev())
+            .filter_map(|base| IntentId::from_bytes(&base.place_id))
+            .collect();
+        (self.journal).remote_held_before(id, Field::Place, &older);
     }
 
     /// Starts the RFC 0029 §5.1 30 days of each node the journal keeps state for and R lacks, as a listing of R does.
