@@ -3351,10 +3351,7 @@ fn a_reverted_folder_no_tree_holds_is_created_outermost_first_for_a_file_two_fol
 
 #[test]
 fn a_reverted_folder_another_device_trashed_stays_under_the_keep_rule_for_a_file_made_in_it() {
-    let mut trees = trees(&[
-        synced("d", dir(ROOT, "d")),
-        synced("u", file("d", "u", 1)),
-    ]);
+    let mut trees = trees(&[synced("d", dir(ROOT, "d")), synced("u", file("d", "u", 1))]);
     trees.revert("d".into());
     for (id, shape) in [("d", dir(ROOT, "d")), ("u", file("d", "u", 1))] {
         trees.set_remote(id.into(), trashed(shape));
