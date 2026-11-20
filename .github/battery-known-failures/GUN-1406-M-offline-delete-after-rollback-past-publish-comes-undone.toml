@@ -1,0 +1,7 @@
+class = "M"
+issue = "GUN-1406"
+tests = ["rewinds_converge_from_seed_301"]
+message = '''not recorded: devices::\S+ \S+ DeleteUndone the delete of node <id> on device <n> came undone, and no change its user did not see brought the node back'''
+examples = [
+  "not recorded: devices::rewinds_converge_from_seed_301\tcase-1184\tDeleteUndone\tthe delete of node 01a1c2c0-39a0-7735-80db-d7e668859a70 on device 0 came undone, and no change its user did not see brought the node back",
+]
