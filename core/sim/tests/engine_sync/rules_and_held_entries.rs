@@ -625,7 +625,419 @@ fn a_server_file_deleted_with_a_deep_chain_of_new_folders_is_acted_below_the_fol
     device.trees.set_remote("f".into(), remote(server, &chunks));
     device.act(&act(4, 0, 0, 0, 0));
     assert!(device.trees.local().get(&"f".into()).is_none());
-    assert!(acted_below(&device, &"k".into(), &BTreeMap::new()));
+    assert!(acted_below(
+        &device,
+        &"k".into(),
+        &BTreeMap::new(),
+        &BTreeMap::new()
+    ));
+}
+
+fn a_file_in_a_taken_along_server_folder() -> (
+    Device,
+    BTreeMap<NodeId, koidrive_engine::tree::Shape>,
+    BTreeMap<NodeId, koidrive_engine::tree::Shape>,
+) {
+    let mut device = Device::new(Trees::new("root"));
+    let shape = |parent: &str, name: &str, kind: Kind, content| koidrive_engine::tree::Shape {
+        parent: parent.into(),
+        name: name.into(),
+        kind,
+        content,
+    };
+    let (held, chunks) = split(Some(content(1, 0)));
+    let local = [
+        ("h", shape("root", "h", Kind::Dir, None)),
+        ("s", shape("h", "s", Kind::Dir, None)),
+        ("f", shape("s", "f", Kind::File, held)),
+    ];
+    for (id, shape) in &local {
+        let identity = device.identity();
+        let chunks: Box<[ChunkRef]> = if *id == "f" {
+            chunks[..].into()
+        } else {
+            Box::default()
+        };
+        device.trees.set_local(
+            (*id).into(),
+            LocalNode {
+                left_out_when_placed: false,
+                content_from_server: false,
+                shape: shape.clone(),
+                identity,
+                parked: false,
+                chunks,
+            },
+        );
+    }
+    for (id, server) in [
+        ("s", shape("root", "s", Kind::Dir, None)),
+        ("f", shape("root", "f", Kind::File, held)),
+    ] {
+        let chunks: Box<[ChunkRef]> = if id == "f" {
+            chunks[..].into()
+        } else {
+            Box::default()
+        };
+        device.trees.set_remote(
+            id.into(),
+            RemoteNode {
+                made_over: Vec::new(),
+                shape: server,
+                trashed: false,
+                content_rev: 1,
+                meta_rev: 1,
+                meta_edit_rev: 1,
+                trash_group: String::new(),
+                version_id: String::new(),
+                edit_rev: 1,
+                pending_for: None,
+                pending_by: None,
+                chunks,
+            },
+        );
+    }
+    let discarded = BTreeMap::from([("h".into(), local[0].1.clone())]);
+    let kept_with = BTreeMap::from([
+        ("s".into(), local[1].1.clone()),
+        ("f".into(), local[2].1.clone()),
+    ]);
+    (device, kept_with, discarded)
+}
+
+#[test]
+fn a_server_file_deleted_from_a_taken_along_folder_is_judged_by_where_it_was_at_the_discard() {
+    let (mut device, kept_with, discarded) = a_file_in_a_taken_along_server_folder();
+    device.act(&act(4, 0, 0, 0, 0));
+    assert!(device.trees.local().get(&"f".into()).is_none());
+    assert!(acted_below(&device, &"s".into(), &kept_with, &discarded));
+}
+
+#[test]
+fn a_server_entry_counts_for_a_taken_along_folder_only_if_the_folder_held_it_at_the_discard() {
+    for (at_discard, changes_the_folder) in
+        [(Some("root"), false), (None, false), (Some("s"), true)]
+    {
+        let (mut device, kept_with, discarded) = a_file_in_a_taken_along_server_folder();
+        let (g, s): (NodeId, NodeId) = ("g".into(), "s".into());
+        let mut remote = device.trees.remote().get(&"f".into()).unwrap().clone();
+        remote.shape.name = "g".into();
+        if let Some(parent) = at_discard {
+            remote.shape.parent = parent.into();
+            device.trees.set_remote(g.clone(), remote.clone());
+        }
+        device.note_taken_along([&s]);
+        remote.shape.parent = s.clone();
+        remote.shape.name = "g2".into();
+        device.trees.set_remote(g.clone(), remote);
+        device.note_taken_along([]);
+        device.acted.insert(g.clone());
+        device.removed_from.insert(g, s.clone());
+        assert_eq!(
+            acted_below(&device, &s, &kept_with, &discarded),
+            changes_the_folder,
+            "{at_discard:?}"
+        );
+    }
+}
+
+#[test]
+fn a_server_folder_holding_a_file_another_device_purged_since_is_still_a_server_copy() {
+    let (mut device, _, _) = a_file_in_a_taken_along_server_folder();
+    let (s, f): (NodeId, NodeId) = ("s".into(), "f".into());
+    let server = device.trees.remote().get(&f).unwrap().shape.clone();
+    device.trees.set_synced(f.clone(), Some(server));
+    device.trees.remove_remote(&f);
+    let (shown, mut kept) = (BTreeMap::new(), BTreeMap::new());
+    assert!(server_copy(
+        &device,
+        &s,
+        &shown,
+        &BTreeSet::new(),
+        &BTreeMap::new(),
+        &mut kept
+    ));
+    assert!(kept.contains_key(&f));
+}
+
+#[test]
+fn a_post_purge_edit_below_a_purged_moved_in_folder_reclaims_the_discarded_parent() {
+    let (mut device, kept_with, discarded) = a_file_in_a_taken_along_server_folder();
+    let (h, s, f): (NodeId, NodeId, NodeId) = ("h".into(), "s".into(), "f".into());
+    let mut server_file = device.trees.remote().get(&f).unwrap().clone();
+    server_file.shape.parent = s.clone();
+    device.trees.set_remote(f.clone(), server_file.clone());
+    let server_dir = device.trees.remote().get(&s).unwrap().shape.clone();
+    device.trees.set_synced(s.clone(), Some(server_dir));
+    device.trees.set_synced(f.clone(), Some(server_file.shape));
+    for id in [&f, &s] {
+        let purged = koidrive_proto::v1::NodePurged {
+            node_id: id.to_string(),
+            ..Default::default()
+        };
+        let change = Some(change_record::Change::Purged(purged));
+        device.receive(&[ChangeRecord { change }], false);
+    }
+    let asked = BTreeSet::new();
+    assert!(!revive(&device, &discarded, &kept_with, &asked).contains(&h));
+    device.act(&act(2, 0, 0, 0, 99));
+    assert!(acted_below(&device, &s, &kept_with, &discarded));
+    assert!(revive(&device, &discarded, &kept_with, &asked).contains(&h));
+}
+
+#[test]
+fn a_removal_counts_against_a_folder_only_when_the_server_holds_the_entry_inside_it() {
+    for (p_in, s_in, counts) in [("s", "root", true), ("root", "p", false)] {
+        let mut device = Device::new(Trees::new("root"));
+        place_dir(&mut device, "s", Some(("root", "s")), Some((s_in, "s")));
+        place_dir(&mut device, "p", None, Some((p_in, "p")));
+        let shape = device.trees.remote().live(&"p".into()).cloned();
+        device.trees.set_synced("p".into(), shape);
+        device.removed_from.insert("p".into(), "s".into());
+        let removed = removed_by_user_from(&device, &"s".into());
+        assert_eq!(removed, counts, "{p_in}");
+    }
+}
+
+#[test]
+fn renaming_away_from_a_conflict_name_the_device_applied_is_acted_below_the_folder() {
+    let (mut device, mut kept_with, discarded) = a_file_in_a_taken_along_server_folder();
+    let f: NodeId = "f".into();
+    let mut remote = device.trees.remote().get(&f).unwrap().clone();
+    remote.shape.parent = "s".into();
+    remote.shape.name = conflict_name("a", "me", NOW, 1);
+    let mut local_file = device.trees.local().get(&f).unwrap().clone();
+    local_file.shape = remote.shape.clone();
+    device.trees.set_local(f.clone(), local_file);
+    device
+        .trees
+        .set_synced(f.clone(), Some(remote.shape.clone()));
+    kept_with.insert(f.clone(), remote.shape.clone());
+    device.trees.set_remote(f.clone(), remote);
+    device.act(&act(3, 0, 2, 0, 0));
+    assert_eq!(device.trees.local().get(&f).unwrap().shape.name, "a");
+    assert!(acted_below(&device, &"s".into(), &kept_with, &discarded));
+}
+
+#[test]
+fn any_server_conflict_name_the_device_has_not_applied_yet_is_no_change() {
+    let marker = conflict_name("", "me", NOW, 1);
+    for (name, attempt) in [
+        ("a".to_string(), 4),
+        ("a".to_string(), 12),
+        (format!("a{marker}.txt"), 4),
+        (format!("a.x{marker}"), 4),
+    ] {
+        let (mut device, kept_with, discarded) = a_file_in_a_taken_along_server_folder();
+        let f: NodeId = "f".into();
+        let mut remote = device.trees.remote().get(&f).unwrap().clone();
+        remote.shape.parent = "s".into();
+        remote.shape.name = conflict_name(&name, "me", NOW, attempt);
+        device.act(&act(3, 0, 2, 0, 0));
+        let mut local_file = device.trees.local().get(&f).unwrap().clone();
+        local_file.shape.name = name;
+        device.trees.set_local(f.clone(), local_file);
+        device.trees.set_remote(f.clone(), remote);
+        device.trees.revert(f);
+        assert!(!acted_below(&device, &"s".into(), &kept_with, &discarded));
+    }
+}
+
+fn place_dir(
+    device: &mut Device,
+    id: &str,
+    local: Option<(&str, &str)>,
+    server: Option<(&str, &str)>,
+) {
+    let shape = |(parent, name): (&str, &str)| koidrive_engine::tree::Shape {
+        parent: parent.into(),
+        name: name.into(),
+        kind: Kind::Dir,
+        content: None,
+    };
+    if let Some(at) = local {
+        let identity = device.identity();
+        device.trees.set_local(
+            id.into(),
+            LocalNode {
+                left_out_when_placed: false,
+                content_from_server: false,
+                shape: shape(at),
+                identity,
+                parked: false,
+                chunks: Box::default(),
+            },
+        );
+    }
+    if let Some(at) = server {
+        device.trees.set_remote(
+            id.into(),
+            RemoteNode {
+                made_over: Vec::new(),
+                shape: shape(at),
+                trashed: false,
+                content_rev: 1,
+                meta_rev: 1,
+                meta_edit_rev: 1,
+                trash_group: String::new(),
+                version_id: String::new(),
+                edit_rev: 1,
+                pending_for: None,
+                pending_by: None,
+                chunks: Box::default(),
+            },
+        );
+    }
+}
+
+#[test]
+fn a_removal_is_judged_through_a_server_chain_longer_than_the_local_tree() {
+    let mut device = Device::new(Trees::new("root"));
+    place_dir(&mut device, "k", Some(("root", "k")), Some(("root", "k")));
+    place_dir(&mut device, "e", None, Some(("root", "e")));
+    device.removed_from.insert("e".into(), "k".into());
+    let mut baseline = BTreeMap::new();
+    let mut below = "e".to_string();
+    for depth in (1..=8).rev() {
+        let folder = format!("s{depth}");
+        baseline.insert(below.into(), (&folder).into());
+        below = folder;
+    }
+    baseline.insert(below.into(), "k".into());
+    device
+        .on_server_when_taken_along
+        .insert("k".into(), baseline);
+    device.acted.insert("e".into());
+    let kept_with = BTreeMap::from([(
+        "k".into(),
+        device.trees.local().get(&"k".into()).unwrap().shape.clone(),
+    )]);
+    assert!(acted_below(
+        &device,
+        &"k".into(),
+        &kept_with,
+        &BTreeMap::new()
+    ));
+}
+
+#[test]
+fn a_change_inside_a_discarded_held_folder_is_not_acted_below_the_server_folder_that_holds_it() {
+    let mut device = Device::new(Trees::new("root"));
+    let folder = |parent: &str, name: &str| koidrive_engine::tree::Shape {
+        parent: parent.into(),
+        name: name.into(),
+        kind: Kind::Dir,
+        content: None,
+    };
+    for (id, parent) in [("s", "root"), ("h", "s"), ("n", "h")] {
+        let identity = device.identity();
+        device.trees.set_local(
+            id.into(),
+            LocalNode {
+                left_out_when_placed: false,
+                content_from_server: false,
+                shape: folder(parent, id),
+                identity,
+                parked: false,
+                chunks: Box::default(),
+            },
+        );
+    }
+    let server = device.trees.local().get(&"s".into()).unwrap().shape.clone();
+    device.trees.set_remote(
+        "s".into(),
+        RemoteNode {
+            made_over: Vec::new(),
+            shape: server,
+            trashed: false,
+            content_rev: 1,
+            meta_rev: 1,
+            meta_edit_rev: 1,
+            trash_group: String::new(),
+            version_id: String::new(),
+            edit_rev: 1,
+            pending_for: None,
+            pending_by: None,
+            chunks: Box::default(),
+        },
+    );
+    let discarded = BTreeMap::from([("h".into(), folder("s", "h"))]);
+    device.acted.insert("n".into());
+    assert!(!acted_below(
+        &device,
+        &"s".into(),
+        &BTreeMap::new(),
+        &discarded
+    ));
+    device.acted.insert("h".into());
+    assert!(acted_below(
+        &device,
+        &"s".into(),
+        &BTreeMap::new(),
+        &discarded
+    ));
+}
+
+#[test]
+fn a_first_link_discard_judges_a_taken_along_folder_against_what_it_held_at_the_discard() {
+    let seed = [
+        act(1, 0, 0, 3, 0),
+        act(1, 0, 0, 3, 0),
+        act(0, 0, 0, 2, 0),
+        act(0, 0, 2735742931768910670, 1, 0),
+    ];
+    let local = [
+        act(0, 0, 0, 3, 0),
+        act(1, 0, 11875311943370024282, 5, 0),
+        act(0, 0, 3047016019247648468, 0, 0),
+        act(1, 0, 6661243561629110612, 2, 0),
+        act(0, 0, 5628054386509540524, 2, 0),
+    ];
+    let (during, rulings) = the_server_drops_part_of_a_discarded_folder(
+        vec![(
+            true,
+            vec![
+                act(0, 0, 6560548476402552503, 0, 0),
+                act(3, 12522830786365722604, 11093942931774494242, 0, 0),
+            ],
+        )],
+        act(8, 0, 0, 0, 0),
+        vec![(
+            true,
+            vec![act(3, 12633224309107184393, 13808278524712180971, 0, 0)],
+        )],
+        act(7, 3415821465429094374, 0, 0, 0),
+        act(9, 0, 0, 0, 2),
+        vec!["a"],
+    );
+    let ran = run_ignoring_answering_after(
+        &seed,
+        &local,
+        &[],
+        MAX_OPS,
+        false,
+        &during,
+        Cut::None,
+        &rulings,
+        Answer::Discard,
+        Some(PriorSync::Shown),
+        0,
+    )
+    .unwrap();
+    let root = ran.space.space_id().to_owned();
+    let live = koidrive_proto::v1::NodeStatus::Live as i32;
+    let nodes: BTreeMap<String, _> = (ran.space.nodes().into_iter())
+        .map(|node| (node.node_id.clone(), node))
+        .collect();
+    let taken = &nodes["01a1c2c0-39a0-796f-a8a3-82c9a31d6efe"];
+    assert_eq!(
+        (taken.status, taken.parent_id == root, taken.name.as_str()),
+        (live, true, "b")
+    );
+    assert!(!nodes.contains_key("01a1c2c0-39a0-7768-bfda-be86cbbeaa11"));
+    assert!(!nodes.contains_key("01a1c2c0-39a0-78c3-b5d8-1f333a1fb9e9"));
+    assert_ne!(nodes["01a1c2c0-39a0-7c9f-92dd-37ded7172a70"].status, live);
+    assert_eq!(ran.deletes, 1);
 }
 
 fn an_edit_moved_into_b(b_is_a_node: bool, moved: bool) -> Device {

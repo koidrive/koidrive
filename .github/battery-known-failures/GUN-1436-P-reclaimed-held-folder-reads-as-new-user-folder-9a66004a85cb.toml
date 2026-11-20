@@ -1,0 +1,10 @@
+class = "P"
+issue = "GUN-1436"
+tests = ["a_first_link_discard_keeps_a_folder_the_user_changes_after_the_server_drops_part_of_it"]
+message = '''<id> was discarded and is created on the server with no later answer to publish it at \S+\.rs:<line>\.'''
+examples = [
+    "01a1c2c0-39a0-7768-bfda-be86cbbeaa11 was discarded and is created on the server with no later answer to publish it at core/sim/tests/engine_sync/common.rs:2632.",
+]
+cases = [
+    "9a66004a85cbbc52755815249e160282c71e14fff310b5a440f202578b035daf",
+]

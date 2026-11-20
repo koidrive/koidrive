@@ -1,0 +1,10 @@
+class = "A"
+issue = "GUN-1461"
+tests = ["a_first_link_discard_takes_along_only_the_server_entries_the_user_leaves_alone"]
+message = '''<id> is the user's again after the Discard, but the effects remove it at \S+\.rs:<line>\.'''
+examples = [
+    "01a1c2c0-39a0-7768-bfda-be86cbbeaa11 is the user's again after the Discard, but the effects remove it at core/sim/tests/engine_sync/common.rs:2374.",
+]
+cases = [
+    "ce2b193348f310823024f4b3cf4d3b325e9a6cebfc8bb65e445672a46dc8b9a5",
+]

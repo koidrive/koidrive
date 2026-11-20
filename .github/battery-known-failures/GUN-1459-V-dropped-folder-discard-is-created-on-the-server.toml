@@ -1,0 +1,28 @@
+class = "V"
+issue = "GUN-1459"
+tests = ["a_first_link_discard_keeps_a_folder_the_user_changes_after_the_server_drops_part_of_it"]
+message = '''<id> was discarded and is created on the server with no later answer to publish it at \S+\.rs:<line>\.'''
+examples = [
+    "01a1c2c0-39a0-780a-953a-eb70673e29cb was discarded and is created on the server with no later answer to publish it at core/sim/tests/engine_sync/common.rs:2636.",
+    "01a1c2c0-39a0-775c-844c-3cd7f43c661c was discarded and is created on the server with no later answer to publish it at core/sim/tests/engine_sync/common.rs:2636.",
+]
+cases = [
+    "0b0701b9ccf94132986f099b88f7459e94fb07418e475d205a3261db2a197865",
+    "0b495ebbbce1f912a9fe4cbd7120f26c81a8416f6ca5261dcef270bdff8f1b00",
+    "0e35ee39becb5984a7c6605230499dd72062698a5e9bb5187d4a6f33008b2b2b",
+    "2b1e70ed6d9293888e6d671e69caaf476b3cb5c79116cafc559f1d5da907599c",
+    "2c831308bf8b749d3ca7456e1e1dee91eeaeb87a58f4534d7726d9687b303333",
+    "35b1aae51da25a01c3ee1d8137593c4ffe32f497bad36a9a16d51f0af05ac6a3",
+    "59418606e1048fde347c2ad88863fbf3e06305f1a2fcf2c8bd247b15a60e9a40",
+    "5aa7ebcfa8e815d8dd6068ca6b394067c40b7b7644cca94791603368338f568a",
+    "5d05ca1a54efc7c9908daa86cf03e65685324241f07936c8187a7b76ac6b8aef",
+    "67120e7e7e313bc44a313c70cd0e470a7361bcee1149ad42c21d2a3466d0dad8",
+    "8d8f4d0cd69b85e80b93852560e74875c9665408e7b723ec1679ec878b17b1c6",
+    "95ced69bf0ba10a2ef33584c2435338aa1649a04342bc98f04bb9997ca60a6e5",
+    "98c83f2b50096b3a91915af2eb7b10c0ef6a351fb7017ad1305117f7d5bcfea3",
+    "9f1e0104e733bcacda5c6837d6871b52ecf08cd418795dc267297ec43c5d58d3",
+    "a2ed034a1ae94e72368dc4c0b1e8e949a7385f4b92d656faa855a3d46d5b6b17",
+    "b630d7683baf088fc0a06bd90786a88ce3b19635a2923b33a2cd05ca7b14ee98",
+    "dfbe13221e4a489eab8e5325a43124ed0a5c2f0b34d67681c0ae22e801f44f05",
+    "fa4963197174392fcb3d01c49830ee30e1eee52af31edaa5dc9377851aa67831",
+]
