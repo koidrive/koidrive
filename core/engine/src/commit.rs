@@ -5125,24 +5125,19 @@ fn plan(
     };
     let ordered = !(wants.iter().flatten())
         .any(|want| matches!(want, Want::Delete { .. } | Want::Restore { .. }));
-    let (mut pass, mut stalled, mut lift) = (1, false, None);
+    let (mut pass, mut stalled) = (1, false);
     let mut filled_at = None;
     let capped = loop {
-        let (mut progress, mut full, mut refused) = (false, false, Vec::new());
+        let (mut progress, mut full) = (false, false);
         for at in 0..wants.len() {
             let Some(want) =
                 (wants[at].as_ref()).filter(|want| scratch.fit(want, &moving) == Fit::Valid)
             else {
                 continue;
             };
-            let lifted = lift == Some(at);
-            if lifted {
-                lift = None;
-            }
             let Some((carried, bundle)) =
-                scratch.compensation(want, answers, trees, &wants, &moving, lifted)
+                scratch.compensation(want, answers, trees, &wants, &moving)
             else {
-                refused.push(at);
                 continue;
             };
             let order = match want {
@@ -5264,7 +5259,7 @@ fn plan(
                 guarded: *guarded,
             };
             let Some((carried, bundle)) =
-                scratch.compensation(&aside, answers, trees, &wants, &moving, true)
+                scratch.compensation(&aside, answers, trees, &wants, &moving)
             else {
                 break true;
             };
@@ -5339,17 +5334,6 @@ fn plan(
             );
             continue;
         }
-        if lift.take().is_none()
-            && let Some(at) = refused.into_iter().find(|at| {
-                let want = wants[*at]
-                    .as_ref()
-                    .expect("refused in the pass that stalled");
-                (scratch.compensation(want, answers, trees, &wants, &moving, true)).is_some()
-            })
-        {
-            lift = Some(at);
-            continue;
-        }
         let held: Vec<NodeId> = (wants.iter().flatten())
             .filter_map(|want| match want {
                 Want::Delete { id, .. } if scratch.fit(want, &moving) == Fit::Merged => {
@@ -5372,7 +5356,7 @@ fn plan(
             {
                 return None;
             }
-            let bundle = scratch.compensation(want, answers, trees, &wants, &moving, true)?;
+            let bundle = scratch.compensation(want, answers, trees, &wants, &moving)?;
             Some((at, bundle))
         });
         let Some((at, (carried, bundle))) = forced else {
@@ -6374,9 +6358,10 @@ impl<'a> Scratch<'a> {
 
     /// The wants that must go into the same commit right after `want`, so that what it brings
     /// back from the trash with an answered node's trash group (R8) and L does not keep is trashed
-    /// again (section 6.4), or none when one of them would not apply after it: the indices of the
-    /// planned moves that must leave a folder before it is trashed again, each after the moves of
-    /// the live folders it goes into (state-model.md), then the trashes.
+    /// again (section 6.4), or none when one of them would not apply after it or the result would
+    /// leave live a node brought back from the trash that L does not hold: the indices of the
+    /// planned moves that must leave a folder before it is trashed again, ordered against every
+    /// pending move as ordinary planning orders them, then the trashes.
     fn compensation(
         &self,
         want: &Want,
@@ -6384,7 +6369,6 @@ impl<'a> Scratch<'a> {
         trees: &Trees,
         wants: &[Option<Want>],
         moving: &BTreeSet<NodeId>,
-        stalled: bool,
     ) -> Option<Compensation> {
         let Want::Move {
             id, parent, name, ..
@@ -6473,9 +6457,21 @@ impl<'a> Scratch<'a> {
             })
             .cloned()
             .collect();
-        let mut lifted = BTreeSet::new();
-        let mut pending: BTreeSet<NodeId> = (moving.iter())
-            .filter(|node| *node != id)
+        let follows_answer = |node: &NodeId| {
+            let mut at = placed(node);
+            for _ in 0..=revived.len() + self.creating.len() + self.moves.len() {
+                let Some(up) = at else {
+                    return false;
+                };
+                if up == id || revived.contains(up) {
+                    return true;
+                }
+                at = placed(up);
+            }
+            false
+        };
+        let pending: BTreeSet<NodeId> = (moving.iter())
+            .filter(|node| *node != id && !follows_answer(node))
             .cloned()
             .collect();
         let mut carried = Vec::new();
@@ -6487,7 +6483,7 @@ impl<'a> Scratch<'a> {
             {
                 continue;
             }
-            let leaving: Vec<usize> = (wants.iter().enumerate())
+            let mut leaving: Vec<usize> = (wants.iter().enumerate())
                 .filter(|(at, slot)| {
                     matches!(slot, Some(moved @ Want::Move { id: moved_id, .. })
                         if moved_id != id
@@ -6497,107 +6493,61 @@ impl<'a> Scratch<'a> {
                 })
                 .map(|(at, _)| at)
                 .collect();
-            for at in leaving {
-                if !matches!(&wants[at], Some(Want::Move { id, .. }) if scratch.inside(id, top)) {
-                    continue;
-                }
-                let mut chain = vec![at];
-                while let Some(&at) = chain.last() {
-                    if carried.iter().any(|(done, _)| *done == at) {
-                        chain.pop();
-                        continue;
-                    }
-                    let refused = 'step: {
-                        let Some(Want::Move {
-                            id,
-                            parent,
-                            name,
-                            guarded,
-                            ..
-                        }) = &wants[at]
-                        else {
-                            unreachable!("only moves are carried");
-                        };
-                        let into_top = scratch.kind(parent).is_none();
-                        let to = match into_top {
-                            false => parent.clone(),
-                            true if scratch.inside(id, top) => match scratch.parent(top) {
-                                Some(at) => at.to_owned(),
-                                None => break 'step Some(unfit()),
-                            },
-                            true => break 'step Some(unfit()),
-                        };
-                        let step = Want::Move {
-                            id: id.clone(),
-                            parent: to,
-                            name: name.clone(),
-                            pending_for: None,
-                            guarded: *guarded,
-                        };
-                        let live: BTreeSet<NodeId> = (pending.iter())
-                            .filter(|node| !lifted.contains(&at) && scratch.live(node))
-                            .cloned()
-                            .collect();
-                        let fit = scratch.fit(&step, &live);
-                        if fit == Fit::Wait
-                            && let Some(awaited) = scratch.awaited_return(&step, &live)
-                        {
-                            let first = (wants.iter()).position(
-                                |slot| matches!(slot, Some(Want::Move { id, .. }) if id == awaited),
-                            );
-                            match first.filter(|first| !chain.contains(first)) {
-                                Some(first) if live.contains(awaited) => chain.push(first),
-                                _ => break 'step Some(unfit()),
+            while !leaving.is_empty() {
+                let waiting = leaving.len();
+                for at in std::mem::take(&mut leaving) {
+                    let moved = wants[at].as_ref().expect("found");
+                    let Want::Move {
+                        id,
+                        parent,
+                        name,
+                        guarded,
+                        ..
+                    } = moved
+                    else {
+                        unreachable!("only moves leave");
+                    };
+                    let kind = scratch.kind(id).expect("moved nodes are in R");
+                    let pending_at = match scratch.kind(parent) {
+                        None => match scratch.parent(top) {
+                            Some(at) => Some(at.to_owned()),
+                            None => return unfit(),
+                        },
+                        Some(_) => match scratch.fit(moved, &pending) {
+                            Fit::Valid => None,
+                            Fit::Wait => {
+                                leaving.push(at);
+                                continue;
                             }
-                            break 'step None;
-                        }
-                        let set_aside = match fit {
-                            _ if into_top => true,
-                            Fit::Valid => false,
                             Fit::NameTaken
-                                if (scratch.name_holders(&step)).all(|holder| {
-                                    holder == id
-                                        || outside.contains(holder)
-                                        || live.contains(holder) && self.ends.leaves(holder)
-                                }) =>
+                                if (scratch.name_holders(moved))
+                                    .all(|holder| holder == id || outside.contains(holder)) =>
                             {
-                                true
+                                Some(parent.clone())
                             }
-                            _ => break 'step Some(unfit()),
-                        };
-                        let Want::Move { parent, .. } = &step else {
-                            unreachable!("built as a move");
-                        };
-                        let aside = set_aside.then(|| Want::Move {
-                            id: id.clone(),
-                            name: scratch.free_name(parent, name),
-                            parent: parent.clone(),
-                            pending_for: Some(name.clone()),
-                            guarded: *guarded,
-                        });
-                        let kind = scratch.kind(id).expect("moved nodes are in R");
-                        match &aside {
-                            Some(aside @ Want::Move { parent, name, .. }) => {
-                                if scratch.fit(aside, &live) != Fit::Valid {
-                                    break 'step Some(None);
-                                }
-                                scratch.place(id, parent, name, kind);
+                            _ => return unfit(),
+                        },
+                    };
+                    let aside = pending_at.map(|at| Want::Move {
+                        id: id.clone(),
+                        name: scratch.free_name(&at, name),
+                        parent: at,
+                        pending_for: Some(name.clone()),
+                        guarded: *guarded,
+                    });
+                    match &aside {
+                        Some(aside @ Want::Move { parent, name, .. }) => {
+                            if scratch.fit(aside, &pending) != Fit::Valid {
+                                return None;
                             }
-                            _ => scratch.place(id, parent, name, kind),
+                            scratch.place(id, parent, name, kind);
                         }
-                        pending.remove(id);
-                        carried.push((at, aside));
-                        chain.pop();
-                        None
-                    };
-                    let Some(refused) = refused else {
-                        continue;
-                    };
-                    if chain.len() == 1 || !stalled {
-                        return refused;
+                        _ => scratch.place(id, parent, name, kind),
                     }
-                    lifted.insert(chain[0]);
-                    chain.truncate(1);
+                    carried.push((at, aside));
+                }
+                if leaving.len() == waiting {
+                    return unfit();
                 }
             }
             let members = (scratch.subtree(top).into_iter())
@@ -6613,6 +6563,15 @@ impl<'a> Scratch<'a> {
             }
             scratch.trash(top);
             bundle.push(retrash);
+        }
+        let left_behind = (scratch.nodes.iter()).any(|(node, entry)| {
+            entry.live
+                && !self.live(node)
+                && trees.local().get(node).is_none()
+                && !restored.contains(node)
+        });
+        if answered.is_some() && left_behind {
+            return None;
         }
         Some((carried, bundle))
     }
@@ -6748,5 +6707,85 @@ mod ancestry_size_tests {
         }
         assert!(encoded <= estimated, "{encoded} > {estimated}");
         assert!(estimated <= MAX_COMMIT_BYTES, "{estimated}");
+    }
+}
+
+#[cfg(test)]
+mod compensation_tests {
+    use super::*;
+    use crate::tree::{FileIdentity, LocalNode, RemoteNode};
+
+    fn dir(parent: &str, name: &str) -> Shape {
+        Shape {
+            parent: parent.into(),
+            name: name.into(),
+            kind: Kind::Dir,
+            content: None,
+        }
+    }
+
+    #[test]
+    fn a_bundle_that_leaves_a_folder_live_that_the_trash_gave_back_and_l_does_not_hold_is_refused()
+    {
+        let mut trees = Trees::new("root");
+        let local = [
+            ("a", dir("root", "new")),
+            ("x", dir("root", "x")),
+            ("b", dir("x", "b")),
+        ];
+        for (ino, (id, shape)) in local.into_iter().enumerate() {
+            let identity = FileIdentity {
+                ino: ino as u128 + 1,
+                birth_ns: Some(0),
+                handle: None,
+            };
+            let node = LocalNode {
+                left_out_when_placed: false,
+                content_from_server: false,
+                shape,
+                identity,
+                parked: false,
+                chunks: Box::default(),
+            };
+            trees.set_local(id.into(), node);
+        }
+        let remote = [
+            ("a", dir("root", "old"), "g1"),
+            ("c", dir("a", "c"), "g1"),
+            ("b", dir("c", "b"), "g1"),
+            ("p", dir("root", "p"), "g2"),
+            ("x", dir("p", "x"), "g3"),
+        ];
+        for (id, shape, group) in remote {
+            trees.set_synced(id.into(), Some(shape.clone()));
+            let node = RemoteNode {
+                made_over: Vec::new(),
+                shape,
+                trashed: true,
+                content_rev: 1,
+                edit_rev: 1,
+                meta_rev: 1,
+                meta_edit_rev: 1,
+                trash_group: group.into(),
+                version_id: String::new(),
+                pending_for: None,
+                pending_by: None,
+                chunks: Box::default(),
+            };
+            trees.set_remote(id.into(), node);
+        }
+        let moved = |id: &str, parent: &str, name: &str| Want::Move {
+            id: id.into(),
+            parent: parent.into(),
+            name: name.into(),
+            guarded: false,
+            pending_for: None,
+        };
+        let wants = [Some(moved("a", "root", "new")), Some(moved("b", "x", "b"))];
+        let moving = BTreeSet::from(["a".into(), "b".into()]);
+        let answers = BTreeSet::from(["a".into()]);
+        let scratch = Scratch::new(&trees);
+        let answer = wants[0].as_ref().unwrap();
+        assert!((scratch.compensation(answer, &answers, &trees, &wants, &moving)).is_none());
     }
 }
