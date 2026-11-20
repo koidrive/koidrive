@@ -1461,7 +1461,12 @@ impl World {
                         _ if !ids.contains(at) || !on_disk(value) => false,
                         (_, None) => true,
                         (Value::Place { .. }, Some(synced)) => {
-                            (&synced.parent, &synced.name) != (&node.shape.parent, &node.shape.name)
+                            let base = if answer == Answer::Publish {
+                                trees.remote().live(at).unwrap_or(synced)
+                            } else {
+                                synced
+                            };
+                            (&base.parent, &base.name) != (&node.shape.parent, &node.shape.name)
                         }
                         (Value::Content { write, .. }, Some(synced)) => {
                             synced.content.as_ref().map(tag) != Some(*write)

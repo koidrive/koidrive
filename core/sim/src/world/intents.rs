@@ -829,7 +829,7 @@ impl Intents {
                     && covers(j)
                     && !self.nodes(i).any(|id| self.on(j, id));
                 let dropped = !other.stands() && !removed_below;
-                if j == i || dropped && !other.restored {
+                if j == i || other.answer == Some(Answered::Settles) || dropped && !other.restored {
                     return false;
                 }
                 let later = field == Field::Place
@@ -855,14 +855,12 @@ impl Intents {
                     && (1..=other.made).contains(&intent.applied)
                     && (self.saw(j, i)
                         || (self.shown[other.author].get(&i)).is_some_and(|at| *at <= other.made));
-                let changed = other.answer != Some(Answered::Settles);
                 let replaced = other.value.field() == field
                     && self.nodes(i).any(|id| self.on(j, id))
-                    && (changed && self.saw(j, i)
+                    && (self.saw(j, i)
                         || answered_over
                         || later
-                        || changed
-                            && !held_as(j)
+                        || !held_as(j)
                             && (0..self.list.len()).any(|k| held_as(k) && self.saw(j, k)));
                 let looped = later
                     && other.held
@@ -1152,6 +1150,30 @@ mod tests {
         intents.record(0, 1, 1, "write", content(1));
         intents.answered(0, 2, 1, content(2), Answered::Settles, false);
         assert!(intents.check(&holding(2), |_| false, |_, _| false).is_err());
+    }
+
+    #[test]
+    fn a_child_answer_cannot_settle_another_devices_move() {
+        let mut intents = Intents::new(2);
+        for nodes in &mut intents.nodes {
+            nodes.insert(1, [NodeId::from("n")].into());
+        }
+        let at = |name: &str| Value::Place {
+            parent: None,
+            name: name.to_owned(),
+        };
+        let server = holding(1);
+        let original = intents.record(1, 1, 1, "create", at("a"));
+        intents.sync(&server, 1, None);
+        intents.seen[0].insert(original, 1);
+        intents.record(0, 2, 1, "move", at("b"));
+        let check = |intents: &Intents| intents.check(&server, |_| false, |_, _| false);
+        let missing = check(&intents).expect_err("the move to b is missing");
+        assert!(missing.0.contains("at \"b\""));
+
+        intents.answered(1, 3, 1, at("a"), Answered::Settles, false);
+        intents.sync(&server, 4, None);
+        assert_eq!(check(&intents), Err(missing));
     }
 
     #[test]
