@@ -2440,6 +2440,7 @@ fn run_ignoring_answering_after(
                     Some(identity),
                 )
                 .unwrap();
+            release_taken_along(&device.trees, &mut kept_with, &freed);
             continue;
         }
         let mut before = (device.trees.clone(), commits.questions().to_vec());
@@ -2467,8 +2468,10 @@ fn run_ignoring_answering_after(
             let contents = written(shown.values().map(|shape| shape.content), 1);
             local_writes.retain(|write| !contents.contains(write));
             for id in shown.keys() {
-                device.touched.remove(id);
-                device.acted.remove(id);
+                if !device.off_disk.contains(id) {
+                    device.touched.remove(id);
+                    device.acted.remove(id);
+                }
                 placed.remove(id);
                 revived_once.remove(id);
                 freed.remove(id);
