@@ -1700,14 +1700,19 @@ impl Engine {
                 .filter(|(parent, name)| (parent, name) != (&shape.parent, &shape.name));
             let slot = (shape.parent.clone(), shape.name.clone());
             let held = (self.took_slot.get(&slot)).is_some_and(|(taker, _, _)| *taker == id);
-            if let Some((parent, name)) = moved {
-                let staged = Path::new(&name)
+            if let Some(from) = moved {
+                let tmp = Path::new(&from.1)
                     .extension()
                     .is_some_and(|extension| extension.eq_ignore_ascii_case("tmp"));
-                self.renamed_away.insert(id.clone(), (parent, name, now_ms));
-                self.took_slot.insert(slot, (id.clone(), now_ms, staged));
+                let own_identity = (self.took_slot.get(&from))
+                    .is_some_and(|(taker, _, staged)| *taker == id && !staged);
+                self.took_slot
+                    .insert(slot, (id.clone(), now_ms, tmp && !own_identity));
+                self.renamed_away
+                    .insert(id.clone(), (from.0, from.1, now_ms));
             } else if !held {
-                self.took_slot.insert(slot, (id.clone(), now_ms, true));
+                let new_entry = !self.trees.displaced_local().contains_key(&id);
+                self.took_slot.insert(slot, (id.clone(), now_ms, new_entry));
             }
         }
         self.trees.set_local_changed(
