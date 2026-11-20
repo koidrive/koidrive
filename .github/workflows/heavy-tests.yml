@@ -351,7 +351,7 @@ jobs:
           shown=$(printf ' %q' ${selection[@]+"${selection[@]}"})
           unset KOIDRIVE_BATTERY_CASES
           [ -z "$CASES" ] || export KOIDRIVE_BATTERY_CASES="$CASES"
-          repro="git checkout $SHA && cd server && pnpm install --frozen-lockfile && pnpm build:web && ${CASES:+KOIDRIVE_BATTERY_CASES=$CASES }pnpm exec vitest run$shown"
+          repro="git checkout $SHA && cd server && pnpm install --frozen-lockfile && pnpm build:web && env -u KOIDRIVE_BATTERY_CASES${CASES:+ KOIDRIVE_BATTERY_CASES=$CASES} pnpm exec vitest run$shown"
           {
             echo "### $RUNNER_OS: vitest run$shown in server/"
             echo
