@@ -2215,12 +2215,7 @@ fn run_ignoring_answering_after(
                 from_server.insert(record.node.clone());
             }
             if let Effect::RemoveDir { along, .. } = &record.effect {
-                let held: Vec<(String, Option<Kind>)> = (device.trees.local_children(&record.node))
-                    .filter(|child| !device.trees.recorded_local(child))
-                    .filter_map(|child| device.trees.local().get(child))
-                    .filter(|node| !along.iter().any(|file| file.identity.same(&node.identity)))
-                    .map(|node| (node.shape.name.clone(), Some(node.shape.kind)))
-                    .collect();
+                let held = held_on_disk(&device, &record.node, along);
                 if !held.is_empty() {
                     let held: Vec<(&str, Option<Kind>)> = held
                         .iter()
@@ -2700,6 +2695,28 @@ const CUTS: [Cut; 5] = [
     Cut::Answered,
     Cut::Effect,
 ];
+
+fn held_on_disk(
+    device: &Device,
+    folder: &NodeId,
+    along: &[koidrive_engine::effects::Displaced],
+) -> Vec<(String, Option<Kind>)> {
+    let in_l = (device.trees.local_children(folder))
+        .filter(|child| device.on_disk(child))
+        .filter_map(|child| device.trees.local().get(child))
+        .filter(|node| !along.iter().any(|file| file.identity.same(&node.identity)))
+        .map(|node| (node.shape.name.clone(), Some(node.shape.kind)));
+    let ignored: BTreeMap<String, Kind> = (device.ignored.iter())
+        .filter(|((holder, _), _)| holder == folder)
+        .filter_map(|((_, below), entry)| match below.as_slice() {
+            [name] => Some((name.clone(), entry.kind)),
+            [name, ..] => Some((name.clone(), Kind::Dir)),
+            [] => None,
+        })
+        .collect();
+    in_l.chain(ignored.into_iter().map(|(name, kind)| (name, Some(kind))))
+        .collect()
+}
 
 fn local_writes_check(
     device: &Device,
