@@ -1827,6 +1827,7 @@ impl Trees {
     }
 
     pub fn remove_remote(&mut self, id: &NodeId) {
+        let kept = self.holds_only_entries_it_leaves_out(id);
         if !self.left_out_rename_sent(id) {
             self.names_left_out.remove(id);
         }
@@ -1858,6 +1859,24 @@ impl Trees {
             self.mark(id);
             self.journal.r_lacks(id);
         }
+        if kept {
+            self.keep_folder(id);
+        }
+    }
+
+    fn holds_only_entries_it_leaves_out(&self, id: &NodeId) -> bool {
+        let (Some(remote), Some(local)) = (self.r.get(id), self.l.get(id)) else {
+            return false;
+        };
+        !self.kept_folders.contains(id)
+            && remote.shape.kind == Kind::Dir
+            && local.shape.kind == Kind::Dir
+            && !local.parked
+            && !local.shape.same_position(&remote.shape)
+            && !self.excluded(id)
+            && self.local_children_placed_or_parked(id).next().is_some()
+            && (self.local_children_placed_or_parked(id))
+                .all(|child| self.excluded(child) || self.left_rules_file(child))
     }
 
     fn index_remote(&mut self, id: &NodeId, old: Option<&RemoteNode>) {

@@ -3959,6 +3959,33 @@ fn a_purged_folder_kept_for_an_excluded_file_sends_nothing_after_rename_or_resta
     }
 }
 
+#[test]
+fn a_folder_held_apart_from_a_rename_the_rules_leave_out_is_sent_under_a_new_id_once_the_server_purges_it()
+ {
+    let mut trees = trees(&[synced("a", dir(ROOT, "a"))]);
+    trees.set_rules(&AT_ROOT, Source::Koiignore, rules("*.txt\n"));
+    trees.set_remote(
+        "a".into(),
+        RemoteNode {
+            meta_rev: 2,
+            meta_edit_rev: 2,
+            ..remote(dir(ROOT, "c.txt"))
+        },
+    );
+    trees.set_local_changed("b".into(), local(file("a", "b", 1), 9));
+    assert_eq!(ops(&mut trees), []);
+    trash(&mut trees, "a");
+    trees.remove_remote(&"a".into());
+    let sent = ops(&mut trees);
+    let [op::Op::CreateDir(folder), op::Op::CreateFile(entry)] = &sent[..] else {
+        panic!("{sent:?}")
+    };
+    assert_ne!(folder.node_id, "a");
+    assert_eq!((&*folder.parent_id, &*folder.name), (ROOT, "a"));
+    assert_eq!(entry.node_id, "b");
+    assert_eq!((&*entry.parent_id, &*entry.name), (&*folder.node_id, "b"));
+}
+
 fn unanswered_create_in_a_folder_the_server_renamed() -> (Trees, Commits) {
     let mut trees = trees(&[
         synced("a", dir(ROOT, "a")),
