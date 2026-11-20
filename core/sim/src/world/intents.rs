@@ -128,6 +128,7 @@ pub(super) fn expected(check: Check, why: &str) -> bool {
 }
 
 pub(super) const RESTORE_ANSWER: &str = "restore answer";
+pub(super) const RESTORE: &str = "restore";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Field {
@@ -705,17 +706,16 @@ impl Intents {
         let chain: Vec<u128> = std::iter::successors(at, |ino| under.get(ino).copied())
             .chain([delete.ino])
             .collect();
-        let brings_back = |id: &NodeId| {
-            id == node
-                || (chain.iter())
-                    .any(|ino| self.nodes_of(author, *ino, made).any(|there| there == id))
+        let above = |id: &NodeId| {
+            (chain.iter()).any(|ino| self.nodes_of(author, *ino, made).any(|there| there == id))
         };
         (self.list.iter().enumerate())
             .skip(j + 1)
             .filter(|(k, later)| {
+                let restores = later.restore_answer() || later.kind == RESTORE;
                 later.author == author
                     && later.value == Value::Live
-                    && self.nodes(*k).any(brings_back)
+                    && self.nodes(*k).any(|id| id == node || restores && above(id))
             })
             .map(|(_, later)| later)
             .collect()
@@ -1298,10 +1298,14 @@ mod tests {
             intents.record(0, at, deleted, RESTORE_ANSWER, Value::Live);
         };
         let from_the_trash = |intents: &mut Intents, deleted: u128, at| {
-            intents.record(0, at, deleted, "restore", Value::Live);
+            intents.record(0, at, deleted, RESTORE, Value::Live);
         };
         let the_other_file = |intents: &mut Intents, _: u128, at| {
-            intents.record(0, at, 2, "restore", Value::Live);
+            intents.record(0, at, 2, RESTORE, Value::Live);
+        };
+        let keeps_the_other_file = |intents: &mut Intents, _: u128, at| {
+            intents.answered(0, at, 2, Value::Live, Answered::Owed, true);
+            intents.answered(0, at, 10, Value::Live, Answered::Settles, false);
         };
         for (at, answered, undo) in [
             (
@@ -1318,6 +1322,7 @@ mod tests {
             assert!(lost.0.contains("write 1 of the publish"), "{}", lost.0);
         }
         assert_eq!(kept(&in_folder, 6, &the_other_file), Ok(()));
+        assert_eq!(kept(&in_folder, 6, &keeps_the_other_file), Ok(()));
         assert_eq!(kept(&alone, 4, &restore_answer), Ok(()));
     }
 
@@ -1342,7 +1347,7 @@ mod tests {
                 replaced_by: None,
             };
             intents.record(0, 3, 1, "delete", trashed);
-            intents.record(0, 4, 1, "restore", Value::Live);
+            intents.record(0, 4, 1, RESTORE, Value::Live);
             intents.check(&at_a, |_| false, |_, _| false)
         };
         let saw_the_answer = |intents: &mut Intents| {

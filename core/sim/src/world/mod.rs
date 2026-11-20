@@ -92,7 +92,7 @@ use self::deletes::{Deletion, live_nodes};
 use self::device::{Device, Engine, Link, Message, Rules};
 pub use self::disk::Cut;
 use self::disk::{Applied, Disk, Place, Precision, Refused};
-use self::intents::{Answered, Intents, RESTORE_ANSWER, Server, Value};
+use self::intents::{Answered, Intents, RESTORE, RESTORE_ANSWER, Server, Value};
 pub use self::intents::{Check, ExpectedRed, allow_red, expect_red};
 use self::rules::{LeftOutOnDisk, Unsynced, excluded_op};
 use crate::space::{Role, Session, SpaceDo};
@@ -1107,7 +1107,7 @@ impl World {
         self.observe(d);
         if let Some(ino) = self.intents.ino_of(d, &NodeId::from(node)) {
             self.intents
-                .record(d, self.moment, ino, "restore", Value::Live);
+                .record(d, self.moment, ino, RESTORE, Value::Live);
         }
     }
 
