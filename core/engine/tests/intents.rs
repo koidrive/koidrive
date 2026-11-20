@@ -1581,6 +1581,23 @@ fn a_carried_file_in_a_purged_folder_that_the_tombstone_lists_does_not_come_back
 }
 
 #[test]
+fn a_create_superseded_because_another_node_holds_its_intents_does_not_mark_its_folder_purged() {
+    let mut device = PurgedFolder::new(|trees| {
+        trees.set_local_changed("z".into(), local(file("x", "z", 1)));
+    });
+    assert_eq!(device.build_one(), [("x".to_owned(), "a".to_owned())]);
+    let held = |field| Some(wire(sent(&device.trees, "x", field), 1_800));
+    let intents = proto::FieldIntents {
+        place: held(Field::Place),
+        status: held(Field::Status),
+        content: None,
+    };
+    let holder = node_state("y", &dir("a", "x"), 2, Some(intents));
+    device.answer(outcome(op_result::Code::Superseded), vec![holder]);
+    assert!(!device.trees.purged_folder(&"x".into()));
+}
+
+#[test]
 fn a_purged_folder_ends_when_r_holds_it_again_or_its_absence_lapses() {
     let mut device = PurgedFolder::new(|trees| {
         trees.set_local_changed("z".into(), local(file("x", "z", 1)));
