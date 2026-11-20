@@ -1354,6 +1354,7 @@ fn engine_state() -> EngineState {
             lost_shapes: BTreeMap::from([("lost".into(), engine_shape("root", "lost.txt"))]),
             outside: nodes(["kept", "lost"]),
             lost: nodes(["lost"]),
+            found: BTreeMap::from([("kept".into(), "dist/kept.txt".into())]),
             displaced: BTreeMap::from([(
                 "displaced".into(),
                 FileIdentity {
@@ -1888,6 +1889,8 @@ fn engine_state_updates_store_every_part() {
     changed.commits.restores.clear();
     changed.effects.in_flight = Vec::new();
     changed.trees.waiting.clear();
+    changed.trees.outside.remove(&"kept".into());
+    changed.trees.found.clear();
     let guard = &mut changed.commits.guard;
     guard.confirmed_limits.insert(Limit::Deletions);
     guard.remote.remove(&deletion("gone-file", unknown(6)));

@@ -1335,16 +1335,8 @@ impl Snapshot {
         };
         let mut looked = Vec::new();
         let mut search = Wanted::new();
-        for (path, known) in wanted {
-            match found.get(path).map(|at| entry_at(at)) {
-                Some(Err(_)) => {}
-                Some(Ok(Some(entry))) if entry.kind == known.kind && !entry.id.same(&known.id) => {
-                    looked.push((path.clone(), Looked::Replaced(entry.id)));
-                }
-                _ => {
-                    search.insert((known.id, known.kind), None);
-                }
-            }
+        for known in wanted.values() {
+            search.insert((known.id, known.kind), None);
         }
         let fresh: HashSet<Key> = (search.keys().copied())
             .filter(|key| rules.unproven(*key))
@@ -1364,15 +1356,21 @@ impl Snapshot {
                 .or_default()
                 .push(entry.id);
         }
-        looked.extend(
-            (wanted.iter())
-                .filter(|(_, known)| search.contains_key(&(known.id, known.kind)))
-                .filter(|(_, known)| {
-                    !(held.get(&(known.id.without_handle(), known.kind)))
-                        .is_some_and(|ids| ids.iter().any(|id| id.same(&known.id)))
-                })
-                .map(|(path, _)| (path.clone(), Looked::Gone)),
-        );
+        let missed = (wanted.iter())
+            .filter(|(_, known)| search.contains_key(&(known.id, known.kind)))
+            .filter(|(_, known)| {
+                !(held.get(&(known.id.without_handle(), known.kind)))
+                    .is_some_and(|ids| ids.iter().any(|id| id.same(&known.id)))
+            });
+        for (path, known) in missed {
+            match found.get(path).map(|at| entry_at(at)) {
+                Some(Err(_)) => {}
+                Some(Ok(Some(entry))) if entry.kind == known.kind => {
+                    looked.push((path.clone(), Looked::Replaced(entry.id)));
+                }
+                _ => looked.push((path.clone(), Looked::Gone)),
+            }
+        }
         Ok(looked)
     }
 
@@ -3625,8 +3623,9 @@ pub enum Looked {
     Found(PathBuf),
     /// A search that looked everywhere ([`Rules::coverage`]) did not find it, and the snapshot does not hold it.
     Gone,
-    /// Another entry of its kind took the place where an earlier call found it, as a save by rename does, so it is
-    /// the same entry with this identity. A scan counts a file that takes another's path the same way.
+    /// A search that looked everywhere did not find it, the snapshot does not hold it, and another entry of its kind
+    /// took the place where an earlier call found it, as a save by rename does. It is the same entry with this identity
+    /// unless the identity belongs to another node. A scan counts a file that takes another's path the same way.
     Replaced(FileId),
 }
 

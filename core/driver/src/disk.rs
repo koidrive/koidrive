@@ -177,6 +177,8 @@ pub(crate) enum Settled {
     AwaitsScan(String),
 }
 
+type Sought = (BTreeMap<PathBuf, Known>, BTreeMap<PathBuf, PathBuf>);
+
 /// What the effect sections share with the observer's thread.
 #[derive(Debug, Default)]
 pub(crate) struct Sections {
@@ -184,7 +186,7 @@ pub(crate) struct Sections {
     epoch: AtomicU64,
     resets: Mutex<(Requested, u64)>,
     open: Mutex<Vec<(Requests, Vec<PathBuf>)>>,
-    recorded: Mutex<Option<BTreeMap<PathBuf, Known>>>,
+    recorded: Mutex<Option<Sought>>,
     marks: koidrive_fs::MarkLog,
 }
 
@@ -273,8 +275,8 @@ impl Sections {
             ));
             observer.reset(resets);
         }
-        if let Some(recorded) = self.recorded.lock().unwrap().take() {
-            observer.seek(recorded);
+        if let Some((recorded, found)) = self.recorded.lock().unwrap().take() {
+            observer.seek(recorded, found);
         }
         let stamp = self.stamp();
         let observation = observer.observe(wait)?;
@@ -353,6 +355,7 @@ pub(crate) struct Disk {
     space_id: String,
     sections: Arc<Sections>,
     recorded: BTreeMap<PathBuf, Known>,
+    found: BTreeMap<PathBuf, PathBuf>,
     /// The paths of the latest effect sections, each with the epoch its section ended at, oldest first.
     spans: VecDeque<(u64, Vec<PathBuf>)>,
     /// The end epoch of the latest section that `spans` no longer holds.
@@ -499,6 +502,7 @@ impl Disk {
             space_id: link.space_id.clone(),
             sections,
             recorded: BTreeMap::new(),
+            found: BTreeMap::new(),
             spans: VecDeque::new(),
             forgotten: 0,
             unscanned: Unscanned::default(),
@@ -585,10 +589,10 @@ impl Disk {
     }
 
     fn record(&mut self, engine: &Engine) {
-        let recorded = engine.recorded();
-        if recorded != self.recorded {
-            *self.sections.recorded.lock().unwrap() = Some(recorded.clone());
-            self.recorded = recorded;
+        let (recorded, found) = (engine.recorded(), engine.found());
+        if recorded != self.recorded || found != self.found {
+            *self.sections.recorded.lock().unwrap() = Some((recorded.clone(), found.clone()));
+            (self.recorded, self.found) = (recorded, found);
         }
     }
 
@@ -930,6 +934,7 @@ impl Disk {
                 .sections
                 .request(engine.resets(dropped.iter().cloned()));
             self.unscanned.dropped.push((requested, dropped));
+            (self.recorded, self.found) = Default::default();
         }
         self.record(engine);
         Ok(())
@@ -2168,7 +2173,8 @@ fn paths(change: &Observed) -> impl Iterator<Item = &Path> {
         | Observed::Modified { path, .. }
         | Observed::Removed { path, .. }
         | Observed::Missing { path, .. }
-        | Observed::Reidentified { path, .. } => (path, None),
+        | Observed::Reidentified { path, .. }
+        | Observed::Found { path, .. } => (path, None),
         Observed::Renamed { from, to, .. } => (from, Some(to)),
     };
     std::iter::once(first.as_path()).chain(second.map(PathBuf::as_path))

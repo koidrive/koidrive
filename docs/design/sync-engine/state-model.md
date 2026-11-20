@@ -250,7 +250,7 @@ The store writes, per `handle` call and in one transaction:
 - the queued restores with the outcomes of those that ended;
 - the entries a Publish answer to a first link released, or a fresh first link sent, until the server applies their create (§2.7);
 - the folders another device deleted that stay on disk for the entries this device does not sync in them, and, for each one another device's folder took over and each folder below it, the names of the entries a listing found there that L does not hold, which stay excluded (§5.10);
-- the nodes recorded as moved into an ignored folder that is no node, each with its file identity once another entry took its path, and which of them are folders the disk lost that L keeps only for recorded nodes below them (§5.10);
+- the nodes recorded as moved into an ignored folder that is no node, each with its file identity once another entry took its path and the place where the walk last found it, and which of them are folders the disk lost that L keeps only for recorded nodes below them (§5.10);
 - the nodes a scan missed after a walk that did not search every ignored folder, which the ambiguous-disappearance question holds (§5.10);
 - every open question with what it holds;
 - the ID generator's state (`IdGen::state`).

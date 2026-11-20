@@ -143,6 +143,11 @@ pub enum Observed {
         path: PathBuf,
         id: FileId,
     },
+    /// The search of the ignored folders found the entry that L records at `path` at `at`.
+    Found {
+        path: PathBuf,
+        at: PathBuf,
+    },
 }
 
 /// What the observer is to believe about one scope, a path relative to the root, before it scans the scope again:
@@ -404,8 +409,8 @@ impl FsObserver {
         })
     }
 
-    pub fn seek(&mut self, recorded: BTreeMap<PathBuf, Known>) {
-        self.found.retain(|path, _| recorded.contains_key(path));
+    pub fn seek(&mut self, recorded: BTreeMap<PathBuf, Known>, found: BTreeMap<PathBuf, PathBuf>) {
+        self.found = found;
         self.recorded = recorded;
     }
 
@@ -682,6 +687,7 @@ impl FsObserver {
         &mut self,
         gone: BTreeMap<PathBuf, Known>,
         unsettled: &[&PathBuf],
+        learned: &mut Vec<Observed>,
     ) -> Vec<PathBuf> {
         if unsettled.is_empty() {
             self.search = None;
@@ -696,7 +702,7 @@ impl FsObserver {
                     Search::new(vec![known]).step(&self.root, &[at], &mut 0, &|| false)
                 && let [Some(at)] = hits.as_slice()
             {
-                self.found.insert(path, at.clone());
+                self.report_found(path, at.clone(), learned);
                 continue;
             }
             sought.push((path, known));
@@ -724,7 +730,7 @@ impl FsObserver {
                     }
                     match hit {
                         Some(at) => {
-                            self.found.insert(path, at);
+                            self.report_found(path, at, learned);
                         }
                         None => gone.push(path),
                     }
@@ -736,6 +742,16 @@ impl FsObserver {
                 self.search = None;
                 Vec::new()
             }
+        }
+    }
+
+    fn report_found(&mut self, path: PathBuf, at: PathBuf, learned: &mut Vec<Observed>) {
+        if self.found.get(&path) != Some(&at) {
+            learned.push(Observed::Found {
+                path: path.clone(),
+                at: at.clone(),
+            });
+            self.found.insert(path, at);
         }
     }
 
@@ -900,24 +916,22 @@ impl Observer for FsObserver {
                 .map(|(path, known)| (path.clone(), *known))
                 .collect();
             let mut gone = BTreeMap::new();
+            let mut replacements = BTreeMap::new();
+            let mut learned = Vec::new();
             match self.watcher.look_for(&wanted, &self.found) {
                 Ok(looked) => {
                     for (path, looked) in looked {
                         match looked {
                             Looked::Found(at) => {
-                                self.found.insert(path, at);
+                                self.report_found(path, at, &mut learned);
                             }
-                            Looked::Gone => {
+                            Looked::Gone | Looked::Replaced(_) => {
                                 if let Some(known) = self.recorded.get(&path) {
+                                    if let Looked::Replaced(id) = looked {
+                                        replacements.insert(path.clone(), id);
+                                    }
                                     gone.insert(path, *known);
                                 }
-                            }
-                            Looked::Replaced(id) => {
-                                let Some(known) = self.recorded.get_mut(&path) else {
-                                    continue;
-                                };
-                                known.id = id;
-                                changes.push(Observed::Reidentified { path, id });
                             }
                         }
                     }
@@ -926,15 +940,23 @@ impl Observer for FsObserver {
                     tracing::debug!(%error, "the entries moved into left-out folders could not be looked for");
                 }
             }
-            for path in self.find_unsettled(gone, &unsettled) {
+            for path in self.find_unsettled(gone, &unsettled, &mut learned) {
+                if let Some(id) = replacements.remove(&path)
+                    && let Some(known) = self.recorded.get_mut(&path)
+                {
+                    known.id = id;
+                    learned.push(Observed::Reidentified { path, id });
+                    continue;
+                }
                 self.found.remove(&path);
                 let Some(Known { kind, .. }) = self.recorded.remove(&path) else {
                     continue;
                 };
                 if !self.watcher.snapshot().entries.contains_key(&path) {
-                    changes.push(Observed::Removed { kind, path });
+                    learned.push(Observed::Removed { kind, path });
                 }
             }
+            changes.splice(0..0, learned);
         }
         if (self.stopped)() {
             return Ok(None);
@@ -2174,7 +2196,8 @@ mod tests {
                 | Observed::Modified { path, .. }
                 | Observed::Removed { path, .. }
                 | Observed::Missing { path, .. }
-                | Observed::Reidentified { path, .. } => path.as_path(),
+                | Observed::Reidentified { path, .. }
+                | Observed::Found { path, .. } => path.as_path(),
                 Observed::Renamed { to, .. } => to.as_path(),
             })
             .collect();
@@ -2213,7 +2236,7 @@ mod tests {
         }
     }
 
-    struct LooksInVain(Scripted);
+    struct LooksInVain(Scripted, Looked);
 
     impl Watcher for LooksInVain {
         fn poll(&mut self, timeout: Duration) -> Result<Poll, FsError> {
@@ -2234,13 +2257,24 @@ mod tests {
             _: &BTreeMap<PathBuf, PathBuf>,
         ) -> Result<Vec<(PathBuf, Looked)>, FsError> {
             Ok((wanted.keys())
-                .map(|path| (path.clone(), Looked::Gone))
+                .map(|path| (path.clone(), self.1.clone()))
                 .collect())
         }
     }
 
     #[test]
     fn a_recorded_file_moved_into_a_pending_folder_is_not_reported_removed() {
+        a_pending_folder_can_still_hold_the_original(Looked::Gone);
+    }
+
+    #[test]
+    fn a_replacement_waits_for_the_original_in_a_pending_folder() {
+        a_pending_folder_can_still_hold_the_original(Looked::Replaced(FileId::stored(
+            1, None, None,
+        )));
+    }
+
+    fn a_pending_folder_can_still_hold_the_original(looked: Looked) {
         let dir = marked();
         let root = dir.path();
         fs::create_dir(root.join("logs")).unwrap();
@@ -2258,25 +2292,37 @@ mod tests {
             root: observer.scanned(),
             ..Poll::default()
         };
-        observer.watcher = Box::new(LooksInVain(Scripted {
-            snapshot: observer.snapshot().clone(),
-            polls: vec![busy, settled],
-        }));
+        observer.watcher = Box::new(LooksInVain(
+            Scripted {
+                snapshot: observer.snapshot().clone(),
+                polls: vec![busy, settled],
+            },
+            looked.clone(),
+        ));
         let recorded = PathBuf::from("dist/report.docx");
         let kind = EntryKind::File;
-        observer.seek(BTreeMap::from([(recorded.clone(), Known { kind, id })]));
-        let busy = observer.observe(Duration::ZERO).unwrap();
+        observer.seek(
+            BTreeMap::from([(recorded.clone(), Known { kind, id })]),
+            BTreeMap::new(),
+        );
+        let busy = observer.observe(Duration::ZERO).unwrap().unwrap();
         assert!(
-            busy.is_none_or(|batch| batch.changes.is_empty()),
-            "the file is in logs, which no scan has settled"
+            matches!(&busy.changes[..], [Observed::Found { path, at }] if *path == recorded && at == Path::new("logs/report.docx"))
         );
         fs::remove_file(&moved).unwrap();
         let settled =
             (observer.observe(Duration::ZERO).unwrap()).expect("the batch after logs settled");
-        assert!(matches!(
-            settled.changes.as_slice(),
-            [Observed::Removed { kind: EntryKind::File, path }] if *path == recorded
-        ));
+        match looked {
+            Looked::Gone => assert!(matches!(
+                settled.changes.as_slice(),
+                [Observed::Removed { kind: EntryKind::File, path }] if *path == recorded
+            )),
+            Looked::Replaced(id) => assert!(matches!(
+                settled.changes.as_slice(),
+                [Observed::Reidentified { path, id: applied }] if *path == recorded && *applied == id
+            )),
+            Looked::Found(_) => unreachable!(),
+        }
     }
 
     /// The first scan of an observer saw `proj`, a folder it knew, disappear and could not settle it, so it may not

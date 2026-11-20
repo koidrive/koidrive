@@ -4,6 +4,7 @@
 
 use std::cell::{Cell, OnceCell, RefCell};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::path::PathBuf;
 
 use koidrive_ignore::{Scope, Source, Status};
 use siphasher::sip::SipHasher13;
@@ -634,6 +635,7 @@ pub struct Trees {
     /// entry each had before the move.
     outside: TrackedSet<NodeId>,
     lost: TrackedSet<NodeId>,
+    found: TrackedMap<NodeId, PathBuf>,
     /// The nodes of `outside`, and those L held under them, that left L because another entry took their name
     /// ([`Trees::displace_local`]), each with the identity L held for it.
     displaced: TrackedMap<NodeId, FileIdentity>,
@@ -757,6 +759,7 @@ impl Trees {
             ignore: Matcher::new(LocalRules::default()),
             outside: TrackedSet::default(),
             lost: TrackedSet::default(),
+            found: TrackedMap::default(),
             displaced: TrackedMap::default(),
             missing: TrackedSet::default(),
             rules_known: true,
@@ -2091,6 +2094,7 @@ impl Trees {
         }
         self.lost.remove(&id);
         self.removed_from.remove(&id);
+        self.found.remove(&id);
         if self.outside.remove(&id) {
             let children: Vec<NodeId> = self.l_names.children(&id).cloned().collect();
             self.outside.extend(children);
@@ -2312,6 +2316,7 @@ impl Trees {
         self.unknown_rules.remove(id);
         self.outside.remove(id);
         self.lost.remove(id);
+        self.found.remove(id);
         self.count_held_trash(id, false);
         self.end_local_claim(id);
         self.end_resend(id);
@@ -3105,6 +3110,7 @@ impl Trees {
         if self.l.get(id).is_some() {
             self.outside.insert(id.to_owned());
             self.lost.remove(id);
+            self.found.remove(id);
             let mut below = vec![id.to_owned()];
             while let Some(node) = below.pop() {
                 below.extend(self.l_names.children(&node).cloned());
@@ -3126,6 +3132,19 @@ impl Trees {
     /// The folders [`Trees::keep_lost_local`] recorded that no observation has placed or removed since.
     pub fn lost_local(&self) -> &BTreeSet<NodeId> {
         &self.lost
+    }
+
+    /// Records `at` as where the search of the ignored folders found the node that [`Trees::ignore_local`]
+    /// recorded. Changes nothing for a node it did not record.
+    pub fn find_local(&mut self, id: &NodeId, at: PathBuf) {
+        if self.outside.contains(id) {
+            self.found.insert(id.to_owned(), at);
+        }
+    }
+
+    /// Where [`Trees::find_local`] last found each recorded node.
+    pub fn found_local(&self) -> &BTreeMap<NodeId, PathBuf> {
+        &self.found
     }
 
     /// Whether [`Trees::ignore_local`] recorded the node, or a folder L holds it under.
@@ -6634,6 +6653,7 @@ impl Trees {
             lost_shapes: (*self.lost_shapes).clone(),
             outside: (*self.outside).clone(),
             lost: (*self.lost).clone(),
+            found: (*self.found).clone(),
             displaced: (*self.displaced).clone(),
             missing: (*self.missing).clone(),
             edited_here: (*self.edited_here).clone(),
@@ -6715,6 +6735,7 @@ impl Trees {
             ignore: _,
             outside,
             lost,
+            found,
             displaced,
             missing,
             rules_known: _,
@@ -6766,6 +6787,7 @@ impl Trees {
             lost_shapes: lost_shapes.take_changes(),
             outside: outside.take_changes(),
             lost: lost.take_changes(),
+            found: found.take_changes(),
             displaced: displaced.take_changes(),
             missing: missing.take_changes(),
             edited_here: edited_here.take_changes(),
@@ -6844,6 +6866,9 @@ impl Trees {
         if let Some(id) = (state.lost.iter()).find(|id| !state.outside.contains(*id)) {
             return Err(StateError::NotIgnoredLocal(id.clone()));
         }
+        if let Some(id) = (state.found.keys()).find(|id| !state.outside.contains(*id)) {
+            return Err(StateError::NotIgnoredLocal(id.clone()));
+        }
         let kept = |id: &&NodeId| self.l.get(id).is_none() && self.r.live(id).is_some();
         if let Some(id) = state.displaced.keys().find(|id| !kept(id)) {
             return Err(StateError::NotDisplaced(id.clone()));
@@ -6918,6 +6943,7 @@ impl Trees {
             lost_shapes,
             outside,
             lost,
+            found,
             displaced,
             missing,
             edited_here,
@@ -6974,6 +7000,7 @@ impl Trees {
         self.lost_shapes = lost_shapes.into();
         self.outside = outside.into();
         self.lost = lost.into();
+        self.found = found.into();
         self.displaced = displaced.into();
         self.missing = missing.into();
         self.edited_here = edited_here.into();

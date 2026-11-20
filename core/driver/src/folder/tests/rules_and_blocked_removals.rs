@@ -1595,6 +1595,232 @@ fn moved_into_a_left_out_folder(remote: &mut Remote, to: &str) -> (Site, Device)
 }
 
 #[test]
+fn a_copy_in_a_left_out_folder_saved_by_rename_while_stopped_stays_the_only_copy() {
+    use std::os::unix::fs::MetadataExt;
+    let mut remote = Remote::new();
+    let (site, b) = moved_into_a_left_out_folder(&mut remote, "dist/report.docx");
+    drop(b);
+    fs::write(site.root.join("dist/.~report.tmp"), "edited").unwrap();
+    fs::rename(
+        site.root.join("dist/.~report.tmp"),
+        site.root.join("dist/report.docx"),
+    )
+    .unwrap();
+    let mut b = started(&site, &mut remote, &dist_left_out());
+    for _ in 0..3 {
+        b.settle();
+        b.rest(&mut remote);
+    }
+    assert!(b.sent.is_empty(), "{:?}", b.sent);
+    assert_eq!(
+        files(&site.root),
+        [("dist/report.docx".to_owned(), "edited".to_owned())]
+    );
+    let ino = fs::metadata(site.root.join("dist/report.docx"))
+        .unwrap()
+        .ino();
+    let recorded = b.folder.engine.recorded();
+    assert_eq!(recorded[Path::new("report.docx")].id.ino, u128::from(ino));
+}
+
+fn settled_after_a_start(site: &Site, remote: &mut Remote, sync: &SyncRules) {
+    let mut b = started(site, remote, sync);
+    for _ in 0..3 {
+        b.settle();
+        b.rest(remote);
+    }
+}
+
+#[test]
+fn a_copy_renamed_aside_in_a_left_out_folder_while_stopped_keeps_its_node() {
+    let mut remote = Remote::new();
+    let (site, b) = moved_into_a_left_out_folder(&mut remote, "dist/report.docx");
+    let id = remote.tree()["report.docx"].clone();
+    drop(b);
+    fs::rename(
+        site.root.join("dist/report.docx"),
+        site.root.join("dist/kept.docx"),
+    )
+    .unwrap();
+    fs::write(site.root.join("dist/report.docx"), "other").unwrap();
+    settled_after_a_start(&site, &mut remote, &dist_left_out());
+    settled_after_a_start(&site, &mut remote, &SyncRules::default());
+    assert_eq!(server_bytes(&remote, &id), b"report");
+    assert_eq!(remote.tree().get("dist/kept.docx"), Some(&id));
+}
+
+#[test]
+fn a_left_out_folder_moved_aside_and_rebuilt_while_stopped_keeps_its_node() {
+    let mut remote = Remote::new();
+    let (site, b) = moved_into_a_left_out_folder(&mut remote, "dist/report.docx");
+    let id = remote.tree()["report.docx"].clone();
+    drop(b);
+    fs::create_dir(site.root.join("archive")).unwrap();
+    fs::rename(site.root.join("dist"), site.root.join("archive/dist")).unwrap();
+    fs::create_dir(site.root.join("dist")).unwrap();
+    fs::write(site.root.join("dist/report.docx"), "rebuilt").unwrap();
+    settled_after_a_start(&site, &mut remote, &dist_left_out());
+    fs::rename(
+        site.root.join("archive/dist"),
+        site.root.join("archive/kept"),
+    )
+    .unwrap();
+    settled_after_a_start(&site, &mut remote, &dist_left_out());
+    assert_eq!(server_bytes(&remote, &id), b"report");
+    assert_eq!(remote.tree().get("archive/kept/report.docx"), Some(&id));
+}
+
+#[test]
+fn a_left_out_folder_moved_into_the_synced_tree_and_rebuilt_while_stopped_keeps_its_node() {
+    let mut remote = Remote::new();
+    let (site, b) = moved_into_a_left_out_folder(&mut remote, "dist/report.docx");
+    let id = remote.tree()["report.docx"].clone();
+    drop(b);
+    fs::rename(site.root.join("dist"), site.root.join("docs")).unwrap();
+    fs::create_dir(site.root.join("dist")).unwrap();
+    fs::write(site.root.join("dist/report.docx"), "rebuilt").unwrap();
+    settled_after_a_start(&site, &mut remote, &dist_left_out());
+    assert_eq!(server_bytes(&remote, &id), b"report");
+    assert_eq!(remote.tree().get("docs/report.docx"), Some(&id));
+}
+
+#[test]
+fn a_copy_saved_by_rename_while_stopped_in_a_folder_the_rules_let_in_at_start_keeps_its_node() {
+    let mut remote = Remote::new();
+    let (site, b) = moved_into_a_left_out_folder(&mut remote, "dist/report.docx");
+    let id = remote.tree()["report.docx"].clone();
+    drop(b);
+    fs::write(site.root.join("dist/.~report.tmp"), "edited").unwrap();
+    fs::rename(
+        site.root.join("dist/.~report.tmp"),
+        site.root.join("dist/report.docx"),
+    )
+    .unwrap();
+    settled_after_a_start(&site, &mut remote, &SyncRules::default());
+    assert_eq!(remote.tree().get("dist/report.docx"), Some(&id));
+    assert_eq!(remote.tree().len(), 2, "{:?}", remote.tree());
+    assert_eq!(server_bytes(&remote, &id), b"edited");
+}
+
+#[test]
+fn a_left_out_copy_moved_over_another_ones_found_place_while_stopped_keeps_both_nodes_apart() {
+    let mut remote = Remote::new();
+    let (site, mut b) = linked(&mut remote, "b");
+    fs::write(site.root.join("a.docx"), "a").unwrap();
+    fs::write(site.root.join("b.docx"), "b").unwrap();
+    b.settle();
+    b.rest(&mut remote);
+    drop(b);
+    let mut b = started(&site, &mut remote, &dist_left_out());
+    fs::create_dir(site.root.join("dist")).unwrap();
+    fs::rename(site.root.join("a.docx"), site.root.join("dist/a.docx")).unwrap();
+    fs::rename(site.root.join("b.docx"), site.root.join("dist/b.docx")).unwrap();
+    for _ in 0..3 {
+        b.settle();
+        b.rest(&mut remote);
+    }
+    let ida = remote.tree()["a.docx"].clone();
+    let idb = remote.tree()["b.docx"].clone();
+    drop(b);
+    fs::rename(site.root.join("dist/b.docx"), site.root.join("dist/a.docx")).unwrap();
+    settled_after_a_start(&site, &mut remote, &dist_left_out());
+    settled_after_a_start(&site, &mut remote, &SyncRules::default());
+    assert!(files(&site.root).contains(&("a.docx".to_owned(), "a".to_owned())));
+    assert_eq!(server_bytes(&remote, &ida), b"a");
+    assert_eq!(server_bytes(&remote, &idb), b"b");
+}
+
+#[test]
+fn a_displaced_copy_moved_over_another_ones_found_place_while_stopped_keeps_both_nodes() {
+    let mut remote = Remote::new();
+    let (site, mut b) = linked(&mut remote, "b");
+    fs::write(site.root.join("a.docx"), "a").unwrap();
+    fs::write(site.root.join("x.docx"), "x").unwrap();
+    b.settle();
+    b.rest(&mut remote);
+    drop(b);
+    let mut b = started(&site, &mut remote, &dist_left_out());
+    fs::create_dir(site.root.join("dist")).unwrap();
+    fs::rename(site.root.join("a.docx"), site.root.join("dist/a.docx")).unwrap();
+    fs::rename(site.root.join("x.docx"), site.root.join("dist/x.docx")).unwrap();
+    for _ in 0..3 {
+        b.settle();
+        b.rest(&mut remote);
+    }
+    let ida = remote.tree()["a.docx"].clone();
+    let idx = remote.tree()["x.docx"].clone();
+    fs::write(site.root.join("x.docx"), "new x").unwrap();
+    for _ in 0..3 {
+        b.settle();
+        b.rest(&mut remote);
+    }
+    drop(b);
+    fs::rename(site.root.join("dist/x.docx"), site.root.join("dist/a.docx")).unwrap();
+    settled_after_a_start(&site, &mut remote, &dist_left_out());
+    settled_after_a_start(&site, &mut remote, &SyncRules::default());
+    assert_eq!(server_bytes(&remote, &ida), b"a");
+    assert_eq!(server_bytes(&remote, &idx), b"x");
+}
+
+#[test]
+fn a_left_out_copy_replaced_by_a_hard_link_of_a_synced_file_while_stopped_downloads_again() {
+    let mut remote = Remote::new();
+    let (site, mut b) = linked(&mut remote, "b");
+    fs::write(site.root.join("report.docx"), "report").unwrap();
+    fs::write(site.root.join("notes.docx"), "notes").unwrap();
+    b.settle();
+    b.rest(&mut remote);
+    drop(b);
+    let mut b = started(&site, &mut remote, &dist_left_out());
+    fs::create_dir(site.root.join("dist")).unwrap();
+    fs::rename(
+        site.root.join("report.docx"),
+        site.root.join("dist/report.docx"),
+    )
+    .unwrap();
+    for _ in 0..3 {
+        b.settle();
+        b.rest(&mut remote);
+    }
+    drop(b);
+    fs::remove_file(site.root.join("dist/report.docx")).unwrap();
+    fs::hard_link(
+        site.root.join("notes.docx"),
+        site.root.join("dist/report.docx"),
+    )
+    .unwrap();
+    settled_after_a_start(&site, &mut remote, &dist_left_out());
+    settled_after_a_start(&site, &mut remote, &SyncRules::default());
+    assert!(
+        files(&site.root).contains(&("report.docx".to_owned(), "report".to_owned())),
+        "{:?}",
+        files(&site.root)
+    );
+}
+
+#[test]
+fn a_synced_file_moved_over_a_left_out_copy_in_a_folder_let_in_at_start_downloads_it_again() {
+    let mut remote = Remote::new();
+    let (site, b) = moved_into_a_left_out_folder(&mut remote, "dist/report.docx");
+    let id = remote.tree()["report.docx"].clone();
+    drop(b);
+    fs::write(site.root.join("notes.docx"), "notes").unwrap();
+    settled_after_a_start(&site, &mut remote, &dist_left_out());
+    fs::rename(
+        site.root.join("notes.docx"),
+        site.root.join("dist/report.docx"),
+    )
+    .unwrap();
+    settled_after_a_start(&site, &mut remote, &SyncRules::default());
+    assert!(
+        files(&site.root).contains(&("report.docx".to_owned(), "report".to_owned())),
+        "{:?}",
+        files(&site.root)
+    );
+    assert_eq!(server_bytes(&remote, &id), b"report");
+}
+
+#[test]
 fn a_copy_in_a_left_out_folder_saved_by_rename_stays_the_only_copy() {
     let mut remote = Remote::new();
     let (site, mut b) = moved_into_a_left_out_folder(&mut remote, "dist/report.docx");
