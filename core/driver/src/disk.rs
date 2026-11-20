@@ -1005,7 +1005,8 @@ impl Disk {
         let parent = &synced.parent;
         if *parent != trees.local().root
             && trees.local().get(parent).is_none()
-            && !trees.excluded(parent)
+            && !trees.missing().contains(parent)
+            && !trees.displaced_local().contains_key(parent)
         {
             return Some(true);
         }

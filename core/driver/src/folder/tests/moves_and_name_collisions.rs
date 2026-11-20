@@ -1098,7 +1098,11 @@ fn report_folder_after(site: &Site, place: &str) -> std::path::PathBuf {
             fs::rename(site.root.join("docs"), site.root.join(place)).unwrap();
             site.root.join(place)
         }
-        "deleted" => {
+        "rule docs/ then drafts" => {
+            fs::rename(site.root.join("docs"), site.root.join("drafts")).unwrap();
+            site.root.join("drafts")
+        }
+        "deleted" | "rule docs/ then deleted" => {
             fs::remove_dir(site.root.join("docs")).unwrap();
             site.root.join("docs")
         }
@@ -1107,8 +1111,8 @@ fn report_folder_after(site: &Site, place: &str) -> std::path::PathBuf {
 }
 
 fn report_rule(place: &str) -> &'static [u8] {
-    if place == "rule docs/" {
-        b"docs/\n"
+    if place.starts_with("rule docs/") {
+        b"docs/\ndrafts/\n"
     } else {
         b"report.txt\n"
     }
@@ -1121,7 +1125,14 @@ fn a_file_put_back_where_a_rule_leaves_it_out_keeps_its_node_wherever_its_folder
         "rule before the stop",
         "both while running",
     ];
-    let places = ["root", "docs", "papers", "box/docs", "rule docs/"];
+    let places = [
+        "root",
+        "docs",
+        "papers",
+        "box/docs",
+        "rule docs/",
+        "rule docs/ then drafts",
+    ];
     let mut wrong = Vec::new();
     for (order, place) in orders
         .into_iter()
@@ -1226,7 +1237,9 @@ fn an_owed_delete_leaves_the_server_wherever_its_folder_went() {
         "papers",
         "box/docs",
         "rule docs/",
+        "rule docs/ then drafts",
         "deleted",
+        "rule docs/ then deleted",
     ] {
         let mut remote = Remote::new();
         let dir = if place == "root" { "" } else { "docs" };
