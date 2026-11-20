@@ -617,7 +617,7 @@ fn a_server_file_deleted_with_a_deep_chain_of_new_folders_is_acted_below_the_fol
     };
     place(&mut device, "f", file, &chunks);
     let server = koidrive_engine::tree::Shape {
-        parent: "k".into(),
+        parent: "root".into(),
         name: "f".into(),
         kind: Kind::File,
         content: held,
@@ -631,6 +631,77 @@ fn a_server_file_deleted_with_a_deep_chain_of_new_folders_is_acted_below_the_fol
         &BTreeMap::new(),
         &BTreeMap::new()
     ));
+}
+
+#[test]
+fn a_server_file_deleted_from_a_taken_along_folder_is_judged_by_where_it_was_at_the_discard() {
+    let mut device = Device::new(Trees::new("root"));
+    let shape = |parent: &str, name: &str, kind: Kind, content| koidrive_engine::tree::Shape {
+        parent: parent.into(),
+        name: name.into(),
+        kind,
+        content,
+    };
+    let (held, chunks) = split(Some(content(1, 0)));
+    let local = [
+        ("h", shape("root", "h", Kind::Dir, None)),
+        ("s", shape("h", "s", Kind::Dir, None)),
+        ("f", shape("s", "f", Kind::File, held)),
+    ];
+    for (id, shape) in &local {
+        let identity = device.identity();
+        let chunks: Box<[ChunkRef]> = if *id == "f" {
+            chunks[..].into()
+        } else {
+            Box::default()
+        };
+        device.trees.set_local(
+            (*id).into(),
+            LocalNode {
+                left_out_when_placed: false,
+                content_from_server: false,
+                shape: shape.clone(),
+                identity,
+                parked: false,
+                chunks,
+            },
+        );
+    }
+    for (id, server) in [
+        ("s", shape("root", "s", Kind::Dir, None)),
+        ("f", shape("root", "f", Kind::File, held)),
+    ] {
+        let chunks: Box<[ChunkRef]> = if id == "f" {
+            chunks[..].into()
+        } else {
+            Box::default()
+        };
+        device.trees.set_remote(
+            id.into(),
+            RemoteNode {
+                made_over: Vec::new(),
+                shape: server,
+                trashed: false,
+                content_rev: 1,
+                meta_rev: 1,
+                meta_edit_rev: 1,
+                trash_group: String::new(),
+                version_id: String::new(),
+                edit_rev: 1,
+                pending_for: None,
+                pending_by: None,
+                chunks,
+            },
+        );
+    }
+    let discarded = BTreeMap::from([("h".into(), local[0].1.clone())]);
+    let kept_with = BTreeMap::from([
+        ("s".into(), local[1].1.clone()),
+        ("f".into(), local[2].1.clone()),
+    ]);
+    device.act(&act(4, 0, 0, 0, 0));
+    assert!(device.trees.local().get(&"f".into()).is_none());
+    assert!(acted_below(&device, &"s".into(), &kept_with, &discarded));
 }
 
 #[test]
