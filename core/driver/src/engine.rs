@@ -2153,6 +2153,12 @@ impl Staging {
         self.history.take().map(|(_, history)| history)
     }
 
+    pub fn remember_result(&mut self, at: &Base, changes: &[ChangeRecord]) {
+        if (self.history.as_ref()).is_some_and(|(through, _)| at.seq == *through + 1) {
+            self.remember(at, changes);
+        }
+    }
+
     pub fn remember(&mut self, at: &Base, changes: &[ChangeRecord]) {
         let Some((through, log)) = &mut self.history else {
             return;
@@ -2311,6 +2317,19 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(dir.path().join("store.sqlite")).unwrap();
         (dir, store)
+    }
+
+    #[test]
+    fn a_commit_result_ahead_of_the_backlog_keeps_the_log_the_backlog_completes() {
+        use koidrive_engine::commit::Base;
+        use koidrive_engine::first_link::History;
+        let mut staging = listed(3, Vec::new());
+        staging.read_history_since(Base::from(0), Log::SinceCursor(History::new()));
+        staging.remember_result(&Base::from(3), &[]);
+        for seq in 1..=3 {
+            staging.remember(&Base::from(seq), &[]);
+        }
+        assert!(staging.take_history().is_some());
     }
 
     /// A bootstrap's tree of `nodes` that the log has caught up at `seq`.
