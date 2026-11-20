@@ -840,7 +840,7 @@ fn deleting_around_a_hidden_copy_keeps_its_folder_and_deletes_included_children(
     let p = "p".into();
     assert!(device.trees.local_child(&p, "ss").is_some());
     assert!(device.ignored.contains_key(&(p.clone(), vec!["A".into()])));
-    device.act(&act(4, 1, 0, 0, 0));
+    device.act(&act(4, 2, 0, 0, 0));
     assert!(device.trees.local().get(&p).is_some());
     assert!(device.trees.local_child(&p, "ss").is_none());
     assert!(device.ignored.contains_key(&(p, vec!["A".into()])));
