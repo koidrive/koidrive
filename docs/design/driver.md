@@ -36,7 +36,7 @@ A bootstrap pages through `ListTree`, and once the folder has synced, through `L
 
 ## The observer reports changes with their content
 
-`FsObserver` runs `core/fs`'s watcher (inotify on Linux, FSEvents on macOS) and rescans every 30 seconds where the watcher cannot cover the tree. Each batch carries the changes, the content of every created or modified file chunked with `core/chunk`, and the root check. The observer starts from a snapshot rebuilt from the store, so the first scan after a restart reports only what changed meanwhile and reads only the files that differ.
+`FsObserver` runs `core/fs`'s watcher (inotify on Linux, FSEvents on macOS) and rescans every 30 seconds where the watcher cannot cover the tree. Each batch carries the changes, the content of every created or modified file chunked with `core/chunk`, and the root check. The observer starts from a snapshot rebuilt from the store. On restart it can skip reading files whose stored change times still match. After an upgrade from a store without change times, it reads files again to check for offline edits.
 
 ## The daemon serves the CLI over a socket
 

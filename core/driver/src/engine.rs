@@ -753,8 +753,8 @@ impl Engine {
 
     /// L as the snapshot a scan of the folder would give if nothing changed since L was written, for the observer to
     /// start from: every placed node at its path, a folder with the zero size and time `core/fs` gives every
-    /// folder, a file with the size, time and executable bit of its content. The first scan then reports what
-    /// changed while nothing observed the folder, removals included, and reads only the files that differ. A node
+    /// folder, a file with the size, times and executable bit of its content. The first scan then checks what
+    /// changed while nothing observed the folder, removals included. A node
     /// [`Trees::ignore_local`] recorded is left out with what is under it, since the disk does not hold it there: an
     /// entry the scan finds at its path is reported as created.
     pub fn snapshot(&self) -> Snapshot {

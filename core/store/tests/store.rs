@@ -565,7 +565,7 @@ fn differences(steps: &[Step], priorities: &[Vec<usize>]) -> Vec<String> {
         let path = dir.path().join(name);
         std::fs::copy(&base, &path).unwrap();
         let conn = Connection::open(&path).unwrap();
-        koidrive_store::migrations::register_functions(&conn, None).unwrap();
+        koidrive_store::migrations::register_functions(&conn).unwrap();
         conn.pragma_update(None, "synchronous", "OFF").unwrap();
         for step in &order {
             conn.execute_batch(step.sql).unwrap();
@@ -794,7 +794,7 @@ fn rewind(path: &Path, version: usize) {
 fn rebuild(path: &Path, migrate: impl FnOnce(&Connection)) {
     let rebuilt = path.with_extension("rebuilt");
     let conn = Connection::open(&rebuilt).unwrap();
-    koidrive_store::migrations::register_functions(&conn, None).unwrap();
+    koidrive_store::migrations::register_functions(&conn).unwrap();
     conn.pragma_update(None, "foreign_keys", false).unwrap();
     conn.pragma_update(None, "synchronous", "OFF").unwrap();
     migrate(&conn);
@@ -3258,37 +3258,55 @@ fn a_kept_cause_the_store_cannot_read_loads_as_none() {
 }
 
 #[test]
-fn an_upgrade_bounds_change_times_by_the_last_write_before_it_on_every_open() {
-    let epoch = std::time::UNIX_EPOCH;
-    let second = std::time::Duration::from_secs(1);
-    for (written, at) in [
-        (epoch + second * 1_793_491_200, 1_793_491_200_000_000_000),
-        (epoch - second, -1_000_000_000),
-    ] {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("state.db");
-        std::fs::copy(
-            concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/alpha6.db"),
-            &path,
-        )
+fn an_upgrade_cannot_hide_an_offline_edit_behind_a_newer_store_mtime() {
+    use koidrive_fs::{Change, Ctime, Snapshot};
+    use std::time::{Duration, SystemTime};
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("files");
+    std::fs::create_dir(&root).unwrap();
+    let name = Path::new("pending.txt");
+    let file = root.join(name);
+    std::fs::write(&file, b"before\n").unwrap();
+    let mut snapshot = Snapshot::scan(&root).unwrap();
+    let mtime = std::fs::metadata(&file).unwrap().modified().unwrap();
+    let path = dir.path().join("state.db");
+    std::fs::copy(
+        concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/alpha6.db"),
+        &path,
+    )
+    .unwrap();
+
+    std::fs::write(&file, b"edited\n").unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(&file)
+        .unwrap()
+        .set_modified(mtime)
         .unwrap();
-        (std::fs::File::options().write(true).open(&path).unwrap())
-            .set_modified(written)
-            .unwrap();
-        for _ in 0..2 {
-            let mut store = Store::open_existing(&path).unwrap();
-            let nodes = store.transaction(|tx| tx.local_nodes()).unwrap();
-            let ctimes = store.transaction(|tx| tx.local_ctimes()).unwrap();
-            assert!(!nodes.is_empty());
-            for node in nodes {
-                assert_eq!(
-                    ctimes.get(&node.node_id.to_string()),
-                    Some(&at),
-                    "{ctimes:?}"
-                );
-            }
-        }
-    }
+    std::fs::File::options()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_modified(SystemTime::now() + Duration::from_secs(60))
+        .unwrap();
+
+    drop(Store::open_existing(&path).unwrap());
+    let mut store = Store::open_existing(&path).unwrap();
+    let nodes = store.read(|tx| tx.local_nodes()).unwrap();
+    let node = nodes
+        .iter()
+        .find(|node| node.shape.name == "pending.txt")
+        .unwrap();
+    let ctimes = store.read(|tx| tx.local_ctimes()).unwrap();
+    snapshot.entries.get_mut(name).unwrap().ctime = Ctime::NotAfter(
+        ctimes
+            .get(&node.node_id.to_string())
+            .copied()
+            .map_or(i128::MIN, i128::from),
+    );
+    let scan = snapshot.rescan(&root, [std::path::PathBuf::new()]).unwrap();
+    assert_eq!(scan.changes, [Change::Modified { path: name.into() }]);
 }
 
 #[test]
