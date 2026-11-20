@@ -1026,8 +1026,8 @@ impl Disk {
                     tx.set_unread_folders(&unread)?;
                     engine.unread = Some(unread);
                 }
-                engine.observe_verified(&changes, now_ms, &|path, volume, identity| {
-                    self.space.verifies_copy(path, volume, identity)
+                engine.observe_verified(&changes, now_ms, &|path, volume, identity, linked| {
+                    self.space.verifies_copy(path, volume, identity, linked)
                 });
                 for (id, proof) in &unlinked {
                     if engine.displaced_copy(id) == Some(*proof) {
@@ -2115,7 +2115,7 @@ fn settle(
                     let volume = engine.path_of(&record.node).and_then(|path| {
                         let volume = engine.volume_at(&path)?;
                         space
-                            .verifies_copy(&path, volume, (*identity)?)
+                            .verifies_copy(&path, volume, (*identity)?, false)
                             .then_some(volume)
                     });
                     engine.note_placed_copy(&record.node, volume);

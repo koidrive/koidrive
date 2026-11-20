@@ -1834,14 +1834,20 @@ impl<'a> View<'a> {
 
     fn parkable(&self, id: &NodeId) -> bool {
         let trees = self.trees;
-        (candidate(trees, id) || trees.waiting().contains_key(id) || trees.reclaimed(id))
+        let Some(local) = trees.local().get(id).filter(|node| node.is_placed()) else {
+            return false;
+        };
+        let waits_for_position = trees.waiting().get(id).is_some_and(|waiting| {
+            waiting.origin != Origin::Released
+                || waiting
+                    .shape
+                    .as_ref()
+                    .is_none_or(|base| local.shape.same_position(base))
+        });
+        (candidate(trees, id) || waits_for_position || trees.reclaimed(id))
             && !trees.excluded(id)
             && !trees.held(id)
-            && trees.local().get(id).is_some_and(|node| {
-                node.is_placed()
-                    && !(trees.remote().live(id))
-                        .is_some_and(|remote| node.shape.same_position(remote))
-            })
+            && !(trees.remote().live(id)).is_some_and(|remote| local.shape.same_position(remote))
             && self.stuck(id, trees.local().len()).is_none()
             && !(trees.remote().live(id)).is_some_and(|remote| self.goes_home(id, remote))
             && !self.keeps_in_place(id)

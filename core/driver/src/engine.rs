@@ -974,19 +974,19 @@ impl Engine {
     /// entry L never held stays out.
     #[cfg(test)]
     pub fn observe(&mut self, changes: &[Observed], now_ms: u64) -> BTreeSet<NodeId> {
-        self.observe_verified(changes, now_ms, &|_, _, _| true)
+        self.observe_verified(changes, now_ms, &|_, _, _, _| true)
     }
 
     pub fn observe_verified(
         &mut self,
         changes: &[Observed],
         now_ms: u64,
-        verifies: &dyn Fn(&Path, VolumeId, FileId) -> bool,
+        verifies: &dyn Fn(&Path, VolumeId, FileId, bool) -> bool,
     ) -> BTreeSet<NodeId> {
-        let copy_volume = |engine: &Self, path: &Path, id: FileId| {
+        let copy_volume = |engine: &Self, path: &Path, id: FileId, linked: bool| {
             id.birth_ns
                 .and_then(|_| engine.volume_at(path))
-                .filter(|&volume| verifies(path, volume, id))
+                .filter(|&volume| verifies(path, volume, id, linked))
         };
         let unscanned = self.unscanned.take();
         let wait = 2 * DELETE_WAIT_MS;
@@ -1227,7 +1227,7 @@ impl Engine {
                             EntryKind::Dir,
                             file_identity(*id),
                             false,
-                            copy_volume(self, path, *id),
+                            copy_volume(self, path, *id, false),
                             None,
                             None,
                             now_ms,
@@ -1270,7 +1270,7 @@ impl Engine {
                         *kind,
                         identity,
                         *linked,
-                        copy_volume(self, to, *id),
+                        copy_volume(self, to, *id, *linked),
                         content,
                         None,
                         now_ms,
@@ -1291,7 +1291,7 @@ impl Engine {
                         continue;
                     }
                     let identity = file_identity(*id);
-                    let volume = copy_volume(self, path, *id);
+                    let volume = copy_volume(self, path, *id, *linked);
                     let takes = |node: &&NodeId| {
                         holds_kind(&self.trees, node, *kind)
                             && (!linked || self.trees.recorded_local(node))
@@ -1341,7 +1341,7 @@ impl Engine {
                 } => {
                     let Some(content) = content else { continue };
                     let identity = file_identity(*id);
-                    let volume = copy_volume(self, path, *id);
+                    let volume = copy_volume(self, path, *id, *linked);
                     let node = self
                         .resolve(path, EntryKind::File, &identity, *linked, volume)
                         .or_else(|| self.unclaimed(marked_node.as_deref(), *linked));
@@ -1420,7 +1420,7 @@ impl Engine {
         moving: &BTreeSet<NodeId>,
         touched: &mut BTreeSet<NodeId>,
         gone: &mut Gone,
-        copy_volume: impl Fn(&Self, &Path, FileId) -> Option<VolumeId>,
+        copy_volume: impl Fn(&Self, &Path, FileId, bool) -> Option<VolumeId>,
     ) {
         let sent =
             |id: &NodeId| (self.commits.in_flight()).is_some_and(|flight| flight.deletes_node(id));
@@ -1483,7 +1483,7 @@ impl Engine {
                 EntryKind::File,
                 identity,
                 false,
-                copy_volume(self, &path, file_id(identity)),
+                copy_volume(self, &path, file_id(identity), false),
                 content,
                 None,
                 now_ms,
@@ -1651,7 +1651,7 @@ impl Engine {
         path: &Path,
         kind: EntryKind,
         id: FileId,
-        verifies: &dyn Fn(&Path, VolumeId, FileId) -> bool,
+        verifies: &dyn Fn(&Path, VolumeId, FileId, bool) -> bool,
     ) -> Replacement {
         let found = self.trees.found_local();
         let at = found.get(node).map_or(path, PathBuf::as_path);
@@ -1689,7 +1689,7 @@ impl Engine {
         let Some(volume) = found
             .get(node)
             .and_then(|at| self.volume_at(at))
-            .filter(|&volume| verifies(at, volume, id))
+            .filter(|&volume| verifies(at, volume, id, false))
         else {
             return Replacement::Uncertain;
         };
@@ -1769,9 +1769,7 @@ impl Engine {
         identity: &FileIdentity,
         linked: bool,
     ) -> Option<&NodeId> {
-        if linked || identity.birth_ns.is_none() {
-            return None;
-        }
+        identity.birth_ns?;
         let volume = volume?;
         let proof = CopyProof {
             identity: *identity,
@@ -1781,6 +1779,7 @@ impl Engine {
             self.trees.displaced_local().get(id) == Some(identity)
                 && self.copy_volumes.get(id) == Some(&proof)
                 && holds_kind(&self.trees, id, kind)
+                && (!linked || self.trees.remote().live(id).is_some())
         });
         let only = candidates.next()?;
         candidates.next().is_none().then_some(only)
@@ -1940,7 +1939,9 @@ impl Engine {
             }
             if let Some(id) = &node {
                 self.note_placed_copy(id, volume);
-                if let Some(old) = readmitted.filter(|old| kind == Kind::File && old != id) {
+                if let Some(old) =
+                    readmitted.filter(|old| !linked && kind == Kind::File && old != id)
+                {
                     self.trees.remove_local(&old);
                     touched.insert(old);
                 }
@@ -2055,7 +2056,7 @@ impl Engine {
             self.trees.mark_born_as_temp(id.clone());
         }
         self.note_placed_copy(&id, volume);
-        if let Some(old) = readmitted.filter(|old| kind == Kind::File && old != &id) {
+        if let Some(old) = readmitted.filter(|old| !linked && kind == Kind::File && old != &id) {
             self.trees.remove_local(&old);
             touched.insert(old);
         }
@@ -5994,6 +5995,7 @@ mod tests {
             "different volume",
             "reused inode",
             "unverified",
+            "linked",
         ] {
             let (_dir, mut store) = store();
             let volume = VolumeId::Uuid([1; 16]);
@@ -6016,7 +6018,25 @@ mod tests {
             } else {
                 identity
             };
-            engine.observe(&[created("new", found, true, 7)], 1);
+            if case == "linked" {
+                let row = NodeState {
+                    kind: NodeKind::File as i32,
+                    current: Some(proto::VersionInfo {
+                        content: engine.trees.local_entry(&old).unwrap().content(),
+                        ..Default::default()
+                    }),
+                    ..node(&old.to_string(), "old")
+                };
+                store.transaction(|tx| tx.put_remote_node(&row)).unwrap();
+                let (_, remote) = RemoteNode::from_state(&row).unwrap();
+                engine
+                    .trees
+                    .set_synced(old.clone(), Some(remote.shape.clone()));
+                engine.trees.set_remote(old.clone(), remote);
+            }
+            engine.observe_verified(&[created("new", found, true, 7)], 1, &|_, _, _, _| {
+                case != "linked"
+            });
             let new = local_at(&engine.trees, Path::new("new")).unwrap();
             assert_ne!(old, new, "{case}");
             let Observed::Created { path, content, .. } = created("new", found, false, 8) else {
@@ -6026,12 +6046,12 @@ mod tests {
                 &[Observed::Modified {
                     path,
                     id: found,
-                    linked: false,
+                    linked: case == "linked",
                     content,
                     marked_node: None,
                 }],
                 2,
-                &|_, _, _| case != "unverified",
+                &|_, _, _, _| case != "unverified",
             );
             store.transaction(|tx| engine.checkpoint(tx)).unwrap();
             let engine = store.transaction(|tx| Engine::load(tx, ROOT)).unwrap();

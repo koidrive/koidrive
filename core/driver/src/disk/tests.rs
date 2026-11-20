@@ -2903,7 +2903,10 @@ fn a_displaced_file_stays_held_through_rename_and_retires_after_its_last_unlink(
     fs::create_dir(folder.root.join("build")).unwrap();
     let mut running = folder.start_unobserved(no_hook()).unwrap();
     let identity = koidrive_fs::id_of(File::open(&path).unwrap().as_fd()).unwrap();
-    if running.engine.root_volume.is_none() || identity.birth_ns.is_none() {
+    let Some(volume) = running.engine.root_volume else {
+        return;
+    };
+    if identity.birth_ns.is_none() {
         return;
     }
     running.engine.observe_verified(
@@ -2916,7 +2919,7 @@ fn a_displaced_file_stays_held_through_rename_and_retires_after_its_last_unlink(
             marked_node: None,
         }],
         0,
-        &|path, volume, id| running.disk.space.verifies_copy(path, volume, id),
+        &|path, volume, id, linked| running.disk.space.verifies_copy(path, volume, id, linked),
     );
     let id = local_at(&running.engine.trees, Path::new("held.txt")).unwrap();
     let ignored = folder.root.join("build/held.txt");
@@ -2937,6 +2940,17 @@ fn a_displaced_file_stays_held_through_rename_and_retires_after_its_last_unlink(
     fs::rename(&ignored, &moved).unwrap();
     let last = folder.root.join("build/last-link.txt");
     fs::hard_link(&moved, &last).unwrap();
+    for linked in [false, true] {
+        assert_eq!(
+            running.disk.space.verifies_copy(
+                Path::new("build/last-link.txt"),
+                volume,
+                identity,
+                linked
+            ),
+            linked
+        );
+    }
     fs::remove_file(&moved).unwrap();
     let mut watching = observer(&folder.root, Snapshot::default());
     let sections = running.disk.sections();

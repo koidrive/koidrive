@@ -1823,11 +1823,17 @@ pub(crate) fn path_of(root: BorrowedFd<'_>, ino: u128) -> io::Result<Option<Path
 
 impl Space {
     /// Whether the exact identity is at this path on the given volume.
-    pub fn verifies_copy(&self, at: &Path, volume: VolumeId, identity: FileId) -> bool {
+    pub fn verifies_copy(
+        &self,
+        at: &Path,
+        volume: VolumeId,
+        identity: FileId,
+        linked: bool,
+    ) -> bool {
         self.copy_at(at).is_some_and(|(dir, stat)| {
             identity.birth_ns.is_some()
                 && stat.id == identity
-                && (stat.file_type != FileType::RegularFile || stat.nlink == 1)
+                && (stat.file_type != FileType::RegularFile || linked || stat.nlink == 1)
                 && crate::root::volume_id(dir.as_fd()) == Some(volume)
         })
     }
