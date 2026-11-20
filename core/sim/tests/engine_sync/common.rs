@@ -863,6 +863,13 @@ impl Device {
     }
 
     fn place_found(&mut self, holder: &NodeId, name: &str, entry: DiskEntry) -> NodeId {
+        let displaced = entry
+            .original
+            .as_ref()
+            .filter(|(id, identity)| {
+                entry.kind == Kind::File && self.trees.displaced_local().get(id) == Some(identity)
+            })
+            .map(|(id, _)| id.clone());
         let original = entry.original.filter(|(id, _)| {
             self.trees.local().get(id).is_some() && self.trees.recorded_local(id)
         });
@@ -887,6 +894,9 @@ impl Device {
         self.acted_on(id.clone());
         self.off_disk.remove(&id);
         self.trees.set_local_changed(id.clone(), node);
+        if let Some(old) = displaced {
+            self.trees.remove_local(&old);
+        }
         let mut above = left;
         while let Some(folder) = above.filter(|folder| {
             self.trees.lost_local().contains(folder)
