@@ -510,7 +510,7 @@ fn r5_server_renamed_move_over_a_lost_rename_of_a_device_that_left() {
 #[test]
 fn r5_server_renamed_move_over_a_lost_rename_bystander_first() {
     let (mut world, _) = server_renamed_move_over_c(false);
-    let _red = expect_red(Check::PlaceKept, GUN_1381_PLACE_KEPT);
+    let _red = expect_red_without_intents(Check::PlaceKept, GUN_1381_PLACE_KEPT);
     restore_and_reconnect(&mut world, 2, &[2, 1, 0]);
 }
 
