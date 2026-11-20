@@ -76,6 +76,21 @@ pub struct RenamedOver {
     pub name: String,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum NameLeftOut {
+    DiskRefusal(Option<RenamedOver>),
+    FrozenHolder(RenamedOver),
+}
+
+impl NameLeftOut {
+    pub fn sent_over(&self) -> Option<&RenamedOver> {
+        match self {
+            Self::DiskRefusal(over) => over.as_ref(),
+            Self::FrozenHolder(over) => Some(over),
+        }
+    }
+}
+
 /// A server version whose value this device held, and whether its user authored it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -319,7 +334,7 @@ pub struct TreesState {
     /// Until this device sends the conflict rename, a record holds only while the rules leave out a folder at the
     /// node's place in R, and any new position in R, L holding the node there, or rules that let that folder in end
     /// it. The value is the place the rename was sent over; once sent, only its answer ends the record.
-    pub names_left_out: BTreeMap<NodeId, Option<RenamedOver>>,
+    pub names_left_out: BTreeMap<NodeId, NameLeftOut>,
     /// The nodes S holds and R lacks after a server loss that a change of this device's user in or
     /// below them needs. Each is created again while S keeps it and what it holds. R taking the
     /// node, the server acknowledging its create, or L dropping it ends the record.
@@ -534,7 +549,7 @@ pub struct TreesChanges {
     pub unsent_edits: SetChanges<NodeId>,
     pub dropped_edits: SetChanges<NodeId>,
     pub unsent_moves: SetChanges<NodeId>,
-    pub names_left_out: MapChanges<NodeId, Option<RenamedOver>>,
+    pub names_left_out: MapChanges<NodeId, NameLeftOut>,
     pub unsent_creates: SetChanges<NodeId>,
     pub kept_folders: SetChanges<NodeId>,
     pub kept_entries: MapChanges<NodeId, KeptEntries>,

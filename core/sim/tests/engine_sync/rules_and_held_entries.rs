@@ -1107,3 +1107,94 @@ fn a_synced_file_moved_into_a_new_folder_below_a_folder_renamed_out_on_the_serve
         assert_eq!((ran.deletes, ran.removals, ran.trashed), (0, 0, 0));
     }
 }
+
+fn frozen_name_send(
+    held: usize,
+    claim: usize,
+    folder: bool,
+    text: u8,
+) -> Result<(), TestCaseError> {
+    let (space, _) = seeded(&[
+        act(0, 0, 0, held, 0),
+        act(0, 0, 0, 3, 0),
+        act(u8::from(!folder), 0, 0, 2, text),
+    ]);
+    let root = space.space_id();
+    let mut device = Device::new(Trees::new(root));
+    let mut ids = BTreeMap::new();
+    for state in space.nodes().iter().filter(|state| state.node_id != root) {
+        let (id, remote) = RemoteNode::from_state(state).unwrap();
+        ids.insert(state.name.clone(), id.clone());
+        let identity = device.identity();
+        device.trees.set_local(
+            id.clone(),
+            LocalNode {
+                shape: remote.shape.clone(),
+                identity,
+                parked: false,
+                chunks: remote.chunks.clone(),
+                content_from_server: true,
+                left_out_when_placed: false,
+            },
+        );
+        device
+            .trees
+            .set_synced(id.clone(), Some(remote.shape.clone()));
+        device.trees.set_remote(id, remote);
+    }
+    device.rule(&Ruling::Exclude(vec!["*.txt"]));
+    let holder = &ids[NAMES[held]];
+    let id = &ids["b"];
+    let mut moved = device.trees.remote().get(holder).unwrap().clone();
+    moved.shape.parent = ids["c.txt"].clone();
+    moved.meta_rev += 1;
+    device.trees.set_remote(holder.clone(), moved);
+    let mut wanted = device.trees.remote().get(id).unwrap().clone();
+    wanted.shape.name = NAMES[claim].into();
+    wanted.meta_rev += 1;
+    device.trees.set_remote(id.clone(), wanted.clone());
+    let mut local = device.trees.local().get(id).unwrap().clone();
+    local.shape = wanted.shape;
+    device.trees.set_local_changed(id.clone(), local);
+
+    let mut commits = Commits::default();
+    let trees = &mut device.trees;
+    trees.settle(commits.aliases());
+    prop_assert_eq!(trees.check(), Ok(()));
+    let mut before = trees.clone();
+    let built = commits.build(trees, &mut device.ids, NOW as u64, "history", "me", 1u64);
+    let sent = built.and_then(|commit| {
+        commit.ops.iter().find_map(|op| match &op.op {
+            Some(op::Op::Move(moved)) if moved.node_id == *id => Some(moved),
+            _ => None,
+        })
+    });
+    let Some(sent) = sent else {
+        return Err(TestCaseError::fail(format!(
+            "no rename for {}",
+            NAMES[claim]
+        )));
+    };
+    prop_assert_eq!(&sent.new_name, &conflict_name(NAMES[claim], "", NOW, 1));
+    prop_assert!(!before.name_left_out(id));
+    let recorded = trees.state().names_left_out.remove(id);
+    prop_assert_eq!(
+        recorded,
+        Some(NameLeftOut::FrozenHolder(RenamedOver {
+            parent: NodeId::from(&sent.new_parent_id),
+            name: NAMES[claim].into(),
+        }))
+    );
+    sent_move_check(
+        sent,
+        &trees.local().get(id).unwrap().shape,
+        trees.synced().get(id),
+        trees.remote().get(id),
+        "me",
+        &BTreeMap::new(),
+        sent_move_refusal(&before, trees, id).as_ref(),
+    )?;
+    before.set_synced(holder.clone(), None);
+    prop_assert!(sent_move_refusal(&before, trees, id).is_none());
+    Ok(())
+}

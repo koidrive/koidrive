@@ -16,7 +16,8 @@ use koidrive_engine::question::{
 use koidrive_engine::restore::{Outcome, Rejection, Resolved, RestoreIntent, SplitRestore};
 use koidrive_engine::state::{
     Agreed, CommitsState, EffectsState, FinishOrigin, GivenUp, KeptCause, KeptEntries, KeptRules,
-    KeptRulesFile, LostPosition, MovedHere, PendingFinish, RenamedOver, SyncedPosition, TreesState,
+    KeptRulesFile, LostPosition, MovedHere, NameLeftOut, PendingFinish, RenamedOver,
+    SyncedPosition, TreesState,
 };
 use koidrive_engine::tree::{
     ContentKey, FileIdentity, Kind, LocalNode as EngineLocalNode, NodeId, RemoteNode,
@@ -1437,10 +1438,10 @@ fn engine_state() -> EngineState {
             unsent_moves: nodes(["m"]),
             names_left_out: [(
                 "n".into(),
-                Some(RenamedOver {
+                NameLeftOut::DiskRefusal(Some(RenamedOver {
                     parent: "p".into(),
                     name: "n.txt".into(),
-                }),
+                })),
             )]
             .into(),
             unsent_creates: nodes(["c"]),

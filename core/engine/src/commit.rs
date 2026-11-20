@@ -27,7 +27,7 @@ use crate::restore::{
 };
 use crate::state::{
     Agreed, CONTENT_ANCESTRY_LIMIT, CommitsChanges, CommitsState, FinishOrigin, GivenUp,
-    MovePosition, RenamedOver, StateError,
+    MovePosition, NameLeftOut, RenamedOver, StateError,
 };
 use crate::tracked::{Marked, TrackedMap, TrackedSet};
 use crate::tree::{
@@ -267,6 +267,7 @@ impl Commits {
             return BTreeSet::new();
         }
         (effects::displaced_by_excluded(trees).into_iter())
+            .chain(frozen_name_claimants(trees))
             .filter(|id| !self.problems.contains(id))
             .filter(|id| !(self.questions.iter()).any(|q| q.holds().any(|held| held == id)))
             .filter(|id| conflict_rename(trees, id, &self.device_name.0, now_ms).is_some())
@@ -1581,8 +1582,9 @@ impl Commits {
             self.hold(trees);
         }
         self.ask_missing(trees, ids, now_ms);
+        let claimants = frozen_name_claimants(trees);
         let waiting: BTreeSet<NodeId> = (trees.waiting().keys())
-            .filter(|id| !changed_locally(trees, id))
+            .filter(|id| !changed_locally(trees, id) && !claimants.contains(*id))
             .cloned()
             .collect();
         let skip_ordinary =
@@ -1893,16 +1895,25 @@ impl Commits {
             }
         }
         if ops.is_empty() && released.is_empty() {
-            ops.extend(displaced_renames(trees, &skip, &self.device_name.0, now_ms).take(cap));
+            let claimants = frozen_name_claimants(trees);
+            ops.extend(
+                displaced_renames(trees, &skip, &claimants, &self.device_name.0, now_ms).take(cap),
+            );
             for op in &ops {
                 if let Some(op::Op::Move(moved)) = &op.op
                     && let Some(from) = &moved.from
                 {
-                    let over = RenamedOver {
+                    let id = NodeId::from(&moved.node_id);
+                    let over = || RenamedOver {
                         parent: NodeId::from(&from.parent_id),
                         name: from.name.clone(),
                     };
-                    trees.send_left_out_rename(&NodeId::from(&moved.node_id), over);
+                    if claimants.contains(&id) {
+                        trees.revert(id.clone());
+                        trees.record_conflict_rename(id, NameLeftOut::FrozenHolder(over()));
+                    } else if trees.name_left_out(&id) {
+                        trees.record_conflict_rename(id, NameLeftOut::DiskRefusal(Some(over())));
+                    }
                 }
             }
         }
@@ -3887,10 +3898,12 @@ fn settle_kept_folders(trees: &mut Trees, ids: &mut IdGen, now_ms: u64) {
 fn displaced_renames<'a>(
     trees: &'a Trees,
     skip: &'a BTreeSet<NodeId>,
+    claimants: &'a BTreeSet<NodeId>,
     device_name: &'a str,
     now_ms: u64,
 ) -> impl Iterator<Item = proto::Op> + 'a {
     (effects::displaced_by_excluded(trees).into_iter())
+        .chain(claimants.iter().cloned())
         .filter(|id| !skip.contains(id))
         .filter_map(move |id| {
             let shape = trees.remote().live(&id)?;
@@ -3909,6 +3922,30 @@ fn displaced_renames<'a>(
                 ..Default::default()
             })
         })
+}
+
+fn frozen_name_claimants(trees: &Trees) -> BTreeSet<NodeId> {
+    (trees.waiting().keys())
+        .chain(trees.dirty())
+        .filter(|id| {
+            let Some(remote) = trees.remote().live(id) else {
+                return false;
+            };
+            let placed = (trees.local().get(id))
+                .is_some_and(|local| !local.parked && local.shape.same_position(remote));
+            let agreed =
+                (trees.synced().live(id)).is_some_and(|synced| synced.same_position(remote));
+            let frozen = (trees.synced_holders(&remote.parent, &remote.name)).any(|other| {
+                other != *id
+                    && trees.ignored(other)
+                    && (trees.synced().live(other)).is_some_and(|held| {
+                        (trees.remote().live(other)).is_none_or(|r| !r.same_position(held))
+                    })
+            });
+            placed && !agreed && frozen && !trees.ignored(id)
+        })
+        .cloned()
+        .collect()
 }
 
 fn conflict_rename(trees: &Trees, id: &NodeId, device_name: &str, now_ms: u64) -> Option<String> {

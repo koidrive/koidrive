@@ -133,11 +133,7 @@ fn a_folder_made_in_a_folder_another_device_renamed_to_a_name_its_rules_exclude_
 }
 
 #[test]
-fn a_file_at_a_name_another_spelling_of_which_its_rules_came_to_exclude_waits_for_that_name() {
-    let _red = expect_red(
-        Check::NameLeftOut,
-        "device 1 is quiet, but nodes [\"01a1c2c0-39a0-7cb2-989b-810659c5a8bc\"] wait for names that entries its rules leave out hold",
-    );
+fn a_file_at_a_name_another_spelling_of_which_its_rules_came_to_exclude_takes_a_conflict_name() {
     let phases = [
         vec![
             (2, file("A")),
@@ -959,4 +955,348 @@ fn a_file_made_in_a_folder_its_include_list_takes_syncs_through_the_folders_pend
     phase.extend([(1, user(1, 0, 2, "b")), work, (1, rename(0, 0, "a"))]);
     let rulings = [(0, 1, Ruling::Include(vec!["ss/"]))];
     converge_ruled(&[vec![], vec![]], &rulings, &[phase]).unwrap();
+}
+
+fn spelled_like(world: &World, device: usize, name: &str) -> Vec<String> {
+    (paths_on(world, device).into_iter())
+        .filter(|path| !path.contains('/'))
+        .filter(|path| path == name || path.starts_with(&format!("{name} (conflict from ")))
+        .collect()
+}
+
+fn frozen_name_phases(extra: Vec<(usize, Step)>) -> Vec<Vec<(usize, Step)>> {
+    vec![
+        vec![
+            (2, file("A")),
+            (0, folder("a")),
+            (1, folder("a")),
+            (0, user(0, 0, 3983142787068221396, "b")),
+            (0, rename(6113237590744703406, 5114041128735224957, "c.txt")),
+        ],
+        vec![
+            (0, rename(6162043229936789262, 3027433216408009345, "b")),
+            (1, act(3, 13474642980939706019, 2727123195511875546, "A", 3)),
+        ],
+        extra,
+    ]
+}
+
+#[test]
+fn a_folder_another_device_moved_keeps_that_move_when_the_rules_that_froze_its_name_go() {
+    let rulings = [(2, 1, Ruling::Exclude(vec![]))];
+    let rules = [vec![], vec!["*.txt", "\u{e9}"], vec![]];
+    converge_ruled(&rules, &rulings, &frozen_name_phases(vec![])).unwrap();
+}
+
+#[test]
+fn a_folder_another_device_deletes_stays_deleted_beside_a_file_at_the_name_its_rules_froze() {
+    let rules = [vec![], vec!["*.txt", "\u{e9}"], vec![]];
+    converge_excluding(&rules, &frozen_name_phases(vec![(0, delete(0))])).unwrap();
+}
+
+fn beside_a_folder_moved_into_an_excluded_folder(
+    made: Vec<(usize, Step)>,
+    claim: Vec<(usize, Step)>,
+) -> Vec<Vec<(usize, Step)>> {
+    let mut first = made;
+    first.extend([
+        (0, folder("a")),
+        (0, folder("c.txt")),
+        (0, user(1, 0, 1, "b")),
+    ]);
+    vec![first, vec![(0, rename(0, 2, "a"))], claim, vec![], vec![]]
+}
+
+#[test]
+fn a_file_renamed_to_the_name_an_excluded_folder_keeps_takes_a_conflict_name_and_the_folder_moves_once_let_in()
+ {
+    let phases = beside_a_folder_moved_into_an_excluded_folder(
+        vec![(1, file("b"))],
+        vec![(1, rename(0, 0, "A"))],
+    );
+    let rulings = [(4, 1, Ruling::Exclude(vec![]))];
+    let rules = [vec![], vec!["*.txt"]];
+    converge_ruled(&rules, &rulings, &phases[..3]).unwrap();
+    let world = converge_ruled(&rules, &rulings, &phases).unwrap();
+    assert!(
+        live_node_at(&world, &["c.txt", "a", "b"]).is_some(),
+        "{:?}",
+        paths_on(&world, 1)
+    );
+    let renamed = spelled_like(&world, 1, "A");
+    assert!(renamed.len() == 1 && renamed[0] != "A", "{renamed:?}");
+}
+
+#[test]
+fn a_node_both_devices_rename_to_the_name_an_excluded_folder_keeps_takes_a_conflict_name() {
+    let folder_with_a_file = vec![(1, folder("b")), (1, user(1, 0, 1, "a"))];
+    for made in [vec![(1, file("b"))], folder_with_a_file] {
+        let held = made.len() > 1;
+        let claim = vec![(0, rename(3, 0, "A")), (1, rename(0, 0, "A"))];
+        let phases = beside_a_folder_moved_into_an_excluded_folder(made, claim);
+        let world = converge_excluding(&[vec![], vec!["*.txt"]], &phases).unwrap();
+        for device in 0..2 {
+            let renamed = spelled_like(&world, device, "A");
+            assert!(
+                renamed.len() == 1 && renamed[0] != "A",
+                "{device}: {renamed:?}"
+            );
+            let inside = format!("{}/a", renamed[0]);
+            assert_eq!(paths_on(&world, device).contains(&inside), held, "{device}");
+        }
+    }
+}
+
+const CLAIMED: &str = "A (conflict from unknown device 2026-11-09)";
+
+fn claimed_a_kept_name(made: Vec<(usize, Step)>, steps: usize) -> World {
+    let phases = beside_a_folder_moved_into_an_excluded_folder(made, vec![]);
+    let mut world = converge_excluding(&[vec![], vec!["*.txt"]], &phases[..2]).unwrap();
+    let mut claim = vec![(1, rename(0, 0, "A"))];
+    claim.extend(std::iter::repeat_n((1, Step::Work(0)), steps));
+    world.run(2, &claim).unwrap();
+    world
+}
+
+fn settle_claim(world: &mut World) {
+    (2..5)
+        .try_for_each(|phase| world.phase(phase, &[]))
+        .unwrap();
+    for device in 0..2 {
+        assert_eq!(spelled_like(world, device, "A"), [CLAIMED], "{device}");
+    }
+}
+
+#[test]
+fn a_claimant_keeps_its_name_after_the_excluded_holder_leaves() {
+    let phases = beside_a_folder_moved_into_an_excluded_folder(vec![(1, file("b"))], vec![]);
+    for trash in [false, true] {
+        let mut world = converge_excluding(&[vec![], vec!["*.txt"]], &phases[..2]).unwrap();
+        let id = live_node_at(&world, &["c.txt", "a"]).unwrap().into();
+        let holder = target(&world, 0, &["c.txt", "a"]);
+        let leaves = if trash {
+            delete(holder)
+        } else {
+            rename(holder, 0, "ss")
+        };
+        world.phase(2, &[(0, leaves)]).unwrap();
+        let synced = world.devices[1].engine.trees.synced().live(&id);
+        assert_eq!(
+            synced.map(|node| node.name.as_str()),
+            (!trash).then_some("ss")
+        );
+        let file = target(&world, 1, &["b"]);
+        world.phase(3, &[(1, rename(file, 0, "A"))]).unwrap();
+        for device in 0..2 {
+            assert_eq!(
+                spelled_like(&world, device, "A"),
+                ["A"],
+                "{trash}: {device}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_newer_rename_or_delete_beats_the_move_off_a_frozen_name() {
+    for trash in [false, true] {
+        for steps in [4, 5] {
+            let mut world = claimed_a_kept_name(vec![(1, file("b"))], steps);
+            let id = live_node_at(&world, &["A"]).unwrap();
+            assert!(live_node_at(&world, &[CLAIMED]).is_none());
+            world.run(2, &[(0, Step::Work(0)); 8]).unwrap();
+            let claim = target(&world, 0, &["A"]);
+            let change = if trash {
+                delete(claim)
+            } else {
+                rename(claim, 0, "ss")
+            };
+            world.run(2, &[(0, change)]).unwrap();
+            world.run(2, &commit(0)).unwrap();
+            let expected = (!trash).then_some(&id);
+            assert!(live_node_at(&world, &["A"]).is_none());
+            assert_eq!(live_node_at(&world, &["ss"]).as_ref(), expected);
+            (2..5)
+                .try_for_each(|phase| world.phase(phase, &[]))
+                .unwrap();
+            assert!(live_node_at(&world, &["A"]).is_none());
+            assert!(live_node_at(&world, &[CLAIMED]).is_none());
+            assert_eq!(live_node_at(&world, &["ss"]).as_ref(), expected);
+            if trash {
+                assert!(world.space().nodes().iter().any(|node| {
+                    node.node_id == id && node.status == NodeStatus::Trashed as i32
+                }));
+            }
+            assert_eq!(
+                world.seen.get("move with from superseded").copied(),
+                (steps == 5).then_some(1)
+            );
+        }
+    }
+}
+
+#[test]
+fn a_node_whose_conflict_rename_is_in_flight_when_the_rules_let_the_kept_name_in_follows_that_rename()
+ {
+    let folder_with_a_file = vec![(1, folder("b")), (1, user(1, 0, 1, "a"))];
+    let steps: Vec<(usize, Step)> = (0..3).flat_map(|_| commit(1)).collect();
+    for made in [vec![(1, file("b"))], folder_with_a_file] {
+        let mut saw_while_disk_waited = [false; 2];
+        for lift in 0..=steps.len() {
+            let mut world = claimed_a_kept_name(made.clone(), 0);
+            world.run(2, &steps[..lift]).unwrap();
+            let sent = live_node_at(&world, &[CLAIMED]);
+            let engine = &world.devices[1].engine;
+            let trees = &engine.trees;
+            if let Some(id) = sent.as_ref().map(NodeId::from)
+                && (trees.local().get(&id)).is_some_and(|node| node.shape.name == "A")
+            {
+                assert_eq!(
+                    trees.synced().live(&id).map(|node| node.name.as_str()),
+                    Some("b"),
+                    "{made:?}, {lift}"
+                );
+                saw_while_disk_waited[usize::from(engine.commits.in_flight().is_none())] = true;
+            }
+            world.rule(1, &Ruling::Exclude(vec![])).unwrap();
+            world.run(2, &steps[lift..]).unwrap();
+            (2..5)
+                .try_for_each(|phase| world.phase(phase, &[]))
+                .unwrap();
+            assert_eq!(paths_on(&world, 0), paths_on(&world, 1), "{lift}");
+            let renamed = spelled_like(&world, 1, "A");
+            if sent.is_some() {
+                assert_eq!(renamed, [CLAIMED], "{lift}");
+            } else if lift == 0 {
+                assert_eq!(renamed, ["A"]);
+            } else {
+                assert!(
+                    renamed == ["A"] || renamed == [CLAIMED],
+                    "{lift}: {renamed:?}"
+                );
+            }
+        }
+        assert_eq!(saw_while_disk_waited, [true; 2], "{made:?}");
+    }
+}
+
+#[test]
+fn a_file_renamed_to_the_name_an_excluded_folder_keeps_is_not_renamed_again_while_its_rename_is_a_problem()
+ {
+    let mut world = claimed_a_kept_name(vec![(1, file("b"))], 4);
+    let refused = (1, Step::Commit(Reply::Refused(error::Code::LimitExceeded)));
+    let deliver = (1, Step::Deliver(0));
+    world.run(2, &[refused, refused, deliver]).unwrap();
+    assert_eq!(
+        world
+            .seen
+            .get("commit of one op refused for its size, its node is a problem"),
+        Some(&1)
+    );
+    let served = (1, Step::Commit(Reply::Served));
+    world.run(2, &[served, served, deliver]).unwrap();
+    assert!(live_node_at(&world, &["A"]).is_some() && live_node_at(&world, &[CLAIMED]).is_none());
+    settle_claim(&mut world);
+}
+
+#[test]
+fn a_folder_renamed_to_the_name_an_excluded_folder_keeps_takes_a_conflict_name_with_what_it_holds_across_a_crash()
+ {
+    let made = vec![(1, folder("b")), (1, user(1, 0, 1, "a"))];
+    let mut acknowledged_before_moved = false;
+    for steps in 0..10 {
+        let mut world = claimed_a_kept_name(made.clone(), steps);
+        acknowledged_before_moved |= live_node_at(&world, &[CLAIMED]).is_some()
+            && paths_on(&world, 1).contains(&"A".to_string());
+        world.run(2, &[(1, Step::Crash)]).unwrap();
+        settle_claim(&mut world);
+        for device in 0..2 {
+            let inside = format!("{CLAIMED}/a");
+            assert!(
+                paths_on(&world, device).contains(&inside),
+                "{device}: {:?}",
+                paths_on(&world, device)
+            );
+        }
+    }
+    assert!(acknowledged_before_moved);
+}
+
+#[test]
+fn a_rejected_conflict_rename_over_a_frozen_name_does_not_record_a_disk_refusal() {
+    let mut world = claimed_a_kept_name(vec![(1, file("b"))], 5);
+    let id = NodeId::from(live_node_at(&world, &["A"]).unwrap());
+    let engine = &world.devices[1].engine;
+    assert!(engine.commits.in_flight().is_some());
+    assert!(
+        engine.trees.state().names_left_out.contains_key(&id),
+        "no sent conflict rename"
+    );
+    assert!(live_node_at(&world, &[CLAIMED]).is_none());
+
+    world
+        .rule(1, &Ruling::Exclude(vec!["*.txt", "A/", "ss"]))
+        .unwrap();
+    let claim = target(&world, 1, &["A"]);
+    world
+        .run(2, &[(1, rename(claim, 0, "ss")), (1, SCAN)])
+        .unwrap();
+    let engine = &world.devices[1].engine;
+    assert_eq!(engine.trees.local().get(&id).unwrap().shape.name, "ss");
+    assert_eq!(engine.trees.remote().live(&id).unwrap().name, "A");
+    let reject = (
+        1,
+        Step::Commit(Reply::Refused(error::Code::UnsupportedVersion)),
+    );
+    world.run(2, &[reject, (1, DELIVER)]).unwrap();
+    let engine = &world.devices[1].engine;
+    assert_eq!(world.seen.get("commit refused, planned again"), Some(&1));
+    assert!(engine.commits.in_flight().is_none());
+    assert_eq!(
+        engine.trees.state().names_left_out.get(&id),
+        None,
+        "a rejection is not a disk refusal"
+    );
+    assert_eq!(engine.trees.local().get(&id).unwrap().shape.name, "ss");
+    assert!(live_node_at(&world, &[CLAIMED]).is_none());
+}
+
+#[test]
+fn a_conflict_rename_over_a_frozen_name_replays_its_lost_answer_before_the_disk_rename() {
+    let mut world = claimed_a_kept_name(vec![(1, file("b"))], 0);
+    let steps: Vec<_> = (0..2).flat_map(|_| commit(1)).collect();
+    world.run(2, &steps[..7]).unwrap();
+    let id = NodeId::from(live_node_at(&world, &[CLAIMED]).unwrap());
+    let engine = &world.devices[1].engine;
+    let sent = engine.commits.in_flight().unwrap().commit.clone();
+    let record = engine.trees.state().names_left_out[&id].clone();
+    world
+        .run(
+            2,
+            &[
+                (1, Step::Drop),
+                (1, Step::Crash),
+                (1, Step::Work(0)),
+                (1, Step::Connect),
+                (1, DELIVER),
+            ],
+        )
+        .unwrap();
+    let engine = &world.devices[1].engine;
+    assert_eq!(
+        world
+            .seen
+            .get("reconnect resends a commit the server applied"),
+        Some(&1)
+    );
+    assert_eq!(engine.commits.in_flight().unwrap().commit, sent);
+    assert_eq!(engine.trees.state().names_left_out[&id], record);
+
+    world.run(2, &[(1, COMMIT), (1, DELIVER)]).unwrap();
+    let engine = &world.devices[1].engine;
+    assert!(engine.commits.in_flight().is_none());
+    assert!(!engine.trees.state().names_left_out.contains_key(&id));
+    assert_eq!(engine.trees.local().get(&id).unwrap().shape.name, "A");
+    assert_eq!(engine.trees.synced().get(&id).unwrap().name, "b");
+    settle_claim(&mut world);
 }

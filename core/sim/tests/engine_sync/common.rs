@@ -20,7 +20,7 @@ use koidrive_engine::question::{Answer, Question, QuestionKind};
 
 use koidrive_engine::restore::{Outcome, Rejection, Resolved, RestoreIntent};
 
-use koidrive_engine::state::{RenamedOver, StateError};
+use koidrive_engine::state::{NameLeftOut, RenamedOver, StateError};
 
 use koidrive_engine::tree::{
     ContentKey, FileIdentity, Kind, LocalNode, Names, NodeId, RemoteNode, Shape, same,
@@ -1789,6 +1789,26 @@ fn position(shape: &koidrive_engine::tree::Shape) -> Position {
     (shape.parent.clone(), shape.name.clone())
 }
 
+fn sent_move_refusal(before: &Trees, trees: &Trees, id: &NodeId) -> Option<RenamedOver> {
+    if before.name_left_out(id) {
+        return match trees.state().names_left_out.remove(id) {
+            Some(NameLeftOut::DiskRefusal(over)) => over,
+            _ => None,
+        };
+    }
+    let at = before.remote().live(id)?;
+    let local = before.local().get(id)?;
+    if local.parked || !local.shape.same_position(at) || before.ignored(id) {
+        return None;
+    }
+    (before.synced_holders(&at.parent, &at.name))
+        .any(|holder| holder != id && before.ignored(holder))
+        .then(|| RenamedOver {
+            parent: at.parent.clone(),
+            name: at.name.clone(),
+        })
+}
+
 fn sent_move_check(
     moved: &Move,
     local: &Shape,
@@ -2599,11 +2619,7 @@ fn run_ignoring_answering_after(
             {
                 let synced = device.trees.synced().get(id);
                 let remote = device.trees.remote().get(id);
-                let refused_at = if device.trees.name_left_out(id) {
-                    device.trees.state().names_left_out.remove(id).flatten()
-                } else {
-                    None
-                };
+                let refused_at = sent_move_refusal(&before.0, &device.trees, id);
                 sent_move_check(
                     moved,
                     &local.shape,

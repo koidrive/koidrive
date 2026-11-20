@@ -17,8 +17,8 @@ use koidrive_engine::question::{RecoveryCause, RecoveryTrigger, Revisions};
 use koidrive_engine::restore::SplitRestore;
 use koidrive_engine::state::{
     Agreed, CommitsChanges, CommitsState, ContentProvenance, EffectsChanges, EffectsState,
-    FinishOrigin, GivenUp, LostPosition, MapChanges, MovedHere, PendingFinish, RenamedOver,
-    SetChanges, SyncedPosition, TreesChanges, TreesState,
+    FinishOrigin, GivenUp, LostPosition, MapChanges, MovedHere, NameLeftOut, PendingFinish,
+    RenamedOver, SetChanges, SyncedPosition, TreesChanges, TreesState,
 };
 use koidrive_engine::tree::{ContentKey, DigestTooLong, FileIdentity, Kind, NodeId, Shape};
 use koidrive_proto::v1::{Commit, CommitResult, Content, NodeKind};
@@ -431,21 +431,41 @@ impl Tx<'_> {
                 .unsent_moves
                 .insert(NodeId::from(row.get::<_, String>(0)?));
         }
-        let mut stmt = self
-            .0
-            .prepare_cached("SELECT node_id, sent_parent_id, sent_name FROM names_left_out")?;
+        let mut stmt = self.0.prepare_cached(
+            "SELECT node_id, sent_parent_id, sent_name, origin FROM names_left_out",
+        )?;
         let mut rows = stmt.query([])?;
         while let Some(row) = next_row!(rows, abandoned) {
-            let over = (row.get::<_, Option<String>>(1)?)
-                .zip(row.get::<_, Option<String>>(2)?)
-                .map(|(parent, name)| RenamedOver {
-                    parent: NodeId::from(parent),
-                    name,
-                });
+            let origin: String = row.get(3)?;
+            let record = match (
+                origin.as_str(),
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, Option<String>>(2)?,
+            ) {
+                ("disk_refusal", None, None) => NameLeftOut::DiskRefusal(None),
+                ("disk_refusal", Some(parent), Some(name)) => {
+                    NameLeftOut::DiskRefusal(Some(RenamedOver {
+                        parent: NodeId::from(parent),
+                        name,
+                    }))
+                }
+                ("frozen_holder", Some(parent), Some(name)) => {
+                    NameLeftOut::FrozenHolder(RenamedOver {
+                        parent: NodeId::from(parent),
+                        name,
+                    })
+                }
+                _ => {
+                    return Err(invalid(format!(
+                        "invalid name left out origin or sent place for {}",
+                        row.get::<_, String>(0)?
+                    )));
+                }
+            };
             state
                 .trees
                 .names_left_out
-                .insert(NodeId::from(row.get::<_, String>(0)?), over);
+                .insert(NodeId::from(row.get::<_, String>(0)?), record);
         }
         let mut stmt = self.0.prepare_cached("SELECT node_id FROM kept_folders")?;
         let mut rows = stmt.query([])?;
@@ -1009,13 +1029,17 @@ impl Tx<'_> {
         self.write_node_map(
             names_left_out,
             "DELETE FROM names_left_out WHERE node_id = ?1",
-            "INSERT OR REPLACE INTO names_left_out (node_id, sent_parent_id, sent_name) VALUES (?1, ?2, ?3)",
-            |put, node, over: &Option<RenamedOver>| {
-                let over = over.as_ref();
+            "INSERT OR REPLACE INTO names_left_out (node_id, sent_parent_id, sent_name, origin) VALUES (?1, ?2, ?3, ?4)",
+            |put, node, record: &NameLeftOut| {
+                let (origin, over) = match record {
+                    NameLeftOut::DiskRefusal(over) => ("disk_refusal", over.as_ref()),
+                    NameLeftOut::FrozenHolder(over) => ("frozen_holder", Some(over)),
+                };
                 put.execute(params![
                     node,
                     over.map(|over| over.parent.to_string()),
-                    over.map(|over| &over.name)
+                    over.map(|over| &over.name),
+                    origin
                 ])
             },
         )?;

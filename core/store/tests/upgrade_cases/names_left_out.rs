@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 upgrade_case!(names_left_out, |store| {
+    use koidrive_engine::state::NameLeftOut;
+
     store
         .transaction(|tx| {
             let before = tx.engine_state()?;
@@ -11,12 +13,12 @@ upgrade_case!(names_left_out, |store| {
                 .find(|node| node.shape.name == "report.txt")
                 .unwrap();
             let mut state = before.clone();
-            state.trees.names_left_out.insert(report.node_id.clone(), None);
+            state.trees.names_left_out.insert(report.node_id.clone(), NameLeftOut::DiskRefusal(None));
             tx.set_engine_state(&state)?;
             let mut stored = tx.engine_state()?;
             assert_eq!(
                 stored.trees.names_left_out,
-                std::collections::BTreeMap::from([(report.node_id, None)])
+                std::collections::BTreeMap::from([(report.node_id, NameLeftOut::DiskRefusal(None))])
             );
             stored.trees.names_left_out.clear();
             assert_eq!(stored, before);
