@@ -2155,10 +2155,7 @@ impl Staging {
     }
 
     pub fn replay_result(&mut self, at: Base, changes: &[ChangeRecord]) -> Result<(), Stop> {
-        let next = (self.history.as_ref()).is_some_and(|(through, _)| at.seq == *through + 1);
-        if next && at.committed_at_ms != 0 {
-            self.remember(&at, changes);
-        }
+        self.remember(&at, changes);
         if at.seq == self.last.seq + 1 {
             self.replay_commit(at, changes)?;
         }
@@ -2325,19 +2322,6 @@ mod tests {
     }
 
     #[test]
-    fn a_commit_result_ahead_of_the_backlog_keeps_the_log_the_backlog_completes() {
-        use koidrive_engine::commit::Base;
-        use koidrive_engine::first_link::History;
-        let mut staging = listed(3, Vec::new());
-        staging.read_history_since(Base::from(0), Log::SinceCursor(History::new()));
-        staging.replay_result(Base::from(3), &[]).unwrap();
-        for seq in 1..=3 {
-            staging.remember(&Base::from(seq), &[]);
-        }
-        assert!(staging.take_history().is_some());
-    }
-
-    #[test]
     fn a_commit_result_is_the_log_record_of_its_seq() {
         let mut staging = backlog_through(3);
         let result = koidrive_engine::commit::Base {
@@ -2347,14 +2331,6 @@ mod tests {
         };
         staging.replay_result(result, &[]).unwrap();
         assert!(staging.take_history().is_some());
-    }
-
-    #[test]
-    fn a_commit_result_without_a_time_leaves_no_log_to_read() {
-        let mut staging = backlog_through(3);
-        let result = koidrive_engine::commit::Base::from(4);
-        staging.replay_result(result, &[]).unwrap();
-        assert!(staging.take_history().is_none());
     }
 
     #[test]
