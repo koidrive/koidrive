@@ -1316,6 +1316,12 @@ fn forked_aside(trees: &Trees, id: &NodeId, shape: &Shape) -> bool {
         })
 }
 
+enum Destination<'a> {
+    Unpark(&'a LocalNode, &'a Shape),
+    Create(&'a Shape),
+    Sync(&'a LocalNode, &'a Shape),
+}
+
 #[allow(clippy::large_enum_variant)]
 enum Step {
     Apply(Effect, Option<Shape>),
@@ -1386,25 +1392,16 @@ impl<'a> View<'a> {
     }
 
     fn step(&self, id: &NodeId) -> Step {
-        let local = self.trees.local().get(id);
-        let remote = self.trees.remote().live(id);
-        if let Some(local) = local.filter(|_| self.trees.left_behind(id)) {
+        if let Some(local) = (self.trees.local().get(id)).filter(|_| self.trees.left_behind(id)) {
             return self.remove(id, local);
         }
-        if let Some(local) = local.filter(|local| local.parked && self.trees.ignored(id)) {
-            if self.trees.trashed_while_parked(id) {
-                return self.remove(id, local);
+        let destination = match (self.trees.local().get(id), self.trees.remote().live(id)) {
+            (Some(local), _) if local.parked && self.trees.ignored(id) => {
+                if self.trees.trashed_while_parked(id) {
+                    return self.remove(id, local);
+                }
+                Destination::Unpark(local, self.way_out(id, local))
             }
-            let target = self.way_out(id, local);
-            if let Some(holder) = self.holds_place(id, target) {
-                return Step::Blocked(Some(holder));
-            }
-            return self.unpark(id, local, target);
-        }
-        if let Some(holder) = remote.and_then(|shape| self.holds_place(id, shape)) {
-            return Step::Blocked(Some(holder));
-        }
-        let (local, remote) = match (local, remote) {
             (None, None) => return Step::Skip,
             (Some(local), None)
                 if local.parked
@@ -1417,7 +1414,7 @@ impl<'a> View<'a> {
                 if forked_aside(self.trees, id, &local.shape) {
                     return Step::Blocked(None);
                 }
-                return self.unpark(id, local, &local.shape);
+                Destination::Unpark(local, &local.shape)
             }
             (Some(_), None)
                 if self.trees.reverted().contains(id)
@@ -1426,7 +1423,24 @@ impl<'a> View<'a> {
                 return Step::Blocked(None);
             }
             (Some(local), None) => return self.remove(id, local),
-            (None, Some(remote)) => {
+            (None, Some(remote)) => Destination::Create(remote),
+            (Some(local), Some(remote)) if local.parked && self.goes_home(id, remote) => {
+                Destination::Unpark(local, &local.shape)
+            }
+            (Some(local), Some(remote)) if local.parked && !remote_only(self.trees, id) => {
+                Destination::Unpark(local, remote)
+            }
+            (Some(local), Some(remote)) => Destination::Sync(local, remote),
+        };
+        let (Destination::Unpark(_, place)
+        | Destination::Create(place)
+        | Destination::Sync(_, place)) = destination;
+        if let Some(holder) = self.holds_place(id, place) {
+            return Step::Blocked(Some(holder));
+        }
+        let (local, remote) = match destination {
+            Destination::Unpark(local, target) => return self.unpark(id, local, target),
+            Destination::Create(remote) => {
                 if let Some(blocked) = self.blocked(id, remote) {
                     return blocked;
                 }
@@ -1444,14 +1458,8 @@ impl<'a> View<'a> {
                 };
                 return Step::Apply(effect, Some(remote.clone()));
             }
-            (Some(local), Some(remote)) => (local, remote),
+            Destination::Sync(local, remote) => (local, remote),
         };
-        if local.parked && self.goes_home(id, remote) {
-            return self.unpark(id, local, &local.shape);
-        }
-        if local.parked && !remote_only(self.trees, id) {
-            return self.unpark(id, local, remote);
-        }
         if local.shape.kind != remote.kind {
             return Step::Skip;
         }

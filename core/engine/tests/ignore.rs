@@ -3766,7 +3766,7 @@ fn only_destination_checks_ask_directly_whether_a_merged_folder_holds_a_place() 
     }
     assert_eq!(
         callers,
-        BTreeMap::from([("choose", 1), ("permits", 1), ("step", 2)]),
+        BTreeMap::from([("choose", 1), ("permits", 1), ("step", 1)]),
         "View::holds_place only says whether a merged folder sits at a destination. A node that may not move or park because a merged folder holds its place, directly or through a chain, must ask View::keeps_in_place."
     );
 }
@@ -4591,31 +4591,41 @@ fn a_removal_planned_for_a_moved_file_is_not_taken_once_a_rule_excludes_the_copy
 #[test]
 fn a_parked_file_goes_home_when_an_excluded_folder_shares_its_server_name_key_with_a_merged_folder()
 {
-    let (mut trees, mut commits, mut ids) = merged_beside_a_trashed_folder(vec![]);
-    trees.set_synced("X".into(), Some(dir(ROOT, "a")));
-    trees.set_local("X".into(), local(dir(ROOT, "a"), 70));
-    trees.set_remote("X".into(), remote(dir(ROOT, "x.txt")));
-    trees.set_synced("Q".into(), Some(file(ROOT, "q", 2)));
-    trees.set_local("Q".into(), local(file(ROOT, "q", 2), 71));
-    trees.set_remote("Q".into(), remote(file(ROOT, "a", 2)));
-    trees.set_synced("P".into(), Some(file(ROOT, "p", 3)));
-    let parked = LocalNode {
-        parked: true,
-        ..local(file(ROOT, "p", 3), 72)
-    };
-    trees.set_local("P".into(), parked);
-    trees.set_remote("P".into(), remote(file(ROOT, "a", 3)));
-    trees.settle(commits.aliases());
-    let residue = observed_residue(&trees, &commits);
-    assert!(!commits.settle_merge_residue(&mut trees, &mut ids, NOW, &residue));
-    let planned = plan_beside(&trees, &mut ids, &residue);
-    assert!(
-        matches!(&planned[..], [record] if record.node == "P"
-            && record.after.as_ref().is_some_and(|after| after.name == "p")),
-        "{planned:?}"
-    );
-    assert_eq!(
-        merge_report(&trees, &residue).get(&NodeId::from("Q")),
-        Some(&Stuck::HeldBy("X".into()))
-    );
+    for merged_excluded_too in [false, true] {
+        let (mut trees, mut commits, mut ids) = merged_beside_a_trashed_folder(vec![]);
+        if merged_excluded_too {
+            trees.set_rules(&AT_ROOT, Source::Koiignore, rules("*.txt\n/A/\n"));
+        }
+        trees.set_synced("X".into(), Some(dir(ROOT, "a")));
+        trees.set_local("X".into(), local(dir(ROOT, "a"), 70));
+        trees.set_remote("X".into(), remote(dir(ROOT, "x.txt")));
+        trees.set_synced("Q".into(), Some(file(ROOT, "q", 2)));
+        trees.set_local("Q".into(), local(file(ROOT, "q", 2), 71));
+        trees.set_remote("Q".into(), remote(file(ROOT, "a", 2)));
+        trees.set_synced("P".into(), Some(file(ROOT, "p", 3)));
+        let parked = LocalNode {
+            parked: true,
+            ..local(file(ROOT, "p", 3), 72)
+        };
+        trees.set_local("P".into(), parked);
+        trees.set_remote("P".into(), remote(file(ROOT, "a", 3)));
+        trees.settle(commits.aliases());
+        assert_eq!(trees.excluded(&"m1".into()), merged_excluded_too);
+        let residue = observed_residue(&trees, &commits);
+        assert!(!commits.settle_merge_residue(&mut trees, &mut ids, NOW, &residue));
+        let planned = plan_beside(&trees, &mut ids, &residue);
+        assert!(
+            matches!(&planned[..], [record] if record.node == "P"
+                && record.after.as_ref().is_some_and(|after| after.name == "p")),
+            "{planned:?}"
+        );
+        let held = match merged_excluded_too {
+            false => Stuck::HeldBy("X".into()),
+            true => Stuck::Behind("m1".into()),
+        };
+        assert_eq!(
+            merge_report(&trees, &residue).get(&NodeId::from("Q")),
+            Some(&held)
+        );
+    }
 }

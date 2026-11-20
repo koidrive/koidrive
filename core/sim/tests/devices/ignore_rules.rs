@@ -1714,3 +1714,71 @@ fn a_swap_at_a_merged_folders_name_key_keeps_both_folders_in_place() {
         assert_eq!(report.get(&id), Some(&Stuck::Behind(merged.clone())));
     }
 }
+
+#[test]
+fn a_parked_file_goes_home_past_an_excluded_folder_when_its_exact_server_name_is_a_merged_folder() {
+    let mut world = refused_beside_a(None);
+    let merged = reported_merge(&world);
+    world.phase(2, &[(1, file("b")), (1, file("ß"))]).unwrap();
+    let excluded = held_at(&world, 0, &["a"]).unwrap();
+    let a = target(&world, 1, &["a"]);
+    let b = target(&world, 1, &["b"]);
+    let sharp = target(&world, 1, &["ß"]);
+    let mut steps = vec![
+        (1, rename(b, 0, "É")),
+        (1, rename(sharp, 0, "b")),
+        (1, rename(b, 0, "ß")),
+    ];
+    steps.extend(commit(1));
+    steps.extend([(0, DELIVER); 8]);
+    world.run(3, &steps).unwrap();
+    world.run(3, &[(0, EFFECT)]).unwrap();
+    let [park] = world.devices[0].engine.effects.in_flight() else {
+        panic!("expected one park for the swap");
+    };
+    assert!(
+        matches!(
+            park.effect,
+            Effect::Move {
+                to: koidrive_engine::effects::Location::Parked(_),
+                ..
+            }
+        ),
+        "{park:?}"
+    );
+    let parked = park.node.clone();
+    let home = park.after.as_ref().unwrap().name.clone();
+    let old_ino = ino_at(&world, 0, &[&home]);
+    let other = if home == "b" {
+        "ß"
+    } else {
+        assert_eq!(home, "ß");
+        "b"
+    };
+    let p = target(&world, 1, &[other]);
+    let d = target(&world, 1, &[&home]);
+    world.run(3, &[(0, EFFECT)]).unwrap();
+    assert!(parked_ids_on(&world, 0).contains(&parked));
+    let mut steps = vec![
+        (1, rename(a, 0, "c.txt")),
+        (1, rename(p, 0, "A")),
+        (1, rename(d, 0, other)),
+    ];
+    steps.extend(commit(1));
+    steps.extend([(0, DELIVER); 8]);
+    world.run(4, &steps).unwrap();
+    assert_eq!(live_node_at(&world, &["A"]), Some(parked.to_string()));
+    assert_eq!(held_at(&world, 0, &["a"]), Some(excluded.clone()));
+    assert!(world.devices[0].engine.trees.excluded(&excluded));
+    assert_eq!(
+        world.reported_problems(0).get(&merged),
+        Some(&Stuck::MergedInto(parked.clone()))
+    );
+    world.run(4, &[(0, EFFECT), (0, EFFECT)]).unwrap();
+    assert_eq!(
+        world.devices[0].disk.child(&Place::Root, &home),
+        Some(old_ino),
+        "the excluded folder at the server key should send the parked file back to its free home: {:?}",
+        world.reported_problems(0)
+    );
+}
