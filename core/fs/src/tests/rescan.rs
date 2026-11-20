@@ -1621,3 +1621,70 @@ fn a_file_moved_into_a_sibling_renamed_onto_the_carried_path_is_not_removed() {
         "{changes:?}"
     );
 }
+
+#[cfg(target_os = "macos")]
+#[test]
+fn a_sibling_renamed_onto_a_carried_path_renaming_a_child_inside_the_deferred_sibling_keeps_the_hold()
+ {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    let mut snapshot = sibling_fixture(root, true);
+    fs::rename(root.join("a"), root.join("b")).unwrap();
+    fs::rename(root.join("b/x"), root.join("c/x")).unwrap();
+    fs::rename(root.join("b/y"), root.join("b/x")).unwrap();
+    fs::rename(root.join("b/x/inner"), root.join("b/x/other")).unwrap();
+    let first = rescan_with_x_moving(&mut snapshot, root, "b");
+    assert!(
+        !first.changes.iter().any(
+            |change| matches!(change, Change::Removed { path, .. } if path == Path::new("a/x"))
+        ),
+        "{first:?}"
+    );
+    let changes = settle_and_compare(&mut snapshot, root, first);
+    assert!(
+        changes.contains(&renamed_change("b/x", "c/w", EntryKind::File)),
+        "{changes:?}"
+    );
+    assert!(
+        changes.contains(&renamed_change("b/y/inner", "b/x/other", EntryKind::File)),
+        "{changes:?}"
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn a_sibling_renamed_onto_a_carried_path_a_file_still_moving_on_the_follow_up_rescan_is_not_deleted()
+ {
+    for folder in [false, true] {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let mut snapshot = sibling_fixture(root, folder);
+        fs::rename(root.join("a"), root.join("b")).unwrap();
+        fs::rename(root.join("b/x"), root.join("c/x")).unwrap();
+        fs::rename(root.join("b/y"), root.join("b/x")).unwrap();
+        let first = rescan_with_x_moving(&mut snapshot, root, "b");
+        assert_eq!(first.changes, [renamed_change("a", "b", EntryKind::Dir)]);
+        let mut fired = false;
+        let second = snapshot
+            .rescan_with(root, first.unsettled, None, &mut |cut| {
+                if matches!(cut, Cut::Located(at) if at == Path::new("c/w")) && !fired {
+                    fs::rename(root.join("c/w"), root.join("c/z")).unwrap();
+                    fired = true;
+                }
+            })
+            .unwrap();
+        assert!(fired, "{second:?}");
+        let early = second.changes.clone();
+        assert!(
+            !early
+                .iter()
+                .any(|change| matches!(change, Change::Removed { .. })),
+            "{second:?}"
+        );
+        let changes = settle_and_compare(&mut snapshot, root, second);
+        assert!(
+            changes.contains(&renamed_change("b/x", "c/z", EntryKind::File)),
+            "{changes:?}"
+        );
+    }
+}

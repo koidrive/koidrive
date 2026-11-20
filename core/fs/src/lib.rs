@@ -2398,8 +2398,13 @@ impl Snapshot {
             let mut next = 0;
             while let Some(target) = targets.get(next).cloned() {
                 next += 1;
-                for &(from, to) in &moves {
-                    if !to.starts_with(&target) || put_back.iter().any(|(_, put, _)| *put == from) {
+                let mut onto: Vec<(&Path, &Path)> = (moves.iter())
+                    .filter(|(_, to)| to.starts_with(&target))
+                    .copied()
+                    .collect();
+                onto.sort_by_key(|(from, _)| from.components().count());
+                for (from, to) in onto {
+                    if (put_back.iter()).any(|(_, put, _)| from.starts_with(put)) {
                         continue;
                     }
                     let back = carrier
