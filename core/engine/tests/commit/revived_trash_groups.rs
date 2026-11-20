@@ -1103,3 +1103,273 @@ fn a_rename_out_of_the_trash_the_server_renamed_and_lost_is_sent_again() {
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
     assert_eq!(ops(&commit), [mv("f", "p", "b")]);
 }
+
+#[test]
+fn a_parked_folder_another_device_trashed_comes_back_only_with_what_the_rules_keep_in_it() {
+    let revive = mv("p", ROOT, "ß");
+    let create = op::Op::CreateDir(proto::CreateDir {
+        node_id: "c".into(),
+        parent_id: "p".into(),
+        name: "c.txt".into(),
+        ..Default::default()
+    });
+    for (child, sent) in [
+        (None, vec![]),
+        (Some("c.tmp"), vec![]),
+        (Some("c.txt"), vec![revive, create]),
+    ] {
+        let mut rows = vec![
+            synced("s", dir(ROOT, "ss")),
+            (
+                "p",
+                Some(dir(ROOT, "ß")),
+                None,
+                Some(trashed(dir(ROOT, "ß"))),
+            ),
+        ];
+        rows.extend(child.map(|name| ("c", Some(dir("p", name)), None, None)));
+        let mut trees = trees(&rows);
+        trees.set_local(
+            "p".into(),
+            LocalNode {
+                parked: true,
+                ..local(dir(ROOT, "ß"), 2)
+            },
+        );
+        trees.set_rules(
+            &[] as &[&str],
+            koidrive_engine::ignore::Source::Koiignore,
+            Some(RuleFile::parse(b"*.tmp\n")),
+        );
+        trees.settle(&Default::default());
+        let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+        let commit = build(&mut commits, &mut trees, &mut ids);
+        assert_eq!(
+            commit.as_ref().map(ops).unwrap_or_default(),
+            sent,
+            "{child:?}"
+        );
+    }
+}
+
+fn trashed_where_held(rows: &[Row]) -> (Trees, Option<Vec<op::Op>>, Vec<Effect>) {
+    let mut rows = rows.to_vec();
+    rows.push((
+        "p",
+        Some(dir(ROOT, "p")),
+        None,
+        Some(trashed(dir(ROOT, "p"))),
+    ));
+    let mut trees = trees(&rows);
+    trees.set_rules(
+        &[] as &[&str],
+        koidrive_engine::ignore::Source::Koiignore,
+        Some(RuleFile::parse(b"*.tmp\n")),
+    );
+    trees.settle(&Default::default());
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    let sent = build(&mut commits, &mut trees, &mut ids).map(|commit| ops(&commit));
+    let effects = effects_for(&mut trees.clone(), &mut ids, "p");
+    (trees, sent, effects)
+}
+
+#[test]
+fn a_folder_another_device_trashed_where_this_device_holds_it_goes_to_the_local_trash() {
+    let (_, sent, effects) = trashed_where_held(&[]);
+    assert_eq!(sent, None);
+    assert!(
+        matches!(&effects[..], [Effect::RemoveDir { .. }]),
+        "{effects:?}"
+    );
+}
+
+#[test]
+fn a_new_file_in_a_folder_another_device_trashed_where_this_device_holds_it_brings_the_folder_back()
+{
+    let (_, sent, _) = trashed_where_held(&[("c", Some(file("p", "c.txt", 1)), None, None)]);
+    let create = op::Op::CreateFile(proto::CreateFile {
+        made_over: Vec::new(),
+        source_version_id: String::new(),
+        node_id: "c".into(),
+        parent_id: "p".into(),
+        name: "c.txt".into(),
+        content: Some(content(1)),
+        ..Default::default()
+    });
+    assert_eq!(sent, Some(vec![mv("p", ROOT, "p"), create]));
+}
+
+#[test]
+fn a_file_another_device_trashed_where_this_device_holds_it_with_other_content_is_uploaded_and_brought_back()
+ {
+    let (_, sent, _) = trashed_where_held(&[(
+        "f",
+        Some(file(ROOT, "f", 2)),
+        None,
+        Some(trashed(file(ROOT, "f", 1))),
+    )]);
+    let sent = sent.unwrap();
+    assert!(
+        sent.contains(&mv("f", ROOT, "f")) && uploads(&sent, 2),
+        "{sent:?}"
+    );
+}
+
+#[test]
+fn a_folder_another_device_trashed_where_this_device_holds_only_excluded_entries_is_kept() {
+    let (trees, sent, _) = trashed_where_held(&[("c", Some(file("p", "c.tmp", 1)), None, None)]);
+    assert_eq!(sent, None);
+    let (mut effects, mut ids) = (Effects::default(), IdGen::new(2));
+    let [removal] = effects.plan(&trees, None, &mut ids, NOW, BatchLimit::ONE) else {
+        panic!("one removal is planned");
+    };
+    assert_eq!(removal.node, "p");
+    let effect = removal.effect_id.clone();
+    let held = [("c.tmp", Some(Kind::File))];
+    assert!(effects.keeps(&trees, None, &Default::default(), &effect, &held));
+}
+
+#[test]
+fn a_folder_another_device_trashed_where_this_device_holds_it_waits_for_the_question_that_holds_it()
+{
+    use koidrive_engine::question::{Held, Question, QuestionKind, RecoveryGroup};
+    let mut trees = trees(&[(
+        "p",
+        Some(dir(ROOT, "p")),
+        None,
+        Some(trashed(dir(ROOT, "p"))),
+    )]);
+    let question = Question {
+        id: "q".into(),
+        asked_at_ms: NOW,
+        kind: QuestionKind::Recovery {
+            group: RecoveryGroup::ChangedOnThisDevice,
+            sent_in: None,
+            cause: None,
+        },
+        held: [(
+            "p".into(),
+            Held {
+                members: [("p".into(), None)].into(),
+                files: 0,
+            },
+        )]
+        .into(),
+        answer: None,
+        shown: Default::default(),
+        frozen: None,
+    };
+    let state = CommitsState {
+        questions: vec![question],
+        ..Default::default()
+    };
+    let mut commits = Commits::from_state(state).unwrap();
+    commits.hold(&mut trees);
+    trees.settle(commits.aliases());
+    let mut ids = IdGen::new(1);
+    assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
+    assert_eq!(effects_for(&mut trees.clone(), &mut ids, "p"), []);
+    let [asked] = commits.questions() else {
+        panic!("{:?}", commits.questions());
+    };
+    let asked = asked.id.clone();
+    assert!(
+        commits.decide(&mut trees, &asked, Answer::Discard),
+        "{:?}",
+        commits.questions()
+    );
+    trees.settle(commits.aliases());
+    assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
+    let effects = effects_for(&mut trees, &mut ids, "p");
+    assert!(
+        matches!(&effects[..], [Effect::RemoveDir { .. }]),
+        "{effects:?}"
+    );
+}
+
+fn with_state(trees: &mut Trees, edit: impl FnOnce(&mut TreesState)) {
+    let mut state = trees.state();
+    edit(&mut state);
+    trees.restore(state).unwrap();
+    trees.rules_scanned();
+    trees.settle(&Default::default());
+}
+
+#[test]
+fn a_parked_folder_another_device_renamed_and_trashed_goes_to_the_local_trash() {
+    let mut trees = trees(&[
+        synced("s", dir(ROOT, "ss")),
+        (
+            "p",
+            Some(dir(ROOT, "ß")),
+            Some(dir(ROOT, "ß")),
+            Some(trashed(dir(ROOT, "renamed"))),
+        ),
+    ]);
+    trees.set_synced("p".into(), None);
+    trees.set_local(
+        "p".into(),
+        LocalNode {
+            parked: true,
+            ..local(dir(ROOT, "ß"), 2)
+        },
+    );
+    trees.settle(&Default::default());
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
+    let effects = effects_for(&mut trees, &mut ids, "p");
+    assert!(
+        matches!(&effects[..], [Effect::RemoveDir { .. }]),
+        "{effects:?}"
+    );
+}
+
+#[test]
+fn a_node_its_user_moves_back_to_a_place_the_server_held_it_at_before_is_brought_back() {
+    let mut trees = trees(&[(
+        "f",
+        Some(file(ROOT, "old", 1)),
+        None,
+        Some(trashed(file(ROOT, "new", 1))),
+    )]);
+    with_state(&mut trees, |state| {
+        let old = koidrive_engine::state::Agreed {
+            rev: 1,
+            parent: ROOT.into(),
+            name: "old".into(),
+            trash_group: None,
+        };
+        state.past_positions.insert("f".into(), vec![old]);
+    });
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    let sent = build(&mut commits, &mut trees, &mut ids)
+        .map(|commit| ops(&commit))
+        .unwrap_or_default();
+    assert!(sent.contains(&mv("f", ROOT, "old")), "{sent:?}");
+}
+
+#[test]
+fn a_parked_folder_its_user_moved_before_parking_is_brought_back_when_another_device_trashes_it() {
+    let mut trees = trees(&[(
+        "p",
+        Some(dir(ROOT, "moved")),
+        Some(dir(ROOT, "p")),
+        Some(trashed(dir(ROOT, "p"))),
+    )]);
+    trees.set_synced("p".into(), None);
+    trees.set_local(
+        "p".into(),
+        LocalNode {
+            parked: true,
+            ..local(dir(ROOT, "moved"), 2)
+        },
+    );
+    trees.settle(&Default::default());
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    let effects = effects_for(&mut trees, &mut ids, "p");
+    assert!(matches!(&effects[..], [Effect::Move { .. }]), "{effects:?}");
+    let sent = build(&mut commits, &mut trees, &mut ids)
+        .map(|commit| ops(&commit))
+        .unwrap_or_default();
+    assert!(sent.contains(&mv("p", ROOT, "moved")), "{sent:?}");
+}

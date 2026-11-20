@@ -796,8 +796,11 @@ impl Effects {
                 let mut entry = folder.clone();
                 entry.push(name);
                 kind.is_none_or(|kind| trees.ignores(&entry, kind))
-                    || (trees.local_holders(&record.node, name))
-                        .any(|id| trees.under_kept_entry(id) || trees.left_out_on_the_server(id))
+                    || (trees.local_holders(&record.node, name)).any(|id| {
+                        trees.under_kept_entry(id)
+                            || trees.left_out_on_the_server(id)
+                            || trees.excluded(id)
+                    })
             })
     }
 

@@ -1,0 +1,16 @@
+class = "A"
+issue = "GUN-1471"
+tests = [
+  "a_first_link_discard_keeps_a_folder_the_user_changes_after_the_server_drops_part_of_it",
+  "a_first_link_discard_takes_along_only_the_server_entries_the_user_leaves_alone",
+]
+message = '''<id> is brought back from the server's trash with no change its user made in or below it and no move above it in the same commit at \S+\.rs:<line>\.'''
+examples = [
+  "01a1c2c0-39a0-7c9f-92dd-37ded7172a70 is brought back from the server's trash with no change its user made in or below it and no move above it in the same commit at core/sim/tests/engine_sync/common.rs:1897.",
+]
+cases = [
+  "1da71c778fcc",
+  "5590068d305f",
+  "fe4d630c841c",
+]
+

@@ -576,6 +576,7 @@ struct Device {
     rules: Rules,
     touched: BTreeSet<NodeId>,
     acted: BTreeSet<NodeId>,
+    acked: BTreeSet<NodeId>,
     removed_from: BTreeMap<NodeId, NodeId>,
     kept_back: BTreeSet<NodeId>,
     relocated: BTreeMap<NodeId, Relocation>,
@@ -610,6 +611,7 @@ impl Device {
             rules: Rules::default(),
             touched: BTreeSet::new(),
             acted: BTreeSet::new(),
+            acked: BTreeSet::new(),
             removed_from: BTreeMap::new(),
             kept_back: BTreeSet::new(),
             relocated: BTreeMap::new(),
@@ -691,7 +693,7 @@ impl Device {
                 chunks: Box::default(),
             };
             let id = NodeId::from(self.ids.uuid_v7(NOW as u64));
-            self.acted.insert(id.clone());
+            self.acted_on(id.clone());
             self.trees.set_local_changed(id, node);
         }
         self.rescan();
@@ -750,7 +752,7 @@ impl Device {
             parked: false,
             chunks: entry.chunks,
         };
-        self.acted.insert(id.clone());
+        self.acted_on(id.clone());
         self.off_disk.remove(&id);
         self.trees.set_local_changed(id.clone(), node);
         let mut above = left;
@@ -764,7 +766,7 @@ impl Device {
                 .insert(folder.clone(), above.clone().expect("lost folder in L"));
             self.kept_back.remove(&folder);
             self.relocated.remove(&folder);
-            self.acted.insert(folder.clone());
+            self.acted_on(folder.clone());
             self.trees.remove_local(&folder);
         }
         id
@@ -819,6 +821,34 @@ impl Device {
             .filter(|id| visible(&self.trees, id))
             .collect();
         self.trees.listed(&moved, Pending::default());
+    }
+
+    fn acted_on(&mut self, id: NodeId) {
+        self.acked.remove(&id);
+        self.acted.insert(id);
+    }
+
+    fn acknowledged(&mut self, commit: &Commit, results: &[OpResult]) {
+        for (op, outcome) in commit.ops.iter().zip(results) {
+            let id = match &op.op {
+                Some(op::Op::Delete(delete)) => &delete.node_id,
+                Some(op::Op::CreateFile(create)) => &create.node_id,
+                Some(op::Op::CreateDir(create)) => &create.node_id,
+                Some(op::Op::Move(moved)) => &moved.node_id,
+                Some(op::Op::UpdateContent(update)) => &update.node_id,
+                _ => continue,
+            };
+            use op_result::Code;
+            let taken = [
+                Code::Applied,
+                Code::AppliedRenamed,
+                Code::ConflictCopy,
+                Code::MergedInto,
+            ];
+            if taken.iter().any(|code| outcome.code == *code as i32) {
+                self.acked.insert(NodeId::from(id));
+            }
+        }
     }
 
     /// One change the user makes on disk, as the next rescan reports it. The user sees no parked
@@ -892,7 +922,7 @@ impl Device {
             below.push(name.to_owned());
             self.move_to_ignored_disk(&id, holder.clone(), below);
             self.touched.insert(id.clone());
-            self.acted.insert(id.clone());
+            self.acted_on(id.clone());
             self.trees.ignore_local(&id);
             return;
         }
@@ -949,7 +979,7 @@ impl Device {
                     chunks,
                 };
                 let id = NodeId::from(self.ids.uuid_v7(NOW as u64));
-                self.acted.insert(id.clone());
+                self.acted_on(id.clone());
                 self.trees.set_local_changed(id, node);
             }
             (2, Some((id, mut node))) if node.shape.kind == Kind::File => {
@@ -959,7 +989,7 @@ impl Device {
                 let written = Some(content(1, action.text));
                 if node.content() != written {
                     self.touched.insert(id.clone());
-                    self.acted.insert(id.clone());
+                    self.acted_on(id.clone());
                 }
                 (node.shape.content, node.chunks) = split(written);
                 self.trees.set_local_changed(id, node);
@@ -974,7 +1004,7 @@ impl Device {
                         node.shape.name = name.into();
                         if before.parent != node.shape.parent || before.name != node.shape.name {
                             self.touched.insert(id.clone());
-                            self.acted.insert(id.clone());
+                            self.acted_on(id.clone());
                             self.relocate(&id, &before, &node.shape);
                         }
                         self.trees.set_local_changed(id, node);
@@ -1022,11 +1052,11 @@ impl Device {
                     !doomed.contains(holder) && !only_in_l.contains(holder)
                 });
                 for folder in &kept {
-                    self.acted.insert(folder.clone());
+                    self.acted_on(folder.clone());
                     self.trees.ignore_local(folder);
                 }
                 for folder in &only_in_l {
-                    self.acted.insert(folder.clone());
+                    self.acted_on(folder.clone());
                     self.trees.keep_lost_local(folder);
                 }
                 self.off_disk.extend(only_in_l);
@@ -1037,7 +1067,7 @@ impl Device {
                     }
                     self.kept_back.remove(&other);
                     self.relocated.remove(&other);
-                    self.acted.insert(other.clone());
+                    self.acted_on(other.clone());
                     self.trees.remove_local(&other);
                 }
             }
@@ -1844,6 +1874,41 @@ fn sent_move_check(
     Ok(())
 }
 
+fn revive_check(
+    device: &Device,
+    moved: &BTreeSet<NodeId>,
+    id: &NodeId,
+) -> Result<(), TestCaseError> {
+    let trees = &device.trees;
+    let changed = |node: &NodeId| {
+        (device.acted.contains(node) || device.touched.contains(node))
+            && !device.acked.contains(node)
+    };
+    let parent = |node: &NodeId| match trees.local().get(node) {
+        Some(local) => Some(local.shape.parent.clone()),
+        None => trees
+            .remote()
+            .get(node)
+            .map(|remote| remote.shape.parent.clone()),
+    };
+    let path = |node: &NodeId| {
+        let mut path = vec![node.clone()];
+        while let Some(next) = parent(path.last().unwrap()).filter(|next| !path.contains(next)) {
+            path.push(next);
+        }
+        path
+    };
+    let below = (trees.local().iter())
+        .any(|(node, _)| changed(node) && !trees.excluded(node) && path(node).contains(id));
+    let above = path(id).iter().skip(1).any(|node| moved.contains(node));
+    prop_assert!(
+        below || above,
+        "{} is brought back from the server's trash with no change its user made in or below it and no move above it in the same commit",
+        id
+    );
+    Ok(())
+}
+
 fn placement_check(
     device: &Device,
     record: &koidrive_engine::effects::EffectRecord,
@@ -2566,6 +2631,12 @@ fn run_ignoring_answering_after(
             }
             continue;
         };
+        let moved: BTreeSet<NodeId> = (commit.ops.iter())
+            .filter_map(|op| match &op.op {
+                Some(op::Op::Move(moved)) => Some(NodeId::from(&moved.node_id)),
+                _ => None,
+            })
+            .collect();
         let mut sending = Vec::new();
         let mut positioned = Vec::new();
         for op in &commit.ops {
@@ -2593,6 +2664,11 @@ fn run_ignoring_answering_after(
                     id,
                     into
                 );
+            }
+            if let Some(op::Op::Move(_)) = &op.op
+                && (device.trees.remote().get(id)).is_some_and(|node| node.trashed)
+            {
+                revive_check(&device, &moved, id)?;
             }
             if let Some(op::Op::Move(moved)) = &op.op
                 && let Some(local) = device.trees.local().get(id).filter(|node| !node.parked)
@@ -2722,6 +2798,7 @@ fn run_ignoring_answering_after(
         }
         last_seq = result.seq;
         prop_assert!(commits.acknowledge(&mut device.trees, last_seq));
+        device.acknowledged(&commit, &result.results);
         due = true;
         if restores.is_empty() {
             continue;
