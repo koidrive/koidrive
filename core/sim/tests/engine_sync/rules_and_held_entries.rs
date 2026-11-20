@@ -714,26 +714,27 @@ fn a_server_file_deleted_from_a_taken_along_folder_is_judged_by_where_it_was_at_
 }
 
 #[test]
-fn a_server_entry_deleted_in_a_taken_along_folder_is_judged_by_the_discard_that_took_it_along() {
-    for (taken_first, changes_the_folder) in [(true, false), (false, true)] {
+fn a_server_entry_deleted_in_a_taken_along_folder_counts_only_if_the_folder_held_it_at_the_discard() {
+    for (at_discard, changes_the_folder) in [(Some("root"), false), (None, false), (Some("s"), true)] {
         let (mut device, kept_with, discarded) = a_file_in_a_taken_along_server_folder();
         let (g, s): (NodeId, NodeId) = ("g".into(), "s".into());
         let mut remote = device.trees.remote().get(&"f".into()).unwrap().clone();
         remote.shape.name = "g".into();
-        device.trees.set_remote(g.clone(), remote.clone());
-        let taken = [s.clone()];
-        device.note_taken_along(&taken[..usize::from(taken_first)]);
-        device.note_arrivals();
+        if let Some(parent) = at_discard {
+            remote.shape.parent = parent.into();
+            device.trees.set_remote(g.clone(), remote.clone());
+        }
+        device.note_taken_along([&s]);
         remote.shape.parent = s.clone();
+        remote.shape.name = "g2".into();
         device.trees.set_remote(g.clone(), remote);
-        device.note_arrivals();
-        device.note_taken_along(&taken[usize::from(taken_first)..]);
+        device.note_taken_along([]);
         device.acted.insert(g.clone());
         device.removed_from.insert(g, s.clone());
         assert_eq!(
             acted_below(&device, &s, &kept_with, &discarded),
             changes_the_folder,
-            "{taken_first}"
+            "{at_discard:?}"
         );
     }
 }
