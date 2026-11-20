@@ -663,6 +663,144 @@ fn is_gone(err: &io::Error) -> bool {
     ) || err.raw_os_error() == Some(rustix::io::Errno::LOOP.raw_os_error())
 }
 
+/// A walk of the scopes of a folder for the entries with some kinds and identities, carried on by [`Search::step`]
+/// within a budget. Each entry is stat'ed where its folder lists it, so no file is opened and no symbolic link is
+/// followed, and one folder is open at a time. A walk ends without an entry only once no folder it listed has changed
+/// since.
+#[derive(Debug)]
+pub struct Search {
+    wanted: Vec<Known>,
+    hits: Vec<Option<PathBuf>>,
+    covered: Vec<PathBuf>,
+    scopes: Vec<PathBuf>,
+    folders: Vec<PathBuf>,
+    absent: Vec<PathBuf>,
+    listed: BTreeMap<PathBuf, ([i128; 2], i128)>,
+    ticks: HashMap<u64, i128>,
+}
+
+impl Search {
+    pub fn new(wanted: Vec<Known>) -> Search {
+        Search {
+            hits: vec![None; wanted.len()],
+            wanted,
+            covered: Vec::new(),
+            scopes: Vec::new(),
+            folders: Vec::new(),
+            absent: Vec::new(),
+            listed: BTreeMap::new(),
+            ticks: HashMap::new(),
+        }
+    }
+
+    /// Looks at up to `budget` more entries, taking them from it, at or below `scopes` of the folder at `root`, adding
+    /// each scope that no earlier step covered. Returns where each wanted entry is, in order, once the walk has found
+    /// them all or ended, and `None` when the budget ran out or `stopped` held first. Fails when a folder there cannot
+    /// be listed, since an entry may be in it.
+    pub fn step(
+        &mut self,
+        root: &Path,
+        scopes: &[&PathBuf],
+        budget: &mut usize,
+        stopped: &dyn Fn() -> bool,
+    ) -> io::Result<Option<Vec<Option<PathBuf>>>> {
+        for scope in scopes {
+            if !(self.covered.iter()).any(|covered| scope.starts_with(covered)) {
+                self.covered.push((*scope).clone());
+                self.scopes.push((*scope).clone());
+            }
+        }
+        let root = open_root(root)?;
+        while let Some(scope) = self.scopes.pop() {
+            if self.probe(root.as_fd(), scope)? {
+                return Ok(Some(std::mem::take(&mut self.hits)));
+            }
+        }
+        while let Some(folder) = self.folders.pop() {
+            if *budget == 0 || stopped() {
+                self.folders.push(folder);
+                return Ok(None);
+            }
+            let Some((dir, _)) = open_attached(root.as_fd(), &folder, &mut |_| {})? else {
+                continue;
+            };
+            let seen = now_ns();
+            let bound = stat_fd(dir.as_fd())?;
+            (self.listed).insert(folder.clone(), ([bound.mtime_ns, bound.ctime_ns], seen));
+            for name in list(dir.as_fd())? {
+                *budget = budget.saturating_sub(1);
+                let stat = match stat_at(dir.as_fd(), &name) {
+                    Err(err) if is_gone(&err) => continue,
+                    stat => stat?,
+                };
+                let at = folder.join(&name);
+                if self.hit(&stat, &at) {
+                    return Ok(Some(std::mem::take(&mut self.hits)));
+                }
+                if stat.file_type == FileType::Directory && !self.listed.contains_key(&at) {
+                    self.folders.push(at);
+                }
+            }
+        }
+        for (folder, (times, seen)) in std::mem::take(&mut self.listed) {
+            let Some((dir, _)) = open_attached(root.as_fd(), &folder, &mut |_| {})? else {
+                continue;
+            };
+            let now = stat_fd(dir.as_fd())?;
+            let tick = *(self.ticks)
+                .entry(now.dev)
+                .or_insert_with(|| timestamp_tick(dir.as_fd()));
+            if [now.mtime_ns, now.ctime_ns] == times
+                && (times.iter()).all(|at| seen >= at + tick_of(*at, Some(tick)))
+            {
+                self.listed.insert(folder, (times, seen));
+            } else {
+                self.folders.push(folder);
+            }
+        }
+        for scope in std::mem::take(&mut self.absent) {
+            if self.probe(root.as_fd(), scope)? {
+                return Ok(Some(std::mem::take(&mut self.hits)));
+            }
+        }
+        if !self.folders.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(std::mem::take(&mut self.hits)))
+    }
+
+    fn probe(&mut self, root: BorrowedFd<'_>, scope: PathBuf) -> io::Result<bool> {
+        let (Some(parent), Some(name)) = (scope.parent(), scope.file_name()) else {
+            self.folders.push(scope);
+            return Ok(false);
+        };
+        let stat = match open_attached(root, parent, &mut |_| {})? {
+            None => None,
+            Some((dir, _)) => match stat_at(dir.as_fd(), name) {
+                Err(err) if is_gone(&err) => None,
+                stat => Some(stat?),
+            },
+        };
+        match stat {
+            Some(stat) if self.hit(&stat, &scope) => return Ok(true),
+            Some(stat) if stat.file_type == FileType::Directory => self.folders.push(scope),
+            _ => self.absent.push(scope),
+        }
+        Ok(false)
+    }
+
+    fn hit(&mut self, stat: &Stat, at: &Path) -> bool {
+        if let Some(entry) = stat.entry() {
+            for (known, hit) in self.wanted.iter().zip(&mut self.hits) {
+                if hit.is_none() && entry.kind == known.kind && entry.id.same(&known.id) {
+                    *hit = Some(at.to_path_buf());
+                }
+            }
+        }
+        self.hits.iter().all(Option::is_some)
+    }
+}
+
 fn list(dir: BorrowedFd<'_>) -> io::Result<BTreeSet<OsString>> {
     let mut names = BTreeSet::new();
     for item in rustix::fs::Dir::read_from(dir)? {

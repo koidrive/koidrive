@@ -198,13 +198,29 @@ pub(crate) struct Requests(u64);
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Answers {
     pub through: Requests,
-    pub open: Vec<Requests>,
+    pub open: Vec<(Requests, Vec<PathBuf>)>,
 }
 
 impl Answers {
     fn covers(&self, request: Requests) -> bool {
-        request <= self.through && !self.open.contains(&request)
+        request <= self.through && !self.open.iter().any(|(open, _)| *open == request)
     }
+
+    fn narrow(&self, requested: &mut Vec<(Requests, Vec<PathBuf>)>) {
+        requested.retain_mut(|(request, paths)| {
+            if let Some((_, left)) = self.open.iter().find(|(open, _)| open == request) {
+                *paths = within(left, paths);
+            }
+            !self.covers(*request)
+        });
+    }
+}
+
+fn within(scopes: &[PathBuf], of: &[PathBuf]) -> Vec<PathBuf> {
+    (scopes.iter())
+        .filter(|scope| of.iter().any(|at| scope.starts_with(at)))
+        .cloned()
+        .collect()
 }
 
 /// The epoch read before a batch's scans began.
@@ -265,14 +281,14 @@ impl Sections {
         Ok(observation.map(|observation| {
             let unanswered = observer.unanswered();
             open.retain_mut(|(_, scopes)| {
-                scopes.retain(|scope| unanswered.contains(scope));
+                *scopes = within(unanswered, scopes);
                 !scopes.is_empty()
             });
             Batch {
                 stamp,
                 answered: Answers {
                     through,
-                    open: open.iter().map(|(request, _)| *request).collect(),
+                    open: open.clone(),
                 },
                 observation,
                 unread: observer.unread(),
@@ -784,8 +800,8 @@ impl Disk {
         engine.rules(observation.rules, observation.all_rules);
         self.rescan_after
             .retain(|requested| !answered.covers(*requested));
-        (self.unscanned.effects).retain(|(requested, _)| !answered.covers(*requested));
-        (self.unscanned.dropped).retain(|(requested, _)| !answered.covers(*requested));
+        answered.narrow(&mut self.unscanned.effects);
+        answered.narrow(&mut self.unscanned.dropped);
         if stamp.0 < self.forgotten {
             tracing::debug!(
                 space_id = self.space_id.as_str(),
@@ -896,6 +912,11 @@ impl Disk {
     /// also when the scan found nothing, so the wait ends without a change on disk.
     pub fn awaits_scan(&self) -> bool {
         !self.unscanned.effects.is_empty()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn forget_sections(&mut self) {
+        self.forgotten = self.sections.epoch.fetch_add(2, Ordering::SeqCst) + 2;
     }
 
     #[cfg(test)]
