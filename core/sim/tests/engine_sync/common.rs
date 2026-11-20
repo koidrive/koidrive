@@ -578,6 +578,17 @@ struct Device {
     removed_from: BTreeMap<NodeId, NodeId>,
     kept_back: BTreeSet<NodeId>,
     relocated: BTreeMap<NodeId, Relocation>,
+    ignored: IgnoredDisk,
+    off_disk: BTreeSet<NodeId>,
+}
+
+type DiskPath = (NodeId, Vec<String>);
+type IgnoredDisk = BTreeMap<DiskPath, DiskEntry>;
+
+struct DiskEntry {
+    kind: Kind,
+    content: Option<Content>,
+    original: Option<(NodeId, FileIdentity)>,
 }
 
 struct Relocation {
@@ -586,6 +597,23 @@ struct Relocation {
 }
 
 impl Device {
+    fn new(trees: Trees) -> Self {
+        Self {
+            trees,
+            ids: IdGen::new(7),
+            inos: 0,
+            fresh_dir_names: false,
+            rules: Rules::default(),
+            touched: BTreeSet::new(),
+            acted: BTreeSet::new(),
+            removed_from: BTreeMap::new(),
+            kept_back: BTreeSet::new(),
+            relocated: BTreeMap::new(),
+            ignored: IgnoredDisk::new(),
+            off_disk: BTreeSet::new(),
+        }
+    }
+
     fn relocate(
         &mut self,
         id: &NodeId,
@@ -638,7 +666,108 @@ impl Device {
         self.rescan();
     }
 
+    fn find_ignored_entries_let_in(&mut self) -> bool {
+        let mut found = BTreeMap::new();
+        let mut placed_any = false;
+        for ((anchor, path), entry) in std::mem::take(&mut self.ignored) {
+            let (holder, depth) = (1..path.len())
+                .rev()
+                .find_map(|depth| {
+                    found
+                        .get(&(anchor.clone(), path[..depth].to_vec()))
+                        .map(|holder| (holder, depth))
+                })
+                .unwrap_or((&anchor, 0));
+            let below = path[depth..].to_vec();
+            if below.len() != 1
+                || self
+                    .disk_path(holder, &below)
+                    .is_none_or(|path| self.trees.ignores(&path, entry.kind))
+            {
+                self.ignored.insert((holder.clone(), below), entry);
+                continue;
+            }
+            let kind = entry.kind;
+            let placed = self.place_found(holder, &below[0], entry);
+            placed_any = true;
+            if kind == Kind::Dir {
+                found.insert((anchor, path), placed);
+            }
+        }
+        placed_any
+    }
+
+    fn place_found(&mut self, holder: &NodeId, name: &str, entry: DiskEntry) -> NodeId {
+        let original = entry.original.filter(|(id, _)| {
+            self.trees.local().get(id).is_some() && self.trees.recorded_local(id)
+        });
+        let (id, identity) = original
+            .unwrap_or_else(|| (NodeId::from(self.ids.uuid_v7(NOW as u64)), self.identity()));
+        let old = self.trees.local().get(&id);
+        let left = old.map(|node| node.shape.parent.clone());
+        let node = LocalNode {
+            left_out_when_placed: old.is_some_and(|node| node.left_out_when_placed),
+            content_from_server: old.is_some_and(|node| node.content_from_server)
+                && old.and_then(|node| node.shape.content.as_ref()) == entry.content.as_ref(),
+            shape: Shape {
+                parent: holder.clone(),
+                name: name.to_owned(),
+                kind: entry.kind,
+                content: entry.content,
+            },
+            identity,
+            parked: false,
+        };
+        self.acted.insert(id.clone());
+        self.off_disk.remove(&id);
+        self.trees.set_local_changed(id.clone(), node);
+        let mut above = left;
+        while let Some(folder) = above.filter(|folder| {
+            self.trees.lost_local().contains(folder)
+                && self.trees.local_children(folder).next().is_none()
+        }) {
+            above = (self.trees.local().get(&folder)).map(|node| node.shape.parent.clone());
+            self.off_disk.remove(&folder);
+            self.removed_from
+                .insert(folder.clone(), above.clone().expect("lost folder in L"));
+            self.kept_back.remove(&folder);
+            self.relocated.remove(&folder);
+            self.acted.insert(folder.clone());
+            self.trees.remove_local(&folder);
+        }
+        id
+    }
+
+    fn disk_path(&self, holder: &NodeId, below: &[String]) -> Option<Vec<String>> {
+        if *holder != self.trees.local().root && self.trees.local().get(holder).is_none() {
+            return None;
+        }
+        let mut path = local_path(&self.trees, holder);
+        path.extend_from_slice(below);
+        Some(path)
+    }
+
+    fn on_disk(&self, id: &NodeId) -> bool {
+        let local = self.trees.local();
+        let mut current = id;
+        for _ in 0..=local.len() {
+            if self.off_disk.contains(current) {
+                return false;
+            }
+            match local.get(current) {
+                Some(node) => current = &node.shape.parent,
+                None => return true,
+            }
+        }
+        false
+    }
+
     fn rescan(&mut self) {
+        self.find_ignored_entries_let_in();
+        self.list_folders();
+    }
+
+    fn list_folders(&mut self) {
         let local = self.trees.local();
         let folders: Vec<NodeId> = std::iter::once(local.root.clone())
             .chain(
@@ -651,6 +780,9 @@ impl Device {
     }
 
     fn list_moved(&mut self) {
+        if self.find_ignored_entries_let_in() {
+            self.list_folders();
+        }
         let moved: Vec<NodeId> = (self.trees.take_relist().into_iter())
             .filter(|id| visible(&self.trees, id))
             .collect();
@@ -670,7 +802,7 @@ impl Device {
         let local = self.trees.local();
         let nodes: Vec<(NodeId, LocalNode)> = local
             .iter()
-            .filter(|(id, _)| visible(&self.trees, id))
+            .filter(|(id, _)| visible(&self.trees, id) && self.on_disk(id))
             .map(|(id, node)| (id.clone(), node.clone()))
             .collect();
         let dirs: Vec<NodeId> = [root.clone()]
@@ -693,23 +825,54 @@ impl Device {
             },
             _ => action,
         };
-        let parent = dirs[action.parent % dirs.len()].clone();
+        let outside: Vec<&DiskPath> = if action.kind == 3 {
+            (self.ignored.iter())
+                .filter(|((holder, below), entry)| {
+                    entry.kind == Kind::Dir
+                        && entry.original.is_none()
+                        && self.disk_path(holder, below).is_some()
+                })
+                .map(|(path, _)| path)
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let destination = action.parent % (dirs.len() + outside.len());
         let unique = format!("local-{}", self.inos);
         let name = if action.kind == 0 && self.fresh_dir_names {
             unique.as_str()
         } else {
             NAMES[action.name]
         };
+        let target = (!nodes.is_empty()).then(|| nodes[action.target % nodes.len()].clone());
+        let unseen = |id: &NodeId, kind| self.trees.ignores(&local_path(&self.trees, id), kind);
+        if let Some((holder, below)) = destination.checked_sub(dirs.len()).map(|at| outside[at]) {
+            let Some((id, node)) = target else {
+                return;
+            };
+            if self.disk_name_taken(holder, below, name)
+                || unseen(&id, node.shape.kind)
+                || self.holds(&id, holder)
+            {
+                return;
+            }
+            let mut below = below.clone();
+            below.push(name.to_owned());
+            self.move_to_ignored_disk(&id, holder.clone(), below);
+            self.touched.insert(id.clone());
+            self.acted.insert(id.clone());
+            self.trees.ignore_local(&id);
+            return;
+        }
+        let parent = dirs[destination].clone();
         let taken = |id: Option<&NodeId>| {
             local.iter().any(|(other, n)| {
                 Some(other) != id
                     && !n.parked
                     && n.shape.parent == parent
                     && name_key(&n.shape.name) == name_key(name)
-            })
+            }) || self.disk_name_taken(&parent, &[], name)
         };
-        let target = (!nodes.is_empty()).then(|| nodes[action.target % nodes.len()].clone());
-        let unseen = |id: &NodeId, kind| self.trees.ignores(&local_path(&self.trees, id), kind);
         let into_ignored = parent != root && unseen(&parent, Kind::Dir);
         let lands_unseen = |kind| {
             let mut path = local_path(&self.trees, &parent);
@@ -723,6 +886,16 @@ impl Device {
                     _ => (Kind::File, Some(content(1, action.text))),
                 };
                 if lands_unseen(kind) {
+                    if kind == Kind::Dir && lands_unseen(Kind::File) {
+                        self.ignored.insert(
+                            (parent, vec![name.to_owned()]),
+                            DiskEntry {
+                                kind,
+                                content,
+                                original: None,
+                            },
+                        );
+                    }
                     return;
                 }
                 let shape = koidrive_engine::tree::Shape {
@@ -758,11 +931,6 @@ impl Device {
                 let kind = node.shape.kind;
                 match (unseen(&id, kind), lands_unseen(kind)) {
                     (true, true) => {}
-                    (false, true) if into_ignored => {
-                        self.touched.insert(id.clone());
-                        self.acted.insert(id.clone());
-                        self.trees.ignore_local(&id)
-                    }
                     _ => {
                         let before = node.shape.clone();
                         node.shape.parent = parent;
@@ -778,36 +946,53 @@ impl Device {
             }
             (4, Some((id, node))) if !unseen(&id, node.shape.kind) => {
                 let mut doomed = vec![id];
-                let mut held = Vec::new();
+                let (mut held, mut held_in_l) = (Vec::new(), Vec::new());
                 let mut next = 0;
                 while let Some(current) = doomed.get(next).cloned() {
                     for child in self.trees.local_children(&current) {
-                        match self.trees.ignored_local().contains(child) {
-                            true => held.push(child.clone()),
-                            false => doomed.push(child.clone()),
+                        if !self.on_disk(child) {
+                            held_in_l.push(current.clone());
+                        } else if self.trees.ignored_local().contains(child) {
+                            held.push(current.clone());
+                        } else {
+                            doomed.push(child.clone());
                         }
                     }
                     next += 1;
                 }
-                let mut kept = BTreeSet::new();
-                for node in &held {
-                    let mut above = self.trees.local().get(node).map(|n| n.shape.parent.clone());
-                    while let Some(folder) = above.filter(|folder| doomed.contains(folder)) {
-                        if !kept.insert(folder.clone()) {
-                            break;
+                let anchored = (self.ignored.iter())
+                    .filter(|((_, below), entry)| below.len() > 1 || entry.original.is_some())
+                    .map(|((holder, _), _)| holder.clone());
+                let up = |starts: Vec<NodeId>| {
+                    let mut folders = BTreeSet::new();
+                    for start in starts {
+                        let mut above = Some(start);
+                        while let Some(folder) = above.filter(|folder| doomed.contains(folder)) {
+                            if !folders.insert(folder.clone()) {
+                                break;
+                            }
+                            above =
+                                (self.trees.local().get(&folder)).map(|n| n.shape.parent.clone());
                         }
-                        above = self
-                            .trees
-                            .local()
-                            .get(&folder)
-                            .map(|n| n.shape.parent.clone());
                     }
-                }
-                doomed.retain(|node| !kept.contains(node));
+                    folders
+                };
+                let kept = up(held.into_iter().chain(anchored).collect());
+                let mut only_in_l = up(held_in_l);
+                only_in_l.retain(|folder| !kept.contains(folder));
+                doomed.retain(|node| !kept.contains(node) && !only_in_l.contains(node));
+                self.ignored.retain(|(holder, _), _| {
+                    !doomed.contains(holder) && !only_in_l.contains(holder)
+                });
                 for folder in &kept {
                     self.acted.insert(folder.clone());
                     self.trees.ignore_local(folder);
                 }
+                for folder in &only_in_l {
+                    self.acted.insert(folder.clone());
+                    self.trees.keep_lost_local(folder);
+                }
+                self.off_disk.extend(only_in_l);
                 for other in doomed.into_iter().rev() {
                     if let Some(node) = self.trees.local().get(&other) {
                         self.removed_from
@@ -820,6 +1005,51 @@ impl Device {
                 }
             }
             _ => {}
+        }
+    }
+
+    fn disk_name_taken(&self, holder: &NodeId, below: &[String], name: &str) -> bool {
+        let key = name_key(name);
+        (self.ignored.keys()).any(|(anchor, path)| {
+            anchor == holder
+                && path
+                    .split_last()
+                    .is_some_and(|(rest, parent)| parent == below && name_key(rest) == key)
+        })
+    }
+
+    fn move_to_ignored_disk(&mut self, id: &NodeId, holder: NodeId, below: Vec<String>) {
+        let local = self.trees.local();
+        let mut moved = BTreeMap::from([(id.clone(), below)]);
+        let mut next = vec![id.clone()];
+        while let Some(id) = next.pop() {
+            for child in self.trees.local_children(&id) {
+                if !self.on_disk(child) || local.get(child).is_some_and(|node| node.parked) {
+                    continue;
+                }
+                let mut below = moved[&id].clone();
+                below.push(local.get(child).expect("local child").shape.name.clone());
+                moved.insert(child.clone(), below);
+                next.push(child.clone());
+            }
+        }
+        self.ignored = (std::mem::take(&mut self.ignored).into_iter())
+            .map(|((anchor, path), entry)| match moved.get(&anchor) {
+                Some(to) => ((holder.clone(), [to.as_slice(), &path].concat()), entry),
+                None => ((anchor, path), entry),
+            })
+            .collect();
+        self.off_disk.extend(moved.keys().cloned());
+        for (id, below) in moved {
+            let node = local.get(&id).expect("moved node");
+            self.ignored.insert(
+                (holder.clone(), below),
+                DiskEntry {
+                    kind: node.shape.kind,
+                    content: node.shape.content.clone(),
+                    original: Some((id, node.identity)),
+                },
+            );
         }
     }
 
@@ -1691,18 +1921,8 @@ fn run_ignoring_answering_after(
     let (mut space, mut other) = seeded(seed);
     let root = space.space_id().to_owned();
     let history = space.history_id().to_owned();
-    let mut device = Device {
-        trees: Trees::new(root.clone()),
-        ids: IdGen::new(7),
-        inos: 0,
-        fresh_dir_names,
-        rules: Rules::default(),
-        touched: BTreeSet::new(),
-        acted: BTreeSet::new(),
-        removed_from: BTreeMap::new(),
-        kept_back: BTreeSet::new(),
-        relocated: BTreeMap::new(),
-    };
+    let mut device = Device::new(Trees::new(root.clone()));
+    device.fresh_dir_names = fresh_dir_names;
     for state in space.nodes().iter().filter(|n| n.node_id != root) {
         let (id, node) = RemoteNode::from_state(state).unwrap();
         if !node.trashed && first_link.is_none() {
@@ -2445,17 +2665,7 @@ fn run_ignoring_answering_after(
             id
         );
     }
-    let unsent = (device.trees.local().iter())
-        .filter(|(id, _)| device.trees.ignored(id) || waiting.contains(*id))
-        .map(|(_, node)| node.shape.content.clone());
-    let kept = written(
-        server
-            .iter()
-            .map(|(_, s)| s.clone().and_then(|s| s.content))
-            .chain(unsent),
-        1,
-    );
-    prop_assert!(local_writes.is_subset(&kept), "a local write was lost");
+    local_writes_check(&device, &server, &waiting, &local_writes)?;
     let kept = written(
         server
             .iter()
@@ -2484,6 +2694,33 @@ const CUTS: [Cut; 5] = [
     Cut::Answered,
     Cut::Effect,
 ];
+
+fn local_writes_check(
+    device: &Device,
+    server: &[(NodeId, Option<koidrive_engine::tree::Shape>)],
+    waiting: &BTreeSet<NodeId>,
+    local_writes: &BTreeSet<Vec<u8>>,
+) -> Result<(), TestCaseError> {
+    let unsent = (device.trees.local().iter())
+        .filter(|(id, _)| (device.trees.ignored(id) || waiting.contains(*id)) && device.on_disk(id))
+        .map(|(_, node)| node.shape.content.clone());
+    let in_ignored_folders = (device.ignored.iter())
+        .filter(|((holder, below), entry)| {
+            (device.disk_path(holder, below))
+                .is_some_and(|path| device.trees.ignores(&path, entry.kind))
+        })
+        .map(|(_, entry)| entry.content.clone());
+    let kept = written(
+        server
+            .iter()
+            .map(|(_, s)| s.clone().and_then(|s| s.content))
+            .chain(unsent)
+            .chain(in_ignored_folders),
+        1,
+    );
+    prop_assert!(local_writes.is_subset(&kept), "a local write was lost");
+    Ok(())
+}
 
 fn act_tracked(
     device: &mut Device,
