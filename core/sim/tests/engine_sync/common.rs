@@ -2018,7 +2018,9 @@ fn acted_below(
         (device.on_server_when_taken_along.get(id))
             .and_then(|baseline| baseline.get(at))
             .cloned()
-            .or_else(|| (kept_with.get(at).or_else(|| discarded.get(at))).map(|shape| shape.parent.clone()))
+            .or_else(|| {
+                (kept_with.get(at).or_else(|| discarded.get(at))).map(|shape| shape.parent.clone())
+            })
     };
     let belongs_here = |entry: &NodeId| !kept_with.contains_key(id) || reaches(entry, &at_discard);
     let in_remote = |at: &NodeId| trees.remote().live(at).map(|remote| remote.parent.clone());
@@ -2026,7 +2028,10 @@ fn acted_below(
         let mut seen = BTreeSet::new();
         let mut current = Some(entry.to_owned());
         while let Some(at) = current.filter(|at| at != id && seen.insert(at.clone())) {
-            if device.brought_by_others.contains(&at) && !belongs_here(&at) && reaches(&at, &in_remote) {
+            if device.brought_by_others.contains(&at)
+                && !belongs_here(&at)
+                && reaches(&at, &in_remote)
+            {
                 return true;
             }
             current = in_local(&at);

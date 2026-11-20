@@ -743,9 +743,11 @@ fn a_server_entry_counts_for_a_taken_along_folder_only_if_the_folder_held_it_at_
 
 #[test]
 fn renaming_an_entry_another_device_brought_into_a_taken_along_folder_changes_that_entry_alone() {
-    for (at_discard, brought, changes_the_folder) in
-        [(false, true, false), (true, true, true), (false, false, true)]
-    {
+    for (at_discard, brought, changes_the_folder) in [
+        (false, true, false),
+        (true, true, true),
+        (false, false, true),
+    ] {
         let (mut device, kept_with, discarded) = a_file_in_a_taken_along_server_folder();
         let (g, s): (NodeId, NodeId) = ("g".into(), "s".into());
         let mut remote = device.trees.remote().get(&"f".into()).unwrap().clone();
