@@ -1,4 +1,4 @@
-328
+510
 # A delete made offline around a server loss must stay deleted when another device's Keep or resend brings the node back,
 # whether R learns of it from the log, a listing or a restart, and must give way where that device moved the node, changed
 # its content, or the user answered Restore. Where another device renamed the deleted folder, the file's record waits for
@@ -9,6 +9,8 @@
 # waited for the file to leave first, so another device's Keep of the folder does not bring it back.
 # A record ends as soon as R learns, from a delivered change or a listing, that the server trashed or reshaped the node, so
 # a trash and a restore that reach the device before one settle, or a changed node a listing brings, download the node.
-# No record is made by a recovery once any of its causes found the store older than the disk, also after a rewind replaced
-# that cause: the engine test covers both, and the store tests cover the new halt column on a fresh store, before its
-# migration and on an upgrade.
+# A record needs the journal's own status row for the node. While a recovery that found the store older than the disk runs,
+# also after a rewind replaced that cause, the scan and the journal backfill write no such row: the driver test rolls the
+# store back past a removal and the engine tests cover the backfill, a later recovery or bootstrap, and a Restore left
+# waiting, each failing when the record ignores the row or the gate is removed. The store tests cover the new halt column
+# on a fresh store, before its migration and on an upgrade.
