@@ -40,13 +40,9 @@ if 'STRESS_TEST_CAPTURE' not in os.environ:
     (probes / 'cargo.called').write_text(' '.join(sys.argv[1:]))
     sys.exit(99)
 (probes / 'cargo.capture').write_text(' '.join(sys.argv[1:]))
-(probes / 'cargo.fallback').write_text(os.environ.get('FALLBACK_ENV', 'unset'))
 runner = os.environ['CARGO_TARGET_AARCH64_APPLE_DARWIN_RUNNER']
 package = os.environ['FAKE_PACKAGE']
-environment = dict(os.environ, CARGO_MANIFEST_DIR=package, CONFIG_ENV='from-config',
-                   KOIDRIVE_TEST_SERVER_LOG='from-config')
-for name in ('PROPTEST_RNG_SEED', 'FALLBACK_ENV', 'KOIDRIVE_TEST_SERVER'):
-    environment.setdefault(name, '42' if name == 'PROPTEST_RNG_SEED' else 'from-config')
+environment = dict(os.environ, CARGO_MANIFEST_DIR=package)
 for test in filter(None, os.environ['FAKE_TESTS'].split(os.pathsep)):
     subprocess.check_call([runner, test], cwd=package, env=environment)
     capture = Path(os.environ['STRESS_TEST_CAPTURE'])
@@ -55,13 +51,9 @@ for test in filter(None, os.environ['FAKE_TESTS'].split(os.pathsep)):
 ''')
         self.executable(self.bin / "rustc", "print('rustc 1.99.0\\nhost: aarch64-apple-darwin')\n")
         (self.root / ".cargo").mkdir()
-        (self.root / ".cargo/config.toml").write_text("[env]\nCONFIG_ENV = { value = 'from-config', force = true }\n"
-                                                       "FALLBACK_ENV = 'from-config'\nPROPTEST_RNG_SEED = '42'\n"
-                                                       "KOIDRIVE_TEST_SERVER = 'from-config'\n"
-                                                       "KOIDRIVE_TEST_SERVER_LOG = { value = 'from-config' }\n")
+        (self.root / ".cargo/config.toml").write_text("[registry]\nglobal-min-publish-age = '3 days'\n")
         (self.root / "cargo-home").mkdir()
-        (self.root / "cargo-home/config.toml").write_text("[env]\nKOIDRIVE_TEST_SERVER_LOG = { value = 'home', force = true }\n"
-                                                           "CARGO_REGISTRY_TOKEN = { value = 'home', force = true }\n")
+        (self.root / "cargo-home/config.toml").write_text("[net]\nretry = 3\n")
         self.package = self.root / "crate"
         self.package.mkdir()
         self.probe = r'''
@@ -74,8 +66,7 @@ record = dict(pid=os.getpid(), args=sys.argv[1:], cwd=os.getcwd(),
               seed=seed, ordinary=os.environ.get('PROPTEST_CASES'),
               cases=os.environ.get('KOIDRIVE_BATTERY_CASES'),
               server=os.environ.get('KOIDRIVE_TEST_SERVER'),
-              manifest=os.environ.get('CARGO_MANIFEST_DIR'), config=os.environ.get('CONFIG_ENV'),
-              fallback=os.environ.get('FALLBACK_ENV'), server_log=os.environ.get('KOIDRIVE_TEST_SERVER_LOG'),
+              manifest=os.environ.get('CARGO_MANIFEST_DIR'),
               capture=os.environ.get('STRESS_TEST_CAPTURE'))
 (probe / (seed + ('-2' if second else '') + '.start')).write_text(json.dumps(record))
 deadline = time.monotonic() + 5
@@ -100,8 +91,7 @@ else:
 '''
         self.environment = dict(os.environ, PATH=str(self.bin) + os.pathsep + os.environ["PATH"],
                                 PROBES=str(self.probes), PROPTEST_CASES="999", KOIDRIVE_BATTERY_CASES="888",
-                                FAKE_PACKAGE=str(self.package), CONFIG_ENV="inherited", FALLBACK_ENV="inherited",
-                                CARGO_HOME=str(self.root / "cargo-home"),
+                                FAKE_PACKAGE=str(self.package), CARGO_HOME=str(self.root / "cargo-home"),
                                 REVIEW_CANARY_TOKEN="synthetic", CARGO_REGISTRY_TOKEN="synthetic")
         self.build("server")
 
@@ -199,10 +189,7 @@ while True:
             self.assertEqual(probe["cases"], "0")
             self.assertEqual(probe["args"], ["two words", "--include-ignored"])
             self.assertEqual(probe["cwd"], str(self.package))
-            self.assertEqual((probe["manifest"], probe["config"], probe["fallback"], probe["capture"]),
-                             (str(self.package), "from-config", "inherited", None))
-        self.assertEqual((self.probes / "cargo.fallback").read_text(), "inherited")
-        self.assertNotIn(b"FALLBACK_ENV", (self.probes / "capture.jsonl").read_bytes())
+            self.assertEqual((probe["manifest"], probe["capture"]), (str(self.package), None))
         self.assertEqual((self.probes / "cargo.capture").read_text(), "test --locked -p koidrive-net --features serde --test send")
         self.assertFalse((self.probes / "cargo.called").exists())
         for path in [*(self.root / "out").rglob("*"), self.probes / "capture.jsonl"]:
@@ -229,11 +216,10 @@ while True:
         capture = self.root / "capture.jsonl"
         environment = dict(PATH=os.environ["PATH"], REVIEW_CANARY_TOKEN="synthetic", CARGO_REGISTRY_TOKEN="synthetic",
                            STRESS_TEST_CAPTURE=str(capture),
-                           CARGO_PKG_NAME="probe", STRESS_TEST_ALLOWED=json.dumps([*stress.CARGO_SETS, "FALLBACK_ENV"]),
-                           FALLBACK_ENV="from-config")
+                           CARGO_PKG_NAME="probe", STRESS_TEST_ALLOWED=json.dumps(stress.CARGO_SETS))
         subprocess.check_call([str(recorder), "/bin/test-executable"], cwd=self.package, env=environment)
         record = json.loads(capture.read_text())
-        self.assertEqual(record["environment"], {"CARGO_PKG_NAME": "probe", "FALLBACK_ENV": "from-config"})
+        self.assertEqual(record["environment"], {"CARGO_PKG_NAME": "probe"})
         self.assertNotIn("REVIEW_CANARY_TOKEN", capture.read_text())
         self.assertNotIn("CARGO_REGISTRY_TOKEN", capture.read_text())
 
@@ -243,12 +229,42 @@ while True:
             self.run_tests(self.args())
         self.assertEqual((self.probes / "cargo.capture").read_text(), "test --locked -p koidrive-net --tests")
 
-    def test_a_configured_target_runner_is_refused(self):
+    def refused(self, message, args=None):
+        with self.assertRaisesRegex(RuntimeError, message):
+            self.run_tests(args or self.args())
+        self.assertFalse((self.probes / "cargo.capture").exists())
+
+    def test_a_target_runner_is_refused(self):
         with (self.root / ".cargo/config.toml").open("a") as config:
             config.write("[target.aarch64-apple-darwin]\nrunner = 'qemu'\n")
-        with self.assertRaisesRegex(RuntimeError, "target runner is configured"):
-            self.run_tests(self.args())
-        self.assertFalse((self.probes / "cargo.capture").exists())
+        self.refused("config.toml sets a target runner")
+
+    def test_a_target_runner_variable_is_refused(self):
+        with patch.dict(self.environment, CARGO_TARGET_AARCH64_APPLE_DARWIN_RUNNER="qemu"):
+            self.refused("CARGO_TARGET_AARCH64_APPLE_DARWIN_RUNNER is set")
+
+    def test_an_env_table_is_refused(self):
+        with (self.root / ".cargo/config.toml").open("a") as config:
+            config.write("[env]\nPROPTEST_RNG_SEED = '42'\n")
+        self.refused(r"\.cargo/config\.toml sets \[env\]")
+
+    def test_an_env_table_in_cargo_home_is_refused(self):
+        (self.root / "cargo-home/config.toml").write_text("[env]\nX = { value = 'y', force = true }\n")
+        self.refused(r"cargo-home/config\.toml sets \[env\]")
+
+    def test_a_legacy_config_is_refused(self):
+        (self.root / ".cargo/config").write_text("[net]\nretry = 3\n")
+        self.refused(r"\.cargo/config is a legacy Cargo config")
+
+    def test_a_legacy_config_in_cargo_home_is_refused(self):
+        (self.root / "cargo-home/config").write_text("[net]\nretry = 3\n")
+        self.refused("cargo-home/config is a legacy Cargo config")
+
+    def test_a_config_above_the_repository_is_refused(self):
+        (self.root / "repo").mkdir()
+        args = stress.parse_args(["--root", str(self.root / "repo"), "--out", str(self.root / "out"),
+                                  "--crate", "koidrive-net", "--seed", "17"])
+        self.refused("is a Cargo config above the repository", args)
 
     def test_optional_budget_is_unset_and_zero_tests_and_startup_fail_closed(self):
         for mode, expected, code in (("pass", "pass", 0), ("zero", "error", 0),
@@ -290,9 +306,8 @@ while True:
                     probe = json.loads(path.read_text())
                     self.assertEqual(probe["cwd"], str(self.package))
                     self.assertEqual(probe["args"], ["--ignored", "selected test"])
-                    self.assertEqual((probe["manifest"], probe["config"]), (str(self.package), "from-config"))
+                    self.assertEqual(probe["manifest"], str(self.package))
                     self.assertTrue(probe["server"].startswith("http://127.0.0.1:"), probe["server"])
-                    self.assertEqual(probe["server_log"], "from-config")
                 self.assertFalse((self.probes / "cargo.called").exists())
 
     def test_worker_repetitions_run_the_target_the_launcher_asks_for(self):

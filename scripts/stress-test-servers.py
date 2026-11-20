@@ -91,33 +91,43 @@ def parse_args(argv=None):
     return args
 
 
-def cargo_configs(root):
-    home = Path(os.environ.get("CARGO_HOME", Path.home() / ".cargo"))
-    for directory in (root, *root.parents, home):
-        for name in ((".cargo/config.toml", ".cargo/config") if directory != home else ("config.toml", "config")):
-            if (directory / name).is_file():
-                yield directory / name
+def unsupported_cargo_config(root, environment, runner):
+    home = Path(environment.get("CARGO_HOME", Path.home() / ".cargo")).resolve()
+    if runner in environment:
+        return f"{runner} is set"
+    read = []
+    for directory, cargo in ((directory, directory / ".cargo") for directory in (root, *root.parents)):
+        if cargo.resolve() == home:
+            continue
+        if (cargo / "config").is_file():
+            return f"{cargo / 'config'} is a legacy Cargo config"
+        if (cargo / "config.toml").is_file():
+            if directory != root:
+                return f"{cargo / 'config.toml'} is a Cargo config above the repository"
+            read.append(cargo / "config.toml")
+    if (home / "config").is_file():
+        return f"{home / 'config'} is a legacy Cargo config"
+    if (home / "config.toml").is_file():
+        read.append(home / "config.toml")
+    for path in read:
+        config = tomllib.loads(path.read_text())
+        if "env" in config:
+            return f"{path} sets [env]"
+        if any("runner" in table for table in config.get("target", {}).values() if isinstance(table, dict)):
+            return f"{path} sets a target runner"
+    return None
 
 
 def capture_tests(args, environment):
     host = re.search(r"^host: (\S+)$", subprocess.check_output(["rustc", "-vV"], text=True), re.M)[1]
     runner = "CARGO_TARGET_" + re.sub(r"[^A-Za-z0-9]", "_", host).upper() + "_RUNNER"
-    configs = list(cargo_configs(args.root))
-    configured = [str(path) for path in configs if re.search(r"\brunner\s*=", path.read_text())]
-    if runner in environment or configured:
-        raise RuntimeError(f"a Cargo target runner is configured ({runner} or {', '.join(configured)}); "
+    unsupported = unsupported_cargo_config(args.root, environment, runner)
+    if unsupported:
+        raise RuntimeError(f"Parallel and Worker repetitions support only a Cargo config at the repository root "
+                           f"without [env] or a target runner, plus such a config in CARGO_HOME, but {unsupported}; "
                            "run the repetitions serially with Cargo instead")
     command = ["cargo", "test", "--locked", "-p", args.crate, *(["--features", args.features] if args.features else []),
                *(["--test", args.test] if args.test else ["--tests"])]
-    entries = {}
-    for path in reversed(configs):
-        for name, value in tomllib.loads(path.read_text()).get("env", {}).items():
-            entry = value if isinstance(value, dict) else {"value": value}
-            entries.setdefault(name, {}).update(entry, **({"base": path.parent.parent} if "value" in entry else {}))
-    forced = {name: bool(entry.get("force")) for name, entry in entries.items()}
-    allowed = {*CARGO_SETS, *(name for name in entries if name not in environment)}
-    configured_over = {name: str(entry["base"] / entry["value"]) if entry.get("relative") else entry["value"]
-                       for name, entry in entries.items() if forced[name] and name in environment and "value" in entry}
     with tempfile.TemporaryDirectory(prefix="heavy-capture-") as scratch:
         recorder = Path(scratch) / "record-test"
         recorder.write_text("#!" + sys.executable + "\n" + RECORDER)
@@ -126,21 +136,16 @@ def capture_tests(args, environment):
         with (args.out / "logs/capture.log").open("w") as log:
             code = subprocess.call(command, cwd=args.root, stdout=log, stderr=subprocess.STDOUT,
                                    env={**environment, runner: str(recorder), "STRESS_TEST_CAPTURE": str(capture),
-                                        "STRESS_TEST_ALLOWED": json.dumps(sorted(allowed))})
+                                        "STRESS_TEST_ALLOWED": json.dumps(CARGO_SETS)})
         records = [json.loads(line) for line in capture.read_text().splitlines()] if capture.exists() else []
     if code or not records:
         raise RuntimeError(f"{shlex.join(command)} exited {code} and ran {len(records)} test executables; "
                            f"see {args.out / 'logs/capture.log'}")
-    tests = []
-    for record in records:
-        given = record["environment"]
-        tests.append(dict(name=re.sub(r"-[0-9a-f]{16}$", "", Path(record["executable"]).name),
-                          executable=record["executable"], directory=record["directory"],
-                          default={name: value for name, value in given.items() if name in forced and not forced[name]},
-                          override={**{name: value for name, value in given.items()
-                                       if forced.get(name) or (name not in forced and environment.get(name) != value)},
-                                    **configured_over}))
-    return tests
+    return [dict(name=re.sub(r"-[0-9a-f]{16}$", "", Path(record["executable"]).name),
+                 executable=record["executable"], directory=record["directory"],
+                 environment={name: value for name, value in record["environment"].items()
+                              if environment.get(name) != value})
+            for record in records]
 
 
 def test_arguments(args):
@@ -192,7 +197,7 @@ def worker_sandbox(root, destination, crate, tests):
         "for test in tests:\n"
         "    print('     Running ' + test['executable'], flush=True)\n"
         "    status = subprocess.call([test['executable'], *tail], cwd=test['directory'],\n"
-        "                             env={**test['default'], **os.environ, **test['override']})\n"
+        "                             env={**os.environ, **test['environment']})\n"
         "    code = code or status\n"
         "sys.exit(code)\n"
     )
@@ -271,7 +276,7 @@ def start_next(run):
         run.log.write(header)
         run.log.flush()
     run.process = subprocess.Popen(command, cwd=directory,
-                                   env={**test.get("default", {}), **run.environment, **test.get("override", {})},
+                                   env={**run.environment, **test.get("environment", {})},
                                    stdout=run.log, stderr=subprocess.STDOUT, start_new_session=True)
 
 
