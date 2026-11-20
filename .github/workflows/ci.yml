@@ -695,7 +695,7 @@ jobs:
       - run: pnpm typecheck
       - run: pnpm test --reporter=verbose
       - name: Test the deploy-test scripts without a deployment
-        run: pnpm exec vitest run --config scripts/deploy-test/vitest.config.ts --reporter=verbose run.unit e2e.unit load.unit bench.unit first-sync.unit
+        run: pnpm exec vitest run --config scripts/deploy-test/vitest.config.ts --reporter=verbose run.unit e2e.unit load.unit bench.unit first-sync.unit ranged-read.unit
 
   server-deploy:
     name: server deploy check

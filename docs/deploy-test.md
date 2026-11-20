@@ -19,6 +19,7 @@ In the browser, open **Actions**, **Deploy test**, **Run workflow**, keep `main`
 | `e2e` | A macOS and a Linux device sync one space with `koi` |
 | `bench` | Rust chunk upload speed at several concurrency values |
 | `bench-small` | Upload time, request count and Worker CPU for many small files, with and without bundles |
+| `bench-ranged` | R2 read latency of a chunk inside a pack against the same chunk as its own object |
 | `first-sync` | How a macOS client built from several refs syncs 1.9 million small entries for the first time |
 
 ```sh
@@ -26,6 +27,7 @@ gh workflow run deploy-test.yml --ref main -f mode=upgrade -f from_ref=<commit o
 gh workflow run deploy-test.yml --ref main -f mode=e2e
 gh workflow run deploy-test.yml --ref main -f mode=bench -f bench_ns=1,2,4,8 -f bench_repetitions=3
 gh workflow run deploy-test.yml --ref main -f mode=bench-small -f bench_small_files=20000 -f bench_small_kib=16 -f bench_small_runs=3
+gh workflow run deploy-test.yml --ref main -f mode=bench-ranged
 gh workflow run deploy-test.yml --ref main -f mode=first-sync -f first_sync_refs=v0.1.0-alpha.7,main,<branch> -f first_sync_rotation=0
 ```
 
@@ -56,6 +58,8 @@ A job moves on only when its folder holds exactly the expected tree. The last st
 **bench** runs the Rust release test `upload_benchmark` (`core/net/tests/upload_bench.rs`). `bench_ns` takes up to four values from `1,2,4,8`, and `bench_repetitions` takes 1 to 3. For each value, the test sets the upload concurrency to N and uploads 1 GiB of fresh 4 MiB chunks to a new space, so the default sweep uploads 12 GiB. The test times only `Transfer::upload`, with its hashing, planning, PUTs and retry waits. The time includes Worker and R2 work together. The log and summary give MB/s in decimal megabytes, the HTTP version, and the retries seen.
 
 **bench-small** runs the Rust release test `small_file_benchmark` in the same file. `bench_small_files` takes 32 to 50,000, `bench_small_kib` takes 1 to 255, and `bench_small_runs` takes 1 to 5. Each run uploads that many fresh files of that size twice, each time to a new space and through its own HTTP connection pool: once with bundles, and once with one PUT per chunk. Odd runs start with bundles and even runs with puts. For each run and side the summary gives the upload time, files per second, the upload requests the client sent with retries included, and chunks per request, then each side's median time, time range and median request count. After the test, `bench.ts` asks the Cloudflare GraphQL Analytics API for the Worker's invocations and CPU time p50 and p99 in each side's time window, retrying for up to 10 minutes in all while the analytics catch up. On the bundles side, CPU per invocation is CPU per bundle. If the token lacks Account Analytics Read or the query fails, the summary says so and the run still passes with the upload numbers.
+
+**bench-ranged** runs `ranged-read.ts` against the deployment's bucket through the [R2 S3 API](https://developers.cloudflare.com/r2/api/tokens/), with the token's id as the access key and the SHA-256 of its value as the secret. Before its first write it checks that the state file names this run's bucket and that the bucket's creation date matches the one the run recorded, and it stops otherwise. It writes a 4 MiB object of 64 chunks of 64 KiB, a 4 MiB object of four 1 MiB chunks, and each chunk again as its own object. First it reads every range and every single object once, in a random order across all four kinds. Then it makes 200 warm rounds, each with one random read of every kind in a random order. The summary gives the first reads' p50 and maximum and the warm reads' p50, p90 and p99 per kind. A read's time runs from the request to the last byte, and the body is compared with the written bytes after the timer stops. Every read runs from the runner, so the numbers include the network path to R2, which every kind shares, and none of them is Worker CPU.
 
 **first-sync** measures a first sync of a large tree on GitHub-hosted `macos-15` runners against a Worker deployed from `main` (`first-sync.ts`). One build job for each ref in `first_sync_refs` (at most four) builds `koi` in release mode from that ref, so the client under test can be an older tag or a branch that is not on `main`. The build jobs get no token and no secrets. When they finish, the deploy job waits for approval and deploys, and the sync job starts. The sync job gets no secrets. It frees disk space and generates one seeded tree of 1,900,000 entries shaped like a code workspace: about 300 projects, each with a `node_modules` of 150 to 450 packages, folders up to 8 levels deep, mostly files of 2 KiB or less and a few up to 64 KiB, about 2.4 GiB in all. The deploy job seals one pairing code for each ref, as in e2e, and keeps the Worker until the sync job ends. The approval request appears when the builds finish. Approve it within 30 minutes of the builds finishing. The sync job starts then and, once its tree is ready, waits 35 minutes for the pairing codes, which the deploy job seals only after the approval and the deploy.
 
@@ -129,7 +133,7 @@ Create a custom token (**Manage account**, **Account API tokens**, **Create Toke
 |---|---|---|
 | Account, Workers Scripts, Edit | Workers Scripts Write | Deploy the Worker and its Durable Object classes, read its versions and deployments, list its Durable Object namespaces, and delete it |
 | Account, Workers Observability, Edit | Workers Observability Write | [Query Workers Logs](https://developers.cloudflare.com/api/resources/workers/subresources/observability/subresources/telemetry/methods/query/) for the claim code |
-| Account, Workers R2 Storage, Edit | Workers R2 Storage Write | Create the bucket and read its creation date, list, read and delete its objects, and delete it |
+| Account, Workers R2 Storage, Edit | Workers R2 Storage Write | Create the bucket and read its creation date, list, read, write and delete its objects, and delete it |
 | Account, Account Analytics, Read | Account Analytics Read | Read the usage summary's figures and `bench-small`'s Worker CPU. Without it they show as unavailable |
 
 Anyone with this token can deploy, read and delete every Worker and bucket in the account. Use an account that holds nothing else of value, give the token an expiry date, and roll it if a run log ever shows it.
