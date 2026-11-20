@@ -1,5 +1,5 @@
 class = "I"
-issue = "GUN-864"
+issue = "GUN-1012"
 tests = [
   "devices_converge_across_restores_and_rewinds",
   "devices_converge_across_rewinds_and_rollbacks",

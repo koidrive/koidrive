@@ -1404,6 +1404,16 @@ impl World {
             .filter_map(|id| content(trees.remote().live(id)))
             .collect();
         let ids: BTreeSet<NodeId> = question.holds().cloned().collect();
+        let shown: BTreeMap<&NodeId, intents::Shown> = (question.holds())
+            .filter_map(|id| {
+                let shape = trees.remote().live(id)?;
+                let digest = (shape.content.as_ref()).map(|c| c.manifest_digest.as_slice());
+                Some((id, (Some(&shape.parent), shape.name.as_str(), digest)))
+            })
+            .collect();
+        let writes: BTreeSet<i64> = remote.iter().copied().collect();
+        let root = NodeId::from(self.space.space_id());
+        (self.intents).showed(d, self.moment, &shown, &writes, &root, &ids);
         let mut published: Vec<(u128, Value, Answered)> = Vec::new();
         if matches!(answer, Answer::Publish | Answer::Keep) {
             for (id, write, ino) in &held {
@@ -1448,7 +1458,12 @@ impl World {
                         _ if !ids.contains(at) || !on_disk(value) => false,
                         (_, None) => true,
                         (Value::Place { .. }, Some(synced)) => {
-                            (&synced.parent, &synced.name) != (&node.shape.parent, &node.shape.name)
+                            let base = if answer == Answer::Publish {
+                                trees.remote().live(at).unwrap_or(synced)
+                            } else {
+                                synced
+                            };
+                            (&base.parent, &base.name) != (&node.shape.parent, &node.shape.name)
                         }
                         (Value::Content { write, .. }, Some(synced)) => {
                             synced.content.as_ref().map(tag) != Some(*write)
@@ -1503,7 +1518,9 @@ impl World {
             _ => {}
         }
         for (ino, value, answered) in published {
-            self.intents.answered(d, self.moment, ino, value, answered);
+            let held = ids.iter().any(|id| self.intents.ino_of(d, id) == Some(ino));
+            self.intents
+                .answered(d, self.moment, ino, value, answered, held);
         }
         assert!(
             engine

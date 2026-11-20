@@ -1,0 +1,10 @@
+class = "E"
+issue = "GUN-984"
+tests = ["a_device_with_local_changes_converges_with_the_server_and_keeps_every_write"]
+message = '''assertion failed: `\(left == right\)` left: `\("<id>", "c\.txt"\)`, right: `\("<id>", "c\.txt"\)`: <id> is sent to a place the disk does not hold it at at \S+\.rs:<line>\.'''
+examples = [
+  "assertion failed: `(left == right)` \n  left: `(\"01a1c2c0-39a0-7c9f-92dd-37ded7172a70\", \"c.txt\")`, \n right: `(\"01a1c2c0-39a0-775c-844c-3cd7f43c661c\", \"c.txt\")`: 01a1c2c0-39a0-7353-a331-565b5a0660d9 is sent to a place the disk does not hold it at at core/sim/tests/engine_sync/common.rs:1376.",
+]
+cases = [
+  "0093867575d8",
+]

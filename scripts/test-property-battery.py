@@ -712,8 +712,8 @@ cases = ["{1:064}"]
         elsewhere = ("assertion failed: `(left == right)` \n  left: `(\"01a1c2c0-39a0-75ee-831c-498d57bc0a70\", \"a\")`, \n right: `(\"01a1c2c0-39a0-780a-953a-eb70673e29cb\", \"a\")`: 01a1c2c0-39a0-7895-abc3-b3429e08873f"
                      " is sent to a place the disk does not hold it at at core/sim/tests/engine_sync/common.rs:1330.")
         never_reached = next(entry for entry in entries
-                             if entry["file"] == "GUN-864-I-delete-never-reached-server-across-server-restores.toml")["examples"][0]
-        undone = next(entry for entry in entries if entry["file"] == "GUN-864-I-delete-came-undone.toml")["examples"][1]
+                             if entry["file"] == "GUN-1012-I-delete-never-reached-server-across-server-restores.toml")["examples"][0]
+        undone = next(entry for entry in entries if entry["file"] == "GUN-1012-I-delete-came-undone.toml")["examples"][1]
         def example(case):
             return next(entry for entry in entries if case.startswith(tuple(entry.get("cases", ["-"]))))["examples"][0]
         def after_670(case, test):
@@ -737,9 +737,9 @@ cases = ["{1:064}"]
             (server_restores, quiet, e0a5, [("J", "GUN-1012", ["5e0a61643769"])]),
             (folder, never_reached, other, []),
             (rewinds_and_rollbacks, never_reached, other, []),
-            (server_restores, never_reached, other, [("I", "GUN-864", None)]),
-            (restores_and_rewinds, never_reached, other, [("I", "GUN-864", None)]),
-            ("devices_on_coarse_volumes_converge_across_restores_and_rewinds", never_reached, other, [("I", "GUN-864", None)]),
+            (server_restores, never_reached, other, [("I", "GUN-1012", None)]),
+            (restores_and_rewinds, never_reached, other, [("I", "GUN-1012", None)]),
+            ("devices_on_coarse_volumes_converge_across_restores_and_rewinds", never_reached, other, [("I", "GUN-1012", None)]),
             (lose_rollbacks, example(x2293), x2293, [("X", "GUN-1199", ["2293e681b3bc"])]),
             (lose_rollbacks, example(x2293), other, []),
             (lose_coarse, example(w74e3), w74e3, [("W", "GUN-1200", ["74e37aa2bf80", "78f33ddc3d91", "570e17d678be", "17e659c037e5"])]),
@@ -756,18 +756,18 @@ cases = ["{1:064}"]
             (lose_restores, after_670(j6ef9, lose_restores), other, []),
             (lose_coarse, after_670(j0bde, lose_coarse), j0bde, [("J", "GUN-1012", ["0bdef7272764"])]),
             (lose_coarse, after_670(j0bde, lose_coarse), other, []),
-            (server_restores, example(i764b), i764b, [("I", "GUN-864", ["764b716b5c59", "a80ed333a4ff"])]),
-            (server_restores, example(i764b), ia80e, [("I", "GUN-864", ["764b716b5c59", "a80ed333a4ff"])]),
+            (server_restores, example(i764b), i764b, [("I", "GUN-1012", ["764b716b5c59", "a80ed333a4ff"])]),
+            (server_restores, example(i764b), ia80e, [("I", "GUN-1012", ["764b716b5c59", "a80ed333a4ff"])]),
             (server_restores, example(i764b), other, []),
             (restores_and_rewinds, example(i764b), i764b, []),
             (server_restores, example(i764b) + kept, i764b, []),
             (server_restores, head_only_undone(server_restores, ia80e), ia80e, []),
             (coarse_restores, example(a9151), a9151, [("A", "GUN-767", ["9151604dfe20"])]),
-            (coarse_restores, example(a9151), other, [("I", "GUN-864", None)]),
-            (restores_and_rewinds, example(a9151), a9151, [("I", "GUN-864", None)]),
+            (coarse_restores, example(a9151), other, [("I", "GUN-1012", None)]),
+            (restores_and_rewinds, example(a9151), a9151, [("I", "GUN-1012", None)]),
             (coarse_restores, undone, a9151, [("A", "GUN-767", ["9151604dfe20"])]),
-            (coarse_restores, undone, other, [("I", "GUN-864", None)]),
-            (restores_and_rewinds, example(ibbe9), ibbe9, [("I", "GUN-864", ["bbe992fee5c2"])]),
+            (coarse_restores, undone, other, [("I", "GUN-1012", None)]),
+            (restores_and_rewinds, example(ibbe9), ibbe9, [("I", "GUN-1012", ["bbe992fee5c2"])]),
             (restores_and_rewinds, example(ibbe9), other, []),
             (lose_restores, example(ibbe9), ibbe9, []),
             (restores_and_rewinds, example(ibbe9) + placed, ibbe9, []),
@@ -909,7 +909,7 @@ cases = ["{1:064}"]
         replayed = triage.outcome(101, DEVICES_REPLAY.format(test=test, lines=f"{red}\n{never_ran}"))
         self.assertEqual(replayed, {"result": "fail", "message": red})
         self.assertEqual([(entry["class"], entry["issue"]) for entry in triage.matches(entries, test, replayed["message"])],
-                         [("I", "GUN-864")])
+                         [("I", "GUN-1012")])
         passed = triage.outcome(101, DEVICES_REPLAY.format(test=test, lines=never_ran))
         self.assertEqual(passed, {"result": "pass", "message": None})
         self.assertEqual(triage.verdict([passed] * 2, [passed] * 2), "flaky or fixed")

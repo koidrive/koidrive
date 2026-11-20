@@ -10343,6 +10343,108 @@ fn a_file_kept_after_its_discard_and_a_second_rewind_must_reach_the_server() {
 }
 
 #[test]
+fn a_place_published_on_the_question_a_discard_was_asked_again_under_reaches_the_server() {
+    use Step::*;
+    let phases = vec![
+        vec![
+            (
+                2,
+                User(Action {
+                    kind: 1,
+                    target: 5732217286338448751,
+                    parent: 8389416635210452036,
+                    name: 1,
+                    text: 2,
+                }),
+            ),
+            (0, Answer(2)),
+            (0, Duplicate(14074771142169861302)),
+            (0, Backup),
+            (2, Work(15022527795426059514)),
+            (2, Work(17698458291317807150)),
+            (1, Work(16416660446278646842)),
+            (1, Effect(Outcome::Crash(Cut::Quarantined))),
+            (2, Work(5008279328945547248)),
+            (2, Answer(2)),
+            (
+                2,
+                User(Action {
+                    kind: 1,
+                    target: 6017788402458857251,
+                    parent: 7538190338020348047,
+                    name: 0,
+                    text: 0,
+                }),
+            ),
+            (0, Work(14421246376305144152)),
+            (
+                0,
+                User(Action {
+                    kind: 2,
+                    target: 8494397777352714945,
+                    parent: 10740052273401726064,
+                    name: 5,
+                    text: 0,
+                }),
+            ),
+            (2, Work(3996416438544962910)),
+            (1, Work(15671510319377511156)),
+            (2, Work(4215348676998077124)),
+            (0, Deliver(16978200929595456542)),
+            (1, Rewind),
+        ],
+        vec![
+            (0, Work(4543018362290328819)),
+            (1, Effect(Outcome::Run)),
+            (2, Scan),
+            (1, Drop),
+            (2, Deliver(8167137929063770365)),
+            (2, Effect(Outcome::Run)),
+            (0, Rewind),
+            (
+                0,
+                User(Action {
+                    kind: 1,
+                    target: 14538280933766807874,
+                    parent: 3672506976579633272,
+                    name: 1,
+                    text: 3,
+                }),
+            ),
+            (
+                2,
+                User(Action {
+                    kind: 2,
+                    target: 10095104434820240279,
+                    parent: 11161419881405131062,
+                    name: 9,
+                    text: 0,
+                }),
+            ),
+            (
+                1,
+                User(Action {
+                    kind: 3,
+                    target: 408161526844092452,
+                    parent: 7638305821525533121,
+                    name: 1,
+                    text: 1,
+                }),
+            ),
+        ],
+    ];
+    let world = converge(3, &phases).unwrap();
+    let node = (world.space().nodes().into_iter())
+        .find(|node| node.node_id == "01a1c2c0-39a0-753e-807a-44e7920b02c1")
+        .expect("the server holds the node device 2 published");
+    assert_eq!(node.name, "a (conflict from device-2 2026-11-09)");
+    assert_eq!(
+        node.current.and_then(|v| v.content).map(|c| tag(&c)),
+        Some(4)
+    );
+}
+
+#[test]
 fn a_recovery_answer_does_not_put_a_disk_first_finish_back_at_its_pending_name() {
     use Reply::*;
     use Step::*;

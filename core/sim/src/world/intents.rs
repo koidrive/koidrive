@@ -260,6 +260,7 @@ fn named(held: &str, given: &str) -> bool {
 pub(super) struct Intents {
     list: Vec<Intent>,
     seen: Vec<BTreeMap<usize, u64>>,
+    shown: Vec<BTreeMap<usize, u64>>,
     nodes: Vec<BTreeMap<u128, BTreeSet<NodeId>>>,
     merged: BTreeMap<NodeId, NodeId>,
     copies: BTreeMap<NodeId, BTreeSet<NodeId>>,
@@ -268,11 +269,14 @@ pub(super) struct Intents {
 
 type Spans = Vec<(u64, Option<u64>)>;
 
+pub(super) type Shown<'a> = (Option<&'a NodeId>, &'a str, Option<&'a [u8]>);
+
 impl Intents {
     pub(super) fn new(devices: usize) -> Self {
         Intents {
             list: Vec::new(),
             seen: vec![BTreeMap::new(); devices],
+            shown: vec![BTreeMap::new(); devices],
             nodes: vec![BTreeMap::new(); devices],
             merged: BTreeMap::new(),
             copies: BTreeMap::new(),
@@ -333,9 +337,29 @@ impl Intents {
         ino: u128,
         value: Value,
         answer: Answered,
+        held: bool,
     ) {
+        let same = |earlier: &Value| match (earlier, &value) {
+            (
+                Value::Place { parent, name },
+                Value::Place {
+                    parent: given_parent,
+                    name: given,
+                },
+            ) => parent == given_parent && nfc(name) == nfc(given),
+            _ => *earlier == value,
+        };
+        let discarded = answer == Answered::Settles
+            && !held
+            && (self.list.iter()).any(|intent| {
+                intent.discarded
+                    && (intent.author, intent.ino) == (author, ino)
+                    && same(&intent.value)
+            });
         self.record(author, made, ino, "publish", value);
-        self.list.last_mut().expect("recorded above").answer = Some(answer);
+        let intent = self.list.last_mut().expect("recorded above");
+        intent.answer = Some(answer);
+        intent.discarded = discarded;
     }
 
     pub(super) fn ino_of(&self, d: usize, node: &NodeId) -> Option<u128> {
@@ -470,7 +494,6 @@ impl Intents {
                 *until = Some(clock + 1);
             }
         }
-        type Shown<'a> = (Option<&'a NodeId>, &'a str, Option<&'a [u8]>);
         let shown: BTreeMap<&NodeId, Shown> = (disk.entries().iter())
             .filter_map(|(ino, entry)| {
                 let parent = match &entry.place {
@@ -485,11 +508,40 @@ impl Intents {
         let writes: BTreeSet<i64> = (disk.entries().values())
             .filter_map(|entry| Some(tag(entry.content.as_ref()?)))
             .collect();
+        for i in self.visible(d, &shown, &writes, root, None) {
+            self.seen[d].insert(i, clock);
+        }
+    }
+
+    pub(super) fn showed(
+        &mut self,
+        d: usize,
+        clock: u64,
+        shown: &BTreeMap<&NodeId, Shown>,
+        writes: &BTreeSet<i64>,
+        root: &NodeId,
+        held: &BTreeSet<NodeId>,
+    ) {
+        for i in self.visible(d, shown, writes, root, Some(held)) {
+            self.shown[d].entry(i).or_insert(clock);
+        }
+    }
+
+    fn visible(
+        &self,
+        d: usize,
+        shown: &BTreeMap<&NodeId, Shown>,
+        writes: &BTreeSet<i64>,
+        root: &NodeId,
+        only: Option<&BTreeSet<NodeId>>,
+    ) -> Vec<usize> {
+        let mut visible = Vec::new();
         for i in 0..self.list.len() {
-            if self.seen[d].contains_key(&i) {
+            let covered = only.is_none_or(|only| self.nodes(i).any(|id| only.contains(id)));
+            if !covered || self.seen[d].contains_key(&i) {
                 continue;
             }
-            let visible = {
+            let shows = {
                 let mut nodes = self.nodes(i).map(|id| (id, shown.get(id)));
                 match &self.list[i].value {
                     Value::Place { parent, name } => nodes.any(|(_, shown)| {
@@ -512,10 +564,11 @@ impl Intents {
                     }
                 }
             };
-            if visible {
-                self.seen[d].insert(i, clock);
+            if shows {
+                visible.push(i);
             }
         }
+        visible
     }
 
     fn holds(&self, i: usize, server: &Server, in_trash: bool) -> bool {
@@ -786,11 +839,12 @@ impl Intents {
                     && covers(j)
                     && !self.nodes(i).any(|id| self.on(j, id));
                 let dropped = !other.stands() && !removed_below;
-                if j == i || dropped && !other.restored {
+                if j == i || other.answer == Some(Answered::Settles) || dropped && !other.restored {
                     return false;
                 }
                 let later = field == Field::Place
                     && !self.saw(i, j)
+                    && !(self.shown[intent.author].get(&j)).is_some_and(|at| *at <= intent.made)
                     && (other.applied > intent.applied || other.held);
                 let held_as = |k: usize| match (&intent.value, &self.list[k].value) {
                     (
@@ -801,6 +855,7 @@ impl Intents {
                         },
                     ) => {
                         k != i
+                            && self.list[k].answer != Some(Answered::Settles)
                             && (intent.applied > 0 && digest == seen
                                 || intent.answer.is_some() && write == seen_write)
                             && self.nodes(i).any(|id| self.on(k, id))
@@ -809,7 +864,9 @@ impl Intents {
                 };
                 let answered_over = intent.answer.is_some()
                     && other.answer == Some(Answered::Owed)
-                    && (1..=other.made).contains(&intent.applied);
+                    && (1..=other.made).contains(&intent.applied)
+                    && (self.saw(j, i)
+                        || (self.shown[other.author].get(&i)).is_some_and(|at| *at <= other.made));
                 let replaced = other.value.field() == field
                     && self.nodes(i).any(|id| self.on(j, id))
                     && (self.saw(j, i)
@@ -1000,9 +1057,9 @@ mod tests {
         };
         let server = Server::of("root", vec![at_a]);
         let ok = |intents: &Intents| intents.check(&server, |_| false, |_, _| false).is_ok();
-        intents.answered(0, 1, 1, content(1), Answered::Settles);
+        intents.answered(0, 1, 1, content(1), Answered::Settles, false);
         assert!(ok(&intents));
-        intents.answered(0, 2, 1, content(2), Answered::Owed);
+        intents.answered(0, 2, 1, content(2), Answered::Owed, false);
         assert!(!ok(&intents));
         intents.record(0, 3, 1, "move", place("a"));
         intents.record(0, 3, 1, "move", place("b"));
@@ -1033,6 +1090,164 @@ mod tests {
         intents.give_up(&server, 0, &[NodeId::from("n")].into());
         assert!(!intents.placed(Some(0), "n", "root", "A", "root"));
         assert!(intents.discarded_place(Some(0), "n", "root", "A", "root"));
+    }
+
+    #[test]
+    fn a_settled_answer_does_not_give_back_a_place_its_user_discarded() {
+        let mut intents = Intents::new(1);
+        intents.nodes[0].insert(1, [NodeId::from("n")].into());
+        let place = || Value::Place {
+            parent: None,
+            name: "p".to_owned(),
+        };
+        intents.record(0, 1, 1, "move", place());
+        intents.give_up(
+            &Server::of("root", Vec::new()),
+            0,
+            &[NodeId::from("n")].into(),
+        );
+        intents.answered(0, 2, 1, place(), Answered::Settles, false);
+        assert!(!intents.placed(Some(0), "n", "root", "p", "root"));
+        assert!(intents.discarded_place(Some(0), "n", "root", "p", "root"));
+    }
+
+    fn holding(write: u8) -> Server {
+        let node = NodeState {
+            node_id: "n".into(),
+            parent_id: "root".into(),
+            name: "a".into(),
+            status: NodeStatus::Live as i32,
+            current: Some(koidrive_proto::v1::VersionInfo {
+                content: Some(koidrive_proto::v1::Content {
+                    manifest_digest: vec![write],
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..NodeState::default()
+        };
+        Server::of("root", vec![node])
+    }
+
+    fn content(write: i64) -> Value {
+        Value::Content {
+            write,
+            digest: vec![write as u8],
+        }
+    }
+
+    #[test]
+    fn an_owed_answer_settles_an_earlier_answer_only_when_its_device_saw_that_answer() {
+        let settles = |seen: bool| {
+            let mut intents = Intents::new(2);
+            for nodes in &mut intents.nodes {
+                nodes.insert(1, [NodeId::from("n")].into());
+            }
+            intents.answered(0, 1, 1, content(1), Answered::Owed, true);
+            intents.sync(&holding(1), 2, None);
+            if seen {
+                intents.shown[1].insert(0, 2);
+            }
+            intents.answered(1, 3, 1, content(2), Answered::Owed, true);
+            intents.check(&holding(2), |_| false, |_, _| false).is_ok()
+        };
+        assert!(settles(true));
+        assert!(!settles(false));
+    }
+
+    #[test]
+    fn a_settled_answer_does_not_settle_an_earlier_change_of_its_device() {
+        let mut intents = Intents::new(1);
+        intents.nodes[0].insert(1, [NodeId::from("n")].into());
+        intents.record(0, 1, 1, "write", content(1));
+        intents.answered(0, 2, 1, content(2), Answered::Settles, false);
+        assert!(intents.check(&holding(2), |_| false, |_, _| false).is_err());
+    }
+
+    #[test]
+    fn a_child_answer_cannot_settle_another_devices_move() {
+        let mut intents = Intents::new(2);
+        for nodes in &mut intents.nodes {
+            nodes.insert(1, [NodeId::from("n")].into());
+        }
+        let at = |name: &str| Value::Place {
+            parent: None,
+            name: name.to_owned(),
+        };
+        let server = holding(1);
+        let original = intents.record(1, 1, 1, "create", at("a"));
+        intents.sync(&server, 1, None);
+        intents.seen[0].insert(original, 1);
+        intents.record(0, 2, 1, "move", at("b"));
+        let check = |intents: &Intents| intents.check(&server, |_| false, |_, _| false);
+        let missing = check(&intents).expect_err("the move to b is missing");
+        assert!(missing.0.contains("at \"b\""));
+
+        intents.answered(1, 3, 1, at("a"), Answered::Settles, false);
+        intents.sync(&server, 4, None);
+        assert_eq!(check(&intents), Err(missing));
+    }
+
+    #[test]
+    fn an_answer_is_not_settled_by_a_move_its_question_showed() {
+        let settles = |shown: bool| {
+            let mut intents = Intents::new(2);
+            for nodes in &mut intents.nodes {
+                nodes.insert(1, [NodeId::from("n")].into());
+            }
+            let at = |name: &str| Value::Place {
+                parent: None,
+                name: name.to_owned(),
+            };
+            let at_upper = NodeState {
+                node_id: "n".into(),
+                parent_id: "root".into(),
+                name: "A".into(),
+                status: NodeStatus::Live as i32,
+                ..NodeState::default()
+            };
+            let server = Server::of("root", vec![at_upper]);
+            let moved = intents.record(1, 1, 1, "move", at("A"));
+            intents.sync(&server, 2, None);
+            if shown {
+                intents.shown[0].insert(moved, 3);
+            }
+            intents.answered(0, 3, 1, at("a"), Answered::Owed, true);
+            intents.check(&server, |_| false, |_, _| false).is_ok()
+        };
+        assert!(settles(false));
+        assert!(!settles(true));
+    }
+
+    #[test]
+    fn a_settled_answer_does_not_give_back_a_discarded_place_spelled_another_way() {
+        let mut intents = Intents::new(1);
+        intents.nodes[0].insert(1, [NodeId::from("n")].into());
+        let place = |name: &str| Value::Place {
+            parent: None,
+            name: name.to_owned(),
+        };
+        intents.record(0, 1, 1, "move", place("E\u{301}"));
+        intents.give_up(
+            &Server::of("root", Vec::new()),
+            0,
+            &[NodeId::from("n")].into(),
+        );
+        intents.answered(0, 2, 1, place("\u{c9}"), Answered::Settles, false);
+        assert!(!intents.placed(Some(0), "n", "root", "\u{c9}", "root"));
+    }
+
+    #[test]
+    fn a_settled_answer_is_no_witness_that_a_later_write_replaced_a_value() {
+        let mut intents = Intents::new(2);
+        for nodes in &mut intents.nodes {
+            nodes.insert(1, [NodeId::from("n")].into());
+        }
+        intents.record(1, 1, 1, "write", content(1));
+        intents.sync(&holding(1), 2, None);
+        intents.answered(0, 3, 1, content(1), Answered::Settles, false);
+        intents.record(0, 4, 1, "write", content(2));
+        assert!(intents.check(&holding(2), |_| false, |_, _| false).is_err());
     }
 
     #[test]
