@@ -1,0 +1,5 @@
+22
+# A copy saved by rename in a left-out folder while Koidrive is stopped must keep its node, and every way another file can take
+# the place where the search last found a copy (rename aside, folder rebuilt, hard link, synced file moved over it, another
+# recorded or displaced copy, another volume, a pending folder) must make the copy download again instead of taking a wrong
+# identity. Each driver test is one of those attacks; none of the existing tests reach the stored found place.
