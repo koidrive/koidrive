@@ -6381,6 +6381,35 @@ fn carried_moves_go_after_the_moves_they_need_and_leave_no_revived_trash_behind(
                 [("move", "d"), ("move", "b")],
             ],
         },
+        Case {
+            name: "a carried folder brings back its own trash group",
+            local: vec![
+                ("a", dir(ROOT, "new")),
+                ("c", dir("a", "c")),
+                ("b", dir("c", "b")),
+                ("x", dir(ROOT, "x")),
+            ],
+            synced: vec![
+                ("a", dir(ROOT, "old")),
+                ("c", dir("a", "c")),
+                ("b", dir("c", "b")),
+                ("f", dir("b", "f")),
+                ("x", dir(ROOT, "x")),
+            ],
+            remote: vec![
+                Remote("a", dir(ROOT, "old"), true, 1),
+                Remote("c", dir("a", "c"), true, 1),
+                Remote("b", dir("c", "b"), true, 1),
+                Remote("f", dir("b", "f"), true, 1),
+                Remote("x", dir(ROOT, "x"), false, 1),
+            ],
+            groups: vec![("b", "inner"), ("f", "inner")],
+            moved: vec![("b", dir("x", "b"))],
+            order: vec![
+                [("move", "b"), ("delete", "f")],
+                [("delete", "f"), ("move", "a")],
+            ],
+        },
     ];
     cases.retain(|case| std::env::var("CASE").map_or(true, |name| case.name.contains(&name)));
     for case in cases {

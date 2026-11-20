@@ -6508,6 +6508,9 @@ impl<'a> Scratch<'a> {
                         unreachable!("only moves leave");
                     };
                     let kind = scratch.kind(id).expect("moved nodes are in R");
+                    let trashed = (scratch.group(id))
+                        .filter(|_| !scratch.live(id))
+                        .map(str::to_owned);
                     let pending_at = match scratch.kind(parent) {
                         None => match scratch.parent(top) {
                             Some(at) => Some(at.to_owned()),
@@ -6543,6 +6546,9 @@ impl<'a> Scratch<'a> {
                             scratch.place(id, parent, name, kind);
                         }
                         _ => scratch.place(id, parent, name, kind),
+                    }
+                    if let Some(group) = trashed {
+                        scratch.revive_group(id, &group);
                     }
                     carried.push((at, aside));
                 }
