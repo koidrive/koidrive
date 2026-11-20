@@ -30,7 +30,7 @@ const SPACE_SCHEMA_DIGESTS = [
   "bb0fb66becaebda26b5a74d92d6e27e3e03637a70ec914eb4cbcf1d02bc600ac",
   "39282002f50e1334fb92e3caf96970bdd08518082994aebf6cca19c86661744e",
   "e02ca2a4d105c62a8677141db1541530f75153517cb6352d0e53f9ed44452f84",
-  "0f600e64403d4dc9c0ca649deb32f4262540acec8b1c8f68a39a39d401e42844",
+  "4432d4095ccfb57e94b47c74ac3a1b7ddaf42129f05137df821264e6749d4a74",
 ];
 const ACCOUNT_SCHEMA_DIGESTS = [
   "cdd5988fc835119f5b6ad96ebde0be7f38aac621215c10844fdb4fb99f4a7fcf",
@@ -314,4 +314,13 @@ describe("upgraded objects keep working", () => {
     const row = await inObject(stub, (sql) => sql.exec("SELECT kind, scope, expires_at_ms, issued_by FROM devices WHERE device_id = ?", deviceId).one());
     expect(row).toEqual({ kind: "device", scope: null, expires_at_ms: null, issued_by: null });
   });
+});
+
+it("plans sparse pack selection using the migrated index", async () => {
+  const details = await inObject(SPACE.stub("sparse-index-review"), (sql) =>
+    sql.exec(`EXPLAIN QUERY PLAN SELECT pack_id FROM packs
+      WHERE state = 2 AND size > (live_bytes + live_count * 36 + 16) * 2 ORDER BY live_bytes LIMIT 16`)
+      .toArray().map((row) => row.detail).join(" / "),
+  );
+  expect(details).toContain("USING INDEX packs_sparse");
 });
