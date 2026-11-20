@@ -1510,18 +1510,20 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
           this.sql.exec("DELETE FROM chunks WHERE hash = ?", hash);
           this.sql.exec("UPDATE packs SET live_count = live_count - 1, live_bytes = live_bytes - ? WHERE pack_id = ?", size, pack_id);
         }
-        this.sql.exec(
-          "UPDATE packs SET state = ? WHERE state IN (?, ?) AND live_count = 0 AND hold_until_ms < ? AND pack_id < ?",
+        const freed = this.sql.exec(
+          `UPDATE packs SET state = ? WHERE pack_id IN
+             (SELECT pack_id FROM packs WHERE state IN (?, ?) AND live_count = 0 AND hold_until_ms < ? AND pack_id < ? LIMIT ?) RETURNING pack_id`,
           PackState.DELETING,
           PackState.LIVE,
           PackState.DRAINED,
           nowMs,
           uuidv7Prefix(nowMs - PACK_FREE_AGE_MS),
-        );
-        for (const { pack_id } of this.sql.exec("SELECT pack_id FROM packs WHERE state = ?", PackState.WRITING).toArray()) {
+          GC_BATCH,
+        ).toArray().length;
+        for (const { pack_id } of this.sql.exec("SELECT pack_id FROM packs WHERE state = ? AND live_count = 0", PackState.WRITING).toArray()) {
           if (!this.compacting.has(String(pack_id))) this.sql.exec("UPDATE packs SET state = ? WHERE pack_id = ?", PackState.DELETING, pack_id);
         }
-        return due.length;
+        return Math.max(due.length, freed);
       });
 
       const graceStart = nowMs - settings.chunk_grace_days * DAY_MS;
@@ -1579,7 +1581,7 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
           .toArray()
           .map((row) => ({ key: String(row.key), hash: new Uint8Array(row.hash as ArrayBuffer), incarnation: String(row.incarnation) }));
         const packs = this.sql
-          .exec("SELECT pack_id FROM packs WHERE state = ? LIMIT ?", PackState.DELETING, R2_DELETE_BATCH - rows.length - orphans.length)
+          .exec("SELECT pack_id FROM packs WHERE state = ? AND live_count = 0 LIMIT ?", PackState.DELETING, R2_DELETE_BATCH - rows.length - orphans.length)
           .toArray()
           .map((row) => String(row.pack_id));
         if (rows.length + orphans.length + packs.length === 0) break;

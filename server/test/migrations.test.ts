@@ -327,10 +327,13 @@ it("plans sparse pack selection using the migrated index", async () => {
   expect(details).toContain("USING INDEX packs_sparse");
 });
 
-it("plans freeing empty packs using the migrated index", async () => {
+it.each([
+  "SELECT pack_id FROM packs WHERE state IN (2, 3) AND live_count = 0 AND hold_until_ms < 0 AND pack_id < '' LIMIT 1000",
+  "SELECT pack_id FROM packs WHERE state = 1 AND live_count = 0",
+  "SELECT pack_id FROM packs WHERE state = 4 AND live_count = 0 LIMIT 1000",
+])("plans GC's empty-pack lookup %s using the migrated index", async (query) => {
   const details = await inObject(SPACE.stub("empty-index-review"), (sql) =>
-    sql.exec(`EXPLAIN QUERY PLAN UPDATE packs SET state = 4 WHERE state IN (2, 3) AND live_count = 0 AND hold_until_ms < 0 AND pack_id < ''`)
-      .toArray().map((row) => row.detail).join(" / "),
+    sql.exec(`EXPLAIN QUERY PLAN ${query}`).toArray().map((row) => row.detail).join(" / "),
   );
   expect(details).toContain("USING INDEX packs_empty");
 });

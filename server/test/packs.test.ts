@@ -9,6 +9,7 @@ import type { RpcResponse } from "../src/gen/koidrive/v1/messages_pb";
 import { ChunkPlan_Action, Error_Code } from "../src/gen/koidrive/v1/rpc_pb";
 import { toHex, uuidv7 } from "../src/ids";
 import { HOLD_MS, SpaceDO } from "../src/space-do";
+import { GC_BATCH } from "../src/space/limits";
 import { ChunkState, PackState } from "../src/space/schema";
 import { chunkKey, getMeta, packKey, setMeta } from "../src/space/store";
 import { content, op, packFixture, spaceKeyOf, targetIncarnation, TestClient } from "./helpers";
@@ -367,6 +368,18 @@ describe("chunk packs: pack GC (RFC 0032 section 6)", () => {
     expect(await packsOf(space)).toMatchObject([{ pack_id: pack.packId, state: PackState.LIVE }]);
     expect(await env.BUCKET.head(pack.key)).not.toBeNull();
     expect((await gc(space, packMs + 20 * DAY + 1)).deletedPacks).toBe(1);
+  });
+
+  it("frees at most one batch of packs per pass and reports more work", async () => {
+    const space = await packedSpace();
+    const packMs = Date.now() - 8 * DAY;
+    await runInDurableObject(space.stub, (_instance, state) => {
+      for (let i = 0; i <= GC_BATCH; i++) {
+        state.storage.sql.exec("INSERT INTO packs (pack_id, size, state, live_count, live_bytes, hold_until_ms) VALUES (?, 1, ?, 0, 0, 0)", uuidv7(packMs + i), PackState.LIVE);
+      }
+    });
+    expect(await gc(space, Date.now())).toMatchObject({ deletedPacks: GC_BATCH, more: true });
+    expect(await gc(space, Date.now())).toMatchObject({ deletedPacks: 1 });
   });
 
   it.each([
