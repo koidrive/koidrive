@@ -1,12 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import type { ObjectStore } from "./host";
+import { toHex } from "./ids";
 
 const MAGIC = new TextEncoder().encode("KDPACK01");
 const FOOTER_BYTES = 16;
 const ENTRY_BYTES = 36;
 export const SUFFIX_ENTRIES = 32;
 export const SUFFIX_BYTES = FOOTER_BYTES + SUFFIX_ENTRIES * ENTRY_BYTES;
+export const MAX_PACKED_CHUNK_BYTES = 1 << 20;
+export const MAX_PACK_BODY_BYTES = 4 << 20;
 
 export interface PackedChunk {
   hash: Uint8Array;
@@ -19,8 +22,24 @@ export interface PackEntry {
   size: number;
 }
 
+function checkMembers(members: readonly { hash: Uint8Array; size: number }[]): number {
+  if (members.length === 0) throw new Error("a pack holds at least one chunk");
+  const hashes = new Set<string>();
+  let bodyBytes = 0;
+  for (const { hash, size } of members) {
+    if (hash.length !== 32) throw new Error("a packed chunk hash is 32 bytes");
+    if (size < 1 || size > MAX_PACKED_CHUNK_BYTES) throw new Error(`a packed chunk is 1 to ${MAX_PACKED_CHUNK_BYTES} bytes`);
+    const hex = toHex(hash);
+    if (hashes.has(hex)) throw new Error(`a pack lists chunk ${hex} twice`);
+    hashes.add(hex);
+    bodyBytes += size;
+  }
+  if (bodyBytes > MAX_PACK_BODY_BYTES) throw new Error(`a pack body is at most ${MAX_PACK_BODY_BYTES} bytes`);
+  return bodyBytes;
+}
+
 export function encodePack(chunks: readonly PackedChunk[]): Uint8Array {
-  const bodyBytes = chunks.reduce((sum, chunk) => sum + chunk.data.length, 0);
+  const bodyBytes = checkMembers(chunks.map(({ hash, data }) => ({ hash, size: data.length })));
   const out = new Uint8Array(bodyBytes + chunks.length * ENTRY_BYTES + FOOTER_BYTES);
   const view = new DataView(out.buffer);
   let offset = 0;
@@ -63,6 +82,7 @@ export async function readPackIndex(objects: ObjectStore, key: string): Promise<
     entries.push({ hash: index.slice(i * ENTRY_BYTES, i * ENTRY_BYTES + 32), offset, size });
     offset += size;
   }
-  if (offset !== indexOffset || entries.some((entry) => entry.size === 0)) throw new Error(`${key} has an index that does not match its body`);
+  if (offset !== indexOffset) throw new Error(`${key} has an index that does not match its body`);
+  checkMembers(entries);
   return entries;
 }

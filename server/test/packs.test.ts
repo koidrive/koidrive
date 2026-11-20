@@ -294,3 +294,49 @@ describe("chunk packs: what stays unchanged until pack GC (RFC 0032 section 11 i
     expect({ objects: noted.objects, bytes: noted.bytes }).toEqual({ objects: 4, bytes: pack.bytes.length + singles.reduce((sum, chunk) => sum + chunk.bytes.length, 0) });
   });
 });
+
+describe("chunk packs: which confirmation a row takes (RFC 0032 section 3)", () => {
+  it.each(["HEAD", "v1 receipt"] as const)("a late %s confirmation must not mark a newly packed row as single", async (kind) => {
+    const space = await packedSpace();
+    const winner = await space.prepare("both-formats", "inner-missing");
+    const outer = await space.prepare("both-formats", "outer-missing");
+    const [common, outerMissing] = outer.chunks as [Planned, Planned];
+    const pack = await storedPack(space, [common]);
+    const single = await putSingle(common);
+    const key = new URL((kind === "HEAD" ? common : outerMissing).url);
+    const hash = key.pathname.split("/").at(-1)!;
+    const held = holdHead(`spaces/${space.spaceId}/chunks/${hash.slice(0, 2)}/${hash}/${key.searchParams.get("inc")}`);
+    const waiting = space.commit(outer, kind === "HEAD" ? [] : [single]);
+    try {
+      await vi.waitFor(() => expect(held.reached).toBe(true));
+      expect(outcome(await space.commit(winner, pack.receipts, space.otherDevice()))).toBe(Error_Code.MISSING_CHUNKS);
+      expect(await rowsOf(space, [common])).toMatchObject([{ state: ChunkState.PENDING, packId: pack.packId, headChecked: 0 }]);
+    } finally {
+      held.released = true;
+      await waiting;
+    }
+    expect(outcome(await waiting)).toBe(Error_Code.MISSING_CHUNKS);
+    expect(await rowsOf(space, [common])).toMatchObject([{ state: ChunkState.PENDING, packId: pack.packId, headChecked: 0 }]);
+  });
+
+  it("skips an ineligible pack and accepts the next eligible receipt for the same chunk", async () => {
+    const space = await packedSpace();
+    const file = await space.prepare("in-ineligible-and-eligible-packs");
+    const rejected = await storedPack(space, file.chunks);
+    const accepted = await storedPack(space, file.chunks);
+    await runInDurableObject(space.stub, (_instance, state) => {
+      state.storage.sql.exec("INSERT INTO packs (pack_id, size, state, live_count, live_bytes, hold_until_ms) VALUES (?, ?, 3, 0, 0, 0)", rejected.packId, rejected.bytes.length);
+    });
+    expect(outcome(await space.commit(file, [...rejected.receipts, ...accepted.receipts]))).toBe("commit");
+    expect(await rowsOf(space, file.chunks)).toMatchObject([{ packId: accepted.packId }]);
+  });
+
+  it("keeps receipt order when the first eligible pack needs a HEAD", async () => {
+    const space = await packedSpace();
+    const file = await space.prepare("expired-and-fresh");
+    const expired = await storedPack(space, file.chunks, { expiresAtMs: Date.now() - 1000 });
+    const fresh = await storedPack(space, file.chunks);
+    expect(outcome(await space.commit(file, [...expired.receipts, ...fresh.receipts]))).toBe("commit");
+    expect(await rowsOf(space, file.chunks)).toMatchObject([{ packId: expired.packId }]);
+  });
+});

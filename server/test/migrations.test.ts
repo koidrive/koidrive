@@ -191,16 +191,16 @@ for (const kind of [SPACE, ACCOUNT]) {
       });
     }
 
-    it("leaves storage unchanged when a step after the first runs again on storage that already has its effect", async () => {
-      const current = await inObject(kind.stub("rerun-fresh"), (sql) => schemaOf(sql));
-      for (let applied = 2; applied <= kind.steps.length; applied++) {
+    for (let applied = 2; applied <= kind.steps.length; applied++) {
+      it(`leaves storage unchanged when step ${applied} runs again on storage that already has its effect`, async () => {
+        const current = await inObject(kind.stub(`rerun-fresh-${applied}`), (sql) => schemaOf(sql));
         const stub = kind.stub(`rerun-${applied}`);
         await inObject(stub, (sql) => rewrite(sql, kind, { label: "", applied, versioned: true }, applied - 1));
         await evictDurableObject(stub);
         const after = await inObject(stub, (sql) => ({ schema: schemaOf(sql), version: versionOf(sql, kind) }));
-        expect(after, `step ${applied}`).toEqual({ schema: current, version: kind.steps.length });
-      }
-    });
+        expect(after).toEqual({ schema: current, version: kind.steps.length });
+      });
+    }
 
     it("refuses storage that a newer release wrote", async () => {
       const stub = kind.stub("from-a-newer-release");

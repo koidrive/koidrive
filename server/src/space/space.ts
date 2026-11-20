@@ -1155,19 +1155,17 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
         if (confirmedPending(row)) continue;
         const object = { spaceId, hashHex: hex, incarnation: String(row.incarnation) };
         let valid = false;
-        let packed: PackLocation | undefined;
-        let stale: PackLocation | undefined;
+        let first: { at: PackLocation; expired: boolean } | undefined;
         for (const receipt of receiptsByHash.get(hex) ?? []) {
           if (receipt.size !== chunk.size) continue;
           if (await verifyChunkGrant(this.spaceKey, "receipt", object, receipt.size, receipt.token, nowMs)) valid = true;
+          if (first) continue;
           const v2 = await verifyPackedReceipt(this.spaceKey, object, receipt.size, receipt.token, nowMs);
-          if (!v2 || uuidv7Ms(v2.at.packId) <= nowMs - PACK_RECEIPT_AGE_MS) continue;
-          if (v2.expired) stale ??= v2.at;
-          else packed ??= v2.at;
+          if (v2 && uuidv7Ms(v2.at.packId) > nowMs - PACK_RECEIPT_AGE_MS && this.packTakesLocations(v2.at)) first = v2;
         }
         if (valid) receipted.push(object);
-        else if (packed) located.push({ object, size: chunk.size, at: packed });
-        else if (stale) expired.push({ object, size: chunk.size, at: stale });
+        else if (first?.expired) expired.push({ object, size: chunk.size, at: first.at });
+        else if (first) located.push({ object, size: chunk.size, at: first.at });
         else unconfirmed.push({ object, size: chunk.size });
       }
       let heads = MAX_HEAD_CHECKS;
@@ -1187,12 +1185,16 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
       return receipted;
     }
 
+    private packTakesLocations(at: PackLocation): boolean {
+      const pack = this.sql.exec("SELECT state, size FROM packs WHERE pack_id = ?", at.packId).toArray()[0];
+      return !pack || (pack.state === PackState.LIVE && pack.size === at.packSize);
+    }
+
     private recordLocations(located: readonly Located[], nowMs: number): void {
       if (located.length === 0) return;
       this.db.transactionSync(() => {
         for (const { object, size, at } of located) {
-          const pack = this.sql.exec("SELECT state, size FROM packs WHERE pack_id = ?", at.packId).toArray()[0];
-          if (pack && (pack.state !== PackState.LIVE || pack.size !== at.packSize)) continue;
+          if (!this.packTakesLocations(at)) continue;
           const moved = this.sql.exec(
             `UPDATE chunks SET pack_id = ?, pack_offset = ?, hold_until_ms = MAX(hold_until_ms, ?)
              WHERE hash = ? AND state = ? AND incarnation = ? AND pack_id IS NULL AND head_checked = 0`,
@@ -1221,7 +1223,7 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
       this.db.transactionSync(() => {
         for (const object of objects) {
           this.sql.exec(
-            "UPDATE chunks SET hold_until_ms = MAX(hold_until_ms, ?), head_checked = 1 WHERE hash = ? AND state = ? AND incarnation = ?",
+            "UPDATE chunks SET hold_until_ms = MAX(hold_until_ms, ?), head_checked = 1 WHERE hash = ? AND state = ? AND incarnation = ? AND pack_id IS NULL",
             nowMs + HOLD_MS,
             fromHex(object.hashHex)!,
             ChunkState.PENDING,

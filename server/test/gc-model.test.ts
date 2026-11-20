@@ -917,6 +917,13 @@ const scenarios: Step[][] = [
     gc,
     { t: "rewind", point: 0 },
   ],
+  [
+    minute,
+    { t: "prepare", chunks: [0, 1] },
+    { t: "put", plan: 1, outcome: "ok" },
+    { t: "pack", plans: [1], outcome: "ok" },
+    { t: "race", outer: { t: "commit", file: 0, receipts: [], extra: [0] }, at: "head", inner: [{ t: "commit", file: 1, receipts: [0], extra: [1], refused: true }] },
+  ],
 ];
 
 const cases = Number(inject("batteryCases") || 100);
