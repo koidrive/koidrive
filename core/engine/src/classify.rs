@@ -2341,13 +2341,13 @@ impl Trees {
     /// ([`TreesState::removed_from`]); an unobserved one downloads again (section 5.10).
     pub fn remove_local(&mut self, id: &NodeId) {
         let left_out = self.excluded(id) && self.ignored_in_remote(id);
-        let removed = (self.l.get(id))
-            .filter(|_| self.r.live(id).is_some() && !left_out && !self.unobserved.contains(id));
-        if let Some(local) = removed {
-            let folder = local.shape.parent.clone();
+        let folder = (self.l.get(id))
+            .filter(|_| self.r.live(id).is_some() && !left_out)
+            .map(|local| local.shape.parent.clone());
+        self.drop_local(id);
+        if let Some(folder) = folder.filter(|_| !self.unobserved.contains(id)) {
             self.removed_from.insert(id.to_owned(), folder);
         }
-        self.drop_local(id);
     }
 
     pub(crate) fn drop_local(&mut self, id: &NodeId) {

@@ -5886,10 +5886,19 @@ mod a_server_file_moved_into_an_asked_folder {
             "",
             "while a scan is pending",
             "renamed by the server out of the rules",
+            "excluded by a rule the same scan reports",
         ] {
             let (mut c, mut t, mut i) = server_folder_moved_in_while_left_out();
             let asked = question(&c).id;
+            let same_scan = unseen == "excluded by a rule the same scan reports";
+            if same_scan {
+                scan(&mut t, "sc", file("sf", "c", 9));
+            }
             assert!(c.decide(&mut t, &asked, Answer::Discard));
+            if same_scan {
+                let rules = RuleFile::parse(b"/new/ignored/c\n");
+                t.set_rules(&[] as &[&str], Source::Koiignore, Some(rules));
+            }
             t.remove_local(&"sc".into());
             match unseen {
                 "while a scan is pending" => {
@@ -6872,4 +6881,44 @@ fn a_server_folder_whose_unobserved_delete_reverts_is_taken_along_before_its_ent
             ]
         );
     }
+}
+
+#[test]
+fn an_unobserved_delete_in_the_batch_that_changes_the_rules_does_not_make_the_folder_the_users() {
+    let mut trees = trees(
+        &[
+            ("f", dir(ROOT, "new")),
+            ("x", dir(ROOT, "server")),
+            ("y", dir("x", "y")),
+            ("c", file("y", "c", 5)),
+        ],
+        &[
+            ("x", dir(ROOT, "server")),
+            ("y", dir("x", "y")),
+            ("c", file("y", "c", 5)),
+        ],
+    );
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(7));
+    commits.first_link(&mut trees, &mut ids, NOW, PriorSync::Shown);
+    let asked = question(&commits);
+    trees.set_rules(
+        &[] as &[&str],
+        Source::Koiignore,
+        Some(RuleFile::parse(b"ignored\n")),
+    );
+    let mut renamed = trees.local().get(&"y".into()).unwrap().clone();
+    renamed.shape.name = "ignored".into();
+    trees.set_local_changed("y".into(), renamed);
+    trees.remove_local(&"c".into());
+    trees.remove_local(&"y".into());
+    trees.settle(commits.aliases());
+    let mut moved = trees.local().get(&"x".into()).unwrap().clone();
+    moved.shape.parent = "f".into();
+    moved.shape.name = "ignored".into();
+    trees.set_local_changed("x".into(), moved);
+    trees.settle(commits.aliases());
+    assert!(commits.decide(&mut trees, &asked.id, Answer::Discard));
+    assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
+    trees.set_rules(&[] as &[&str], Source::Koiignore, None);
+    assert_eq!(drive_until_quiet(&mut commits, &mut trees, &mut ids), []);
 }
