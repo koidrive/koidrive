@@ -717,6 +717,7 @@ pub struct Trees {
     l_parked: ByName,
     l_displaced: ByName,
     displaced_nodes: BTreeMap<NodeId, LocalNode>,
+    readmitted_from: TrackedMap<NodeId, NodeId>,
     displaced_changed: BTreeSet<NodeId>,
     /// Every node of L, placed or parked, by its identity.
     l_identities: Identities,
@@ -842,6 +843,7 @@ impl Trees {
             l_parked: ByName::default(),
             l_displaced: ByName::default(),
             displaced_nodes: BTreeMap::new(),
+            readmitted_from: TrackedMap::default(),
             displaced_changed: BTreeSet::new(),
             l_identities: Identities::default(),
             s_names: ByName::default(),
@@ -2152,7 +2154,18 @@ impl Trees {
     /// Sets L. A reverted node that L now holds at a position other than its old one and R's was
     /// moved by the user, and is no longer reverted: that move is committed instead.
     pub fn set_local(&mut self, id: NodeId, mut node: LocalNode) {
+        if self
+            .l
+            .get(&id)
+            .is_some_and(|old| old.identity != node.identity)
+        {
+            self.readmitted_from.remove(&id);
+        }
         if let Some(old) = self.displaced_nodes.remove(&id) {
+            if old.identity == node.identity && self.displaced.contains_key(&old.shape.parent) {
+                self.readmitted_from
+                    .insert(id.clone(), old.shape.parent.clone());
+            }
             self.l_displaced.remove(&id, &old.shape);
             self.forget_identity(&id, &old.identity);
             self.displaced_changed.insert(id.clone());
@@ -2483,6 +2496,7 @@ impl Trees {
     }
 
     fn forget_local(&mut self, id: &NodeId) {
+        self.readmitted_from.remove(id);
         self.content_provenance
             .update(id, &self.r, false, |provenance| {
                 provenance.local = None;
@@ -3721,6 +3735,7 @@ impl Trees {
         let Some(node) = self.l.remove(id) else {
             return;
         };
+        self.readmitted_from.remove(id);
         match node.parked {
             false => self.l_names.remove(id, &node.shape),
             true => self.l_parked.remove(id, &node.shape),
@@ -5452,8 +5467,14 @@ impl Trees {
     }
 
     pub(crate) fn left_for_displaced(&self, id: &NodeId) -> bool {
+        let Some(from) = self.readmitted_from.get(id) else {
+            return false;
+        };
+        if !self.displaced.contains_key(from) {
+            return false;
+        }
         let placed = (self.l.get(id)).is_some_and(|node| node.is_placed());
-        if !placed || self.acknowledged_class(id) != Class::Remote {
+        if !placed || self.ignored_in_remote(id) || self.acknowledged_class(id) != Class::Remote {
             return false;
         }
         if path(&self.l, id).is_none_or(|(names, kind)| self.ignores(&names, kind)) {
@@ -5464,7 +5485,7 @@ impl Trees {
             let Some(remote) = self.r.live(current) else {
                 return false;
             };
-            if self.displaced.contains_key(&remote.parent) {
+            if &remote.parent == from {
                 return true;
             }
             current = &remote.parent;
@@ -7922,6 +7943,7 @@ impl Trees {
             found: self.found.to_map(),
             displaced: self.displaced.to_map(),
             displaced_while_creating: self.displaced_while_creating.to_set(),
+            readmitted_from: self.readmitted_from.to_map(),
             missing: self.missing.to_set(),
             edited_here: self.edited_here.to_map(),
             moved_here: self.moved_here.to_map(),
@@ -8027,6 +8049,7 @@ impl Trees {
             l_parked: _,
             l_displaced: _,
             displaced_nodes: _,
+            readmitted_from,
             displaced_changed: _,
             l_identities: _,
             s_names: _,
@@ -8073,6 +8096,7 @@ impl Trees {
             found: found.take_changes(),
             displaced: displaced.take_changes(),
             displaced_while_creating: displaced_while_creating.take_changes(),
+            readmitted_from: readmitted_from.take_changes(),
             missing: missing.take_changes(),
             edited_here: edited_here.take_changes(),
             moved_here: moved_here.take_changes(),
@@ -8346,6 +8370,7 @@ impl Trees {
             found,
             displaced,
             displaced_while_creating,
+            readmitted_from,
             missing,
             edited_here,
             moved_here,
@@ -8408,6 +8433,7 @@ impl Trees {
         self.found = found.into();
         self.displaced = displaced.into();
         self.displaced_while_creating = displaced_while_creating.into();
+        self.readmitted_from = readmitted_from.into();
         self.missing = missing.into();
         self.edited_here = edited_here.into();
         self.moved_here = moved_here.into();

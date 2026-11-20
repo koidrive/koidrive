@@ -331,6 +331,16 @@ impl Tx<'_> {
                 .insert(NodeId::from(row.get::<_, String>(0)?));
         }
         let mut stmt = self.0.prepare_cached(
+            "SELECT node_id, prior_displaced_parent FROM local_nodes WHERE prior_displaced_parent IS NOT NULL",
+        )?;
+        let mut rows = stmt.query([])?;
+        while let Some(row) = next_row!(rows, abandoned) {
+            state.trees.readmitted_from.insert(
+                NodeId::from(row.get::<_, String>(0)?),
+                NodeId::from(row.get::<_, String>(1)?),
+            );
+        }
+        let mut stmt = self.0.prepare_cached(
             "SELECT node_id, ino, ino_high, birth_ns, lost, handle, found, awaiting_create
              FROM recorded_nodes",
         )?;
@@ -841,6 +851,7 @@ impl Tx<'_> {
             found,
             displaced,
             displaced_while_creating,
+            readmitted_from,
             missing,
             edited_here,
             moved_here,
@@ -1043,6 +1054,15 @@ impl Tx<'_> {
             },
         )?;
         self.write_recorded(outside, lost, found, displaced, displaced_while_creating)?;
+        let mut parent = self.0.prepare_cached(
+            "UPDATE local_nodes SET prior_displaced_parent = ?2 WHERE node_id = ?1",
+        )?;
+        for (node, from) in readmitted_from {
+            parent.execute(params![
+                node.to_string(),
+                from.as_ref().map(ToString::to_string)
+            ])?;
+        }
         self.write_set(
             missing,
             "DELETE FROM missing_nodes WHERE node_id = ?1",

@@ -860,6 +860,11 @@ impl Tx<'_> {
                  ON CONFLICT (node_id) DO UPDATE SET parent_id = excluded.parent_id,
                   name = excluded.name, kind = excluded.kind, content = excluded.content,
                   ino = excluded.ino, ino_high = excluded.ino_high, birth_ns = excluded.birth_ns,
+                  copy_volume = CASE WHEN local_nodes.ino = excluded.ino
+                                      AND local_nodes.ino_high = excluded.ino_high
+                                      AND local_nodes.birth_ns IS excluded.birth_ns
+                                      AND local_nodes.handle IS excluded.handle
+                                     THEN local_nodes.copy_volume END,
                   parked = excluded.parked, left_out_when_placed = excluded.left_out_when_placed,
                   content_from_server = excluded.content_from_server, handle = excluded.handle",
             )?
@@ -882,6 +887,36 @@ impl Tx<'_> {
 
     pub fn remove_local_node(&self, node_id: &str) -> Result<bool> {
         self.remove("local_nodes", node_id)
+    }
+
+    pub fn each_local_copy_volume<B>(
+        &self,
+        mut each: impl FnMut(NodeId, VolumeId) -> ControlFlow<B>,
+    ) -> Result<Option<B>> {
+        let mut stmt = self.0.prepare_cached(
+            "SELECT node_id, copy_volume FROM local_nodes WHERE copy_volume IS NOT NULL",
+        )?;
+        let mut rows = stmt.query([])?;
+        while let Some(row) = rows.next()? {
+            let id: String = row.get(0)?;
+            let bytes: Vec<u8> = row.get(1)?;
+            let volume = VolumeId::from_bytes(&bytes)
+                .ok_or_else(|| Error::InvalidEngineState(format!("copy volume of {id}")))?;
+            if let ControlFlow::Break(stopped) = each(id.into(), volume) {
+                return Ok(Some(stopped));
+            }
+        }
+        Ok(None)
+    }
+
+    pub fn set_local_copy_volume(&self, id: &NodeId, volume: Option<VolumeId>) -> Result<()> {
+        self.0
+            .prepare_cached("UPDATE local_nodes SET copy_volume = ?2 WHERE node_id = ?1")?
+            .execute(params![
+                id.to_string(),
+                volume.as_ref().map(VolumeId::as_bytes)
+            ])?;
+        Ok(())
     }
 
     /// For each local node that has one, the latest change time its file can have while it still holds what L records:

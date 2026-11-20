@@ -25,7 +25,7 @@ use koidrive_engine::tree::{
     Content, ContentKey, DigestTooLong, FileIdentity, Kind, LocalNode, Names, Node, NodeId,
     RemoteNode, Shape, Tree, same_content,
 };
-use koidrive_fs::{Ctime, Entry, EntryKind, FileId, Known, Mount, Snapshot, Unread};
+use koidrive_fs::{Ctime, Entry, EntryKind, FileId, Known, Mount, Snapshot, Unread, VolumeId};
 use koidrive_proto::v1::{
     CaughtUp, ChangeRecord, ChunkRef, CommitRecord, NodeKind, NodeState, TrashPage, TreePage,
     change_record,
@@ -54,6 +54,9 @@ pub(crate) struct Engine {
     pub recovery_cause: Option<RecoveryCause>,
     unscanned: Option<BTreeSet<NodeId>>,
     pub mounts: BTreeMap<PathBuf, Mount>,
+    pub root_volume: Option<VolumeId>,
+    copy_volumes: BTreeMap<NodeId, CopyProof>,
+    volume_changes: BTreeSet<NodeId>,
     pub unread: Option<BTreeMap<PathBuf, i64>>,
     stored_ctimes: BTreeMap<NodeId, i64>,
     unstored_ctimes: BTreeMap<NodeId, i64>,
@@ -76,6 +79,12 @@ struct SlotTaker {
 const DELETE_WAIT_MS: u64 = 2_000;
 
 const BACKUP_CHECK_SLACK_MS: u64 = 250;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) struct CopyProof {
+    pub identity: FileIdentity,
+    pub volume: VolumeId,
+}
 
 /// What applying a batch of the log did.
 #[derive(Debug, PartialEq)]
@@ -108,12 +117,22 @@ impl Engine {
         let changed = self.trees.take_changed();
         self.local_written_since_load |= !changed.local.is_empty();
         for id in &changed.local {
-            match self.trees.local_entry(id) {
+            let local = self.trees.local_entry(id);
+            if let Some(held) = self.copy_volumes.get(id)
+                && local.is_none_or(|node| node.identity != held.identity)
+            {
+                self.copy_volumes.remove(id);
+                self.volume_changes.insert(id.clone());
+            }
+            match local {
                 Some(node) => tx.put_local_node(&stored(id, node))?,
                 None => {
                     tx.remove_local_node(&id.to_string())?;
                 }
             }
+        }
+        for id in std::mem::take(&mut self.volume_changes) {
+            tx.set_local_copy_volume(&id, self.copy_volumes.get(&id).map(|held| held.volume))?;
         }
         let now_ns = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -947,7 +966,22 @@ impl Engine {
     /// A rename to a path the rules exclude is a move out of what this device syncs: the node takes that position
     /// when its folder is in L or arrives in the batch, and keeps its entry otherwise ([`Trees::ignore_local`]); an
     /// entry L never held stays out.
+    #[cfg(test)]
     pub fn observe(&mut self, changes: &[Observed], now_ms: u64) -> BTreeSet<NodeId> {
+        self.observe_verified(changes, now_ms, &|_, _, _| true)
+    }
+
+    pub fn observe_verified(
+        &mut self,
+        changes: &[Observed],
+        now_ms: u64,
+        verifies: &dyn Fn(&Path, VolumeId, FileId) -> bool,
+    ) -> BTreeSet<NodeId> {
+        let copy_volume = |engine: &Self, path: &Path, id: FileId| {
+            id.birth_ns
+                .and_then(|_| engine.volume_at(path))
+                .filter(|&volume| verifies(path, volume, id))
+        };
         let unscanned = self.unscanned.take();
         let wait = 2 * DELETE_WAIT_MS;
         (self.renamed_away).retain(|_, (_, _, at, _)| now_ms < at.saturating_add(wait));
@@ -966,14 +1000,7 @@ impl Engine {
                     linked,
                     kind,
                     ..
-                } => resolve(
-                    &self.trees,
-                    &self.mounts,
-                    from,
-                    *kind,
-                    &file_identity(*id),
-                    *linked,
-                ),
+                } => self.resolve(from, *kind, &file_identity(*id), *linked, None),
                 Observed::Created { .. }
                 | Observed::Modified { .. }
                 | Observed::Reidentified { .. }
@@ -999,6 +1026,7 @@ impl Engine {
                     path,
                     ..
                 } => (self.trees.locals_with_identity(&file_identity(*id)).rev())
+                    .filter(|node| self.trees.local().get(node).is_some())
                     .find(|node| same_volume(&self.trees, &self.mounts, node, path)),
                 _ => None,
             })
@@ -1186,6 +1214,8 @@ impl Engine {
                             path,
                             EntryKind::Dir,
                             file_identity(*id),
+                            false,
+                            copy_volume(self, path, *id),
                             None,
                             None,
                             now_ms,
@@ -1195,7 +1225,13 @@ impl Engine {
                         );
                     }
                 }
-                Observed::Renamed { to, kind, id, .. } => {
+                Observed::Renamed {
+                    to,
+                    kind,
+                    id,
+                    linked,
+                    ..
+                } => {
                     let node_kind = match kind {
                         EntryKind::File => Kind::File,
                         EntryKind::Dir => Kind::Dir,
@@ -1221,6 +1257,8 @@ impl Engine {
                         to,
                         *kind,
                         identity,
+                        *linked,
+                        copy_volume(self, to, *id),
                         content,
                         None,
                         now_ms,
@@ -1241,17 +1279,21 @@ impl Engine {
                         continue;
                     }
                     let identity = file_identity(*id);
+                    let volume = copy_volume(self, path, *id);
                     let takes = |node: &&NodeId| {
                         holds_kind(&self.trees, node, *kind)
-                            && (!linked
-                                || self.trees.recorded_local(node)
-                                || self.trees.displaced_local().contains_key(*node))
+                            && (!linked || self.trees.recorded_local(node))
                     };
                     let node = (self.trees.locals_with_identity(&identity).rev())
+                        .filter(|node| self.trees.local().get(node).is_some())
                         .filter(|node| !staying.contains(*node))
                         .filter(|node| same_volume(&self.trees, &self.mounts, node, path))
                         .find(takes)
                         .cloned()
+                        .or_else(|| {
+                            self.displaced_at(volume, *kind, &identity, *linked)
+                                .cloned()
+                        })
                         .or_else(|| {
                             (gone.get(path))
                                 .filter(|(node, held, held_kind)| {
@@ -1268,6 +1310,8 @@ impl Engine {
                         path,
                         *kind,
                         identity,
+                        *linked,
+                        volume,
                         content.clone(),
                         marked_node.as_deref(),
                         now_ms,
@@ -1285,20 +1329,17 @@ impl Engine {
                 } => {
                     let Some(content) = content else { continue };
                     let identity = file_identity(*id);
-                    let node = resolve(
-                        &self.trees,
-                        &self.mounts,
-                        path,
-                        EntryKind::File,
-                        &identity,
-                        *linked,
-                    )
-                    .or_else(|| self.unclaimed(marked_node.as_deref(), *linked));
+                    let volume = copy_volume(self, path, *id);
+                    let node = self
+                        .resolve(path, EntryKind::File, &identity, *linked, volume)
+                        .or_else(|| self.unclaimed(marked_node.as_deref(), *linked));
                     self.place(
                         node,
                         path,
                         EntryKind::File,
                         identity,
+                        *linked,
+                        volume,
                         Some(content.clone()),
                         marked_node.as_deref(),
                         now_ms,
@@ -1594,12 +1635,138 @@ impl Engine {
         let at = found.get(node).map_or(path, PathBuf::as_path);
         self.trees.locals_with_identity(&identity).any(|other| {
             other != node
+                && self.trees.local().get(other).is_some()
                 && if let Some(other_at) = found.get(other) {
                     volume_at(&self.mounts, other_at) == volume_at(&self.mounts, at)
                 } else {
                     same_volume(&self.trees, &self.mounts, other, at)
                 }
         })
+    }
+
+    pub(super) fn volume_at(&self, path: &Path) -> Option<VolumeId> {
+        let volume = match volume_at(&self.mounts, path).and_then(|mount| self.mounts.get(mount)) {
+            Some(Mount::Volume(volume)) => Some(*volume),
+            Some(Mount::Unidentified) => None,
+            None => self.root_volume,
+        }?;
+        self.mount_of(volume).map(|_| volume)
+    }
+
+    pub(super) fn mount_of(&self, volume: VolumeId) -> Option<&Path> {
+        let mut paths = (self.root_volume == Some(volume))
+            .then_some(Path::new(""))
+            .into_iter()
+            .chain(self.mounts.iter().filter_map(|(path, mount)| {
+                (*mount == Mount::Volume(volume)).then_some(path.as_path())
+            }));
+        let only = paths.next()?;
+        paths.next().is_none().then_some(only)
+    }
+
+    fn resolve(
+        &self,
+        path: &Path,
+        kind: EntryKind,
+        identity: &FileIdentity,
+        linked: bool,
+        volume: Option<VolumeId>,
+    ) -> Option<NodeId> {
+        let at = local_at(&self.trees, path);
+        at.clone()
+            .filter(|id| {
+                self.trees
+                    .local()
+                    .get(id)
+                    .is_some_and(|node| node.identity.same(identity))
+            })
+            .or_else(|| {
+                if linked {
+                    return None;
+                }
+                self.trees
+                    .locals_with_identity(identity)
+                    .rev()
+                    .filter(|node| self.trees.local().get(node).is_some())
+                    .filter(|node| holds_kind(&self.trees, node, kind))
+                    .find(|node| same_volume(&self.trees, &self.mounts, node, path))
+                    .or_else(|| self.displaced_at(volume, kind, identity, linked))
+                    .cloned()
+            })
+            .or(at)
+    }
+
+    fn displaced_at(
+        &self,
+        volume: Option<VolumeId>,
+        kind: EntryKind,
+        identity: &FileIdentity,
+        linked: bool,
+    ) -> Option<&NodeId> {
+        if linked || identity.birth_ns.is_none() {
+            return None;
+        }
+        let volume = volume?;
+        let proof = CopyProof {
+            identity: *identity,
+            volume,
+        };
+        let mut candidates = self.trees.locals_with_identity(identity).filter(|id| {
+            self.trees.displaced_local().get(id) == Some(identity)
+                && self.copy_volumes.get(id) == Some(&proof)
+                && holds_kind(&self.trees, id, kind)
+        });
+        let only = candidates.next()?;
+        candidates.next().is_none().then_some(only)
+    }
+
+    pub(super) fn note_placed_copy(&mut self, id: &NodeId, volume: Option<VolumeId>) {
+        let proof = volume
+            .zip(self.trees.local().get(id).map(|local| local.identity))
+            .filter(|(_, identity)| identity.birth_ns.is_some())
+            .map(|(volume, identity)| CopyProof { identity, volume });
+        if self.copy_volumes.get(id).copied() != proof {
+            match proof {
+                Some(proof) => {
+                    self.copy_volumes.insert(id.clone(), proof);
+                }
+                None => {
+                    self.copy_volumes.remove(id);
+                }
+            }
+            self.volume_changes.insert(id.clone());
+        }
+    }
+
+    pub(super) fn displaced_copy(&self, id: &NodeId) -> Option<CopyProof> {
+        let proof = *self.copy_volumes.get(id)?;
+        (self.trees.displaced_local().get(id) == Some(&proof.identity)
+            && self.trees.local_entry(id)?.shape.kind == Kind::File)
+            .then_some(proof)
+    }
+
+    pub(super) fn displaced_copies(&self) -> impl Iterator<Item = (&NodeId, CopyProof)> {
+        self.trees
+            .displaced_local()
+            .keys()
+            .filter_map(|id| Some((id, self.displaced_copy(id)?)))
+    }
+
+    pub(super) fn found_displaced_path(&self, id: &NodeId) -> Option<PathBuf> {
+        let mut current = id;
+        let mut below = Vec::new();
+        let trees = &self.trees;
+        for _ in 0..=trees.local().len() + trees.displaced_local().len() {
+            if let Some(found) = trees.found_local().get(current) {
+                let mut path = found.clone();
+                path.extend(below.iter().rev());
+                return Some(path);
+            }
+            let node = trees.local_entry(current)?;
+            below.push(node.shape.name.as_str());
+            current = &node.shape.parent;
+        }
+        None
     }
 
     pub fn found(&self) -> BTreeMap<PathBuf, PathBuf> {
@@ -1641,6 +1808,8 @@ impl Engine {
         path: &Path,
         kind: EntryKind,
         identity: FileIdentity,
+        linked: bool,
+        volume: Option<VolumeId>,
         content: Option<Content>,
         mark: Option<&str>,
         now_ms: u64,
@@ -1655,6 +1824,7 @@ impl Engine {
         ) else {
             return;
         };
+        let readmitted = self.displaced_at(volume, kind, &identity, linked).cloned();
         let kind = match kind {
             EntryKind::File => Kind::File,
             EntryKind::Dir => Kind::Dir,
@@ -1675,9 +1845,10 @@ impl Engine {
         };
         let node = node
             .filter(|id| {
-                !(self.trees.recorded_local(id)
-                    && (self.trees.local().get(id))
-                        .is_some_and(|held| !held.identity.same(&identity)))
+                (!self.trees.displaced_local().contains_key(id) || readmitted.as_ref() == Some(id))
+                    && !(self.trees.recorded_local(id)
+                        && (self.trees.local().get(id))
+                            .is_some_and(|held| !held.identity.same(&identity)))
             })
             .or_else(|| self.trees.vanished_at(&parent, name, kind).cloned());
         let existing = node.as_ref().and_then(|id| self.trees.local().get(id));
@@ -1700,6 +1871,13 @@ impl Engine {
         if unchanged {
             if let (Some(id), Some(content)) = (&node, &shape.content) {
                 self.trees.restamp_local(id, content.mtime_ns);
+            }
+            if let Some(id) = &node {
+                self.note_placed_copy(id, volume);
+                if let Some(old) = readmitted.filter(|old| kind == Kind::File && old != id) {
+                    self.trees.remove_local(&old);
+                    touched.insert(old);
+                }
             }
             return;
         }
@@ -1810,6 +1988,11 @@ impl Engine {
         if born {
             self.trees.mark_born_as_temp(id.clone());
         }
+        self.note_placed_copy(&id, volume);
+        if let Some(old) = readmitted.filter(|old| kind == Kind::File && old != &id) {
+            self.trees.remove_local(&old);
+            touched.insert(old);
+        }
         touched.insert(id);
         let mut above = left;
         while let Some(folder) = above.filter(|folder| {
@@ -1896,6 +2079,8 @@ pub(crate) struct Stored {
     ids: Option<Vec<u8>>,
     cursor: Option<Cursor>,
     mounts: BTreeMap<PathBuf, Mount>,
+    root_volume: Option<VolumeId>,
+    copy_volumes: BTreeMap<NodeId, CopyProof>,
     unread: Option<BTreeMap<PathBuf, i64>>,
     ctimes: BTreeMap<NodeId, i64>,
     owed: BTreeSet<NodeId>,
@@ -1911,6 +2096,8 @@ impl Stored {
             ids: None,
             cursor: None,
             mounts: BTreeMap::new(),
+            root_volume: None,
+            copy_volumes: BTreeMap::new(),
             unread: None,
             ctimes: BTreeMap::new(),
             owed: BTreeSet::new(),
@@ -2001,6 +2188,25 @@ impl Stored {
         if !tx.engine_state_unless(&mut self.state, &mut abandoned_now)? {
             return Ok(false);
         }
+        let volumes = &mut self.copy_volumes;
+        let stopped = tx.each_local_copy_volume(|id, volume| {
+            if abandoned_now() {
+                return ControlFlow::Break(());
+            }
+            if let Some(node) = trees.local().get(&id) {
+                volumes.insert(
+                    id,
+                    CopyProof {
+                        identity: node.identity,
+                        volume,
+                    },
+                );
+            }
+            ControlFlow::Continue(())
+        })?;
+        if stopped.is_some() {
+            return Ok(false);
+        }
         let ctimes = &mut self.ctimes;
         let stopped = tx.each_local_ctime(|node_id, ctime_ns| {
             if abandoned_now() {
@@ -2015,6 +2221,7 @@ impl Stored {
         self.ids = tx.id_generator()?;
         self.cursor = tx.cursor()?;
         self.mounts = tx.volume_mounts()?;
+        self.root_volume = tx.link()?.and_then(|link| link.root_volume);
         self.unread = tx.unread_folders()?;
         self.owed = (tx.owed_deletes()?.into_iter()).map(NodeId::from).collect();
         Ok(true)
@@ -2027,6 +2234,8 @@ impl Stored {
             ids,
             cursor,
             mounts,
+            root_volume,
+            copy_volumes,
             unread,
             ctimes,
             owed,
@@ -2070,6 +2279,9 @@ impl Stored {
             recovery_cause: None,
             unscanned: None,
             mounts,
+            root_volume,
+            copy_volumes,
+            volume_changes: BTreeSet::new(),
             unread,
             stored_ctimes: ctimes,
             unstored_ctimes: BTreeMap::new(),
@@ -2123,32 +2335,8 @@ pub(crate) fn local_at(trees: &Trees, path: &Path) -> Option<NodeId> {
     Some(current)
 }
 
-/// The node at `path` when it has `identity`, else the node of `kind` with `identity`, else the node at `path`. The identity of
-/// a file with several links (`linked`) names no single path, so it never takes a node from another path, where the
-/// other link may still be.
-fn resolve(
-    trees: &Trees,
-    mounts: &BTreeMap<PathBuf, Mount>,
-    path: &Path,
-    kind: EntryKind,
-    identity: &FileIdentity,
-    linked: bool,
-) -> Option<NodeId> {
-    let at = local_at(trees, path);
-    at.clone()
-        .filter(|id| (trees.local().get(id)).is_some_and(|node| node.identity.same(identity)))
-        .or_else(|| {
-            (trees.locals_with_identity(identity).rev())
-                .filter(|node| holds_kind(trees, node, kind))
-                .find(|node| same_volume(trees, mounts, node, path))
-                .filter(|_| !linked)
-                .cloned()
-        })
-        .or(at)
-}
-
 fn holds_kind(trees: &Trees, node: &NodeId, kind: EntryKind) -> bool {
-    (trees.local().get(node)).is_none_or(|held| held.shape.kind == tree_kind(kind))
+    (trees.local_entry(node)).is_some_and(|held| held.shape.kind == tree_kind(kind))
 }
 
 fn tree_kind(kind: EntryKind) -> Kind {
@@ -2997,6 +3185,9 @@ mod tests {
             recovery_cause: None,
             unscanned: None,
             mounts: BTreeMap::new(),
+            root_volume: None,
+            copy_volumes: BTreeMap::new(),
+            volume_changes: BTreeSet::new(),
             unread: Some(BTreeMap::new()),
             stored_ctimes: BTreeMap::new(),
             unstored_ctimes: BTreeMap::new(),
@@ -3489,7 +3680,8 @@ mod tests {
     /// An engine with an empty space whose R is caught up, for tests of the mapper.
     fn mapper() -> (tempfile::TempDir, Engine) {
         let (dir, mut store) = store();
-        let engine = store.transaction(|tx| Engine::load(tx, ROOT)).unwrap();
+        let mut engine = store.transaction(|tx| Engine::load(tx, ROOT)).unwrap();
+        engine.root_volume = Some(VolumeId::Uuid([1; 16]));
         (dir, engine)
     }
 
@@ -5655,6 +5847,139 @@ mod tests {
         assert_eq!(engine.trees.displaced_local().get(&file), Some(&stored));
         engine.observe(&[created("recovered.txt", identity, false, 7)], 1_100);
         assert_eq!(holding(&engine, "recovered.txt"), Some((file, stored, 7)));
+    }
+
+    #[test]
+    fn the_displaced_parent_of_a_readmitted_file_survives_restarts() {
+        let (_dir, mut store) = store();
+        let volume = Some(VolumeId::Uuid([1; 16]));
+        let reopen = |store: &mut Store| {
+            let mut engine = store.transaction(|tx| Engine::load(tx, ROOT)).unwrap();
+            engine.root_volume = volume;
+            engine
+        };
+        let mut engine = reopen(&mut store);
+        let identity = FileId::stored(2, Some(10), None);
+        engine.observe(
+            &[
+                Observed::Created {
+                    path: "a".into(),
+                    kind: EntryKind::Dir,
+                    id: ino(1),
+                    linked: false,
+                    content: None,
+                    marked_node: None,
+                },
+                created("a/b", identity, false, 7),
+            ],
+            0,
+        );
+        let parent = local_at(&engine.trees, Path::new("a")).unwrap();
+        let file = local_at(&engine.trees, Path::new("a/b")).unwrap();
+        engine.trees.ignore_local(&parent);
+        engine.trees.displace_local(&file);
+        engine.trees.displace_local(&parent);
+        store.transaction(|tx| engine.checkpoint(tx)).unwrap();
+
+        let mut engine = reopen(&mut store);
+        assert!(engine.trees.displaced_local().contains_key(&file));
+        engine.observe(&[created("b", identity, false, 7)], 1);
+        assert_eq!(local_at(&engine.trees, Path::new("b")), Some(file.clone()));
+        store.transaction(|tx| engine.checkpoint(tx)).unwrap();
+
+        let mut engine = reopen(&mut store);
+        assert!(!engine.trees.displaced_local().contains_key(&file));
+        assert_eq!(
+            engine.trees.state().readmitted_from.get(&file),
+            Some(&parent)
+        );
+        let (_, folder) = RemoteNode::from_state(&node(&parent.to_string(), "a")).unwrap();
+        let placed = engine.trees.local().get(&file).unwrap().shape.clone();
+        let remote = RemoteNode {
+            shape: Shape {
+                parent: parent.clone(),
+                ..placed.clone()
+            },
+            ..folder.clone()
+        };
+        engine.trees.set_remote(parent, folder);
+        engine.trees.set_remote(file.clone(), remote);
+        engine.trees.set_synced(file.clone(), Some(placed));
+        engine.trees.rules_scanned();
+        engine.trees.settle(engine.commits.aliases());
+        let effects =
+            engine
+                .effects
+                .plan(&engine.trees, None, &mut engine.ids, 0, crate::disk::BATCH);
+        assert!(effects.iter().any(|record| {
+            record.node == file
+                && matches!(
+                    record.effect,
+                    koidrive_engine::effects::Effect::RemoveFile { .. }
+                )
+        }));
+    }
+
+    #[test]
+    fn a_displaced_file_retires_only_with_proof_that_its_copy_was_readmitted() {
+        for case in [
+            "verified",
+            "legacy",
+            "different volume",
+            "reused inode",
+            "unverified",
+        ] {
+            let (_dir, mut store) = store();
+            let volume = VolumeId::Uuid([1; 16]);
+            let identity = FileId::stored(2, Some(10), Some(20));
+            let mut engine = store.transaction(|tx| Engine::load(tx, ROOT)).unwrap();
+            engine.root_volume = (case != "legacy").then_some(volume);
+            engine.observe(&[created("old", identity, false, 7)], 0);
+            let old = local_at(&engine.trees, Path::new("old")).unwrap();
+            engine.trees.displace_local(&old);
+            store.transaction(|tx| engine.checkpoint(tx)).unwrap();
+
+            let mut engine = store.transaction(|tx| Engine::load(tx, ROOT)).unwrap();
+            engine.root_volume = Some(if case == "different volume" {
+                VolumeId::Uuid([2; 16])
+            } else {
+                volume
+            });
+            let found = if case == "reused inode" {
+                FileId::stored(2, Some(10), Some(21))
+            } else {
+                identity
+            };
+            engine.observe(&[created("new", found, true, 7)], 1);
+            let new = local_at(&engine.trees, Path::new("new")).unwrap();
+            assert_ne!(old, new, "{case}");
+            let Observed::Created { path, content, .. } = created("new", found, false, 8) else {
+                unreachable!()
+            };
+            engine.observe_verified(
+                &[Observed::Modified {
+                    path,
+                    id: found,
+                    linked: false,
+                    content,
+                    marked_node: None,
+                }],
+                2,
+                &|_, _, _| case != "unverified",
+            );
+            store.transaction(|tx| engine.checkpoint(tx)).unwrap();
+            let engine = store.transaction(|tx| Engine::load(tx, ROOT)).unwrap();
+            assert_eq!(
+                engine.trees.displaced_local().contains_key(&old),
+                case != "verified",
+                "{case}"
+            );
+            assert_eq!(
+                holding(&engine, "new").map(|(id, _, text)| (id, text)),
+                Some((new, 8)),
+                "{case}"
+            );
+        }
     }
 
     #[test]

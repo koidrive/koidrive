@@ -1,4 +1,8 @@
 -- requires: file_handles, missing_nodes, recorded_found
+ALTER TABLE local_nodes ADD COLUMN prior_displaced_parent TEXT;
+ALTER TABLE local_nodes ADD COLUMN copy_volume BLOB
+    CHECK (copy_volume IS NULL OR (birth_ns IS NOT NULL AND length(copy_volume) IN (8, 16)));
+
 INSERT INTO local_nodes (node_id, parent_id, name, kind, content, ino, ino_high, birth_ns, parked, handle)
 SELECT recorded.node_id,
        CASE WHEN synced.node_id IS NULL THEN remote.parent_id ELSE synced.parent_id END,

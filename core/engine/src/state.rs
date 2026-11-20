@@ -309,6 +309,7 @@ pub struct TreesState {
     /// identity L holds for it. L holds each without a name, and R does not hold it trashed.
     pub displaced: BTreeMap<NodeId, FileIdentity>,
     pub displaced_while_creating: BTreeSet<NodeId>,
+    pub readmitted_from: BTreeMap<NodeId, NodeId>,
     /// The nodes of `displaced` that a scan missed after a search of the ignored folders that did not look
     /// everywhere, which the commit planner holds under a question (section 5.10).
     pub missing: BTreeSet<NodeId>,
@@ -554,6 +555,7 @@ pub struct TreesChanges {
     pub found: MapChanges<NodeId, PathBuf>,
     pub displaced: MapChanges<NodeId, FileIdentity>,
     pub displaced_while_creating: SetChanges<NodeId>,
+    pub readmitted_from: MapChanges<NodeId, NodeId>,
     pub missing: SetChanges<NodeId>,
     pub edited_here: MapChanges<NodeId, u64>,
     pub moved_here: MapChanges<NodeId, MovedHere>,
@@ -606,6 +608,7 @@ impl TreesChanges {
             found,
             displaced,
             displaced_while_creating,
+            readmitted_from,
             missing,
             edited_here,
             moved_here,
@@ -657,6 +660,7 @@ impl TreesChanges {
                 &before.displaced_while_creating,
                 displaced_while_creating,
             ),
+            readmitted_from: map_changes(&before.readmitted_from, readmitted_from),
             missing: set_changes(&before.missing, missing),
             edited_here: map_changes(&before.edited_here, edited_here),
             moved_here: map_changes(&before.moved_here, moved_here),

@@ -109,10 +109,16 @@ upgrade_case!(displaced_local_nodes, |store| {
 
     let mut upgraded = Store::open(&path).unwrap();
     let (rows, displaced) = upgraded
-        .transaction(|tx| Ok::<_, koidrive_store::Error>((tx.local_nodes()?, tx.engine_state()?.trees.displaced)))
+        .transaction(|tx| {
+            let trees = tx.engine_state()?.trees;
+            assert!(trees.readmitted_from.is_empty());
+            assert!(tx.each_local_copy_volume(|id, _| std::ops::ControlFlow::Break(id))?.is_none());
+            Ok::<_, koidrive_store::Error>((tx.local_nodes()?, trees.displaced))
+        })
         .unwrap();
     for (id, expected) in expected {
         let row = rows.iter().find(|row| row.node_id == id).unwrap();
+        assert!(displaced.contains_key(&row.node_id));
         assert_eq!(row.shape.content, expected, "{}", row.shape.name);
         let Some(content) = row.shape.content.clone() else {
             continue;
