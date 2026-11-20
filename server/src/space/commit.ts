@@ -463,7 +463,7 @@ export class CommitApplier {
         this.sql.exec(`INSERT INTO field_intents (${fields.join(", ")}) VALUES (${fields.map(() => "?").join(", ")})`, ...fields.map((field) => row[field]!));
       }
       if (trashHeld(this.sql, String(node.trash_group)).some((intentId) => !held.includes(intentId))) {
-        this.sql.exec("UPDATE nodes SET meta_rev = ?, meta_dev = ? WHERE node_id = ?", this.ctx.seq, this.dev, nodeId);
+        this.sql.exec("UPDATE nodes SET meta_rev = ? WHERE node_id = ?", this.ctx.seq, nodeId);
       }
     }
   }
