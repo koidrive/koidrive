@@ -4928,7 +4928,9 @@ impl Trees {
     /// or did not hold it, was deleted by another device, so L holds nothing the server lacks. It
     /// keeps S whatever the new R holds, so the trash, R lacking the node, or the content a restore
     /// brought back is a remote change, and the delete is not undone. A lost move of this device
-    /// out of the trash is not sent again for such a node either, since that delete came after it.
+    /// out of the trash is not sent again for such a node either, since that delete came after it,
+    /// nor for a node R holds in the same trash group, since the server would bring the node back
+    /// with that group.
     ///
     /// The other changes are files whose content L and S held alike while R held other content
     /// live, each with whether a lost commit of this device set R's position of it and the shape R
@@ -4986,9 +4988,18 @@ impl Trees {
             .filter(|(_, change)| *change == Untaken::Delete)
             .map(|(id, _)| id)
             .collect();
+        let groups_trashed_again: BTreeSet<&str> = (trashed_again.iter())
+            .filter_map(|id| self.r.get(id))
+            .filter(|remote| remote.trashed && !remote.trash_group.is_empty())
+            .map(|remote| remote.trash_group.as_str())
+            .collect();
         let before = |id: &NodeId, moved: &MovedHere| {
             (self.r.get(id))
-                .filter(|remote| !remote.trashed || !trashed_again.contains(id))
+                .filter(|remote| {
+                    !remote.trashed
+                        || !(trashed_again.contains(id)
+                            || groups_trashed_again.contains(remote.trash_group.as_str()))
+                })
                 .is_some_and(|remote| {
                     remote.meta_rev <= held_through
                         || (moved.upgraded && remote.meta_rev < moved.seq)

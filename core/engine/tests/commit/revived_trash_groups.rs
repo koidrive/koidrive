@@ -946,3 +946,61 @@ fn a_lost_rename_out_of_the_trash_yields_to_a_later_trash_of_its_folder_this_dev
     );
     assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
 }
+
+#[test]
+fn a_lost_folder_restore_yields_to_a_later_trash_of_a_member_this_device_had_not_taken() {
+    let mut trees = trees(&[
+        (
+            "t",
+            Some(dir(ROOT, "T2")),
+            Some(dir(ROOT, "T")),
+            Some(trashed_at(dir(ROOT, "T"), 1)),
+        ),
+        (
+            "g",
+            Some(file("t", "g", 1)),
+            Some(file("t", "g", 1)),
+            Some(trashed_at(file("t", "g", 1), 1)),
+        ),
+    ]);
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
+    assert_eq!(ops(&commit), [mv("t", ROOT, "T2")]);
+    trees.set_remote_made_here("g".into(), remote_at(file("t", "g", 1), 5));
+    acknowledge_made_here(
+        &mut trees,
+        &mut commits,
+        5,
+        &[("t", remote_at(dir(ROOT, "T2"), 5))],
+    );
+    let later = RemoteNode {
+        trash_group: "commit-of-z:0".into(),
+        ..trashed_at(file("t", "g", 1), 6)
+    };
+    trees.set_remote("g".into(), later);
+    trees.settle(commits.aliases());
+    assert_eq!(commits.connected(&welcome(0)), Reconnect::AheadOfServer);
+    let (deleted, edited, moved) = (
+        trees.trashed_here(),
+        trees.edited_here(),
+        trees.moved_here(),
+    );
+    let synced = trees.taken_from_others(|seq| commits.lost_here(seq));
+    let untaken = trees.untaken_changes(|seq| commits.lost_here(seq));
+    assert_eq!(untaken, [("g".into(), Untaken::Delete)]);
+    trees.set_listed_remote("t".into(), trashed_at(dir(ROOT, "T"), 1));
+    trees.set_listed_remote("g".into(), trashed_at(file("t", "g", 1), 1));
+    trees.forget_lost(
+        deleted,
+        edited,
+        synced,
+        moved,
+        untaken,
+        Default::default(),
+        &Default::default(),
+        commits.held_through(),
+        commits.accepted(),
+    );
+    trees.settle(commits.aliases());
+    assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
+}
