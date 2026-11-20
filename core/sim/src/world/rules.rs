@@ -53,43 +53,44 @@ pub(super) fn excluded_op(trees: &Trees, ops: &[Op]) -> Vec<String> {
         let placed = match op.op.as_ref() {
             Some(op::Op::CreateFile(create)) => Some((
                 &create.node_id,
-                &create.parent_id,
+                NodeId::from(&create.parent_id),
                 named(&create.name, &create.pending_for),
                 Kind::File,
             )),
             Some(op::Op::CreateDir(create)) => Some((
                 &create.node_id,
-                &create.parent_id,
+                NodeId::from(&create.parent_id),
                 named(&create.name, &create.pending_for),
                 Kind::Dir,
             )),
             Some(op::Op::Move(moved)) => server(&NodeId::from(&moved.node_id)).map(|shape| {
                 (
                     &moved.node_id,
-                    &moved.new_parent_id,
+                    NodeId::from(&moved.new_parent_id),
                     named(&moved.new_name, &moved.pending_for),
                     shape.kind,
                 )
             }),
-            Some(op::Op::Restore(restore)) if !restore.target_parent_id.is_empty() => {
-                (trees.remote().get(&NodeId::from(&restore.node_id))).map(|node| {
-                    let name = match restore.name.as_str() {
-                        "" => node.shape.name.as_str(),
-                        name => name,
-                    };
-                    (
-                        &restore.node_id,
-                        &restore.target_parent_id,
-                        name,
-                        node.shape.kind,
-                    )
-                })
+            Some(op::Op::Restore(restore)) if restore.version_id.is_empty() => {
+                (trees.remote().get(&NodeId::from(&restore.node_id)))
+                    .filter(|node| node.trashed)
+                    .map(|node| {
+                        let parent = match restore.target_parent_id.as_str() {
+                            "" => node.shape.parent.clone(),
+                            parent => NodeId::from(parent),
+                        };
+                        let name = match restore.name.as_str() {
+                            "" => node.shape.name.as_str(),
+                            name => name,
+                        };
+                        (&restore.node_id, parent, name, node.shape.kind)
+                    })
             }
             _ => None,
         };
         if let Some((id, parent, name, kind)) = placed {
             let shape = Shape {
-                parent: NodeId::from(parent),
+                parent,
                 name: name.to_owned(),
                 kind,
                 content: None,

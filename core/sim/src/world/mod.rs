@@ -3828,31 +3828,48 @@ mod tests {
         trees.set_remote("b".into(), folder("root", "blocked", false));
         trees.set_remote("p".into(), folder("root", "p", false));
         trees.set_remote("x".into(), folder("b", "x", true));
+        trees.set_remote("y".into(), folder("root", "blocked-x", true));
+        trees.set_remote("z".into(), folder("b", "z", false));
         trees.set_rules(
             &[] as &[&str],
             koidrive_engine::ignore::Source::Koiignore,
-            Some(koidrive_engine::ignore::RuleFile::parse(b"/blocked/\n")),
+            Some(koidrive_engine::ignore::RuleFile::parse(
+                b"/blocked/\n/blocked-x/\n",
+            )),
         );
         let op = |op| koidrive_proto::v1::Op {
             op: Some(op),
             ..Default::default()
         };
-        let restore = op(op::Op::Restore(koidrive_proto::v1::Restore {
-            node_id: "x".into(),
-            target_parent_id: "p".into(),
-            ..Default::default()
-        }));
-        let create = op(op::Op::CreateFile(koidrive_proto::v1::CreateFile {
-            node_id: "c".into(),
-            parent_id: "x".into(),
-            name: "c".into(),
-            ..Default::default()
-        }));
+        let restore = |node: &str, parent: &str, name: &str| {
+            op(op::Op::Restore(koidrive_proto::v1::Restore {
+                node_id: node.into(),
+                target_parent_id: parent.into(),
+                name: name.into(),
+                ..Default::default()
+            }))
+        };
+        let create = |parent: &str| {
+            op(op::Op::CreateFile(koidrive_proto::v1::CreateFile {
+                node_id: "c".into(),
+                parent_id: parent.into(),
+                name: "c".into(),
+                ..Default::default()
+            }))
+        };
         assert_eq!(
-            excluded_op(&trees, &[restore, create.clone()]),
+            excluded_op(&trees, &[restore("x", "p", ""), create("x")]),
             Vec::<String>::new()
         );
-        assert_eq!(excluded_op(&trees, &[create]).len(), 1);
+        assert_eq!(excluded_op(&trees, &[create("x")]).len(), 1);
+        assert_eq!(
+            excluded_op(&trees, &[restore("y", "", "allowed-x"), create("y")]),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            excluded_op(&trees, &[restore("z", "p", ""), create("z")]),
+            ["node c at [\"blocked\", \"z\", \"c\"]"]
+        );
     }
 
     #[test]
