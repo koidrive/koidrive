@@ -546,10 +546,10 @@ const JOURNAL_STREAM: u64 = 0x6a09_e667_f3bc_c908;
 impl PartialEq for Journal {
     fn eq(&self, other: &Self) -> bool {
         self.rows == other.rows
-            && *self.history == *other.history
+            && self.history == other.history
             && *self.seen == *other.seen
             && self.listed == other.listed
-            && *self.absent == *other.absent
+            && self.absent == other.absent
     }
 }
 
@@ -594,10 +594,10 @@ impl Journal {
         }));
         JournalState {
             rows,
-            history: (*self.history).clone(),
-            seen: (*self.seen).clone(),
+            history: self.history.to_map(),
+            seen: self.seen.to_map(),
             listed: self.listed,
-            absent: (*self.absent).clone(),
+            absent: self.absent.to_map(),
         }
     }
 

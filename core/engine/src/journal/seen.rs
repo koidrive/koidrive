@@ -54,7 +54,7 @@ impl SeenLists {
 }
 
 impl Deref for SeenLists {
-    type Target = BTreeMap<NodeId, Vec<Seen>>;
+    type Target = TrackedMap<NodeId, Vec<Seen>>;
 
     fn deref(&self) -> &Self::Target {
         &self.lists
