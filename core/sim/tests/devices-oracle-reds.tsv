@@ -725,7 +725,6 @@ devices::rewinds_converge_from_seed_319	case-2454	DeleteUndone	the delete of nod
 devices::rewinds_converge_from_seed_319	case-2517	DeleteUndone	the delete of node 01a1c2c0-39ea-7a9c-a2fe-ec8a5505a73c on device 0 came undone, and no change its user did not see brought the node back
 devices::rewinds_converge_from_seed_319	case-2543	DeleteUndone	the delete of node 01a1c2c0-39a0-7c5c-8466-a7d0954b76a3 on device 1 came undone, and no change its user did not see brought the node back
 devices::rewinds_converge_from_seed_319	case-2659	DeleteUndone	the delete of node 01a1c2c0-39a0-7ea7-93f8-3d888a182e12 on device 1 came undone, and no change its user did not see brought the node back
-devices::rewinds_converge_from_seed_319	case-2686	WriteKept	write 4 of the publish of node 01a1c2c0-39a0-7c5c-8466-a7d0954b76a3 on device 1 is not in the server's tree, and no later change that saw it, no delete that saw it and no rule for lost changes settles it
 devices::rewinds_converge_from_seed_319	case-2694	DeleteUndone	the delete of node 01a1c2c0-39a0-7510-83bc-38d6c6b89fe4 on device 1 came undone, and no change its user did not see brought the node back
 devices::rewinds_converge_from_seed_319	case-2780	DeleteUndone	the delete of node 01a1c2c0-39a0-76b6-8f17-7744bb83aba9 on device 2 came undone, and no change its user did not see brought the node back
 devices::rewinds_converge_from_seed_319	case-2821	DeleteUndone	the delete of node 01a1c2c0-39a0-7741-9272-f1d95e3d688f on device 1 came undone, and no change its user did not see brought the node back
