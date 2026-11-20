@@ -170,6 +170,7 @@ impl Tx<'_> {
                     rev,
                     parent: NodeId::from(parent),
                     name,
+                    trash_group: None,
                 });
             state
                 .trees
@@ -340,7 +341,7 @@ impl Tx<'_> {
                 .insert(NodeId::from(row.get::<_, String>(0)?), moved);
         }
         let mut stmt = self.0.prepare_cached(
-            "SELECT node_id, rev, parent_id, name FROM past_positions ORDER BY node_id, position",
+            "SELECT node_id, rev, parent_id, name, trash_group FROM past_positions ORDER BY node_id, position",
         )?;
         let mut rows = stmt.query([])?;
         while let Some(row) = next_row!(rows, abandoned) {
@@ -348,6 +349,7 @@ impl Tx<'_> {
                 rev: row.get(1)?,
                 parent: NodeId::from(row.get::<_, Option<String>>(2)?.unwrap_or_default()),
                 name: row.get(3)?,
+                trash_group: row.get(4)?,
             };
             let node: NodeId = NodeId::from(row.get::<_, String>(0)?);
             state
@@ -1045,8 +1047,8 @@ impl Tx<'_> {
             .0
             .prepare_cached("DELETE FROM past_positions WHERE node_id = ?1")?;
         let mut put = self.0.prepare_cached(
-            "INSERT INTO past_positions (node_id, position, rev, parent_id, name)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
+            "INSERT INTO past_positions (node_id, position, rev, parent_id, name, trash_group)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
         )?;
         for (node, past) in past_positions {
             let node = node.to_string();
@@ -1057,7 +1059,8 @@ impl Tx<'_> {
                     index,
                     position.rev,
                     non_empty(&position.parent.to_string()),
-                    &position.name
+                    &position.name,
+                    &position.trash_group
                 ])?;
             }
         }

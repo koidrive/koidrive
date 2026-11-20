@@ -1385,12 +1385,15 @@ impl Trees {
         if (self.moved_here.get(&id)).is_some_and(|moved| !kept(moved.seq)) {
             self.moved_here.remove(&id);
         }
-        let replaced = (self.r.get(&id)).filter(|old| !old.trashed && old.meta_rev < node.meta_rev);
+        let replaced = (self.r.get(&id))
+            .filter(|old| !old.trashed || (made_here && !old.trash_group.is_empty()))
+            .filter(|old| old.meta_rev < node.meta_rev);
         if let Some(old) = replaced {
             let past = Agreed {
                 rev: old.meta_rev,
                 parent: old.shape.parent.clone(),
                 name: old.shape.name.clone(),
+                trash_group: old.trashed.then(|| old.trash_group.clone()),
             };
             let moved = self.moved_here.get(&id).map(|moved| moved.seq);
             let earlier = self.past_positions.get_or_insert_with(id.clone(), Vec::new);
@@ -4904,6 +4907,7 @@ impl Trees {
                     past.rev == seq
                         && past.parent == remote.shape.parent
                         && past.name == remote.shape.name
+                        && past.trash_group.is_none()
                 })
         };
         if (self.r.get(id)).is_some_and(|remote| !remote.trashed && held(remote)) {
@@ -5236,7 +5240,10 @@ impl Trees {
     /// bootstrap ([`Trees::untaken_changes`]). A node L held as S did while R held it in the trash,
     /// or did not hold it, was deleted by another device, so L holds nothing the server lacks. It
     /// keeps S whatever the new R holds, so the trash, R lacking the node, or the content a restore
-    /// brought back is a remote change, and the delete is not undone.
+    /// brought back is a remote change, and the delete is not undone. A lost move of this device
+    /// out of the trash is not sent again for such a node either, since that delete came after it,
+    /// nor for a node R holds in the same trash group, since the server would bring the node back
+    /// with that group.
     ///
     /// The other changes are files whose content L and S held alike while R held other content
     /// live, each with whether a lost commit of this device set R's position of it and the shape R
@@ -5287,15 +5294,25 @@ impl Trees {
             .cloned()
             .collect();
         let seen = |id: &NodeId, remote: &RemoteNode| {
-            (self.past_positions.get(id).into_iter().flatten()).any(|past| {
-                past.rev == remote.meta_rev
-                    && past.parent == remote.shape.parent
-                    && past.name == remote.shape.name
-            })
+            (self.past_positions.get(id).into_iter().flatten())
+                .any(|past| same_record(past, remote))
         };
+        let trashed_again: BTreeSet<&NodeId> = (untaken.iter())
+            .filter(|(_, change)| *change == Untaken::Delete)
+            .map(|(id, _)| id)
+            .collect();
+        let groups_trashed_again: BTreeSet<&str> = (trashed_again.iter())
+            .filter_map(|id| self.r.get(id))
+            .filter(|remote| remote.trashed && !remote.trash_group.is_empty())
+            .map(|remote| remote.trash_group.as_str())
+            .collect();
         let before = |id: &NodeId, moved: &MovedHere| {
             (self.r.get(id))
-                .filter(|remote| !remote.trashed)
+                .filter(|remote| {
+                    !remote.trashed
+                        || !(trashed_again.contains(id)
+                            || groups_trashed_again.contains(remote.trash_group.as_str()))
+                })
                 .is_some_and(|remote| {
                     remote.meta_rev <= held_through
                         || (moved.upgraded && remote.meta_rev < moved.seq)
@@ -5362,17 +5379,21 @@ impl Trees {
         }
         let mut queued = BTreeSet::new();
         for id in &lost_moves {
-            let (Some(remote), Some(synced)) = (self.r.live(id), self.s.live(id)) else {
+            let (Some(remote), Some(synced)) = (self.r.get(id), self.s.live(id)) else {
                 continue;
             };
             let before = Shape {
-                parent: remote.parent.clone(),
-                name: remote.name.clone(),
+                parent: remote.shape.parent.clone(),
+                name: remote.shape.name.clone(),
                 ..synced.clone()
             };
+            let revived = remote.trashed && self.l.get(id).is_some();
             if !self.set_synced_if_valid(id.clone(), Some(before.clone())) {
                 queued.insert(id.clone());
                 self.wait(id.clone(), Some(before), Origin::Other);
+            }
+            if revived {
+                self.hold_unsent_move(id.clone());
             }
         }
         for (id, _) in edited {
@@ -6642,6 +6663,7 @@ impl Trees {
                 rev: remote.meta_rev,
                 parent: remote.shape.parent.clone(),
                 name: remote.shape.name.clone(),
+                trash_group: None,
             });
         }
     }
@@ -7383,6 +7405,13 @@ impl Trees {
         self.unknown_rules.clear();
         Ok(Some(()))
     }
+}
+
+fn same_record(past: &Agreed, remote: &RemoteNode) -> bool {
+    past.rev == remote.meta_rev
+        && past.parent == remote.shape.parent
+        && past.name == remote.shape.name
+        && past.trash_group.as_deref() == remote.trashed.then_some(remote.trash_group.as_str())
 }
 
 fn before_move(past: &[Agreed], seq: u64) -> Option<&Agreed> {

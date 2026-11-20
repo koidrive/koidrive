@@ -105,6 +105,7 @@ fn trees_state() -> TreesState {
                     rev: 3,
                     parent: ROOT.into(),
                     name: "m".into(),
+                    trash_group: None,
                 }),
             ),
             ("p".into(), None),
@@ -136,6 +137,7 @@ fn trees_state() -> TreesState {
                 rev: 1,
                 parent: ROOT.into(),
                 name: "q".into(),
+                trash_group: None,
             }],
         )]
         .into(),
