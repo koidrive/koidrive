@@ -6003,7 +6003,7 @@ fn a_move_the_answer_carries_into_a_live_folder_waits_for_that_folders_own_move(
     );
     let (mut commits, mut ids) = recovered(&mut trees, 0);
     let question = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["a", "d"]);
-    assert!(commits.decide(&question.id, Answer::Publish));
+    assert!(commits.decide(&mut trees, &question.id, Answer::Publish));
     let mut moved = trees.local().get(&"b".into()).unwrap().clone();
     moved.shape = file("d", "child", 1);
     trees.set_local("b".into(), moved);
@@ -6039,7 +6039,7 @@ fn carried_moves_follow_the_moves_of_the_folders_they_go_into_when_the_answer_is
     );
     let (mut commits, mut ids) = recovered(&mut trees, 0);
     for question in commits.questions().to_vec() {
-        assert!(commits.decide(&question.id, Answer::Publish));
+        assert!(commits.decide(&mut trees, &question.id, Answer::Publish));
     }
     let sent = ops(&mut commits, &mut trees, &mut ids);
     let at = |op: (&str, &str)| {
@@ -6075,7 +6075,7 @@ fn publishing_a_folder_moved_out_of_a_trashed_parent_with_a_move_into_a_new_fold
     );
     let (mut commits, mut ids) = recovered(&mut trees, 0);
     for question in commits.questions().to_vec() {
-        assert!(commits.decide(&question.id, Answer::Publish));
+        assert!(commits.decide(&mut trees, &question.id, Answer::Publish));
     }
     let sent = ops(&mut commits, &mut trees, &mut ids);
     let expected = [
@@ -6113,7 +6113,7 @@ fn an_answer_commits_when_a_carried_move_goes_into_a_folder_that_moves_into_a_ne
     );
     let (mut commits, mut ids) = recovered(&mut trees, 0);
     for question in commits.questions().to_vec() {
-        assert!(commits.decide(&question.id, Answer::Publish));
+        assert!(commits.decide(&mut trees, &question.id, Answer::Publish));
     }
     let mut moved = trees.local().get(&"d".into()).unwrap().clone();
     moved.shape = dir("b", "d");
@@ -6154,7 +6154,7 @@ fn an_answer_commits_when_an_earlier_carried_move_takes_another_moved_node_out_o
     );
     let (mut commits, mut ids) = recovered(&mut trees, 0);
     for question in commits.questions().to_vec() {
-        assert!(commits.decide(&question.id, Answer::Publish));
+        assert!(commits.decide(&mut trees, &question.id, Answer::Publish));
     }
     for (id, shape) in [("d", dir("b", "d")), ("f", file("n", "f", 1))] {
         let mut moved = trees.local().get(&id.into()).unwrap().clone();
@@ -6215,7 +6215,12 @@ fn a_carried_move_waits_for_its_folders_move_into_a_new_folder_or_its_own_child(
         ("y", dir(ROOT, "y"), Some(dir("d", "y"))),
         ("d", dir("y", "d"), None),
     ];
-    for moved in [new_folder, swap] {
+    let swap_into_a_held_name = [
+        ("y", dir(ROOT, "y"), Some(dir("d", "y"))),
+        ("d", dir("y", "d"), None),
+        ("z", dir("d", "z"), Some(dir(ROOT, "y"))),
+    ];
+    for moved in [&new_folder[..], &swap, &swap_into_a_held_name] {
         let mut local = vec![
             ("a", dir(ROOT, "new")),
             ("c", dir("a", "c")),
@@ -6236,7 +6241,7 @@ fn a_carried_move_waits_for_its_folders_move_into_a_new_folder_or_its_own_child(
             Remote("x", dir(ROOT, "x"), false, 1),
             Remote("d", dir("x", "d"), false, 1),
         ];
-        for (id, here, before) in &moved {
+        for (id, here, before) in moved {
             local.push((id, here.clone()));
             if let Some(before) = before {
                 synced.push((id, before.clone()));
@@ -6246,7 +6251,7 @@ fn a_carried_move_waits_for_its_folders_move_into_a_new_folder_or_its_own_child(
         let mut trees = trees(&local, &synced, &remote);
         let (mut commits, mut ids) = recovered(&mut trees, 0);
         for question in commits.questions().to_vec() {
-            assert!(commits.decide(&question.id, Answer::Publish));
+            assert!(commits.decide(&mut trees, &question.id, Answer::Publish));
         }
         let mut moved = trees.local().get(&"b".into()).unwrap().clone();
         moved.shape = file("d", "child", 1);
@@ -6287,7 +6292,7 @@ fn an_answer_and_its_carried_moves_go_before_a_new_file_takes_the_name_their_fol
     );
     let (mut commits, mut ids) = recovered(&mut trees, 0);
     for question in commits.questions().to_vec() {
-        assert!(commits.decide(&question.id, Answer::Publish));
+        assert!(commits.decide(&mut trees, &question.id, Answer::Publish));
     }
     let mut moved = trees.local().get(&"d".into()).unwrap().clone();
     moved.shape = dir("b", "d");
@@ -6326,4 +6331,62 @@ fn an_answer_and_its_carried_moves_go_before_a_new_file_takes_the_name_their_fol
     ] {
         assert!(sent.contains(&(op.0, op.1.into())), "{sent:?}");
     }
+}
+
+#[test]
+fn a_second_answer_waits_for_its_folders_move_once_the_first_answer_lets_that_move_go() {
+    let mut trees = trees(
+        &[
+            ("a", dir(ROOT, "a1")),
+            ("n", dir("a", "n")),
+            ("b", dir("n", "b")),
+            ("c", dir("a", "c")),
+            ("d", dir("c", "d")),
+            ("e", dir(ROOT, "e1")),
+            ("g", dir("e", "g")),
+            ("i", dir("g", "i")),
+            ("h", dir("n", "h")),
+            ("x", dir(ROOT, "x")),
+        ],
+        &[
+            ("a", dir(ROOT, "a")),
+            ("b", dir(ROOT, "b")),
+            ("c", dir("a", "c")),
+            ("d", dir("c", "d")),
+            ("e", dir(ROOT, "e")),
+            ("g", dir("e", "g")),
+            ("i", dir("g", "i")),
+            ("h", dir("x", "h")),
+            ("x", dir(ROOT, "x")),
+        ],
+        &[
+            Remote("a", dir(ROOT, "a"), true, 1),
+            Remote("b", dir(ROOT, "b"), false, 1),
+            Remote("c", dir("a", "c"), true, 1),
+            Remote("d", dir("c", "d"), true, 1),
+            Remote("e", dir(ROOT, "e"), true, 1),
+            Remote("g", dir("e", "g"), true, 1),
+            Remote("i", dir("g", "i"), true, 1),
+            Remote("h", dir("x", "h"), false, 1),
+            Remote("x", dir(ROOT, "x"), false, 1),
+        ],
+    );
+    let (mut commits, mut ids) = recovered(&mut trees, 0);
+    for question in commits.questions().to_vec() {
+        assert!(commits.decide(&mut trees, &question.id, Answer::Publish));
+    }
+    for (id, shape) in [("d", dir("b", "d")), ("i", dir("h", "i"))] {
+        let mut moved = trees.local().get(&id.into()).unwrap().clone();
+        moved.shape = shape;
+        trees.set_local(id.into(), moved);
+    }
+    trees.settle(&Default::default());
+    let sent = ops(&mut commits, &mut trees, &mut ids);
+    let at = |op: (&str, &str)| {
+        (sent.iter().position(|sent| *sent == (op.0, op.1.into())))
+            .unwrap_or_else(|| panic!("{op:?} not in {sent:?}"))
+    };
+    assert!(at(("move", "a")) < at(("move", "d")), "{sent:?}");
+    assert!(at(("move", "d")) < at(("move", "b")), "{sent:?}");
+    assert!(at(("move", "h")) < at(("move", "i")), "{sent:?}");
 }
