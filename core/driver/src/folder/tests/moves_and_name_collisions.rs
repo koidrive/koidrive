@@ -1369,3 +1369,43 @@ fn a_save_that_renames_the_file_away_and_writes_it_again_keeps_its_node() {
         }
     }
 }
+
+#[test]
+fn a_file_renamed_away_keeps_its_node_while_it_exists_or_when_an_older_file_takes_its_name() {
+    for backup_kept in [true, false] {
+        clock::freeze();
+        let mut remote = Remote::new();
+        let (site, mut a) = linked(&mut remote, "a");
+        let docs = site.root.join("docs");
+        fs::create_dir_all(&docs).unwrap();
+        a.create(&mut remote, &docs.join("report.txt"), b"version one");
+        a.create(&mut remote, &docs.join("notes.txt"), b"notes");
+        a.rest(&mut remote);
+        let nodes = server_nodes(&remote);
+        let (report, notes) = (live_id(&nodes, "report.txt"), live_id(&nodes, "notes.txt"));
+        clock::advance_to(clock::instant() + Duration::from_secs(60));
+        fs::rename(docs.join("report.txt"), docs.join("report.txt~")).unwrap();
+        match backup_kept {
+            true => fs::write(docs.join("report.txt"), b"version two").unwrap(),
+            false => fs::rename(docs.join("notes.txt"), docs.join("report.txt")).unwrap(),
+        }
+        a.scan_until(|a| {
+            (a.folder.engine.trees.local().iter()).any(|(_, node)| node.shape.name == "report.txt~")
+        });
+        if !backup_kept {
+            fs::remove_file(docs.join("report.txt~")).unwrap();
+        }
+        a.rest(&mut remote);
+        let nodes = server_nodes(&remote);
+        if backup_kept {
+            assert_eq!(live_id(&nodes, "report.txt~"), report);
+            assert_ne!(live_id(&nodes, "report.txt"), report);
+        } else {
+            assert_eq!(live_id(&nodes, "report.txt"), notes);
+            assert!(
+                !nodes.iter().any(|node| node.1 == report && node.2),
+                "{nodes:?}"
+            );
+        }
+    }
+}
