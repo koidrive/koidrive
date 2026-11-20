@@ -482,7 +482,7 @@ async function act(world: World, step: Step): Promise<boolean> {
       const outerGate: Gate = { reached: false, released: false };
       pauses.set(step.at, outerGate);
       let outerDone = false;
-      const outer = act(world, step.outer).finally(() => (outerDone = true));
+      const outer = act(world, step.outer).catch(interrupted).finally(() => (outerDone = true));
       await until(() => outerGate.reached || outerDone);
       pauses.clear();
       const outerOutcomes = { put: r2.put, retire: r2.retire, del: r2.del };
@@ -491,7 +491,7 @@ async function act(world: World, step: Step): Promise<boolean> {
       const innerGate: Gate = { reached: false, released: false };
       if (step.innerAt !== undefined) pauses.set(step.innerAt, innerGate);
       let innerDone = false;
-      const inner = act(world, step.inner.at(-1)!).finally(() => (innerDone = true));
+      const inner = act(world, step.inner.at(-1)!).catch(interrupted).finally(() => (innerDone = true));
       await until(() => innerGate.reached || innerDone);
       pauses.clear();
       const innerOutcomes = { put: r2.put, retire: r2.retire, del: r2.del };
@@ -504,6 +504,11 @@ async function act(world: World, step: Step): Promise<boolean> {
       return outerGate.reached && (step.innerAt === undefined || innerGate.reached);
     }
   }
+}
+
+function interrupted(error: unknown): false {
+  if (error instanceof Error && error.message.startsWith("restarting")) return false;
+  throw error;
 }
 
 type Owner = { compacting: Set<string>; settings(): { chunk_grace_days: number } };
@@ -1112,6 +1117,30 @@ const scenarios: Step[][] = [
     { t: "commit", file: 0, receipts: [0], extra: [2], refused: true },
     { t: "clock", ms: 6 * DAY - HOUR },
     { t: "race", outer: { t: "commit", file: 0, receipts: [1], extra: [], refused: true }, at: "head", inner: [{ t: "clock", ms: 2 * DAY }, { t: "prepare", chunks: [1] }, gc] },
+  ],
+  [
+    minute,
+    { t: "prepare", chunks: [0] },
+    { t: "put", plan: 0, outcome: "ok" },
+    { t: "race", outer: { t: "commit", file: 0, receipts: [], extra: [0] }, at: "head", inner: [{ t: "crash" }] },
+  ],
+  [
+    minute,
+    { t: "prepare", chunks: [0] },
+    { t: "pack", plans: [0], outcome: "ok" },
+    { t: "commit", file: 0, receipts: [0], extra: [1], refused: true },
+    { t: "clock", ms: 8 * DAY },
+    { t: "race", outer: gc, at: "retirePacks", inner: [{ t: "crash" }] },
+  ],
+  [
+    minute,
+    { t: "prepare", chunks: [0] },
+    { t: "put", plan: 0, outcome: "ok" },
+    { t: "commit", file: 0, receipts: [0], extra: [] },
+    minute,
+    { t: "prepare", chunks: [1] },
+    { t: "put", plan: 0, outcome: "ok" },
+    { t: "race", outer: { t: "commit", file: 1, receipts: [], extra: [1] }, at: "head", inner: [{ t: "rewind", point: 0, from: "oldest" }] },
   ],
 ];
 
