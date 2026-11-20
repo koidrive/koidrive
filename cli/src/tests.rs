@@ -525,6 +525,7 @@ fn the_status_text_escapes_every_name_path_and_problem() {
         bytes_moved: 0,
         held_disks: Vec::new(),
         kept_entries: Vec::new(),
+        merged_folders: Vec::new(),
         wait: None,
     };
     let status = Status {
@@ -585,6 +586,7 @@ fn the_status_text_names_each_disk_whose_files_the_folder_holds() {
             },
         ],
         kept_entries: Vec::new(),
+        merged_folders: Vec::new(),
         wait: None,
     };
     let status = Status {
@@ -627,6 +629,7 @@ fn the_status_text_names_the_entries_kept_from_a_deleted_folder() {
         bytes_moved: 0,
         held_disks: Vec::new(),
         kept_entries: vec!["app/.env".into(), "app/node_modules".into()],
+        merged_folders: Vec::new(),
         wait: None,
     };
     let status = Status {
@@ -657,6 +660,7 @@ fn the_status_text_names_the_rewind_a_folder_recovers_from() {
         bytes_moved: 0,
         held_disks: Vec::new(),
         kept_entries: Vec::new(),
+        merged_folders: Vec::new(),
         space_id: "s1".into(),
         space_name: "Home".into(),
         path: Some("/home/ada/Docs".into()),
@@ -693,6 +697,7 @@ fn the_status_text_names_the_rewind_beside_a_problem_and_only_once() {
         bytes_moved: 0,
         held_disks: Vec::new(),
         kept_entries: Vec::new(),
+        merged_folders: Vec::new(),
         space_id: "s1".into(),
         space_name: "Home".into(),
         path: Some("/home/ada/Docs".into()),
@@ -749,6 +754,7 @@ fn the_restart_report_escapes_the_folder_and_its_problem() {
         bytes_moved: 0,
         held_disks: Vec::new(),
         kept_entries: Vec::new(),
+        merged_folders: Vec::new(),
         wait: None,
     };
     for state in [FolderState::Stopped, FolderState::CatchingUp] {

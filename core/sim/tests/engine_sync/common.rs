@@ -6,7 +6,9 @@ use koidrive_engine::classify::{Pending, Trees};
 
 use koidrive_engine::commit::{Commits, Failure, Halt, MAX_CONFLICT_ATTEMPTS, MAX_OPS, Reconnect};
 
-use koidrive_engine::effects::{Base, BatchLimit, Effect, EffectRecord, Effects, Location};
+use koidrive_engine::effects::{
+    Base, BatchLimit, Effect, EffectRecord, Effects, Location, MergeResidue, Stuck,
+};
 
 use koidrive_engine::first_link::PriorSync;
 
@@ -2433,13 +2435,15 @@ fn run_ignoring_answering_after(
             effects.unblock(id);
             false
         });
+        let merge_residue = observed_merge_residue(&device, &commits);
         if let Some(record) = effects
-            .plan(
+            .plan_on_disk(
                 &device.trees,
                 commits.in_flight(),
                 &mut device.ids,
                 NOW as u64,
                 BatchLimit::ONE,
+                &merge_residue,
             )
             .first()
             .cloned()
@@ -2597,6 +2601,8 @@ fn run_ignoring_answering_after(
             release_taken_along(&device.trees, &mut kept_with, &freed);
             continue;
         }
+        let residue = observed_merge_residue(&device, &commits);
+        commits.free_merge_residue(&mut device.trees, &mut device.ids, NOW as u64, &residue);
         let mut before = (device.trees.clone(), commits.questions().to_vec());
         let built = commits.build(
             &mut device.trees,
@@ -2929,12 +2935,31 @@ fn run_ignoring_answering_after(
         .map(|(id, _)| id)
         .filter(|id| !outside(id))
         .collect();
-    let refused_merges: BTreeSet<NodeId> = (effects.blocked().iter())
-        .filter_map(|(id, effect)| {
-            let Effect::RemoveDir { along, .. } = effect else {
-                return None;
+    let renaming = commits.renaming(&device.trees, NOW as u64);
+    let reported = koidrive_engine::effects::stuck_on_disk(
+        &device.trees,
+        &effects,
+        commits.in_flight(),
+        &renaming,
+        &observed_merge_residue(&device, &commits),
+    );
+    let refused_merges: BTreeSet<NodeId> = reported
+        .iter()
+        .filter_map(|(id, reason)| {
+            let target = commits.aliases().get(id)?;
+            let along = match (reason, effects.blocked().get(id)) {
+                (Stuck::MergedInto(into), _) if into == target => &[][..],
+                (
+                    Stuck::Parked,
+                    Some(Effect::RemoveDir {
+                        at: Location::Parked(_),
+                        along,
+                        ..
+                    }),
+                ) => along,
+                _ => return None,
             };
-            if !commits.aliases().contains_key(id) || !device.on_disk(id) {
+            if !device.on_disk(id) {
                 return None;
             }
             let held = held_on_disk(&device, id, along);
@@ -2977,6 +3002,10 @@ fn run_ignoring_answering_after(
         })
     };
     let mut waiting = refused_merges.clone();
+    waiting.extend(reported.iter().filter_map(|(id, reason)| match reason {
+        Stuck::Behind(source) if refused_merges.contains(source) => Some(id.clone()),
+        _ => None,
+    }));
     loop {
         let more: Vec<NodeId> = (unsettled.iter())
             .filter(|id| {
@@ -3003,9 +3032,6 @@ fn run_ignoring_answering_after(
         "{:?}",
         effects.blocked()
     );
-    let renaming = commits.renaming(&device.trees, NOW as u64);
-    let reported =
-        koidrive_engine::effects::stuck(&device.trees, &effects, commits.in_flight(), &renaming);
     let local = device.trees.local();
     let inside_itself = |id: &NodeId, folder: &NodeId| {
         folder == id
@@ -3132,6 +3158,19 @@ const CUTS: [Cut; 5] = [
     Cut::Answered,
     Cut::Effect,
 ];
+
+fn observed_merge_residue(device: &Device, commits: &Commits) -> MergeResidue {
+    MergeResidue::observe(&device.trees, commits.aliases(), |source, _| {
+        let held = held_on_disk(device, source, &[]);
+        Ok(device.on_disk(source)
+            && MergeResidue::holds_left_out(
+                &device.trees,
+                source,
+                held.iter().map(|(name, kind)| (Some(name.as_str()), *kind)),
+            ))
+    })
+    .unwrap_or_else(|never: std::convert::Infallible| match never {})
+}
 
 fn held_on_disk(
     device: &Device,

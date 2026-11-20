@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use koidrive_engine::effects::Effect;
+use koidrive_engine::effects::{Effect, Stuck};
 
 use super::*;
 
@@ -155,35 +155,36 @@ fn a_file_at_a_name_another_spelling_of_which_its_rules_came_to_exclude_waits_fo
 }
 
 #[test]
-fn a_folder_the_server_refuses_waits_to_be_removed_around_the_files_its_rules_exclude() {
-    let _red = expect_red(
-        Check::RemoveLeftOut,
-        "device 0 is quiet, but it waits to remove the folders of [\"01a1c2c0-39a0-7cdc-8389-c4663807ce68\"], which hold entries its rules leave out",
-    );
-    let phases = [
-        vec![(0, folder("a"))],
-        vec![
-            (0, folder("c.txt")),
-            (0, user(1, 0, 2, "c.txt")),
-            (0, rename(1, 0, "A")),
-        ],
-    ];
-    removes_only_the_refused_folder(
-        &converge_excluding(&[vec!["*.txt"], vec![]], &phases).unwrap(),
-        1,
-    );
+fn a_folder_the_server_refuses_stays_in_place_and_is_reported() {
+    let mut world = refused_beside_a(None);
+    let source = reported_merge(&world);
+    let kept = content_on(&world, 0, "c.txt");
+    let before = world.folder_effects[0].len();
+    world
+        .phase(2, &[(0, Step::Crash), (0, Step::Connect)])
+        .unwrap();
+    assert_eq!(reported_merge(&world), source);
+    assert_eq!(content_on(&world, 0, "c.txt"), kept);
+    assert_eq!(world.folder_effects[0].len(), before);
 }
 
-fn removes_only_the_refused_folder(world: &World, attempts: usize) {
-    let refused = NodeId::from("01a1c2c0-39a0-7cdc-8389-c4663807ce68");
-    let ran = &world.folder_effects[0];
-    assert!(
-        ran.len() == attempts
-            && ran.iter().all(|record| {
-                record.node == refused && matches!(record.effect, Effect::RemoveDir { .. })
-            }),
-        "{ran:?}"
+fn reported_merge(world: &World) -> NodeId {
+    let source = held_at(world, 0, &["A"]).unwrap();
+    let survivor = NodeId::from("01a1c2c0-39a0-7510-83bc-38d6c6b89fe4");
+    assert_eq!(
+        world.reported_problems(0).get(&source),
+        Some(&Stuck::MergedInto(survivor))
     );
+    ino_at(world, 0, &["A", "c.txt"]);
+    assert!(!world.devices[0].engine.trees.kept_folder(&source));
+    assert!(!world.folder_effects[0].iter().any(|record| {
+        record.node == source
+            && matches!(
+                record.effect,
+                Effect::CreateDir { .. } | Effect::RemoveDir { .. }
+            )
+    }));
+    source
 }
 
 #[test]
@@ -348,35 +349,129 @@ fn a_folder_kept_for_excluded_entries_goes_at_the_restart_after_they_go() {
     assert!(!kept);
 }
 
-fn refused_beside_a(last: (usize, Step)) -> Result<World, Failure> {
-    let _red = expect_red(
-        Check::RemoveLeftOut,
-        "device 0 is quiet, but it waits to remove the folders of [\"01a1c2c0-39a0-7cdc-8389-c4663807ce68\"], which hold entries its rules leave out",
-    );
-    let phases = [
+fn refused_beside_a(last: Option<(usize, Step)>) -> World {
+    let mut phases = vec![
         vec![(0, folder("a"))],
         vec![
             (0, folder("c.txt")),
             (0, user(1, 0, 2, "c.txt")),
             (0, rename(1, 0, "A")),
         ],
-        vec![last],
     ];
-    converge_excluding(&[vec!["*.txt"], vec![]], &phases)
+    if let Some(last) = last {
+        phases.push(vec![last]);
+    }
+    converge_excluding(&[vec!["*.txt"], vec![]], &phases).unwrap()
+}
+
+fn freeing_the_name_key_uploads_a_reported_merge_folder_as_new(
+    device: usize,
+    free: fn(usize) -> Step,
+) {
+    let mut world = refused_beside_a(None);
+    let source = reported_merge(&world);
+    let live = target(&world, device, &["a"]);
+    world.phase(2, &[(device, free(live))]).unwrap();
+    assert_eq!(live_node_at(&world, &["a"]), None);
+    assert!(world.reported_problems(0).is_empty());
+    let created: Vec<String> = (world.space().nodes().into_iter())
+        .filter(|node| node.name == "A")
+        .map(|node| node.node_id)
+        .collect();
+    assert_eq!(created.len(), 1);
+    assert_ne!(created[0], source.to_string());
+    assert_eq!(
+        held_at(&world, 0, &["A"]),
+        Some(NodeId::from(created[0].clone()))
+    );
+    assert!(
+        world
+            .space()
+            .nodes()
+            .iter()
+            .all(|node| node.name != "c.txt")
+    );
+    ino_at(&world, 0, &["A", "c.txt"]);
+    let empty = ino_at(&world, 1, &["A"]);
+    assert_eq!(
+        world.devices[1].disk.child(&Place::In(empty), "c.txt"),
+        None
+    );
+    world.phase(3, &[]).unwrap();
+    assert_eq!(live_node_at(&world, &["A"]), Some(created[0].clone()));
+    assert_eq!(
+        (world.space().nodes().iter())
+            .filter(|node| node.name == "A")
+            .count(),
+        1
+    );
+    let uploaded = NodeId::from(created[0].clone());
+    assert!(!world.folder_effects[0].iter().any(|record| {
+        record.node == uploaded
+            && matches!(
+                record.effect,
+                Effect::CreateDir { .. } | Effect::RemoveDir { .. }
+            )
+    }));
 }
 
 #[test]
-fn a_folder_deleted_beside_a_refused_folder_of_its_name_in_another_case_is_deleted_everywhere() {
-    removes_only_the_refused_folder(&refused_beside_a((0, delete(0))).unwrap(), 2);
+fn a_folder_deleted_beside_a_reported_merge_folder_frees_it_to_upload_as_a_new_folder() {
+    freeing_the_name_key_uploads_a_reported_merge_folder_as_new(0, delete);
+}
+
+#[test]
+fn a_folder_another_device_deletes_beside_a_reported_merge_folder_frees_it_to_upload_as_a_new_folder()
+ {
+    freeing_the_name_key_uploads_a_reported_merge_folder_as_new(1, delete);
+}
+
+#[test]
+fn a_folder_another_device_renames_away_from_a_reported_merge_folder_frees_it_to_upload_as_a_new_folder()
+ {
+    freeing_the_name_key_uploads_a_reported_merge_folder_as_new(1, |live| rename(live, 0, "b"));
 }
 
 #[test]
 fn a_folder_renamed_elsewhere_to_the_case_of_a_refused_folder_beside_it_is_renamed_here() {
-    let _parked = expect_red(
-        Check::RemoveLeftOut,
-        "device 0 is quiet, but it keeps the folders of [\"01a1c2c0-39a0-7cdc-8389-c4663807ce68\"] parked, which hold entries its rules leave out",
+    let mut world = refused_beside_a(Some((1, rename(0, 0, "A"))));
+    let source = reported_merge(&world);
+    let survivor = held_at(&world, 0, &["a"]).unwrap();
+    assert_eq!(
+        world.reported_problems(0).get(&survivor),
+        Some(&Stuck::Behind(source))
     );
-    removes_only_the_refused_folder(&refused_beside_a((1, rename(0, 0, "A"))).unwrap(), 2);
+    assert_eq!(live_node_at(&world, &["A"]), Some(survivor.to_string()));
+    let remove = target(&world, 0, &["A"]);
+    world.phase(3, &[(0, delete(remove))]).unwrap();
+    assert!(world.reported_problems(0).is_empty());
+    assert_eq!(held_at(&world, 0, &["A"]), Some(survivor));
+}
+
+#[test]
+fn moving_a_reported_merge_folder_away_clears_the_problem() {
+    let mut world = refused_beside_a(None);
+    reported_merge(&world);
+    let content = content_on(&world, 0, "c.txt");
+    let source = target(&world, 0, &["A"]);
+    world.phase(2, &[(0, rename(source, 0, "b"))]).unwrap();
+    assert!(world.reported_problems(0).is_empty());
+    ino_at(&world, 0, &["b", "c.txt"]);
+    assert_eq!(content_on(&world, 0, "c.txt"), content);
+}
+
+#[test]
+fn a_rule_lift_syncs_the_left_out_file_of_a_reported_merge_folder() {
+    let mut world = refused_beside_a(None);
+    reported_merge(&world);
+    let content = content_on(&world, 0, "c.txt");
+    world.rule(0, &Ruling::Exclude(vec![])).unwrap();
+    world.phase(2, &[]).unwrap();
+    assert!(world.reported_problems(0).is_empty());
+    assert_eq!(world.devices[0].disk.child(&Place::Root, "A"), None);
+    ino_at(&world, 0, &["a", "c.txt"]);
+    assert_eq!(content_on(&world, 0, "c.txt"), content);
+    assert!(live_node_at(&world, &["a", "c.txt"]).is_some());
 }
 
 fn deleted_while_its_rules_leave_a_file_out(during: Vec<(usize, Step)>) -> Result<World, Failure> {

@@ -231,6 +231,80 @@ impl BatchLimit {
     };
 }
 
+#[derive(Default)]
+pub struct MergeResidue(pub(crate) BTreeMap<NodeId, NodeId>);
+
+impl MergeResidue {
+    pub fn observe<E>(
+        trees: &Trees,
+        aliases: &TrackedMap<NodeId, NodeId>,
+        mut left_out: impl FnMut(&NodeId, &LocalNode) -> Result<bool, E>,
+    ) -> Result<Self, E> {
+        let mut merged = BTreeMap::new();
+        if !trees.rules_known() {
+            return Ok(Self(merged));
+        }
+        for (source, target) in aliases.iter() {
+            let Some(local) = trees.local().get(source).filter(|local| {
+                !local.parked
+                    && local.shape.kind == Kind::Dir
+                    && trees.holds_merge(source)
+                    && trees.remote().get(source).is_none()
+                    && !trees.held(source)
+            }) else {
+                continue;
+            };
+            if left_out(source, local)? {
+                merged.insert(source.clone(), target.clone());
+            }
+        }
+        Ok(Self(merged))
+    }
+
+    pub fn holds_left_out<'a>(
+        trees: &Trees,
+        source: &NodeId,
+        entries: impl IntoIterator<Item = (Option<&'a str>, Option<Kind>)>,
+    ) -> bool {
+        let Some((mut path, _)) = crate::classify::path(trees.local(), source) else {
+            return false;
+        };
+        let mut entries = entries.into_iter().peekable();
+        entries.peek().is_some()
+            && entries.all(|(name, kind)| {
+                let Some((name, kind)) = name.zip(kind) else {
+                    return true;
+                };
+                path.push(name);
+                let ignored = trees.ignores(&path, kind);
+                path.pop();
+                ignored
+                    || trees
+                        .local_holders(source, name)
+                        .any(|id| trees.under_kept_entry(id))
+            })
+    }
+
+    pub fn permits(&self, trees: &Trees, record: &EffectRecord) -> bool {
+        let view = View::with_merge_residue(trees, self);
+        match &record.effect {
+            Effect::RemoveDir { .. } => !self.0.contains_key(&record.node),
+            Effect::Move {
+                to: Location::Parked(_),
+                ..
+            } => {
+                !self.0.contains_key(&record.node)
+                    && (trees.remote().live(&record.node))
+                        .is_none_or(|remote| view.merge_holds_place(&record.node, remote).is_none())
+            }
+            _ => record
+                .after
+                .as_ref()
+                .is_none_or(|shape| view.merge_holds_place(&record.node, shape).is_none()),
+        }
+    }
+}
+
 impl Effects {
     /// What the store keeps of the disk side.
     pub fn state(&self) -> EffectsState {
@@ -360,7 +434,28 @@ impl Effects {
         now_ms: u64,
         limit: BatchLimit,
     ) -> &[EffectRecord] {
-        trees.in_one_pass(|| self.plan_in_one_pass(trees, in_flight, ids, now_ms, limit))
+        self.plan_on_disk(
+            trees,
+            in_flight,
+            ids,
+            now_ms,
+            limit,
+            &MergeResidue::default(),
+        )
+    }
+
+    pub fn plan_on_disk(
+        &mut self,
+        trees: &Trees,
+        in_flight: Option<&InFlight>,
+        ids: &mut IdGen,
+        now_ms: u64,
+        limit: BatchLimit,
+        merge_residue: &MergeResidue,
+    ) -> &[EffectRecord] {
+        trees.in_one_pass(|| {
+            self.plan_in_one_pass(trees, in_flight, ids, now_ms, limit, merge_residue)
+        })
     }
 
     fn plan_in_one_pass(
@@ -370,6 +465,7 @@ impl Effects {
         ids: &mut IdGen,
         now_ms: u64,
         limit: BatchLimit,
+        merge_residue: &MergeResidue,
     ) -> &[EffectRecord] {
         if !self.in_flight.is_empty() || !trees.rules_known() || limit.effects == 0 {
             return &[];
@@ -380,7 +476,7 @@ impl Effects {
         self.failed.retain(|id, _| {
             candidate(trees, id) || trees.waiting().contains_key(id) || finishing.contains(id)
         });
-        let chosen = self.choose(trees, in_flight, limit);
+        let chosen = self.choose(trees, in_flight, limit, merge_residue);
         let counter = *self.cleared + chosen.len() as u64;
         for (node, effect, after) in chosen {
             let target = match &effect {
@@ -432,8 +528,9 @@ impl Effects {
         trees: &Trees,
         in_flight: Option<&InFlight>,
         limit: BatchLimit,
+        merge_residue: &MergeResidue,
     ) -> Vec<(NodeId, Effect, Option<Shape>)> {
-        let view = View::new(trees);
+        let view = View::with_merge_residue(trees, merge_residue);
         let writes_rules = |id: &NodeId| {
             let remote = trees.remote().live(id)?;
             (remote.kind == Kind::File && is_rules_file(&remote.name)).then_some(&remote.parent)
@@ -529,6 +626,9 @@ impl Effects {
                     name: name.to_owned(),
                     ..local.shape.clone()
                 };
+                if view.merge_holds_place(id, &after).is_some() {
+                    return None;
+                }
                 let effect = Effect::Move {
                     from: view.location(id)?,
                     identity: local.identity,
@@ -1000,6 +1100,7 @@ pub enum Stuck {
     Behind(NodeId),
     /// The node is parked, and neither its place in R nor the one L keeps for it is free here.
     Parked,
+    MergedInto(NodeId),
 }
 
 /// The nodes section 5.10 reports as problems: each node the planner considers whose place is held
@@ -1012,7 +1113,23 @@ pub fn stuck(
     in_flight: Option<&InFlight>,
     renaming: &BTreeSet<NodeId>,
 ) -> BTreeMap<NodeId, Stuck> {
-    let view = View::new(trees);
+    stuck_on_disk(
+        trees,
+        effects,
+        in_flight,
+        renaming,
+        &MergeResidue::default(),
+    )
+}
+
+pub fn stuck_on_disk(
+    trees: &Trees,
+    effects: &Effects,
+    in_flight: Option<&InFlight>,
+    renaming: &BTreeSet<NodeId>,
+    merge_residue: &MergeResidue,
+) -> BTreeMap<NodeId, Stuck> {
+    let view = View::with_merge_residue(trees, merge_residue);
     let planned: Vec<&NodeId> = (trees.dirty_others().iter())
         .filter(|id| candidate(trees, id) && !trees.held(id) && !renaming.contains(*id))
         .collect();
@@ -1026,8 +1143,25 @@ pub fn stuck(
             Some(((*id).clone(), Stuck::HeldBy(by)))
         })
         .collect();
+    stuck.extend(
+        merge_residue
+            .0
+            .iter()
+            .map(|(source, target)| (source.clone(), Stuck::MergedInto(target.clone()))),
+    );
+    stuck.extend(planned.iter().filter_map(|id| {
+        let Step::Blocked(Some(holder)) = view.step(id) else {
+            return None;
+        };
+        merge_residue
+            .0
+            .contains_key(&holder)
+            .then(|| ((*id).clone(), Stuck::Behind(holder)))
+    }));
     let idle = effects.in_flight().is_empty()
-        && effects.choose(trees, in_flight, BatchLimit::ONE).is_empty();
+        && effects
+            .choose(trees, in_flight, BatchLimit::ONE, merge_residue)
+            .is_empty();
     let parked: Vec<(NodeId, Stuck)> = (planned.iter())
         .filter(|_| idle)
         .filter(|id| !stuck.contains_key(**id))
@@ -1043,7 +1177,7 @@ pub fn stuck(
         .collect();
     stuck.extend(parked);
     let root = |stuck: &BTreeMap<NodeId, Stuck>, id: &NodeId| match stuck.get(id)? {
-        Stuck::HeldBy(_) | Stuck::Parked => Some(id.to_owned()),
+        Stuck::HeldBy(_) | Stuck::Parked | Stuck::MergedInto(_) => Some(id.to_owned()),
         Stuck::Behind(root) => Some(root.clone()),
     };
     loop {
@@ -1193,11 +1327,34 @@ enum Step {
 /// L as the disk holds it: parked nodes sit in the parked directory and hold no name.
 struct View<'a> {
     trees: &'a Trees,
+    merge_residue: Option<&'a MergeResidue>,
 }
 
 impl<'a> View<'a> {
     fn new(trees: &'a Trees) -> Self {
-        Self { trees }
+        Self {
+            trees,
+            merge_residue: None,
+        }
+    }
+
+    fn with_merge_residue(trees: &'a Trees, merge_residue: &'a MergeResidue) -> Self {
+        Self {
+            trees,
+            merge_residue: (!merge_residue.0.is_empty()).then_some(merge_residue),
+        }
+    }
+
+    fn merge_holds_place(&self, id: &NodeId, shape: &Shape) -> Option<NodeId> {
+        let residue = self.merge_residue?;
+        self.trees
+            .local_holders(&shape.parent, &shape.name)
+            .filter(|holder| *holder != id && residue.0.contains_key(*holder))
+            .find(|holder| {
+                (self.trees.local().get(holder))
+                    .is_some_and(|node| !node.parked && same_name(&node.shape.name, &shape.name))
+            })
+            .cloned()
     }
 
     fn root(&self) -> &'a NodeId {
@@ -1209,6 +1366,9 @@ impl<'a> View<'a> {
         let remote = self.trees.remote().live(id);
         if let Some(local) = local.filter(|_| self.trees.left_behind(id)) {
             return self.remove(id, local);
+        }
+        if let Some(holder) = remote.and_then(|shape| self.merge_holds_place(id, shape)) {
+            return Step::Blocked(Some(holder));
         }
         if let Some(local) = local.filter(|local| local.parked && self.trees.ignored(id)) {
             if self.trees.trashed_while_parked(id) {
@@ -1480,7 +1640,12 @@ impl<'a> View<'a> {
     }
 
     fn remove(&self, id: &NodeId, local: &LocalNode) -> Step {
-        if self.trees.carried(id) || self.trees.kept_folders().contains(id) {
+        if self.trees.carried(id)
+            || self.trees.kept_folders().contains(id)
+            || self
+                .merge_residue
+                .is_some_and(|residue| residue.0.contains_key(id))
+        {
             return Step::Skip;
         }
         let children: Vec<&NodeId> = self.trees.local_children(id).collect();
@@ -1592,6 +1757,9 @@ impl<'a> View<'a> {
         let trees = self.trees;
         (candidate(trees, id) || trees.waiting().contains_key(id) || trees.reclaimed(id))
             && !trees.excluded(id)
+            && !self
+                .merge_residue
+                .is_some_and(|residue| residue.0.contains_key(id))
             && !trees.held(id)
             && trees.local().get(id).is_some_and(|node| {
                 !node.parked

@@ -185,6 +185,19 @@ fn problems(status: &Status, seen: &mut Seen) -> Vec<Problem> {
                 },
             ));
         }
+        for path in &folder.merged_folders {
+            found.push((
+                format!("merged-{space}-{}", path.unquoted()),
+                String::new(),
+                Problem {
+                    id: String::new(),
+                    space_id: space_id.clone(),
+                    path: Some(path.clone().into()),
+                    kind: ProblemKind::MergedFolder,
+                    since_ms: 0,
+                },
+            ));
+        }
         if status.running
             && let Some((unreachable, retry_at_ms)) = folder.unreachable()
         {
@@ -577,6 +590,7 @@ mod tests {
             activity: None,
             bytes_moved: 0,
             kept_entries: Vec::new(),
+            merged_folders: Vec::new(),
         }
     }
 
@@ -878,6 +892,23 @@ mod tests {
     }
 
     #[test]
+    fn a_merged_folder_is_a_named_problem_while_sync_continues() {
+        let mut seen = Seen::new();
+        let mut status = status_of(&[]);
+        let mut folder = folder_in(DriverFolderState::UpToDate, Some("A could not be synced"));
+        folder.merged_folders.push("inside/A".into());
+        status.folders = vec![folder];
+        let first = problems(&status, &mut seen);
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].kind, ProblemKind::MergedFolder);
+        assert_eq!(first[0].path.as_deref(), Some("inside/A"));
+        assert_eq!(problems(&status, &mut seen), first);
+        status.folders[0].merged_folders.clear();
+        assert!(problems(&status, &mut seen).is_empty());
+        assert!(seen.is_empty());
+    }
+
+    #[test]
     fn a_halted_folder_is_a_problem_dated_when_its_reason_first_appeared() {
         let mut seen = Seen::new();
         let mut status = status_of(&[]);
@@ -1152,6 +1183,7 @@ mod unreachable_tests {
                 activity: None,
                 bytes_moved: 0,
                 kept_entries: Vec::new(),
+                merged_folders: Vec::new(),
                 wait: Some(driver::Wait {
                     kind: driver::WaitKind::Retry,
                     until_ms: Some(7),
@@ -1201,6 +1233,7 @@ mod unreachable_tests {
                     activity: None,
                     bytes_moved: 0,
                     kept_entries: Vec::new(),
+                    merged_folders: Vec::new(),
                     wait: Some(driver::Wait {
                         kind: driver::WaitKind::Retry,
                         until_ms: Some(1),

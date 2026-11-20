@@ -246,6 +246,7 @@ extension ProblemKind {
         case .fileBusy: String(localized: "A file keeps changing")
         case .nameNotAllowed: String(localized: "A name isn't allowed on this Mac")
         case .nameTaken: String(localized: "A name is taken by an ignored item")
+        case .mergedFolder: String(localized: "A merged folder still holds ignored items")
         case .changeRejected: String(localized: "The server rejected a change")
         case .ignoreRuleInvalid: String(localized: "An ignore rule can't be read")
         case .signInRequired: String(localized: "This Mac was removed")
@@ -279,6 +280,7 @@ extension ProblemKind {
         case .fileBusy: String(localized: "It changes too often to upload. If it's a log or database, add it to .koiignore.")
         case .nameNotAllowed: String(localized: "Rename the file on another device.")
         case .nameTaken: String(localized: "Rename or move the item, such as a symbolic link, that has its name.")
+        case .mergedFolder: String(localized: "Rename or move this folder, or move the items it holds.")
         case .changeRejected(let reason): reason
         case .ignoreRuleInvalid(let line): String(localized: "Fix or remove line \(line) of .koiignore.")
         case .signInRequired:

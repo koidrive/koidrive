@@ -377,6 +377,8 @@ pub(crate) struct FolderData {
     state: FolderState,
     #[serde(default)]
     problem: Option<String>,
+    #[serde(default)]
+    merged_folders: Vec<koidrive_fs::ItemPath>,
 }
 
 impl FolderData {
@@ -403,6 +405,7 @@ impl FolderData {
             activity: None,
             bytes_moved: 0,
             kept_entries: Vec::new(),
+            merged_folders: self.merged_folders,
         }
     }
 

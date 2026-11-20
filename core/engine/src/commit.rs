@@ -668,6 +668,33 @@ impl Commits {
         &self.aliases
     }
 
+    /// Gives each folder of `residue` whose name key no live folder of the server holds a new ID, so it uploads as a new folder with the entries this device syncs.
+    pub fn free_merge_residue(
+        &mut self,
+        trees: &mut Trees,
+        ids: &mut IdGen,
+        now_ms: u64,
+        residue: &effects::MergeResidue,
+    ) -> bool {
+        let freed: Vec<NodeId> = (residue.0.keys())
+            .filter(|id| self.aliases.contains_key(*id))
+            .filter(|id| {
+                trees.local().get(id).is_some_and(|local| {
+                    let parent =
+                        (self.aliases.get(&local.shape.parent)).unwrap_or(&local.shape.parent);
+                    (trees.remote_holders_of_key(parent, &name_key(&local.shape.name)))
+                        .all(|holder| trees.remote().live(holder).is_none())
+                })
+            })
+            .cloned()
+            .collect();
+        for id in &freed {
+            self.aliases.remove(id);
+            rekey(trees, id, &NodeId::from(ids.uuid_v7(now_ms)));
+        }
+        !freed.is_empty()
+    }
+
     pub fn in_flight(&self) -> Option<&InFlight> {
         self.in_flight.as_ref()
     }

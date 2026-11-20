@@ -337,6 +337,7 @@ pub(crate) struct View {
     pub recovery: Option<RecoveryCause>,
     pub held_disks: Vec<HeldDisk>,
     pub kept_entries: Vec<koidrive_fs::ItemPath>,
+    pub merged_folders: Vec<koidrive_fs::ItemPath>,
 }
 
 impl Folder {
@@ -1198,15 +1199,23 @@ impl Folder {
         let may_build = matches!(self.flight, Flight::Idle)
             && self.engine.commits.in_flight().is_none()
             && self.caught_up()
-            && self.disconnected.is_none()
-            && self
-                .engine
-                .commits
-                .due(&self.engine.trees, &self.link.device_id);
+            && self.disconnected.is_none();
         if !may_build {
             return Ok(());
         }
         let now_ms = crate::clock::unix_ms();
+        let engine = &mut self.engine;
+        if (engine.commits).free_merge_residue(
+            &mut engine.trees,
+            &mut engine.ids,
+            now_ms,
+            self.disk.merge_residue(),
+        ) {
+            self.step(|_, _| Ok(()))?;
+        }
+        if !(self.engine.commits).due(&self.engine.trees, &self.link.device_id) {
+            return Ok(());
+        }
         let device_id = self.link.device_id.clone();
         let Some(token) = self.disk.rotate_before_build(&mut self.store)? else {
             self.flight = Flight::Waiting(Next::Build);

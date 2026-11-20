@@ -604,6 +604,8 @@ pub struct FolderData {
     pub local_entries: Option<u64>,
     pub questions: u64,
     pub problem: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub merged_folders: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub remedy: Option<RemedyData>,
     pub wait: Option<WaitData>,
@@ -671,6 +673,11 @@ impl FolderData {
             local_entries: folder.local_entries,
             questions: folder.questions,
             problem: folder.problem.clone(),
+            merged_folders: folder
+                .merged_folders
+                .iter()
+                .map(|path| path.unquoted().to_owned())
+                .collect(),
             remedy: RemedyData::of(folder),
             wait: folder.wait.as_ref().and_then(WaitData::of),
             progress: (folder.progress.as_ref()).map(|progress| ProgressData {
@@ -1533,8 +1540,20 @@ mod tests {
             bytes_moved: 0,
             held_disks: Vec::new(),
             kept_entries: Vec::new(),
+            merged_folders: Vec::new(),
             wait: None,
         }
+    }
+
+    #[test]
+    fn folder_status_names_a_reported_merge_in_text_and_json() {
+        let mut folder = folder("/space", FolderState::UpToDate);
+        folder.problem = Some("1 item could not be synced: 'A' (it was merged)".into());
+        folder.merged_folders.push("A".into());
+        assert!(crate::status::folder_text(&folder).contains("'A' (it was merged)"));
+        let json = serde_json::to_value(FolderData::of(&folder)).unwrap();
+        assert_eq!(json["merged_folders"], serde_json::json!(["A"]));
+        assert_eq!(json["problem"], serde_json::json!(folder.problem));
     }
 
     #[test]

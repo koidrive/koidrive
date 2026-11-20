@@ -537,6 +537,7 @@ fn folder_status(folder: &Path, space: &SpaceInfo) -> FolderStatus {
         activity: None,
         bytes_moved: 0,
         kept_entries: Vec::new(),
+        merged_folders: Vec::new(),
         wait: None,
         recovery: None,
     }

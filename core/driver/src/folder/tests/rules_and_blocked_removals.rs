@@ -74,6 +74,120 @@ fn removing_a_folder_a_copy_left_waits_for_the_scan_and_preserves_the_copy() {
 }
 
 #[test]
+fn the_driver_names_a_case_sensitive_merge_folder_and_leaves_it_in_place() {
+    let mut remote = Remote::new();
+    let Some((_, site, mut b, sync)) = reported_merge_beside_a(&mut remote) else {
+        return;
+    };
+    let assert_stays = |b: &Device, parent: &str| {
+        let view = b.folder.view();
+        assert_eq!(view.state, FolderState::UpToDate);
+        assert!(
+            view.problem
+                .unwrap()
+                .contains("was merged into another folder")
+        );
+        assert_eq!(
+            view.merged_folders,
+            [koidrive_fs::ItemPath::from(format!("{parent}/A"))]
+        );
+        let base = site.root.join(parent);
+        assert_eq!(fs::read(base.join("A/local.log")).unwrap(), b"local");
+        assert_eq!(fs::read(base.join("a/online")).unwrap(), b"server");
+    };
+    assert_stays(&b, "parent");
+    fs::rename(site.root.join("parent"), site.root.join("moved")).unwrap();
+    b.settle();
+    b.run(&mut remote);
+    b.settle();
+    assert!(b.run(&mut remote).is_empty());
+    assert_stays(&b, "moved");
+    drop(b);
+
+    let mut b = site.start_with(&sync);
+    b.connect(&remote);
+    b.scan_until(|b| b.folder.scanned);
+    b.run(&mut remote);
+    b.settle();
+    b.run(&mut remote);
+    assert_stays(&b, "moved");
+    assert!(b.sent.is_empty());
+
+    fs::rename(site.root.join("moved/A"), site.root.join("moved/renamed")).unwrap();
+    b.settle();
+    b.run(&mut remote);
+    b.settle();
+    b.run(&mut remote);
+    assert_eq!(b.folder.view().problem, None);
+    assert!(b.folder.view().merged_folders.is_empty());
+    assert_eq!(
+        fs::read(site.root.join("moved/renamed/local.log")).unwrap(),
+        b"local"
+    );
+}
+
+fn reported_merge_beside_a(
+    remote: &mut Remote,
+) -> Option<((Site, Device), Site, Device, SyncRules)> {
+    let probe = tempfile::tempdir().unwrap();
+    fs::create_dir(probe.path().join("a")).unwrap();
+    if probe.path().join("A").exists() {
+        return None;
+    }
+    let (source, mut a) = linked(remote, "first");
+    fs::create_dir_all(source.root.join("parent/a")).unwrap();
+    a.create(remote, &source.root.join("parent/a/online"), b"server");
+    let sync = SyncRules {
+        exclude: vec!["*.log".into()],
+        ..SyncRules::default()
+    };
+    let site = Site::new(remote, "second");
+    let mut b = site.start_with(&sync);
+    b.connect(remote);
+    b.scan_until(|b| b.folder.scanned);
+    b.run(remote);
+    b.settle();
+    b.run(remote);
+    fs::create_dir(site.root.join("parent/A")).unwrap();
+    fs::write(site.root.join("parent/A/local.log"), b"local").unwrap();
+    b.settle();
+    b.run(remote);
+    b.settle();
+    assert!(b.run(remote).is_empty());
+    assert!(b.folder.view().problem.is_some());
+    Some(((source, a), site, b, sync))
+}
+
+#[test]
+fn the_driver_uploads_a_merge_folder_as_a_new_folder_once_the_server_deletes_the_live_folder() {
+    let mut remote = Remote::new();
+    let Some(((source, mut a), site, mut b, _)) = reported_merge_beside_a(&mut remote) else {
+        return;
+    };
+    fs::remove_dir_all(source.root.join("parent/a")).unwrap();
+    a.settle();
+    a.run(&mut remote);
+    b.pull(&remote);
+    b.run(&mut remote);
+    b.settle();
+    b.run(&mut remote);
+    assert_eq!(b.folder.view().problem, None);
+    assert!(b.folder.view().merged_folders.is_empty());
+    let tree = remote.tree();
+    assert_eq!(tree.get("parent/a"), None);
+    let trees = &b.folder.engine.trees;
+    let uploaded = trees.local_child(&local_named(&b, "parent"), "A").unwrap();
+    assert_eq!(tree.get("parent/A"), Some(&uploaded.to_string()));
+    assert!(!tree.keys().any(|path| path.ends_with("local.log")));
+    assert_eq!(
+        fs::read(site.root.join("parent/A/local.log")).unwrap(),
+        b"local"
+    );
+    b.settle();
+    assert!(b.run(&mut remote).is_empty());
+}
+
+#[test]
 fn a_downloaded_rules_file_is_in_force_before_anything_else_is_planned() {
     let mut remote = Remote::new();
     let (site_a, mut a) = linked(&mut remote, "a");

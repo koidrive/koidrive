@@ -3,6 +3,26 @@
 use super::*;
 
 #[test]
+fn koi_status_names_a_merged_folder_and_accepts_older_status_without_the_field() {
+    let status = |fields: serde_json::Value| {
+        let done = Done {
+            outcome: Outcome::Ok,
+            data: serde_json::json!({
+                "account": null, "running": true, "folders": [fields]
+            }),
+            decisions: Vec::new(),
+        };
+        done.status().unwrap().0
+    };
+    let mut folder = serde_json::json!({
+        "path": "/space", "space_id": "s1", "space_name": "Test", "state": "up_to_date"
+    });
+    assert!(status(folder.clone()).folders[0].merged_folders.is_empty());
+    folder["merged_folders"] = serde_json::json!(["parent/A"]);
+    assert_eq!(status(folder).folders[0].merged_folders, ["parent/A"]);
+}
+
+#[test]
 fn koi_status_tells_the_app_what_the_update_check_found() {
     let url = "https://github.com/koidrive/koidrive/releases/tag/v0.2.0";
     for (update, expected) in [

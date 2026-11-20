@@ -737,6 +737,8 @@ pub enum ProblemKind {
     /// A file from the server cannot be placed because an ignored or unsupported entry, such as
     /// a symbolic link, already has its name (design §5.1, §5.6).
     NameTaken,
+    /// The server merged this folder into another folder, but it still holds entries this device does not sync.
+    MergedFolder,
     /// The server rejected a change to this node, with the reason it gave (design §2.7).
     ChangeRejected { reason: String },
     /// A line in a `.koiignore` file cannot be parsed and is ignored (design §5.10).
