@@ -4198,14 +4198,16 @@ impl Trees {
             return false;
         };
         let key = name_key(&local.shape.name);
-        !(self.remote_holders_of_key(&local.shape.parent, &key)).any(|other| {
-            other != id
-                && self
-                    .r
-                    .live(other)
-                    .is_some_and(|shape| shape.kind == Kind::Dir)
-        }) && (self.local_children_placed_or_parked(id))
-            .all(|child| self.left_rules_file(child) || self.excluded(child))
+        (self.discarded.contains_key(id)
+            || !(self.remote_holders_of_key(&local.shape.parent, &key)).any(|other| {
+                other != id
+                    && self
+                        .r
+                        .live(other)
+                        .is_some_and(|shape| shape.kind == Kind::Dir)
+            }))
+            && (self.local_children_placed_or_parked(id))
+                .all(|child| self.left_rules_file(child) || self.excluded(child))
     }
 
     /// Whether the kept folder `id` holds nothing this device would keep it for once its platform files and `left`,
