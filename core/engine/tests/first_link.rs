@@ -6997,3 +6997,92 @@ fn an_unobserved_delete_in_the_batch_that_changes_the_rules_does_not_make_the_fo
     trees.set_rules(&[] as &[&str], Source::Koiignore, None);
     assert_eq!(drive_until_quiet(&mut commits, &mut trees, &mut ids), []);
 }
+
+#[test]
+fn a_folder_whose_copy_disappears_while_unobserved_downloads_again_around_a_folder_the_user_moved_out_of_it()
+ {
+    for included in [false, true] {
+        let mut trees = trees(
+            &[
+                ("d", dir(ROOT, "d")),
+                ("x", dir("d", "child")),
+                ("g", dir(ROOT, "g")),
+                ("b", dir(ROOT, "b")),
+            ],
+            &[
+                ("d", dir(ROOT, "d")),
+                ("x", dir("d", "child")),
+                ("g", dir(ROOT, "g")),
+                ("f", file("d", "f", 1)),
+            ],
+        );
+        let (mut commits, mut ids) = (Commits::default(), IdGen::new(7));
+        commits.first_link(&mut trees, &mut ids, NOW, PriorSync::Shown);
+        trees.set_rules(
+            &[] as &[&str],
+            Source::Koiignore,
+            Some(RuleFile::parse(b"/build/\na\n")),
+        );
+        trees.set_local_changed("a".into(), local_node(dir("b", "a"), 9));
+        trees.settle(commits.aliases());
+        trees.ignore_local(&"d".into());
+        let mut moved = trees.local().get(&"x".into()).unwrap().clone();
+        moved.shape.parent = if included { "g" } else { "a" }.into();
+        trees.set_local_changed("x".into(), moved);
+        trees.remove_local(&"d".into());
+        let sent = drive_until_quiet(&mut commits, &mut trees, &mut ids);
+        let moved_to = if included { "g" } else { "a" };
+        let expected: Vec<(NodeId, NodeId, String)> = [
+            ("a", "b", "a"),
+            ("b", ROOT, "b"),
+            ("d", ROOT, "d"),
+            ("f", "d", "f"),
+            ("g", ROOT, "g"),
+            ("x", moved_to, "child"),
+        ]
+        .into_iter()
+        .map(|(id, parent, name)| (id.into(), parent.into(), name.into()))
+        .collect();
+        assert_eq!(local(&trees), expected, "{included}: {sent:?}");
+        let moves: &[(&str, String)] = if included {
+            &[("move", String::new())]
+        } else {
+            &[]
+        };
+        assert_eq!(sent.len(), moves.len(), "{included}: {sent:?}");
+        assert!(
+            sent.iter().all(|op| *op == ("move", "x".into())),
+            "{included}: {sent:?}"
+        );
+        assert_eq!(ops(&mut commits, &mut trees, &mut ids), [], "{included}");
+        if included {
+            continue;
+        }
+        trees.set_rules(
+            &[] as &[&str],
+            Source::Koiignore,
+            Some(RuleFile::parse(b"/build/\n")),
+        );
+        for id in ["a", "x"] {
+            let scanned = trees.local().get(&id.into()).unwrap().clone();
+            trees.set_local_changed(id.into(), scanned);
+        }
+        assert_eq!(drive_until_quiet(&mut commits, &mut trees, &mut ids), []);
+        let asked = question(&commits);
+        assert!(commits.decide(&mut trees, &asked.id, Answer::Publish));
+        let sent = drive_until_quiet(&mut commits, &mut trees, &mut ids);
+        assert_eq!(
+            sent,
+            [
+                ("create dir", "b".into()),
+                ("create dir", "a".into()),
+                ("move", "x".into())
+            ]
+        );
+        assert_eq!(
+            trees.remote().get(&"x".into()).unwrap().shape,
+            dir("a", "child")
+        );
+        assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
+    }
+}

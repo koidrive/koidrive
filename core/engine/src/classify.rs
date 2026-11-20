@@ -3789,7 +3789,9 @@ impl Trees {
     /// Ends a settle: each topmost node whose local copy disappeared while it was unobserved and that the rules
     /// let in leaves S in one group with every node below it whose copy went too, excluded ones included, and the
     /// folders below it the server keeps only for an excluded file, so the group downloads again and no deletion
-    /// is sent (section 5.10). A group leaves whole or stays, and one that stays is tried again at the next
+    /// is sent (section 5.10). A node S holds below them that L holds elsewhere, where the user moved it, goes with
+    /// them together with every node S holds below it, and each of those L holds keeps the shape S held for it as
+    /// its base ([`Origin::Released`]), so it is not downloaded again. A group leaves whole or stays, and one that stays is tried again at the next
     /// settle that changes anything: while the rules are not scanned since a restore, while the rules leave out its
     /// top where S or R holds it, while the rules of a folder above one of its nodes are unknown, while the place
     /// S or R holds for one of its nodes is at or below a [`Pending`] path, or while S cannot drop it. Only the
@@ -3832,16 +3834,22 @@ impl Trees {
             })
             .collect();
         let mut held_for_scan = BTreeSet::new();
-        let groups: Vec<Released> = (tops.into_iter())
+        let groups: Vec<(Released, Vec<(NodeId, Shape)>)> = (tops.into_iter())
             .filter(|top| !self.ignored(top))
             .map(|top| {
                 let mut group = vec![top];
                 let mut next = 0;
                 while let Some(id) = group.get(next).cloned() {
                     next += 1;
+                    let moved_out = self.l.get(&id).is_some();
                     group.extend(
                         (self.s_names.children(&id))
-                            .filter(|child| goes(child))
+                            .filter(|child| {
+                                moved_out
+                                    || goes(child)
+                                    || (self.l.get(child))
+                                        .is_some_and(|node| node.shape.parent != id)
+                            })
                             .cloned(),
                     );
                 }
@@ -3854,17 +3862,25 @@ impl Trees {
                     held_for_scan.extend(group);
                     return None;
                 };
+                let bases: Vec<(NodeId, Shape)> = (group.iter())
+                    .filter(|id| self.l.get(id).is_some() || !self.unobserved.contains(*id))
+                    .filter(|id| !goes(id))
+                    .filter_map(|id| Some((id.clone(), self.s.get(id)?.clone())))
+                    .collect();
                 (!group.iter().any(|id| self.below_unknown_rules(id))
                     && self.fits_synced_together(released.nodes()))
-                .then_some(released)
+                .then_some((released, bases))
             })
             .collect();
         drop(kept);
         self.held_for_scan = held_for_scan;
-        for released in groups {
+        for (released, bases) in groups {
             for id in self.take_released(released).into_iter().rev() {
                 self.mark(&id);
                 self.released.push(id);
+            }
+            for (id, base) in bases {
+                self.wait(id, Some(base), Origin::Released);
             }
         }
         self.released.len() > before
