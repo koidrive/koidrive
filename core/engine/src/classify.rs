@@ -3336,7 +3336,11 @@ impl Trees {
             return;
         };
         self.take_out_local(id);
-        if self.r.live(id).is_some() || created_in_flight {
+        if self
+            .r
+            .get(id)
+            .map_or(created_in_flight, RemoteNode::is_live)
+        {
             self.displaced.insert(id.to_owned(), identity);
         }
     }

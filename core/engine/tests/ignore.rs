@@ -2861,6 +2861,26 @@ fn a_moved_out_file_whose_create_is_in_flight_keeps_its_record_until_the_result_
 }
 
 #[test]
+fn a_moved_out_copy_trashed_before_its_create_answer_leaves_no_displaced_record() {
+    let shape = file(ROOT, "n.txt", 1);
+    let node = NodeId::from("n");
+    let mut trees = trees(&[("n", Some(shape.clone()), None, None)]);
+    let mut commits = Commits::default();
+    commits
+        .build(&mut trees, &mut IdGen::new(1), NOW, HISTORY, "me", 7)
+        .unwrap();
+    trees.set_remote(node.clone(), remote(shape));
+    trash(&mut trees, "n");
+    trees.ignore_local(&node);
+    let creating = commits.in_flight().unwrap().creates(&node);
+    assert!(creating);
+    trees.displace_local(&node, creating);
+
+    trees.restore(trees.state()).unwrap();
+    assert!(trees.displaced_local().is_empty());
+}
+
+#[test]
 fn a_folder_the_server_merges_into_a_live_folder_of_its_name_key_is_taken_over_under_the_live_name()
 {
     let mut trees = trees(&[
