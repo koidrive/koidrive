@@ -1937,15 +1937,18 @@ fn acted_below(
         let unapplied = |remote: &Shape| {
             let marker = conflict_name("", "me", NOW, 1);
             let marker = marker.strip_suffix(')').unwrap_or(&marker);
-            let attempt = remote.name.rfind(marker).and_then(|at| {
-                let number = remote.name[at + marker.len()..].split(')').next()?;
-                match number.strip_prefix(' ') {
+            let renamed = remote.name.match_indices(marker).any(|(at, _)| {
+                let number = remote.name[at + marker.len()..]
+                    .split(')')
+                    .next()
+                    .unwrap_or("");
+                let attempt = match number.strip_prefix(' ') {
                     Some(number) => number.parse().ok(),
                     None => number.is_empty().then_some(1),
-                }
-            });
-            let renamed = attempt.is_some_and(|attempt| {
-                remote.name == conflict_name(&local.shape.name, "me", NOW, attempt)
+                };
+                attempt.is_some_and(|attempt| {
+                    remote.name == conflict_name(&local.shape.name, "me", NOW, attempt)
+                })
             });
             (renamed && trees.reverted().contains(entry)).then(|| Shape {
                 name: local.shape.name.clone(),

@@ -735,13 +735,22 @@ fn renaming_away_from_a_conflict_name_the_device_applied_is_acted_below_the_fold
 
 #[test]
 fn any_server_conflict_name_the_device_has_not_applied_yet_is_no_change() {
-    for attempt in [4, 12] {
+    let marker = conflict_name("", "me", NOW, 1);
+    for (name, attempt) in [
+        ("a".to_string(), 4),
+        ("a".to_string(), 12),
+        (format!("a{marker}.txt"), 4),
+        (format!("a.x{marker}"), 4),
+    ] {
         let (mut device, kept_with, discarded) = a_file_in_a_taken_along_server_folder();
         let f: NodeId = "f".into();
         let mut remote = device.trees.remote().get(&f).unwrap().clone();
         remote.shape.parent = "s".into();
-        remote.shape.name = conflict_name("a", "me", NOW, attempt);
+        remote.shape.name = conflict_name(&name, "me", NOW, attempt);
         device.act(&act(3, 0, 2, 0, 0));
+        let mut local_file = device.trees.local().get(&f).unwrap().clone();
+        local_file.shape.name = name;
+        device.trees.set_local(f.clone(), local_file);
         device.trees.set_remote(f.clone(), remote);
         device.trees.revert(f);
         assert!(!acted_below(&device, &"s".into(), &kept_with, &discarded));
