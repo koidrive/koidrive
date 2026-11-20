@@ -971,8 +971,10 @@ impl Intents {
                             || merged
                             || field != Field::Content && intent.lost && other.made > intent.made
                             || !answered_restore_first
-                                && (other.made > intent.made
-                                    || intent.answer.is_some() && covers(j, false))
+                                && match intent.answer {
+                                    Some(_) => covers(j, false),
+                                    None => other.made > intent.made,
+                                }
                                 && (0..self.list.len()).any(|k| held_as(i, k) && self.saw(j, k))
                             || !answered_restore_first && republished && covers(j, false))
                         || intent.restore_answer()
@@ -1547,6 +1549,37 @@ mod tests {
         ] {
             let kept = kept(publish).expect_err("the delete never held n");
             assert!(kept.0.contains(lost), "{}", kept.0);
+        }
+    }
+
+    #[test]
+    fn an_answer_is_settled_only_by_a_delete_of_its_node_that_saw_its_write() {
+        let kept = |deleted: u128, delete: u64, answer: u64, write: i64| {
+            let mut intents = Intents::new(2);
+            for nodes in &mut intents.nodes {
+                nodes.insert(1, [NodeId::from("n")].into());
+                nodes.insert(2, [NodeId::from("m")].into());
+            }
+            let seen = intents.record(1, 1, 1, "write", content(1));
+            intents.seen[0].insert(seen, 1);
+            let old = Server::of("root", vec![node("n", "root", Some(0))]);
+            intents.rewound(&old, 2);
+            intents.copied(&NodeId::from("n"), &NodeId::from("m"));
+            intents.answered(1, answer, 1, content(write), Answered::Owed, true);
+            let trashed = Value::Trashed {
+                subtree: vec![deleted],
+                under: BTreeMap::new(),
+                replaced_by: None,
+            };
+            intents.record(0, delete, deleted, "delete", trashed);
+            intents.check(&old, |_| false, |_, _| false)
+        };
+        assert_eq!(kept(1, 5, 4, 1), Ok(()));
+        for (deleted, delete, answer, write) in [(2, 5, 4, 1), (1, 5, 6, 2)] {
+            let kept =
+                kept(deleted, delete, answer, write).expect_err("the delete settles nothing");
+            let lost = format!("write {write} of the publish");
+            assert!(kept.0.contains(&lost), "{}", kept.0);
         }
     }
 
