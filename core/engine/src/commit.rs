@@ -4697,9 +4697,7 @@ fn plan(
         if in_alias && (placed(agreed) || placed(remote)) && !trees.reverted().contains(id) {
             reverts.push(id.clone());
         }
-        let parked = trees.local().get(id).is_some_and(|node| node.parked);
-        if (synced.map_or(!parked, |s| !s.same_position(local))
-            || trees.unsent_moves().contains(id))
+        if (synced.is_none_or(|s| !s.same_position(local)) || trees.unsent_moves().contains(id))
             && remote.is_none_or(|r| !r.same_position(local))
             && !trees.reverted().contains(id)
             && !trees.reviving(id)

@@ -6178,6 +6178,7 @@ impl Trees {
     /// server does not hold ([`Trees::unsent_edits`]) is changed locally, although S may hold the
     /// same bytes.
     pub fn class_against(&self, id: &NodeId, synced: Option<&Shape>) -> Class {
+        let synced = synced.or_else(|| self.trashed_where_l_holds(id));
         let class = classify(self.l.live(id), synced, self.r.live(id));
         if class == Class::Remote && self.unsent_creates.contains(id) {
             return Class::Concurrent;
@@ -6346,6 +6347,16 @@ impl Trees {
             Some(waiting) => waiting.shape.as_ref(),
             None => self.s.live(id),
         }
+    }
+
+    fn trashed_where_l_holds(&self, id: &NodeId) -> Option<&Shape> {
+        let remote = self
+            .r
+            .get(id)
+            .filter(|node| node.trashed && !self.asked.contains(id))?;
+        (self.l.get(id))
+            .is_some_and(|local| local.shape.same_position(&remote.shape) && !self.revives(id))
+            .then_some(&remote.shape)
     }
 
     pub(crate) fn acknowledged_class(&self, id: &NodeId) -> Class {

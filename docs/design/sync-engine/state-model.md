@@ -38,6 +38,8 @@ The planner looks only at dirty nodes, those whose L, S or R entry changed since
 
 A node that is not dirty on one side takes the other side's value. A node dirty on both sides is never overwritten by the engine.
 
+A node that S does not hold, that no question holds (mass-deletion §6.4), and that L holds at the place R holds it in the trash is compared with R's shape in place of S's: L holds it where the server last had it, so its place is not a local change. When L holds no other change to it and none below it that this device syncs, R's delete is the only change. The effects remove the node as a remote change (§2.5), and a folder that holds only entries this device leaves out stays on disk as a kept folder (filesystem §5.10). A change to it or below it that this device syncs is uploaded, and the server brings the node back for it (R8). S lacks such a node after a first link or a rewind, and a parked node keeps the place S last gave it.
+
 S := R for a change both sides made alike can wait, because S stays a valid tree (§2.7) and the new name may still be held in S. S then takes R's content at once and the position once it fits, so the next edit on either side is compared with content both sides hold. A node whose acknowledged update waits keeps that update instead.
 
 ## 2.4 The client rebases the conflicts it has seen
@@ -80,7 +82,6 @@ Every effect follows these rules:
 Some remote states cannot be reached one move at a time, such as two files that swap names or a directory that moves under its former child. When no remote move applies but some are pending, the planner parks one blocking node: it moves the node into `.koidrive/parked/<node_id>` and moves it to its final place later. Parking follows these rules, and §5.10 adds those for excluded nodes:
 
 - Parked nodes are excluded from local-change detection. The rescan after a crash finds them in the parked directory and puts them back into L instead of treating them as deleted.
-- A parked node that S no longer holds has no position the user chose, so no move is sent for it unless the user moved it before it was parked. A folder another device trashed stays trashed unless something the rules keep in it is sent.
 - Parking moves an entry whole and never changes its content.
 - A reverted node (§2.6) that blocks another placement is parked like a node whose only change is remote, so two reverted nodes that hold each other's names are placed one after the other.
 - A parked reverted node that R no longer has and that holds no unuploaded edit is removed from the parked directory.

@@ -259,3 +259,81 @@ proptest! {
         )?;
     }
 }
+
+fn run_trashed_while_parked(extra: &[Action]) {
+    let a = |kind, target, parent, name, text| Action {
+        kind,
+        target,
+        parent,
+        name,
+        text,
+    };
+    let mut seed = vec![a(0, 0, 0, 5, 0), a(0, 0, 0, 0, 0)];
+    seed.extend_from_slice(extra);
+    let local = [
+        a(1, 0, 0, 0, 0),
+        a(0, 0, 0, 5, 0),
+        a(0, 0, 3787111875549676609, 0, 0),
+    ];
+    let during = [
+        (
+            false,
+            vec![
+                a(4, 178366619604466626, 0, 0, 0),
+                a(0, 0, 5083919670507891590, 5, 0),
+            ],
+        ),
+        (false, vec![a(0, 0, 534652417235392, 6, 0)]),
+        (
+            false,
+            vec![
+                a(3, 1005123491116420271, 651298272480279263, 6, 3),
+                a(0, 2279346085285218242, 11282465970987566608, 3, 3),
+            ],
+        ),
+        (
+            true,
+            vec![
+                a(2, 3131597719332937549, 264957687198119229, 2, 2),
+                a(2, 8871069319011802480, 17574774595739201031, 4, 3),
+            ],
+        ),
+    ];
+    let rulings = [
+        Ruling::Exclude(vec![]),
+        Ruling::Exclude(vec![]),
+        Ruling::File(vec!["ss/", "!a"]),
+        Ruling::Include(vec!["local-1/", "\u{df}"]),
+        Ruling::File(vec!["*.txt"]),
+        Ruling::Include(vec!["a", "local-1/"]),
+    ];
+    run_ignoring(
+        &seed,
+        &local,
+        &[],
+        1000,
+        false,
+        &during,
+        Cut::Effect,
+        &rulings,
+        Answer::Discard,
+        Some(PriorSync::Shown),
+    )
+    .unwrap();
+}
+
+#[test]
+fn a_folder_another_device_trashed_while_this_device_parks_it_converges() {
+    run_trashed_while_parked(&[]);
+}
+
+#[test]
+fn a_parked_folder_another_device_trashed_with_a_server_folder_inside_is_not_brought_back() {
+    run_trashed_while_parked(&[Action {
+        kind: 0,
+        target: 0,
+        parent: 1,
+        name: 2,
+        text: 0,
+    }]);
+}
