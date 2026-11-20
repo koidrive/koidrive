@@ -1024,7 +1024,8 @@ fn renamed_back_over_a_fresh_trash(moves_upgraded: bool) -> (Option<Vec<op::Op>>
     };
     lose_and_list(&mut trees, &mut commits, &[("f", fresh)]);
     let effects = effects_for(&mut trees, &mut ids, "f");
-    (build(&mut commits, &mut trees, &mut ids).map(|c| ops(&c)), effects)
+    let commit = build(&mut commits, &mut trees, &mut ids).map(|c| ops(&c));
+    (commit, effects)
 }
 
 #[test]
@@ -1035,7 +1036,7 @@ fn a_rename_back_over_a_fresh_trash_at_the_reused_seq_is_sent() {
 }
 
 #[test]
-fn a_rename_back_over_a_fresh_trash_at_the_reused_seq_is_sent_from_a_store_with_upgraded_moves() {
+fn an_upgraded_store_sends_a_rename_back_over_a_fresh_trash_at_the_reused_seq() {
     let (commit, effects) = renamed_back_over_a_fresh_trash(true);
     assert_eq!(effects, []);
     assert_eq!(commit, Some(vec![mv("f", "p", "a")]));
