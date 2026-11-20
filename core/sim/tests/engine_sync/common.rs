@@ -1728,6 +1728,7 @@ fn revive(
             || (trees.local_children(id)).any(|child| {
                 !trees.excluded(child)
                     && !asked.contains(child)
+                    && (trees.remote().get(child).is_some() || device.acted.contains(child))
                     && (!kept_with.contains_key(child)
                         || acted_below(device, child, kept_with, discarded))
                     && discarded
