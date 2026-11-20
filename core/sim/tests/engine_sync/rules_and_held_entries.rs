@@ -714,6 +714,22 @@ fn a_server_file_deleted_from_a_taken_along_folder_is_judged_by_where_it_was_at_
 }
 
 #[test]
+fn a_server_entry_moved_in_between_two_discards_and_deleted_is_not_the_folders_change() {
+    let (mut device, kept_with, discarded) = a_file_in_a_taken_along_server_folder();
+    let (g, s): (NodeId, NodeId) = ("g".into(), "s".into());
+    let mut remote = device.trees.remote().get(&"f".into()).unwrap().clone();
+    remote.shape.name = "g".into();
+    device.trees.set_remote(g.clone(), remote.clone());
+    device.note_on_server();
+    remote.shape.parent = s.clone();
+    device.trees.set_remote(g.clone(), remote);
+    device.note_on_server();
+    device.acted.insert(g.clone());
+    device.removed_from.insert(g, s.clone());
+    assert!(!acted_below(&device, &s, &kept_with, &discarded));
+}
+
+#[test]
 fn renaming_away_from_a_conflict_name_the_device_applied_is_acted_below_the_folder() {
     let (mut device, mut kept_with, discarded) = a_file_in_a_taken_along_server_folder();
     let f: NodeId = "f".into();
