@@ -35,6 +35,15 @@ upgrade_case!(unread_folders, |store| {
                     },
                 )])),
             });
+            state.trees.past_positions.insert(
+                "upgraded".into(),
+                vec![koidrive_engine::state::Agreed {
+                    rev: 2,
+                    parent: "root".into(),
+                    name: "a.txt".into(),
+                    trash_group: Some("2:0".into()),
+                }],
+            );
             tx.set_engine_state(&state)?;
             assert_eq!(tx.engine_state()?, state);
             assert!(tx.unread_folders()?.is_some());
