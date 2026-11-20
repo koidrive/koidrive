@@ -580,6 +580,7 @@ struct Device {
     kept_back: BTreeSet<NodeId>,
     relocated: BTreeMap<NodeId, Relocation>,
     ignored: IgnoredDisk,
+    anchors: BTreeMap<NodeId, FileIdentity>,
     off_disk: BTreeSet<NodeId>,
 }
 
@@ -612,6 +613,7 @@ impl Device {
             kept_back: BTreeSet::new(),
             relocated: BTreeMap::new(),
             ignored: IgnoredDisk::new(),
+            anchors: BTreeMap::new(),
             off_disk: BTreeSet::new(),
         }
     }
@@ -1059,6 +1061,32 @@ impl Device {
                 },
             );
         }
+    }
+
+    fn follow_rekeys(&mut self) {
+        let local = self.trees.local();
+        let rekeyed: BTreeMap<NodeId, NodeId> = (self.anchors.iter())
+            .filter(|(id, _)| local.get(id).is_none())
+            .filter_map(|(id, identity)| {
+                Some((
+                    id.clone(),
+                    self.trees.local_with_identity(identity)?.clone(),
+                ))
+            })
+            .collect();
+        self.ignored = (std::mem::take(&mut self.ignored).into_iter())
+            .map(|((anchor, path), entry)| {
+                (
+                    (rekeyed.get(&anchor).cloned().unwrap_or(anchor), path),
+                    entry,
+                )
+            })
+            .collect();
+        self.anchors = (self.ignored.keys())
+            .filter_map(|(anchor, _)| {
+                Some((anchor.clone(), self.trees.local().get(anchor)?.identity))
+            })
+            .collect();
     }
 
     /// True when `ancestor` is `id` or holds it in L.
@@ -2023,6 +2051,7 @@ fn run_ignoring_answering_after(
         }
     }
     if let Some(prior) = first_link {
+        device.follow_rekeys();
         device.trees.settle(commits.aliases());
         commits.first_link(&mut device.trees, &mut device.ids, NOW as u64, prior);
     }
@@ -2075,6 +2104,7 @@ fn run_ignoring_answering_after(
         prop_assert!(steps <= STEPS, "no convergence within {} steps", STEPS);
         device.trees.settle(commits.aliases());
         prop_assert_eq!(device.trees.check(), Ok(()));
+        device.follow_rekeys();
         note_agreements(&device, &mut sent_since, &mut agreed, &mut from_server);
         if (due || steps % 2 == 0)
             && let Some((on_device, actions)) = during.next()
@@ -2137,6 +2167,7 @@ fn run_ignoring_answering_after(
         device.trees.settle(commits.aliases());
         prop_assert_eq!(device.trees.check(), Ok(()));
         device.list_moved();
+        device.follow_rekeys();
         (device.trees, commits, effects) =
             reload(&device.trees, &commits, &effects, &device.rules)?;
         note_kept_back(&mut device);
@@ -2625,6 +2656,7 @@ fn run_ignoring_answering_after(
 
     device.trees.settle(commits.aliases());
     prop_assert_eq!(device.trees.check(), Ok(()));
+    device.follow_rekeys();
     let kept_for_excluded = device.trees.kept_for_excluded();
     let outside = |id: &NodeId| device.trees.ignored(id) || kept_for_excluded(id);
     let unsettled: Vec<NodeId> = (device.trees.work().into_iter())
