@@ -176,10 +176,9 @@ impl Folder {
             },
         };
         if let Stream::Replaying(staging) = &mut self.stream {
+            staging.remember_result(&at, &result.changes);
             if result.seq == staging.last_seq() + 1 {
                 staging.replay_commit(at, &result.changes)?;
-            } else {
-                staging.remember_result(&at, &result.changes);
             }
             if ours {
                 self.step(|engine, _| receive(engine, result))?;

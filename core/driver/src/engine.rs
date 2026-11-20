@@ -2154,7 +2154,8 @@ impl Staging {
     }
 
     pub fn remember_result(&mut self, at: &Base, changes: &[ChangeRecord]) {
-        if (self.history.as_ref()).is_some_and(|(through, _)| at.seq == *through + 1) {
+        let next = (self.history.as_ref()).is_some_and(|(through, _)| at.seq == *through + 1);
+        if next && at.committed_at_ms != 0 {
             self.remember(at, changes);
         }
     }
@@ -2178,14 +2179,14 @@ impl Staging {
     /// page read later can already hold the result of a commit replayed now.
     pub fn replay(&mut self, records: &[CommitRecord]) -> Result<Applied, Stop> {
         for record in records {
-            if record.seq <= self.last.seq {
-                self.remember(&record_base(record), &record.changes);
-                continue;
-            }
-            if record.seq != self.last.seq + 1 {
+            if record.seq > self.last.seq + 1 {
                 return Ok(Applied::Gap);
             }
-            self.replay_commit(record_base(record), &record.changes)?;
+            let at = record_base(record);
+            self.remember(&at, &record.changes);
+            if record.seq == self.last.seq + 1 {
+                self.replay_commit(at, &record.changes)?;
+            }
         }
         Ok(Applied::Through)
     }
@@ -2198,7 +2199,6 @@ impl Staging {
                 at.seq
             )));
         }
-        self.remember(&at, changes);
         for change in changes {
             match &change.change {
                 Some(change_record::Change::Node(state)) => self.take(state.clone()),
@@ -2219,10 +2219,11 @@ impl Staging {
     }
 
     /// True once the tree may replace R: the replay has reached the highest `head_seq` of any page and the head
-    /// of the last `CaughtUp`.
+    /// of the last `CaughtUp`, and the log a recovery reads has reached the replay.
     pub fn ready(&self) -> bool {
         self.last.seq >= self.highest_page_seq
             && self.caught_up.is_some_and(|head| self.last.seq >= head)
+            && (self.history.as_ref()).is_none_or(|(through, _)| *through >= self.last.seq)
     }
 }
 
@@ -2330,6 +2331,50 @@ mod tests {
             staging.remember(&Base::from(seq), &[]);
         }
         assert!(staging.take_history().is_some());
+    }
+
+    #[test]
+    fn a_commit_result_after_the_listing_waits_for_the_backlog_to_reach_it() {
+        use koidrive_engine::commit::Base;
+        use koidrive_engine::first_link::History;
+        let mut staging = listed(3, Vec::new());
+        staging.read_history_since(Base::from(0), Log::SinceCursor(History::new()));
+        let result = Base {
+            seq: 4,
+            committed_at_ms: 40,
+            ..Base::default()
+        };
+        staging.remember_result(&result, &[]);
+        staging.replay_commit(result, &[]).unwrap();
+        staging.caught_up(4);
+        assert!(!staging.ready());
+        let backlog: Vec<CommitRecord> = (1..=4).map(|seq| record(seq, Vec::new())).collect();
+        staging.replay(&backlog).unwrap();
+        assert!(staging.ready());
+        assert!(staging.take_history().is_some());
+    }
+
+    #[test]
+    fn a_commit_result_without_a_time_leaves_the_commit_time_to_the_backlog() {
+        use koidrive_engine::commit::Base;
+        let mut staging = listed(0, Vec::new());
+        let log = Log::SinceFloor {
+            floor_seq: 0,
+            candidates: BTreeSet::new(),
+            first_ms: None,
+            created_ms: BTreeMap::new(),
+        };
+        staging.read_history_since(Base::from(0), log);
+        staging.remember_result(&Base::from(1), &[]);
+        let backlog = CommitRecord {
+            committed_at_ms: 40,
+            ..record(1, Vec::new())
+        };
+        staging.replay(&[backlog]).unwrap();
+        let Some(Log::SinceFloor { first_ms, .. }) = staging.take_history() else {
+            panic!("the log is kept");
+        };
+        assert_eq!(first_ms, Some(40));
     }
 
     /// A bootstrap's tree of `nodes` that the log has caught up at `seq`.
