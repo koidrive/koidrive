@@ -24,7 +24,7 @@ export interface MockRunAttempt {
 export class MockCloudflare {
   readonly workers = new Map<string, MockWorker>();
   readonly buckets = new Map<string, MockBucket>();
-  readonly namespaces: { id: string; class: string; script: string }[] = [];
+  readonly namespaces: { id: string; class: string; script?: string }[] = [];
   readonly requests: string[] = [];
   createBucketStatus = 200;
   claimStatus = 200;
@@ -32,6 +32,8 @@ export class MockCloudflare {
   bucketDeleteFailures = 0;
   workerDeleteKeepsNamespaces = false;
   failingWorkerCall?: "GET" | "DELETE";
+  bucketListStatus = 200;
+  bucketListCursor = "";
   readonly runAttempts = new Map<string, MockRunAttempt>();
   githubStatus = 200;
   readonly claimCode = "ZQ7K-M2XR-9WPD";
@@ -93,7 +95,7 @@ export class MockCloudflare {
         response.writeHead(status, { "Content-Type": "application/json" });
         response.end(JSON.stringify(value));
       };
-      const ok = (result: unknown) => send(200, { success: true, errors: [], messages: [], result });
+      const ok = (result: unknown, cursor = "") => send(200, { success: true, errors: [], messages: [], result, ...(cursor ? { result_info: { cursor } } : {}) });
       const missing = () => send(404, { success: false, errors: [{ code: 10007, message: "not found" }], messages: [], result: null });
       let match: RegExpExecArray | null;
 
@@ -137,7 +139,7 @@ export class MockCloudflare {
       }
       if ((match = /^\/github\/repos\/koidrive\/koidrive\/actions\/runs\/(\d+)\/attempts\/(\d+)$/.exec(path)) && method === "GET") {
         if (this.githubStatus !== 200) return send(this.githubStatus, { message: "Server Error" });
-        const attempt = this.runAttempts.get(match[1] + "/" + match[2]);
+        const attempt = this.runAttempts.get(Number(match[1]) + "/" + Number(match[2]));
         return attempt ? send(200, attempt) : send(404, { message: "Not Found" });
       }
       const api = /^\/client\/v4\/accounts\/[^/]+(\/.*)$/.exec(path)?.[1];
@@ -199,8 +201,9 @@ export class MockCloudflare {
         return send(200, { success: true, errors: [], messages: [], result: this.namespaces, result_info: { page: 1, total_pages: 1 } });
       }
       if (api === "/r2/buckets" && method === "GET") {
+        if (this.bucketListStatus !== 200) return send(this.bucketListStatus, { success: false, errors: [{ code: 10000, message: "Authentication error" }], messages: [], result: null });
         const contains = new URL(request.url ?? "/", this.url).searchParams.get("name_contains") ?? "";
-        return ok({ buckets: [...this.buckets].filter(([name]) => name.includes(contains)).map(([name, bucket]) => ({ name, ...(bucket.creationDate ? { creation_date: bucket.creationDate } : {}) })) });
+        return ok({ buckets: [...this.buckets].filter(([name]) => name.includes(contains)).map(([name, bucket]) => ({ name, ...(bucket.creationDate ? { creation_date: bucket.creationDate } : {}) })) }, this.bucketListCursor);
       }
       if ((match = /^\/r2\/buckets\/([^/]+)\/lifecycle$/.exec(api)) && method === "PUT") {
         const bucket = this.buckets.get(match[1]!);

@@ -563,9 +563,8 @@ async function teardown(account: Account): Promise<void> {
   }
 }
 
-const RUN_NAME = /^koidrive-test-(\d+)-(\d+)$/;
+const RUN_NAME = /^koidrive-test-([1-9]\d*)-([1-9]\d*)$/;
 const TEST_WORKFLOWS = [".github/workflows/deploy-test.yml", ".github/workflows/load-test.yml"];
-const SWEEP_SKEW_MS = 5 * 60_000;
 
 interface RunAttempt {
   path: string;
@@ -594,7 +593,6 @@ type Verdict = "sweep" | "running" | { leftAlone: string };
 async function sweep(account: Account): Promise<void> {
   const current = testName();
   const repository = process.env.GITHUB_REPOSITORY || fail("GITHUB_REPOSITORY must name the repository whose runs the sweep checks");
-  const [buckets, workers] = await Promise.all([listBuckets(account, NAME_PREFIX), listWorkers(account)]);
   const attempts = new Map<string, RunAttempt | undefined>();
   const finishedRun = async (name: string): Promise<RunAttempt | Exclude<Verdict, "sweep">> => {
     if (name === current) return "running";
@@ -610,7 +608,7 @@ async function sweep(account: Account): Promise<void> {
     if (run === "running" || "leftAlone" in run) return run;
     if (!createdOn) return { leftAlone: "the API gave no creation time for it" };
     const created = Date.parse(createdOn);
-    if (created >= Date.parse(run.run_started_at) - SWEEP_SKEW_MS && created <= Date.parse(run.updated_at) + SWEEP_SKEW_MS) return "sweep";
+    if (created >= Date.parse(run.run_started_at) && created <= Date.parse(run.updated_at)) return "sweep";
     return { leftAlone: "it was created at " + createdOn + ", outside the run attempt that ran from " + run.run_started_at + " to " + run.updated_at };
   };
   const ofFinishedRun = async (script: string): Promise<Verdict> => {
@@ -619,7 +617,6 @@ async function sweep(account: Account): Promise<void> {
   };
   const problems: string[] = [];
   const leftAlone: string[] = [];
-  const live = new Set(workers.map((worker) => worker.name));
   const visit = async (what: string, decide: () => Promise<Verdict>, remove: () => Promise<void>) => {
     try {
       const found = await decide();
@@ -627,18 +624,22 @@ async function sweep(account: Account): Promise<void> {
       else if (found === "sweep") await remove();
       else leftAlone.push("the " + what + ", because " + found.leftAlone);
     } catch (error) {
-      problems.push(what + ": " + (error instanceof Error ? error.message : String(error)));
+      failed(what, error);
     }
   };
 
-  for (const worker of workers.filter((candidate) => candidate.name.startsWith(NAME_PREFIX))) {
+  const failed = (what: string, error: unknown) => problems.push(what + ": " + (error instanceof Error ? error.message : String(error)));
+
+  const workers = await listWorkers(account).catch((error: unknown) => void failed("listing the Workers", error));
+  const live = new Set(workers?.map((worker) => worker.name));
+  for (const worker of workers?.filter((candidate) => candidate.name.startsWith(NAME_PREFIX)) ?? []) {
     await visit("Worker " + worker.name, () => createdDuring(worker.name, worker.createdOn), async () => {
       await deleteWorker(account, worker.name);
       console.log("Deleted the Worker " + worker.name + " and its Durable Objects, which its finished run left behind");
       live.delete(worker.name);
     });
   }
-  for (const bucket of buckets) {
+  for (const bucket of (await listBuckets(account, NAME_PREFIX).catch((error: unknown) => void failed("listing the R2 buckets", error))) ?? []) {
     await visit("R2 bucket " + bucket.name, () => createdDuring(bucket.name, bucket.creationDate), async () => {
       try {
         await deleteBucket(account, bucket.name);
@@ -650,16 +651,14 @@ async function sweep(account: Account): Promise<void> {
       }
     });
   }
-  try {
-    for (const namespace of await listNamespaces(account)) {
-      if (!namespace.script.startsWith(NAME_PREFIX) || live.has(namespace.script)) continue;
-      await visit("Durable Object namespace " + described([namespace]) + " of the deleted Worker " + namespace.script, () => ofFinishedRun(namespace.script), async () => {
-        await deleteNamespace(account, namespace.id);
-        console.log("Deleted the Durable Object namespace " + described([namespace]) + ", which outlived the Worker " + namespace.script + " of a finished run");
-      });
-    }
-  } catch (error) {
-    problems.push("listing the Durable Object namespaces: " + (error instanceof Error ? error.message : String(error)));
+  const namespaces = workers ? await listNamespaces(account).catch((error: unknown) => void failed("listing the Durable Object namespaces", error)) : undefined;
+  for (const namespace of namespaces ?? []) {
+    const script = namespace.script;
+    if (script === undefined || !script.startsWith(NAME_PREFIX) || live.has(script)) continue;
+    await visit("Durable Object namespace " + described([namespace]) + " of the deleted Worker " + script, () => ofFinishedRun(script), async () => {
+      await deleteNamespace(account, namespace.id);
+      console.log("Deleted the Durable Object namespace " + described([namespace]) + ", which outlived the Worker " + script + " of a finished run");
+    });
   }
 
   for (const item of leftAlone) console.log("::warning::The sweep left alone " + item);

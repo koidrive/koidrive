@@ -17,7 +17,7 @@ export interface R2Object {
 export interface Namespace {
   id: string;
   class: string;
-  script: string;
+  script?: string;
 }
 
 export class ApiError extends Error {
@@ -147,14 +147,15 @@ export interface Bucket {
 }
 
 export async function listBuckets(account: Account, prefix: string): Promise<Bucket[]> {
-  const buckets: Bucket[] = [];
+  const buckets = new Map<string, Bucket>();
   let cursor = "";
   for (;;) {
     const query = new URLSearchParams({ name_contains: prefix, per_page: "1000", ...(cursor ? { cursor } : {}) });
     const page = await call<{ buckets?: { name: string; creation_date?: string }[] }>(account, "GET", `/accounts/${account.id}/r2/buckets?${query}`);
-    for (const bucket of page.result?.buckets ?? []) if (bucket.name.startsWith(prefix)) buckets.push({ name: bucket.name, creationDate: bucket.creation_date });
-    cursor = page.result_info?.cursor ?? "";
-    if (!cursor || (page.result?.buckets ?? []).length === 0) return buckets;
+    for (const bucket of page.result?.buckets ?? []) if (bucket.name.startsWith(prefix)) buckets.set(bucket.name, { name: bucket.name, creationDate: bucket.creation_date });
+    const next = page.result_info?.cursor ?? "";
+    if (!next || next === cursor || (page.result?.buckets ?? []).length === 0) return [...buckets.values()];
+    cursor = next;
   }
 }
 

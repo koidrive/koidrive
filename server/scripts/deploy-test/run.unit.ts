@@ -217,17 +217,18 @@ describe("sweep", () => {
   const attempt = (startedMs: number, endedMs: number, path = ".github/workflows/deploy-test.yml", status = "completed") => ({ path, status, run_started_at: new Date(startedMs).toISOString(), updated_at: new Date(endedMs).toISOString() });
 
   it("deletes the Worker and the empty bucket a finished run left, and sets the lifecycle rule on a bucket that still holds objects", async () => {
-    mock.runAttempts.set("7/1", attempt(Date.now() - HOUR, Date.now()));
-    mock.runAttempts.set("8/2", attempt(Date.now() - HOUR, Date.now(), ".github/workflows/load-test.yml@refs/heads/main"));
+    mock.runAttempts.set("7/1", attempt(Date.now() - HOUR, Date.now() + HOUR));
+    mock.runAttempts.set("8/2", attempt(Date.now() - HOUR, Date.now() + HOUR, ".github/workflows/load-test.yml@refs/heads/main"));
     mock.addWorker("koidrive-test-7-1");
     mock.addBucket("koidrive-test-7-1");
     const full = mock.addBucket("koidrive-test-8-2", undefined, ["spaces/a/chunks/aa/aa/1"]);
     mock.addBucket("user-koidrive-test-7-1", undefined, ["theirs.txt"]);
-    mock.namespaces.push({ id: "orphan-account", class: "AccountDO", script: "koidrive-test-8-2" });
+    mock.namespaces.push({ id: "no-script", class: "AccountDO" }, { id: "orphan-account", class: "AccountDO", script: "koidrive-test-8-2" });
+    mock.bucketListCursor = "the-same-cursor-every-time";
     const { status, output } = await runTs("sweep");
     expect({ status, warnings: output.includes("::warning::") }).toEqual({ status: 0, warnings: false });
     expect(mock.workers.size).toBe(0);
-    expect(mock.namespaces).toEqual([]);
+    expect(mock.namespaces).toEqual([{ id: "no-script", class: "AccountDO" }]);
     expect([...mock.buckets.keys()].sort()).toEqual(["koidrive-test-8-2", "user-koidrive-test-7-1"]);
     expect(full.lifecycle).toEqual(EXPIRY);
     expect(full.objects.size).toBe(1);
@@ -236,10 +237,12 @@ describe("sweep", () => {
 
   it.each([
     ["this run's own", NAME, undefined, false],
-    ["a running attempt's", "koidrive-test-9-1", attempt(Date.now() - HOUR, Date.now(), undefined, "in_progress"), false],
+    ["a running attempt's", "koidrive-test-9-1", attempt(Date.now() - HOUR, Date.now() + HOUR, undefined, "in_progress"), false],
     ["an unknown run's", "koidrive-test-9-1", undefined, true],
     ["another workflow's", "koidrive-test-9-1", attempt(Date.now() - HOUR, Date.now() + HOUR, ".github/workflows/ci.yml"), true],
     ["an unparsable name's", "koidrive-test-manual", undefined, true],
+    ["a zero-padded name's", "koidrive-test-09-1", attempt(Date.now() - HOUR, Date.now() + HOUR), true],
+    ["an attempt that ended a minute before they were created", "koidrive-test-9-1", attempt(Date.now() - HOUR, Date.now() - 60_000), true],
     ["an attempt that ended before they were created", "koidrive-test-9-1", attempt(Date.now() - 3 * HOUR, Date.now() - 2 * HOUR), true],
   ])("leaves %s Worker and bucket alone", async (_, name, run, warns) => {
     if (run) mock.runAttempts.set("9/1", run);
@@ -252,8 +255,21 @@ describe("sweep", () => {
     expect(mock.workers.has(name)).toBe(true);
   });
 
+  it("deletes a finished run's Worker and orphaned namespace when the bucket list fails, and then fails", async () => {
+    mock.runAttempts.set("7/1", attempt(Date.now() - HOUR, Date.now() + HOUR));
+    mock.addWorker("koidrive-test-7-1");
+    mock.namespaces.push({ id: "orphan", class: "SpaceDO", script: "koidrive-test-7-2" });
+    mock.runAttempts.set("7/2", attempt(Date.now() - HOUR, Date.now() + HOUR));
+    mock.bucketListStatus = 403;
+    const { status, output } = await runTs("sweep");
+    expect(status).toBe(1);
+    expect(output).toContain("::error::sweep: listing the R2 buckets");
+    expect(mock.workers.size).toBe(0);
+    expect(mock.namespaces).toEqual([]);
+  });
+
   it("leaves alone a bucket the API lists without a creation time", async () => {
-    mock.runAttempts.set("7/1", attempt(Date.now() - HOUR, Date.now()));
+    mock.runAttempts.set("7/1", attempt(Date.now() - HOUR, Date.now() + HOUR));
     const bucket = mock.addBucket("koidrive-test-7-1", "");
     const { status, output } = await runTs("sweep");
     expect(status).toBe(0);
@@ -262,7 +278,7 @@ describe("sweep", () => {
   });
 
   it("leaves alone a Durable Object namespace whose deleted Worker no finished run of a test workflow can claim", async () => {
-    mock.runAttempts.set("9/1", attempt(Date.now() - HOUR, Date.now(), undefined, "in_progress"));
+    mock.runAttempts.set("9/1", attempt(Date.now() - HOUR, Date.now() + HOUR, undefined, "in_progress"));
     const orphans = [{ id: "a", class: "AccountDO", script: "koidrive-test-9-1" }, { id: "b", class: "SpaceDO", script: "koidrive-test-10-1" }, { id: "c", class: "SpaceDO", script: "someone-else" }];
     mock.namespaces.push(...orphans);
     const { status, output } = await runTs("sweep");
