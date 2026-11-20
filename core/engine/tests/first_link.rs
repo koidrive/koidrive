@@ -5927,6 +5927,81 @@ mod a_server_file_moved_into_an_asked_folder {
         }
     }
 
+    #[test]
+    fn a_left_out_file_removed_after_s_gives_up_its_place_is_not_asked_about_again() {
+        let (mut c, mut t, mut i) = server_folder_moved_in_while_left_out();
+        let sc = NodeId::from("sc");
+        assert!(t.unobserved(&sc));
+        assert!(c.decide(&mut t, &question(&c).id, Answer::Discard));
+        assert!(question(&c).frozen.is_some());
+        set_rules(&mut t, Some(b"c-leftout\nignored-dest/\n"));
+        on_the_server(&mut t, "rd", |node| node.shape = dir(ROOT, "ignored-dest"));
+        let mut copy = t.local().get(&sc).unwrap().clone();
+        copy.shape.parent = "f".into();
+        copy.shape.name = "c-leftout".into();
+        t.set_local_changed(sc.clone(), copy);
+        on_the_server(&mut t, "sc", |node| node.shape.parent = "rd".into());
+        assert!(t.local().get(&sc).is_some());
+        assert!(t.synced().get(&sc).is_none(), "{:?}", t.synced().get(&sc));
+        assert!(t.unobserved(&sc));
+        assert_eq!(t.check(), Ok(()));
+        t.set_rules(&[] as &[&str], Source::Koiignore, None);
+        t.remove_local(&sc);
+        t.settle(&Default::default());
+        assert_eq!(settle(&mut c, &mut t, &mut i), []);
+        assert!(
+            c.questions().iter().all(|open| open.answer.is_some()),
+            "{:?}",
+            c.questions()
+        );
+        assert_eq!(
+            t.local().get(&sc).map(|node| &node.shape),
+            Some(&file("rd", "c", 9))
+        );
+    }
+
+    #[test]
+    fn a_left_out_file_removed_as_the_rules_change_after_s_gives_up_its_place_is_not_asked_about_again()
+     {
+        let (mut c, mut t, mut i) = server_folder_moved_in_while_left_out();
+        let sc = NodeId::from("sc");
+        assert!(t.unobserved(&sc));
+        assert!(c.decide(&mut t, &question(&c).id, Answer::Discard));
+        assert!(question(&c).frozen.is_some());
+        set_rules(&mut t, Some(b"c-leftout\nignored-dest/\n"));
+        on_the_server(&mut t, "rd", |node| node.shape = dir(ROOT, "ignored-dest"));
+        let mut copy = t.local().get(&sc).unwrap().clone();
+        copy.shape.parent = "f".into();
+        copy.shape.name = "c-leftout".into();
+        t.set_local_changed(sc.clone(), copy);
+        on_the_server(&mut t, "sc", |node| node.shape.parent = "rd".into());
+        assert!(t.local().get(&sc).is_some());
+        assert!(t.synced().get(&sc).is_none(), "{:?}", t.synced().get(&sc));
+        assert!(t.unobserved(&sc));
+        assert_eq!(t.check(), Ok(()));
+        set_rules(&mut t, None);
+        scan(&mut t, "sc", file("f", "c-leftout", 9));
+        assert!(!t.unobserved(&sc));
+        assert!(t.synced().get(&sc).is_none());
+        t.set_rules(
+            &[] as &[&str],
+            Source::Koiignore,
+            Some(RuleFile::parse(b"c-leftout\n")),
+        );
+        t.remove_local(&sc);
+        t.settle(&Default::default());
+        assert_eq!(settle(&mut c, &mut t, &mut i), []);
+        assert!(
+            c.questions().iter().all(|open| open.answer.is_some()),
+            "{:?}",
+            c.questions()
+        );
+        assert_eq!(
+            t.local().get(&sc).map(|node| &node.shape),
+            Some(&file("rd", "c", 9))
+        );
+    }
+
     fn assert_sc_comes_back(t: &Trees) {
         assert!(
             t.remote()
