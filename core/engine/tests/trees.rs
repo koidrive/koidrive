@@ -1203,12 +1203,12 @@ proptest! {
             for (id, shape) in trees.synced().iter() {
                 everything.set_synced(id.clone(), Some(shape.clone()));
             }
-            let mut state = everything.state();
-            state.unobserved = (trees.state().unobserved.into_iter())
-                .filter(|id| trees.local().get(id).is_some() || trees.synced().get(id).is_some())
-                .collect();
-            state.removed_from = trees.state().removed_from;
-            state.synced_positions = trees.state().synced_positions;
+            let mut state = trees.state();
+            state.dirty = everything.state().dirty;
+            state.unsearched = everything.state().unsearched;
+            state
+                .unobserved
+                .retain(|id| trees.local().get(id).is_some() || trees.synced().get(id).is_some());
             everything.restore(state).unwrap();
             everything.rules_scanned();
             trees.settle(&Default::default());

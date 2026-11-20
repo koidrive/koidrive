@@ -337,6 +337,17 @@ impl<V: Placed + Clone + PartialEq> From<BTreeMap<NodeId, V>> for ByParent<V> {
 #[derive(Clone, Debug, Default)]
 struct ByName(CountedMap<(NodeId, u32), Holders>);
 
+#[derive(Clone, Default)]
+struct Identities(HashMap<(u128, Option<i64>), Holders>);
+
+impl std::fmt::Debug for Identities {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_map()
+            .entries(self.0.iter().collect::<BTreeMap<_, _>>())
+            .finish()
+    }
+}
+
 fn key_hash(key: &str) -> u32 {
     let [a, b, c, d, ..] = SipHasher13::new().hash(key.as_bytes()).to_le_bytes();
     u32::from_le_bytes([a, b, c, d])
@@ -669,7 +680,7 @@ pub struct Trees {
     l_names: ByName,
     l_parked: ByName,
     /// Every node of L, placed or parked, by its identity.
-    l_identities: HashMap<(u128, Option<i64>), Holders>,
+    l_identities: Identities,
     /// The nodes of S.
     s_names: ByName,
     s_marks: BTreeMap<NodeId, String>,
@@ -780,7 +791,7 @@ impl Trees {
             same: BTreeSet::new(),
             l_names: ByName::default(),
             l_parked: ByName::default(),
-            l_identities: HashMap::new(),
+            l_identities: Identities::default(),
             s_names: ByName::default(),
             s_marks: BTreeMap::new(),
             r_names: ByName::default(),
@@ -1105,6 +1116,7 @@ impl Trees {
         let identity = *identity;
         (self
             .l_identities
+            .0
             .get(&(identity.ino, identity.birth_ns))
             .into_iter())
         .flat_map(Holders::iter)
@@ -2130,6 +2142,7 @@ impl Trees {
         }
         (self
             .l_identities
+            .0
             .entry((node.identity.ino, node.identity.birth_ns)))
         .and_modify(|ids| ids.insert(id.clone()))
         .or_insert_with(|| Holders::One(id.clone()));
@@ -2380,8 +2393,8 @@ impl Trees {
 
     fn forget_identity(&mut self, id: &NodeId, identity: &FileIdentity) {
         let inode = (identity.ino, identity.birth_ns);
-        if (self.l_identities.get_mut(&inode)).is_some_and(|ids| ids.remove(id)) {
-            self.l_identities.remove(&inode);
+        if (self.l_identities.0.get_mut(&inode)).is_some_and(|ids| ids.remove(id)) {
+            self.l_identities.0.remove(&inode);
         }
     }
 
