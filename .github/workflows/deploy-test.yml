@@ -242,6 +242,14 @@ jobs:
           node-version: 24
       - uses: ./.github/actions/pnpm-store
       - run: pnpm install --frozen-lockfile
+      - name: Delete what earlier runs left behind
+        continue-on-error: true
+        timeout-minutes: 5
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/deploy-test/run.ts sweep
       - name: Install the pinned Rust toolchain
         if: inputs.mode == 'e2e' || inputs.mode == 'bench' || inputs.mode == 'bench-small'
         working-directory: .
@@ -483,15 +491,6 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: node scripts/deploy-test/run.ts teardown
-      - name: Delete what earlier runs left behind
-        if: always() && steps.secrets.outcome == 'success'
-        continue-on-error: true
-        timeout-minutes: 5
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          GH_TOKEN: ${{ github.token }}
-        run: node scripts/deploy-test/run.ts sweep
       - name: "first sync: upload the Worker's invocations and trace spans"
         if: ${{ !cancelled() && inputs.mode == 'first-sync' }}
         timeout-minutes: 10

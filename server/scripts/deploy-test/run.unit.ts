@@ -294,6 +294,18 @@ describe("sweep", () => {
     expect(mock.buckets.size).toBeGreaterThan(0);
   });
 
+  it("still lists and sweeps buckets and namespaces when the Worker list uses up its share of the budget", async () => {
+    mock.runAttempts.set("7/1", attempt(Date.now() - HOUR, Date.now() + HOUR));
+    mock.addBucket("koidrive-test-7-1");
+    mock.namespaces.push({ id: "orphan", class: "SpaceDO", script: "koidrive-test-7-1" });
+    mock.workerListDelayMs = 30_000;
+    const { status, output } = await runTsWith({ KOIDRIVE_SWEEP_BUDGET_MS: "3000" }, "sweep");
+    expect({ status, errors: output.includes("::error::") }).toEqual({ status: 0, errors: false });
+    expect(output).toContain("::notice::The sweep stopped");
+    expect(mock.buckets.size).toBe(0);
+    expect(mock.namespaces).toEqual([]);
+  });
+
   it("leaves alone a bucket the API lists without a creation time", async () => {
     mock.runAttempts.set("7/1", attempt(Date.now() - HOUR, Date.now() + HOUR));
     const bucket = mock.addBucket("koidrive-test-7-1", "");

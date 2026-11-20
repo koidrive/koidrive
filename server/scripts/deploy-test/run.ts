@@ -603,7 +603,9 @@ async function sweep(account: Account): Promise<void> {
   const current = testName();
   const repository = process.env.GITHUB_REPOSITORY || fail("GITHUB_REPOSITORY must name the repository whose runs the sweep checks");
   const budgetMs = Number(process.env.KOIDRIVE_SWEEP_BUDGET_MS || SWEEP_MS);
-  const deadline = { atMs: Date.now() + budgetMs, what: "the sweep used its " + budgetMs / 1000 + " s budget" };
+  const what = "the sweep used its " + budgetMs / 1000 + " s budget";
+  let deadline: Deadline = { atMs: 0, what };
+  const startPhase = () => (deadline = { atMs: Date.now() + budgetMs / 3, what });
   let unfinished = false;
   const attempts = new Map<string, RunAttempt | undefined>();
   const finishedRun = async (name: string): Promise<RunAttempt | Exclude<Verdict, "sweep">> => {
@@ -654,6 +656,7 @@ async function sweep(account: Account): Promise<void> {
     else problems.push(what + ": " + (error instanceof Error ? error.message : String(error)));
   };
 
+  startPhase();
   const workers = await listWorkers(account, deadline).catch((error: unknown) => void failed("listing the Workers", error));
   const live = new Set(workers?.map((worker) => worker.name));
   for (const worker of workers?.filter((candidate) => candidate.name.startsWith(NAME_PREFIX)) ?? []) {
@@ -663,6 +666,7 @@ async function sweep(account: Account): Promise<void> {
       live.delete(worker.name);
     });
   }
+  startPhase();
   for (const bucket of (await listBuckets(account, NAME_PREFIX, deadline).catch((error: unknown) => void failed("listing the R2 buckets", error))) ?? []) {
     await visit("R2 bucket " + bucket.name, () => createdDuring(bucket.name, bucket.creationDate), async () => {
       try {
@@ -675,7 +679,8 @@ async function sweep(account: Account): Promise<void> {
       }
     });
   }
-  const namespaces = workers ? await listNamespaces(account, deadline).catch((error: unknown) => void failed("listing the Durable Object namespaces", error)) : undefined;
+  startPhase();
+  const namespaces = await listNamespaces(account, deadline).catch((error: unknown) => void failed("listing the Durable Object namespaces", error));
   for (const namespace of namespaces ?? []) {
     const script = namespace.script;
     if (script === undefined || !script.startsWith(NAME_PREFIX) || live.has(script)) continue;
@@ -686,7 +691,7 @@ async function sweep(account: Account): Promise<void> {
   }
 
   for (const item of leftAlone) console.log("::warning::The sweep left alone " + item);
-  if (unfinished) console.log("::notice::The sweep stopped because " + deadline.what + ". The next run's sweep checks what is left");
+  if (unfinished) console.log("::notice::The sweep stopped because " + what + ". The next run's sweep checks what is left");
   if (problems.length > 0) {
     for (const problem of problems) console.error("::error::sweep: " + problem);
     fail("the sweep could not check or delete everything earlier runs left behind");

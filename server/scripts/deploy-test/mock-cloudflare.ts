@@ -39,6 +39,7 @@ export class MockCloudflare {
   readonly runAttempts = new Map<string, MockRunAttempt>();
   githubStatus = 200;
   githubDelayMs = 0;
+  workerListDelayMs = 0;
   readonly hiddenWorkers = new Set<string>();
   readonly claimCode = "ZQ7K-M2XR-9WPD";
   readonly logs: { script: string; timestamp: number; message?: string; path?: string; visibleFrom?: number }[] = [];
@@ -160,6 +161,7 @@ export class MockCloudflare {
         return worker ? ok({ id: worker.id, name: match[1], created_on: new Date().toISOString() }) : missing();
       }
       if (api === "/workers/scripts" && method === "GET") {
+        if (this.workerListDelayMs > 0) return void setTimeout(() => send(200, { success: true, errors: [], messages: [], result: [] }), this.workerListDelayMs);
         return ok([...this.unnamedListings, ...[...this.workers].filter(([name]) => !this.hiddenWorkers.has(name)).map(([name, worker]) => ({ id: name, created_on: worker.createdOn }))]);
       }
       if ((match = /^\/workers\/scripts\/([^/]+)$/.exec(api)) && method === "DELETE") {
