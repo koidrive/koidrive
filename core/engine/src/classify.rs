@@ -167,14 +167,14 @@ fn note_move<N: Node>(
     id: &NodeId,
     old: Option<&N>,
     new: Option<&N>,
-) {
+) -> bool {
     fn at<N: Node>(node: Option<&N>) -> Option<(&NodeId, &str, bool, bool)> {
         let node = node?;
         let shape = node.shape();
         Some((&shape.parent, &shape.name, node.is_live(), node.is_placed()))
     }
     if at(old) == at(new) {
-        return;
+        return false;
     }
     if let Some(old) = old {
         rescope.left.insert(old.shape().parent.clone());
@@ -183,6 +183,7 @@ fn note_move<N: Node>(
     if folder(old) || folder(new) {
         moved(rescope).insert(id.to_owned());
     }
+    old.is_some() && (folder(old) || folder(new))
 }
 
 /// Whether `tree` holds `id` live and placed below one of `folders`, through live, placed folders.
@@ -773,6 +774,7 @@ pub struct Trees {
     /// Dirty nodes the last settle left as [`Class::Same`], which the next one tries again.
     same: BTreeSet<NodeId>,
     rescope: RefCell<Rescope>,
+    relocated: BTreeSet<NodeId>,
     /// The placed nodes of L.
     l_names: ByName,
     l_parked: ByName,
@@ -899,6 +901,7 @@ impl Trees {
             link_due: BTreeSet::new(),
             same: BTreeSet::new(),
             rescope: RefCell::default(),
+            relocated: BTreeSet::new(),
             l_names: ByName::default(),
             l_parked: ByName::default(),
             l_identities: Identities::default(),
@@ -1576,13 +1579,15 @@ impl Trees {
         self.content_provenance
             .remote_changing(&id, &self.r, Some(&node));
         let old = self.r.insert(id.clone(), node);
-        note_move(
+        if note_move(
             self.rescope.get_mut(),
             |rescope| &mut rescope.remote,
             &id,
             old.as_ref(),
             self.r.get(&id),
-        );
+        ) {
+            self.relocated.insert(id.clone());
+        }
         self.index_remote(&id, old.as_ref());
         self.count_held_trash(&id, true);
         self.count_trashed(&id, true);
@@ -1916,13 +1921,15 @@ impl Trees {
         self.content_provenance.remote_changing(id, &self.r, None);
         self.discard_members.remove(id);
         if let Some(old) = self.r.remove(id) {
-            note_move(
+            if note_move(
                 self.rescope.get_mut(),
                 |rescope| &mut rescope.remote,
                 id,
                 Some(&old),
                 None,
-            );
+            ) {
+                self.relocated.insert(id.to_owned());
+            }
             self.index_remote(id, Some(&old));
             self.mark(id);
         }
@@ -2321,13 +2328,15 @@ impl Trees {
         };
         let temp = temp_name(&node.shape.name);
         let old = self.l.insert(id.clone(), node);
-        note_move(
+        if note_move(
             self.rescope.get_mut(),
             |rescope| &mut rescope.local,
             &id,
             old.as_ref(),
             self.l.get(&id),
-        );
+        ) {
+            self.relocated.insert(id.clone());
+        }
         if !temp {
             self.born_as_temp.remove(&id);
         }
@@ -2582,13 +2591,15 @@ impl Trees {
             if self.unobserved.contains(id) {
                 self.copy_gone(id);
             }
-            note_move(
+            if note_move(
                 self.rescope.get_mut(),
                 |rescope| &mut rescope.local,
                 id,
                 Some(&old),
                 None,
-            );
+            ) {
+                self.relocated.insert(id.to_owned());
+            }
             match old.parked {
                 false => self.l_names.remove(id, &old.shape),
                 true => self.l_parked.remove(id, &old.shape),
@@ -4338,23 +4349,32 @@ impl Trees {
                 .filter(|id| self.l.get(id).is_some())
                 .collect(),
         };
-        self.mark_left_out(&tops, abandoned)
+        self.mark_left_out(&[], &tops, abandoned)
     }
 
-    fn mark_left_out(&mut self, tops: &[NodeId], abandoned: &dyn Fn() -> bool) -> Option<()> {
+    fn mark_left_out(
+        &mut self,
+        nodes: &[NodeId],
+        tops: &[NodeId],
+        abandoned: &dyn Fn() -> bool,
+    ) -> Option<()> {
         let mut scopes = HashMap::new();
         let mut seen = HashSet::new();
-        let mut below: Vec<&NodeId> = tops.iter().collect();
+        let mut walk: Vec<(&NodeId, bool)> = (nodes.iter().map(|node| (node, false)))
+            .chain(tops.iter().map(|top| (top, true)))
+            .collect();
         let mut marked = Vec::new();
-        while let Some(node) = below.pop() {
+        while let Some((node, below)) = walk.pop() {
             if !seen.insert(node) {
                 continue;
             }
             if seen.len() % CHECK_EVERY == 0 && abandoned() {
                 return None;
             }
-            for names in [&self.l_names, &self.l_parked, &self.s_names, &self.r_names] {
-                below.extend(names.children(node));
+            if below {
+                for names in [&self.l_names, &self.l_parked, &self.s_names, &self.r_names] {
+                    walk.extend(names.children(node).map(|child| (child, true)));
+                }
             }
             if self.l.get(node).is_none() {
                 continue;
@@ -4364,8 +4384,8 @@ impl Trees {
             }
         }
         let mut above = BTreeSet::new();
-        let starts = (tops.iter())
-            .filter_map(|top| self.l.get(top).map(|node| &node.shape.parent))
+        let starts = (nodes.iter().chain(tops))
+            .filter_map(|node| self.l.get(node).map(|node| &node.shape.parent))
             .chain(self.left_folders.iter());
         for start in starts {
             for folder in self.local_chain(start) {
@@ -7246,7 +7266,8 @@ impl Trees {
                 }
             }
         }
-        self.mark_left_out(&changed, abandoned)?;
+        let relocated: Vec<NodeId> = std::mem::take(&mut self.relocated).into_iter().collect();
+        self.mark_left_out(&changed, &relocated, abandoned)?;
         self.same = pending;
         self.reverted
             .retain(|id| match (self.l.get(id), self.r.live(id)) {
@@ -7836,13 +7857,15 @@ impl Trees {
                 false => self.gone_tops.remove(id),
             };
         }
-        note_move(
+        if note_move(
             self.rescope.get_mut(),
             |rescope| &mut rescope.synced,
             id,
             old.as_ref(),
             self.s.get(id),
-        );
+        ) {
+            self.relocated.insert(id.to_owned());
+        }
         self.release_links(id, old.as_ref());
         let file = |shape: Option<&Shape>| u64::from(shape.is_some_and(|s| s.kind == Kind::File));
         self.s_files = self.s_files - file(old.as_ref()) + file(self.s.get(id));
@@ -8160,6 +8183,7 @@ impl Trees {
             link_due: _,
             same: _,
             rescope: _,
+            relocated: _,
             l_names: _,
             l_parked: _,
             l_identities: _,
