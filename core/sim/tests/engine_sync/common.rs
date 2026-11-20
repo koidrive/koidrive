@@ -3271,13 +3271,25 @@ fn run_ignoring_answering_after(
                 .is_some_and(|held| same_content(&held, content))
         })
     };
+    let on_ignored_disk =
+        |id: &NodeId, node: &LocalNode| {
+            device.ignored.iter().any(|((holder, below), entry)| {
+                entry.original.as_ref().is_some_and(|(original, identity)| {
+                    original == id && *identity == node.identity
+                }) && entry.content == node.shape.content
+                    && device.on_disk(holder)
+                    && device
+                        .disk_path(holder, below)
+                        .is_some_and(|path| trees.ignores(&path, entry.kind))
+            })
+        };
     for (id, node) in trees.local_entries() {
         prop_assert!(
             trees.local().get(id).is_some()
                 || owned(trees, id, node)
+                || on_ignored_disk(id, node)
                 || (node.shape.content.as_ref()).is_some_and(|content| in_history(id, content)),
-            "displaced {} holds content that neither R, a write the device owes, nor the node's server history holds",
-            id
+            "displaced {id} holds content absent from R, the device's owed writes, server history, and the ignored disk"
         );
     }
     local_writes_check(&device, &server, &waiting, &local_writes)?;

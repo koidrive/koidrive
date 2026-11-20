@@ -3509,13 +3509,25 @@ impl World {
                 (retained(&self.space, id).iter())
                     .any(|digest| digest.as_slice() == content.manifest_digest())
             };
+            let on_ignored_disk = |node: &koidrive_engine::tree::LocalNode,
+                                   content: &ContentKey| {
+                let ino = node.identity.ino;
+                disk::identity(ino) == node.identity
+                    && (device.disk.entries().get(&ino))
+                        .and_then(|entry| entry.content.as_ref())
+                        .is_some_and(|held| same_content(&key(held), content))
+                    && (device.disk.path(ino))
+                        .is_some_and(|path| trees.ignores(&path, node.shape.kind))
+            };
             if let Some((id, _)) = (trees.local_entries()).find(|(id, node)| {
                 trees.local().get(id).is_none()
                     && !rules::owned(trees, id, node)
-                    && !(node.shape.content.as_ref()).is_some_and(|content| in_history(id, content))
+                    && !(node.shape.content.as_ref()).is_some_and(|content| {
+                        in_history(id, content) || on_ignored_disk(node, content)
+                    })
             }) {
                 return fail(format!(
-                    "displaced {id} holds content that neither R, a write the device owes, nor the node's server history holds"
+                    "displaced {id} holds content absent from R, the device's owed writes, server history, and the ignored disk"
                 ));
             }
             let left_out = &unsynced[d];

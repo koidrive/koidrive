@@ -1,5 +1,6 @@
-280
+331
 # ignore_rules.rs: each scenario test fails on main and on a mutant of this fix. The r3 rewind rows (works 5, 6 and 7) are the only guard for a file moved out of a displaced folder to an included path, because the engine sync oracle and the battery leave such a copy out until GUN-1341 lands. The restore row checks that both devices hold the write at the same name.
 # Engine and store: the miss_local unit test, the merged displaced-write harness test, and the displaced_local_nodes migration test and upgrade case each fail on their own mutant. No existing test covers the displaced map's new state, or #910's found place kept through the recorded_nodes rebuild.
 # The release fixture verifies complete chunk backfill, a mismatched key, and an incomplete chunk list. The matching file must send its original chunks as a create.
 # The engine and driver tests cover rewind on both sides of displacement and require the file to keep its identity and chunks. The create-in-flight and store reopen cases distinguish an expired record from a confirmed one and check that an identity update keeps the outstanding record.
+# The world test verifies the edited bytes and original file identity at an ignored path after another entry takes its old name. The CI seed covers the other simulator's disk model.

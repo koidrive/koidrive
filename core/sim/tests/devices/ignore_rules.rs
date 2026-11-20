@@ -1062,6 +1062,45 @@ fn a_folder_moved_into_an_ignored_folder_with_an_edit_keeps_it_there_when_its_ol
 }
 
 #[test]
+fn an_edited_displaced_copy_stays_on_its_device_at_an_ignored_path() {
+    let mut world = converge_excluding(
+        &[vec![], vec!["ss/"]],
+        &[vec![(0, folder("a")), (0, user(1, 0, 1, "b"))]],
+    )
+    .unwrap();
+    let file = target(&world, 1, &["a", "b"]);
+    let original = target(&world, 0, &["a", "b"]);
+    let remote_folder = folder_number(&world, 0, &["a"]);
+    world
+        .run(1, &[(1, folder("ss")), (1, overwrite(file)), (1, SCAN)])
+        .unwrap();
+    let ignored = folder_number(&world, 1, &["ss"]);
+    world
+        .phase(
+            1,
+            &[
+                (1, rename(file, ignored, "b")),
+                (1, SCAN),
+                (0, rename(original, remote_folder, "c.txt")),
+                (0, user(1, 0, remote_folder, "b")),
+            ],
+        )
+        .unwrap();
+    let disk = &world.devices[1].disk;
+    let ino = ino_at(&world, 1, &["ss", "b"]);
+    let copy = disk.entries()[&ino].content.as_ref().unwrap();
+    assert_eq!(tag(copy), 2);
+    assert!(
+        world.devices[1]
+            .engine
+            .trees
+            .displaced_local()
+            .values()
+            .any(|held| held.ino == ino)
+    );
+}
+
+#[test]
 fn a_file_at_the_name_of_a_left_out_folder_downloads_at_that_name_once_the_folder_moves_away() {
     let mut racing = vec![(0, user(1, 0, 1, "ss"))];
     racing.extend(commit(0));
