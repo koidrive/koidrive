@@ -1,10 +1,10 @@
--- requires: file_handles, local_nodes_ctime, missing_nodes, recorded_found, recovery_policy
+-- requires: file_handles, missing_nodes, recorded_found
 INSERT INTO local_nodes (node_id, parent_id, name, kind, content, ino, ino_high, birth_ns, parked, handle)
 SELECT recorded.node_id,
        CASE WHEN synced.node_id IS NULL THEN remote.parent_id ELSE synced.parent_id END,
        CASE WHEN synced.node_id IS NULL THEN remote.name ELSE synced.name END,
        CASE WHEN synced.node_id IS NULL THEN remote.kind ELSE synced.kind END,
-       synced.content,
+       matching_current_content(synced.content, remote.current),
        recorded.ino,
        recorded.ino_high,
        recorded.birth_ns,

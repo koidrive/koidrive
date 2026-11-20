@@ -73,7 +73,8 @@ pub mod migrations {
         use koidrive_engine::classify::temp_name;
         use koidrive_engine::names::same_name;
         use koidrive_engine::tree::{ContentKey, same_content};
-        use koidrive_proto::v1::Content;
+        use koidrive_proto::v1::{Content, VersionInfo};
+        use prost::Message;
         use rusqlite::functions::FunctionFlags;
 
         let flags = FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC;
@@ -96,6 +97,24 @@ pub mod migrations {
                 (Some(a), Some(b)) => same_content(&a, &b),
                 (a, b) => a.is_none() && b.is_none(),
             })
+        })?;
+        conn.create_scalar_function("matching_current_content", 2, flags, |ctx| {
+            let to_sql = |error| rusqlite::Error::UserFunctionError(Box::new(error));
+            let Some(synced) = super::engine::content_key(ctx.get(0)?).map_err(to_sql)? else {
+                return Ok(None);
+            };
+            let Some(content) = super::decode::<VersionInfo>(ctx.get(1)?)
+                .map_err(to_sql)?
+                .and_then(|version| version.content)
+            else {
+                return Ok(None);
+            };
+            if content.chunks.len() != content.chunk_count as usize
+                || ContentKey::try_from(&content) != Ok(synced)
+            {
+                return Ok(None);
+            }
+            Ok(Some(content.encode_to_vec()))
         })
     }
 
