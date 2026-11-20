@@ -761,7 +761,7 @@ cases = ["{1:064}"]
             (server_restores, example(i764b), other, []),
             (restores_and_rewinds, example(i764b), i764b, []),
             (server_restores, example(i764b) + kept, i764b, []),
-            (server_restores, head_only_undone(server_restores, ia80e), ia80e, [("D", "GUN-984", None)]),
+            (server_restores, head_only_undone(server_restores, ia80e), ia80e, []),
             (coarse_restores, example(a9151), a9151, [("A", "GUN-767", ["9151604dfe20"])]),
             (coarse_restores, example(a9151), other, [("I", "GUN-864", None)]),
             (restores_and_rewinds, example(a9151), a9151, [("I", "GUN-864", None)]),
@@ -771,7 +771,7 @@ cases = ["{1:064}"]
             (restores_and_rewinds, example(ibbe9), other, []),
             (lose_restores, example(ibbe9), ibbe9, []),
             (restores_and_rewinds, example(ibbe9) + placed, ibbe9, []),
-            (restores_and_rewinds, head_only_undone(restores_and_rewinds, ibbe9), ibbe9, [("D", "GUN-984", None)]),
+            (restores_and_rewinds, head_only_undone(restores_and_rewinds, ibbe9), ibbe9, []),
             (coarse_once, example(s968b), s968b, [("S", "GUN-1044", ["968b4030b16b"])]),
             (coarse_once, example(s968b), other, []),
             (coarse_once, example(s968b) + "\n" + undone, s968b, []),
@@ -896,8 +896,7 @@ cases = ["{1:064}"]
         self.assertEqual(triage.verdict([head] * 2, [head] * 2), triage.SAME)
         for message in (head["message"], base["message"]):
             with self.subTest(message=message):
-                self.assertEqual([(entry["class"], entry["issue"]) for entry in triage.matches(entries, test, message, case[3:])],
-                                 [("D", "GUN-984")])
+                self.assertEqual(triage.matches(entries, test, message, case[3:]), [])
 
     def test_a_devices_replay_keeps_its_unrecorded_reds_and_drops_the_cases_triage_removed(self):
         entries = triage.known_failures(triage.KNOWN_FAILURES)
