@@ -668,7 +668,7 @@ impl Commits {
         &self.aliases
     }
 
-    /// Settles each folder of `residue` against the live folder of the server that holds its name key now (filesystem §5.10). With none, or one this device's user moved away, the folder gets a new ID and uploads as a new folder. With one this device never synced, the folder takes its ID. Otherwise, and while its parent is still merged, the folder stays merged.
+    /// Settles each folder of `residue` against the live node of the server that holds its name key now (filesystem §5.10). With none, or a folder this device's user moved away, the folder gets a new ID and uploads as a new folder. With a folder this device never synced, while no other folder of this device holds the key, the folder takes its ID. Otherwise, and while its parent is still merged, the folder stays merged.
     pub fn settle_merge_residue(
         &mut self,
         trees: &mut Trees,
@@ -687,15 +687,20 @@ impl Commits {
                     }
                     let holder = (trees
                         .remote_holders_of_key(&local.shape.parent, &name_key(&local.shape.name)))
-                    .find(|holder| {
-                        (trees.remote().live(holder)).is_some_and(|shape| shape.kind == Kind::Dir)
-                    });
+                    .find_map(|holder| Some((holder, trees.remote().live(holder)?.kind)));
                     let to = match holder {
                         None => None,
-                        Some(holder) => {
+                        Some((_, Kind::File)) => return None,
+                        Some((holder, Kind::Dir)) => {
                             let synced = trees.synced().get(holder);
                             match trees.local().get(holder) {
-                                None if synced.is_none() => Some(holder.clone()),
+                                None if synced.is_none()
+                                    && (trees
+                                        .local_holders(&local.shape.parent, &local.shape.name))
+                                    .all(|other| other == id) =>
+                                {
+                                    Some(holder.clone())
+                                }
                                 Some(node)
                                     if !node.parked
                                         && synced.is_some_and(|synced| {

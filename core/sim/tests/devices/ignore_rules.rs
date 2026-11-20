@@ -468,37 +468,94 @@ fn a_file_made_offline_in_a_reported_merge_folder_uploads_in_it_when_the_live_fo
     assert_eq!(live_node_at(&world, &["A", "c.txt"]), None);
 }
 
+fn no_live_file_named(world: &World, name: &str) {
+    let live: Vec<_> = (world.space().nodes().into_iter())
+        .filter(|node| node.status == NodeStatus::Live as i32 && node.name == name)
+        .collect();
+    assert!(live.is_empty(), "{live:?}");
+}
+
 #[test]
-fn a_live_file_at_the_name_key_frees_a_reported_merge_folder_under_a_conflict_name() {
+fn a_live_file_at_the_name_key_keeps_a_reported_merge_folder_until_the_file_goes() {
+    let _red = expect_red(
+        Check::NameLeftOut,
+        "device 0 is quiet, but nodes [\"01a1c2c0-39a0-796a-8df8-fb6da7904e2f\"] wait for names that entries its rules leave out hold",
+    );
     let mut world = refused_beside_a(None);
-    reported_merge(&world);
+    let source = reported_merge(&world);
     let live = target(&world, 1, &["a"]);
     let mut steps = vec![(0, Step::Drop), (1, rename(live, 0, "b")), (1, file("a"))];
     steps.extend(commit(1));
     steps.push((0, Step::Connect));
     world.phase(2, &steps).unwrap();
-    assert!(world.reported_problems(0).is_empty());
-    let named = |name: &str| {
-        world
-            .space()
-            .nodes()
-            .into_iter()
-            .find(|node| node.status == NodeStatus::Live as i32 && node.name.starts_with(name))
-    };
+    let file = NodeId::from(&live_node_at(&world, &["a"]).unwrap());
     assert_eq!(
-        named("a").unwrap().kind,
-        koidrive_proto::v1::NodeKind::File as i32
+        world.reported_problems(0).get(&source),
+        Some(&Stuck::MergedInto(file))
     );
-    let freed = named("A (conflict from").unwrap();
-    ino_at(&world, 0, &[&freed.name, "c.txt"]);
-    ino_at(&world, 1, &[&freed.name]);
-    assert!(
-        world
-            .space()
-            .nodes()
-            .iter()
-            .all(|node| node.name != "c.txt")
+    assert_eq!(live_node_at(&world, &["A"]), None);
+    ino_at(&world, 0, &["A", "c.txt"]);
+    let file = target(&world, 1, &["a"]);
+    world.phase(3, &[(1, delete(file))]).unwrap();
+    assert!(world.reported_problems(0).is_empty());
+    assert!(live_node_at(&world, &["A"]).is_some());
+    ino_at(&world, 1, &["A"]);
+    no_live_file_named(&world, "c.txt");
+}
+
+#[test]
+fn a_live_file_at_the_name_key_keeps_out_what_an_anchored_rule_leaves_out_in_a_reported_merge_folder()
+ {
+    let _red = expect_red(
+        Check::NameLeftOut,
+        "device 0 is quiet, but nodes [\"01a1c2c0-39a0-796a-8df8-fb6da7904e2f\"] wait for names that entries its rules leave out hold",
     );
+    let mut world = refused_beside_a(None);
+    world.rule(0, &Ruling::Exclude(vec!["/A/c.txt"])).unwrap();
+    world.phase(2, &[]).unwrap();
+    let source = reported_merge(&world);
+    let live = target(&world, 1, &["a"]);
+    let mut steps = vec![(0, Step::Drop), (1, rename(live, 0, "b")), (1, file("a"))];
+    steps.extend(commit(1));
+    steps.push((0, Step::Connect));
+    world.phase(3, &steps).unwrap();
+    let file = NodeId::from(&live_node_at(&world, &["a"]).unwrap());
+    assert_eq!(
+        world.reported_problems(0).get(&source),
+        Some(&Stuck::MergedInto(file))
+    );
+    no_live_file_named(&world, "c.txt");
+    assert!((world.space().nodes().iter()).all(|node| !node.name.starts_with("A (conflict from")));
+}
+
+#[test]
+fn a_kept_folder_takes_over_a_new_live_folder_of_its_name_while_a_merge_folder_beside_it_stays_reported()
+ {
+    let phases = [
+        vec![(0, folder("a"))],
+        vec![
+            (0, user(1, 0, 1, "c.txt")),
+            (0, folder("c.txt")),
+            (0, user(1, 0, 2, "c.txt")),
+            (0, rename(2, 0, "A")),
+        ],
+    ];
+    let mut world = converge_excluding(&[vec!["*.txt"], vec![]], &phases).unwrap();
+    let source = reported_merge(&world);
+    let live = target(&world, 1, &["a"]);
+    world
+        .phase(2, &[(1, delete(live)), (1, folder("a"))])
+        .unwrap();
+    assert_eq!(
+        held_at(&world, 0, &["a"]).map(|id| id.to_string()),
+        live_node_at(&world, &["a"])
+    );
+    assert!(matches!(
+        world.reported_problems(0).get(&source),
+        Some(Stuck::MergedInto(_))
+    ));
+    ino_at(&world, 0, &["a", "c.txt"]);
+    ino_at(&world, 0, &["A", "c.txt"]);
 }
 
 #[test]

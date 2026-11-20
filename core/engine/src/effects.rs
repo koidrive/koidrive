@@ -244,17 +244,24 @@ impl MergeResidue {
         if !trees.rules_known() {
             return Ok(Self(merged));
         }
-        for (source, target) in aliases.iter() {
-            let Some(local) = trees.local().get(source).filter(|local| {
-                !local.parked
-                    && local.shape.kind == Kind::Dir
-                    && trees.holds_merge(source)
-                    && trees.remote().get(source).is_none()
-                    && !trees.held(source)
-            }) else {
-                continue;
-            };
-            if left_out(source, local)? {
+        let mut sources: Vec<(usize, &NodeId, &NodeId, &LocalNode)> = (aliases.iter())
+            .filter_map(|(source, target)| {
+                let local = trees.local().get(source).filter(|local| {
+                    !local.parked
+                        && local.shape.kind == Kind::Dir
+                        && trees.holds_merge(source)
+                        && trees.remote().get(source).is_none()
+                        && !trees.held(source)
+                })?;
+                let (path, _) = crate::classify::path(trees.local(), source)?;
+                Some((path.len(), source, target, local))
+            })
+            .collect();
+        sources.sort_by_key(|(depth, ..)| std::cmp::Reverse(*depth));
+        for (_, source, target, local) in sources {
+            if (trees.local_children(source)).any(|child| merged.contains_key(child))
+                || left_out(source, local)?
+            {
                 merged.insert(source.clone(), target.clone());
             }
         }
@@ -279,7 +286,7 @@ impl MergeResidue {
             ignored
                 || trees
                     .local_holders(source, name)
-                    .any(|id| trees.under_kept_entry(id) || trees.holds_merge(id))
+                    .any(|id| trees.under_kept_entry(id))
         })
     }
 
@@ -1141,12 +1148,16 @@ pub fn stuck_on_disk(
             Some(((*id).clone(), Stuck::HeldBy(by)))
         })
         .collect();
-    stuck.extend(
-        merge_residue
-            .0
-            .iter()
-            .map(|(source, target)| (source.clone(), Stuck::MergedInto(target.clone()))),
-    );
+    stuck.extend(merge_residue.0.iter().map(|(source, target)| {
+        let holder = trees.local().get(source).and_then(|local| {
+            (trees.remote_holders_of_key(&local.shape.parent, &name_key(&local.shape.name)))
+                .find(|holder| trees.remote().live(holder).is_some())
+        });
+        (
+            source.clone(),
+            Stuck::MergedInto(holder.unwrap_or(target).clone()),
+        )
+    }));
     stuck.extend(planned.iter().filter_map(|id| {
         let Step::Blocked(Some(holder)) = view.step(id) else {
             return None;
