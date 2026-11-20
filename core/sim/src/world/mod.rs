@@ -1561,12 +1561,7 @@ impl World {
                 self.removed[d].extend(remote);
                 for id in &ids {
                     if let Some(ino) = self.intents.ino_of(d, id) {
-                        let value = Value::Trashed {
-                            subtree: vec![ino],
-                            under: BTreeMap::new(),
-                            replaced_by: None,
-                        };
-                        let intent = self.intents.record(d, self.moment, ino, "delete", value);
+                        let intent = self.intents.answered_delete(d, self.moment, ino, id);
                         self.deletions.push(Deletion::unwatched(d, intent));
                     }
                 }

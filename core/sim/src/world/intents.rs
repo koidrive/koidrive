@@ -188,6 +188,7 @@ pub(super) struct Intent {
     discarded: bool,
     pub(super) answer: Option<Answered>,
     pub(super) carried: Option<Carried>,
+    answered_for: Option<NodeId>,
 }
 
 impl Intent {
@@ -267,6 +268,7 @@ pub(super) struct Intents {
     merged: BTreeMap<NodeId, NodeId>,
     copies: BTreeMap<NodeId, BTreeSet<NodeId>>,
     detached: Vec<BTreeMap<u128, BTreeMap<NodeId, Spans>>>,
+    linked: Vec<BTreeMap<u128, BTreeMap<NodeId, u64>>>,
 }
 
 type Spans = Vec<(u64, Option<u64>)>;
@@ -283,6 +285,7 @@ impl Intents {
             merged: BTreeMap::new(),
             copies: BTreeMap::new(),
             detached: vec![BTreeMap::new(); devices],
+            linked: vec![BTreeMap::new(); devices],
         }
     }
 
@@ -311,8 +314,26 @@ impl Intents {
             discarded: false,
             answer: None,
             carried: None,
+            answered_for: None,
         });
         self.list.len() - 1
+    }
+
+    pub(super) fn answered_delete(
+        &mut self,
+        author: usize,
+        made: u64,
+        ino: u128,
+        node: &NodeId,
+    ) -> usize {
+        let value = Value::Trashed {
+            subtree: vec![ino],
+            under: BTreeMap::new(),
+            replaced_by: None,
+        };
+        let i = self.record(author, made, ino, "delete", value);
+        self.list[i].answered_for = Some(node.clone());
+        i
     }
 
     pub(super) fn intent(&self, i: usize) -> &Intent {
@@ -412,8 +433,38 @@ impl Intents {
         ino: u128,
         made: u64,
     ) -> impl Iterator<Item = &NodeId> {
+        self.linked_at(device, ino, made, false)
+    }
+
+    pub(super) fn deleted_at(&self, i: usize, ino: u128) -> impl Iterator<Item = &NodeId> {
+        self.intent_nodes(i, ino, true)
+    }
+
+    fn intent_nodes(&self, i: usize, ino: u128, held: bool) -> impl Iterator<Item = &NodeId> {
+        let intent = &self.list[i];
+        let answered_for = intent.answered_for.as_ref();
+        (self.linked_at(intent.author, ino, intent.made, held)).filter(move |id| {
+            answered_for.is_none_or(|node| *id == node || self.merged.get(node) == Some(*id))
+        })
+    }
+
+    fn linked_at(
+        &self,
+        device: usize,
+        ino: u128,
+        made: u64,
+        held: bool,
+    ) -> impl Iterator<Item = &NodeId> {
         let detached = self.detached[device].get(&ino);
+        let linked = self.linked[device].get(&ino);
         let ids = (self.nodes[device].get(&ino).into_iter().flatten()).filter(move |id| {
+            if held
+                && linked
+                    .and_then(|nodes| nodes.get(*id))
+                    .is_some_and(|since| made < *since)
+            {
+                return false;
+            }
             let spans = detached.and_then(|nodes| nodes.get(*id));
             !spans
                 .into_iter()
@@ -425,7 +476,7 @@ impl Intents {
 
     pub(super) fn nodes(&self, i: usize) -> impl Iterator<Item = &NodeId> {
         let intent = &self.list[i];
-        self.nodes_of(intent.author, intent.ino, intent.made)
+        self.intent_nodes(i, intent.ino, matches!(intent.value, Value::Trashed { .. }))
     }
 
     fn on(&self, i: usize, node: &NodeId) -> bool {
@@ -490,11 +541,26 @@ impl Intents {
         root: &NodeId,
     ) {
         for (ino, node) in inos {
-            self.nodes[d].entry(*ino).or_default().insert(node.clone());
+            let nodes = self.nodes[d].entry(*ino).or_default();
+            if !nodes.is_empty() && !nodes.contains(node) {
+                (self.linked[d].entry(*ino).or_default()).insert(node.clone(), clock + 1);
+            }
+            nodes.insert(node.clone());
             let spans = (self.detached[d].get_mut(ino)).and_then(|nodes| nodes.get_mut(node));
             if let Some((_, until @ None)) = spans.and_then(|spans| spans.last_mut()) {
                 *until = Some(clock + 1);
             }
+        }
+        let moved: Vec<(u128, NodeId)> = (self.nodes[d].iter())
+            .flat_map(|(ino, nodes)| nodes.iter().map(move |node| (*ino, node)))
+            .filter(|(ino, node)| {
+                inos.get(ino) != Some(*node)
+                    && inos.iter().any(|(other, at)| at == *node && other != ino)
+            })
+            .map(|(ino, node)| (ino, node.clone()))
+            .collect();
+        for (ino, node) in moved {
+            self.detach(d, ino, &node, clock + 1);
         }
         let shown: BTreeMap<&NodeId, Shown> = (disk.entries().iter())
             .filter_map(|(ino, entry)| {
@@ -700,14 +766,14 @@ impl Intents {
         let Value::Trashed { subtree, under, .. } = &delete.value else {
             return Vec::new();
         };
-        let (author, made) = (delete.author, delete.made);
-        let at = (subtree.iter().copied())
-            .find(|ino| self.nodes_of(author, *ino, made).any(|id| id == node));
+        let author = delete.author;
+        let at =
+            (subtree.iter().copied()).find(|ino| self.deleted_at(j, *ino).any(|id| id == node));
         let chain: Vec<u128> = std::iter::successors(at, |ino| under.get(ino).copied())
             .chain([delete.ino])
             .collect();
         let above = |id: &NodeId| {
-            (chain.iter()).any(|ino| self.nodes_of(author, *ino, made).any(|there| there == id))
+            (chain.iter()).any(|ino| self.deleted_at(j, *ino).any(|there| there == id))
         };
         (self.list.iter().enumerate())
             .skip(j + 1)
@@ -804,10 +870,9 @@ impl Intents {
             let Value::Trashed { subtree, .. } = &self.list[i].value else {
                 return false;
             };
-            let made = self.list[i].made;
             self.list[i].author == d
                 && !self.list[i].discarded
-                && (subtree.iter()).any(|ino| self.nodes_of(d, *ino, made).any(|id| id == node))
+                && (subtree.iter()).any(|ino| self.deleted_at(i, *ino).any(|id| id == node))
         })
     }
 
@@ -841,9 +906,8 @@ impl Intents {
             let Value::Trashed { subtree, .. } = &self.list[j].value else {
                 return false;
             };
-            let (author, made) = (self.list[j].author, self.list[j].made);
             let deleted: BTreeSet<&NodeId> = (subtree.iter())
-                .flat_map(|ino| self.nodes_of(author, *ino, made))
+                .flat_map(|ino| self.deleted_at(j, *ino))
                 .collect();
             match copies {
                 true => self.holders(i).any(|id| {
@@ -1057,6 +1121,72 @@ impl Intents {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_delete_answer_covers_only_the_node_it_answered_for() {
+        let mut intents = Intents::new(1);
+        let disk = Disk::new(super::super::disk::Precision::Fine);
+        let root = NodeId::from("root");
+        let (old, new) = (NodeId::from("o"), NodeId::from("n"));
+        intents.observe(0, 1, &disk, &BTreeMap::from([(2, old.clone())]), &root);
+        intents.observe(0, 3, &disk, &BTreeMap::from([(2, new.clone())]), &root);
+        let ino = intents.ino_of(0, &old).expect("o was at ino 2");
+        intents.answered_delete(0, 4, ino, &old);
+        assert!(intents.deleted(0, &old));
+        assert!(!intents.deleted(0, &new));
+    }
+
+    #[test]
+    fn a_node_linked_to_an_ino_after_a_delete_of_it_was_made_is_not_that_deletes_node() {
+        let mut intents = Intents::new(1);
+        let disk = Disk::new(super::super::disk::Precision::Fine);
+        let root = NodeId::from("root");
+        let (old, new) = (NodeId::from("o"), NodeId::from("n"));
+        intents.observe(0, 1, &disk, &BTreeMap::from([(2, old.clone())]), &root);
+        let trashed = Value::Trashed {
+            subtree: vec![2],
+            under: BTreeMap::new(),
+            replaced_by: None,
+        };
+        intents.record(0, 2, 2, "delete", trashed);
+        intents.observe(0, 3, &disk, &BTreeMap::from([(2, new.clone())]), &root);
+        assert!(intents.deleted(0, &old));
+        assert!(!intents.deleted(0, &new));
+    }
+
+    #[test]
+    fn a_delete_covers_only_the_nodes_its_ino_held_when_it_was_made() {
+        let mut intents = Intents::new(1);
+        let disk = Disk::new(super::super::disk::Precision::Fine);
+        let root = NodeId::from("root");
+        let (moved, stayed, copy) = (NodeId::from("m"), NodeId::from("s"), NodeId::from("c"));
+        let inos = |at: &[(u128, &NodeId)]| -> BTreeMap<u128, NodeId> {
+            at.iter()
+                .map(|(ino, node)| (*ino, (*node).clone()))
+                .collect()
+        };
+        intents.observe(0, 1, &disk, &inos(&[(2, &moved), (3, &stayed)]), &root);
+        intents.observe(
+            0,
+            2,
+            &disk,
+            &inos(&[(2, &copy), (6, &moved), (3, &stayed)]),
+            &root,
+        );
+        let trashed = |ino| Value::Trashed {
+            subtree: vec![ino],
+            under: BTreeMap::new(),
+            replaced_by: None,
+        };
+        intents.record(0, 4, 2, "delete", trashed(2));
+        intents.record(0, 4, 3, "delete", trashed(3));
+        assert!(intents.deleted(0, &copy));
+        assert!(!intents.deleted(0, &moved));
+        assert!(intents.deleted(0, &stayed));
+        intents.give_up(&Server::of("root", vec![]), 0, &[moved.clone()].into());
+        assert!(intents.deleted(0, &copy));
+        assert!(intents.deleted(0, &stayed));
+    }
 
     #[test]
     fn a_name_the_server_gives_while_the_name_is_taken_is_the_name() {
