@@ -2276,11 +2276,15 @@ impl Commits {
                         trees.record_trashed(id, seq, None);
                     }
                 }
-                op::Op::CreateDir(_) | op::Op::CreateFile(_) | op::Op::Move(_) => {
+                op::Op::Move(_) => {
                     let node = op_node(op);
                     trees.record_moved(&node, seq, flight.move_bases.get(&node).map(Vec::as_slice));
                 }
-                op::Op::UpdateContent(_) | op::Op::Restore(_) | op::Op::MarkGitTracked(_) => {}
+                op::Op::CreateDir(_)
+                | op::Op::CreateFile(_)
+                | op::Op::UpdateContent(_)
+                | op::Op::Restore(_)
+                | op::Op::MarkGitTracked(_) => {}
             }
         }
     }
@@ -2681,14 +2685,14 @@ impl Commits {
                 _ => continue,
             };
             let node = &node;
-            if applied && sent.is_some() {
+            let created = matches!(&op.op, Some(op::Op::CreateDir(_) | op::Op::CreateFile(_)));
+            if applied && sent.is_some() && !created {
                 trees.record_moved(
                     node,
                     result.seq,
                     flight.move_bases.get(node).map(Vec::as_slice),
                 );
             }
-            let created = matches!(&op.op, Some(op::Op::CreateDir(_) | op::Op::CreateFile(_)));
             if created && done {
                 trees.sent_create(node);
             }
