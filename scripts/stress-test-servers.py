@@ -109,11 +109,12 @@ def capture_tests(args, environment):
                            "run the repetitions serially with Cargo instead")
     command = ["cargo", "test", "--locked", "-p", args.crate, *(["--features", args.features] if args.features else []),
                *(["--test", args.test] if args.test else ["--tests"])]
-    forced = {}
-    for path in configs:
+    entries = {}
+    for path in reversed(configs):
         for name, value in tomllib.loads(path.read_text()).get("env", {}).items():
-            forced.setdefault(name, isinstance(value, dict) and value.get("force", False))
-    unset = {name: value for name, value in environment.items() if name not in forced}
+            entries.setdefault(name, {}).update(value if isinstance(value, dict) else {"value": value})
+    forced = {name: bool(entry.get("force")) for name, entry in entries.items()}
+    allowed = {*CARGO_SETS, *(name for name in forced if forced[name] or name not in environment)}
     with tempfile.TemporaryDirectory(prefix="heavy-capture-") as scratch:
         recorder = Path(scratch) / "record-test"
         recorder.write_text("#!" + sys.executable + "\n" + RECORDER)
@@ -121,8 +122,8 @@ def capture_tests(args, environment):
         capture = Path(scratch) / "capture.jsonl"
         with (args.out / "logs/capture.log").open("w") as log:
             code = subprocess.call(command, cwd=args.root, stdout=log, stderr=subprocess.STDOUT,
-                                   env={**unset, runner: str(recorder), "STRESS_TEST_CAPTURE": str(capture),
-                                        "STRESS_TEST_ALLOWED": json.dumps(sorted({*CARGO_SETS, *forced}))})
+                                   env={**environment, runner: str(recorder), "STRESS_TEST_CAPTURE": str(capture),
+                                        "STRESS_TEST_ALLOWED": json.dumps(sorted(allowed))})
         records = [json.loads(line) for line in capture.read_text().splitlines()] if capture.exists() else []
     if code or not records:
         raise RuntimeError(f"{shlex.join(command)} exited {code} and ran {len(records)} test executables; "
@@ -134,7 +135,7 @@ def capture_tests(args, environment):
                           executable=record["executable"], directory=record["directory"],
                           default={name: value for name, value in given.items() if name in forced and not forced[name]},
                           override={name: value for name, value in given.items()
-                                    if forced.get(name) or (name not in forced and unset.get(name) != value)}))
+                                    if forced.get(name) or (name not in forced and environment.get(name) != value)}))
     return tests
 
 

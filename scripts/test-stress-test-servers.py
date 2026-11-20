@@ -40,6 +40,7 @@ if 'STRESS_TEST_CAPTURE' not in os.environ:
     (probes / 'cargo.called').write_text(' '.join(sys.argv[1:]))
     sys.exit(99)
 (probes / 'cargo.capture').write_text(' '.join(sys.argv[1:]))
+(probes / 'cargo.fallback').write_text(os.environ.get('FALLBACK_ENV', 'unset'))
 runner = os.environ['CARGO_TARGET_AARCH64_APPLE_DARWIN_RUNNER']
 package = os.environ['FAKE_PACKAGE']
 environment = dict(os.environ, CARGO_MANIFEST_DIR=package, CONFIG_ENV='from-config',
@@ -57,7 +58,9 @@ for test in filter(None, os.environ['FAKE_TESTS'].split(os.pathsep)):
         (self.root / ".cargo/config.toml").write_text("[env]\nCONFIG_ENV = { value = 'from-config', force = true }\n"
                                                        "FALLBACK_ENV = 'from-config'\nPROPTEST_RNG_SEED = '42'\n"
                                                        "KOIDRIVE_TEST_SERVER = 'from-config'\n"
-                                                       "KOIDRIVE_TEST_SERVER_LOG = { value = 'from-config', force = true }\n")
+                                                       "KOIDRIVE_TEST_SERVER_LOG = { value = 'from-config' }\n")
+        (self.root / "cargo-home").mkdir()
+        (self.root / "cargo-home/config.toml").write_text("[env]\nKOIDRIVE_TEST_SERVER_LOG = { value = 'home', force = true }\n")
         self.package = self.root / "crate"
         self.package.mkdir()
         self.probe = r'''
@@ -96,7 +99,8 @@ else:
 '''
         self.environment = dict(os.environ, PATH=str(self.bin) + os.pathsep + os.environ["PATH"],
                                 PROBES=str(self.probes), PROPTEST_CASES="999", KOIDRIVE_BATTERY_CASES="888",
-                                FAKE_PACKAGE=str(self.package), CONFIG_ENV="inherited",
+                                FAKE_PACKAGE=str(self.package), CONFIG_ENV="inherited", FALLBACK_ENV="inherited",
+                                CARGO_HOME=str(self.root / "cargo-home"),
                                 REVIEW_CANARY_TOKEN="synthetic", CARGO_REGISTRY_TOKEN="synthetic")
         self.build("server")
 
@@ -195,7 +199,9 @@ while True:
             self.assertEqual(probe["args"], ["two words", "--include-ignored"])
             self.assertEqual(probe["cwd"], str(self.package))
             self.assertEqual((probe["manifest"], probe["config"], probe["fallback"], probe["capture"]),
-                             (str(self.package), "from-config", "from-config", None))
+                             (str(self.package), "from-config", "inherited", None))
+        self.assertEqual((self.probes / "cargo.fallback").read_text(), "inherited")
+        self.assertNotIn(b"FALLBACK_ENV", (self.probes / "capture.jsonl").read_bytes())
         self.assertEqual((self.probes / "cargo.capture").read_text(), "test --locked -p koidrive-net --features serde --test send")
         self.assertFalse((self.probes / "cargo.called").exists())
         for path in [*(self.root / "out").rglob("*"), self.probes / "capture.jsonl"]:
