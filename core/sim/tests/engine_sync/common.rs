@@ -1713,7 +1713,8 @@ fn revive(
             || (trees.local_children(id)).any(|child| {
                 !trees.excluded(child)
                     && !asked.contains(child)
-                    && (!kept_with.contains_key(child) || acted_below(device, child, kept_with))
+                    && (!kept_with.contains_key(child)
+                        || acted_below(device, child, kept_with, discarded))
                     && discarded
                         .get(child)
                         .is_none_or(|shown| &shown.parent != *id)
@@ -1851,6 +1852,7 @@ fn placement_check(
     placed: &BTreeMap<NodeId, Position>,
     revived: &BTreeSet<NodeId>,
     merged_into: &BTreeMap<NodeId, NodeId>,
+    discarded: &BTreeMap<NodeId, koidrive_engine::tree::Shape>,
 ) -> Result<(), TestCaseError> {
     if let (Effect::Move { .. }, Some(after), Some(local)) = (
         &record.effect,
@@ -1863,7 +1865,7 @@ fn placement_check(
         .take(kept_with.len() + 1);
         let taken_along = kept_with.contains_key(&record.node)
             && chain.all(|kept| !revived.contains(&kept.parent))
-            && !acted_below(device, &record.node, kept_with);
+            && !acted_below(device, &record.node, kept_with, discarded);
         let parent = (merged_into.get(&local.shape.parent)).unwrap_or(&local.shape.parent);
         let reverted = closes_a_cycle(&device.trees, &record.node, parent)
             && (device.trees.remote().live(&record.node))
@@ -1892,13 +1894,16 @@ fn acted_below(
     device: &Device,
     id: &NodeId,
     kept_with: &BTreeMap<NodeId, koidrive_engine::tree::Shape>,
+    discarded: &BTreeMap<NodeId, koidrive_engine::tree::Shape>,
 ) -> bool {
     let trees = &device.trees;
+    let held = |at: &NodeId| discarded.contains_key(at) && trees.remote().get(at).is_none();
     let reaches = |entry: &NodeId, parent: &dyn Fn(&NodeId) -> Option<NodeId>| {
         let mut current = Some(entry.to_owned());
         for _ in 0..=trees.local().len() + device.removed_from.len() {
             match current {
                 Some(at) if at == *id => return true,
+                Some(at) if at != *entry && held(&at) => return false,
                 Some(at) => current = parent(&at),
                 None => return false,
             }
@@ -2326,6 +2331,7 @@ fn run_ignoring_answering_after(
                 &placed,
                 &revived,
                 &merged_into,
+                &discarded,
             )?;
             if let Some(local) = (device.trees.local().get(&record.node))
                 .filter(|local| local.parked || device.trees.ignored(&record.node))
