@@ -3392,3 +3392,43 @@ fn a_folder_merged_into_another_is_not_made_a_new_node_for_a_file_made_in_it() {
     trees.settle(commits.aliases());
     assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
 }
+#[test]
+fn a_parked_reverted_folder_no_tree_holds_is_created_while_still_parked_when_its_place_is_taken() {
+    let mut trees = trees(&[synced("f", dir(ROOT, "f")), synced("x", file(ROOT, "d", 1))]);
+    trees.set_local(
+        "d".into(),
+        LocalNode {
+            parked: true,
+            ..local(dir(ROOT, "d"), 2)
+        },
+    );
+    trees.revert("d".into());
+    trees.set_local_changed("f".into(), local(dir("d", "f"), 1));
+    trees.settle(&Default::default());
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
+    let d = folder_named(&trees, "d");
+    assert_ne!(d, "d");
+    assert!(trees.local().get(&d.as_str().into()).unwrap().parked);
+    assert_eq!(placed(&commit), [at(&d, ROOT, "d"), at("f", &d, "f")]);
+    let renamed = OpResult {
+        name: "d (conflict)".into(),
+        ..outcome(op_result::Code::AppliedRenamed)
+    };
+    acknowledge(
+        &mut commits,
+        &mut trees,
+        vec![renamed, outcome(op_result::Code::Applied)],
+    );
+    trees.set_remote(d.as_str().into(), remote(dir(ROOT, "d (conflict)")));
+    trees.set_remote("f".into(), remote_at(dir(&d, "f"), 2));
+    trees.settle(commits.aliases());
+    effects_for(&mut trees, &mut ids, &d);
+    trees.settle(commits.aliases());
+    let local = |id: &str| trees.local().get(&id.into()).unwrap().clone();
+    assert!(!local(&d).parked);
+    assert_eq!(local(&d).shape, dir(ROOT, "d (conflict)"));
+    assert_eq!(local("f").shape, dir(&d, "f"));
+    assert_eq!(local("x").shape, file(ROOT, "d", 1));
+    assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
+}
