@@ -602,6 +602,15 @@ struct Relocation {
 }
 
 impl Device {
+    fn note_on_server(&mut self) {
+        for (id, remote) in self.trees.remote().iter() {
+            if !remote.trashed {
+                (self.on_server_since_discard.entry(id.clone()))
+                    .or_insert_with(|| remote.shape.parent.clone());
+            }
+        }
+    }
+
     fn new(trees: Trees) -> Self {
         Self {
             trees,
@@ -2225,13 +2234,7 @@ fn run_ignoring_answering_after(
         device.trees.settle(commits.aliases());
         prop_assert_eq!(device.trees.check(), Ok(()));
         if !discarded.is_empty() {
-            let arrived: Vec<(NodeId, NodeId)> = (device.trees.remote().iter())
-                .filter(|(id, remote)| {
-                    !remote.trashed && !device.on_server_since_discard.contains_key(*id)
-                })
-                .map(|(id, remote)| (id.clone(), remote.shape.parent.clone()))
-                .collect();
-            device.on_server_since_discard.extend(arrived);
+            device.note_on_server();
         }
         device.follow_rekeys();
         note_agreements(&device, &mut sent_since, &mut agreed, &mut from_server);
@@ -2555,11 +2558,7 @@ fn run_ignoring_answering_after(
             device.acted.retain(|id| !taken.contains_key(id));
             kept_with.append(&mut taken);
             discarded.extend(shown);
-            let on_server: Vec<(NodeId, NodeId)> = (device.trees.remote().iter())
-                .filter(|(_, remote)| !remote.trashed)
-                .map(|(id, remote)| (id.clone(), remote.shape.parent.clone()))
-                .collect();
-            device.on_server_since_discard.extend(on_server);
+            device.note_on_server();
         }
         let held = held_by(commits.questions());
         let revived = revive(&device, &discarded, &kept_with, &held);
