@@ -3667,7 +3667,10 @@ fn a_folder_merged_into_a_folder_the_server_then_purges_is_created_again_with_wh
     );
     assert!(!commits.aliases().contains_key(&"n".into()));
     applied(&mut trees, &mut commits, &commit);
-    assert_eq!(build(&mut commits, &mut trees, &mut ids).map(|c| ops(&c)), None);
+    assert_eq!(
+        build(&mut commits, &mut trees, &mut ids).map(|c| ops(&c)),
+        None
+    );
 }
 
 #[test]
