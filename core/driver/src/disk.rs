@@ -56,7 +56,8 @@ use koidrive_engine::tree::{Content, FileIdentity, Kind, LocalNode, NodeId};
 use koidrive_fs::{
     Action, Base, BroughtBack, Contents, Ctime, Dir, Displaced, Effect, Entry, EntryKind, FileId,
     Known, Location, Marker, Minted, Outcome, Reason, Reclaimed, Refusal, RootAt, RootProblem,
-    RootTokens, Rotation, Space, Step, Unresolved, check_root_at, open_root_folder, root_at,
+    RootTokens, Rotation, Space, Step, Unresolved, check_root_at, open_root_folder, platform_file,
+    root_at,
 };
 use koidrive_net::{CallError, ChunkError, Session, StopReason, Transfer};
 use koidrive_proto::v1::error::Code;
@@ -65,7 +66,7 @@ use koidrive_store::{Link, Store, Tx};
 use prost::Message;
 use rustix::fs::{Mode, OFlags};
 
-use crate::engine::{Engine, file_id, file_identity, pending};
+use crate::engine::{Engine, file_id, file_identity, local_at, pending};
 use crate::failures::{self, Failure};
 use crate::observe::{FsObserver, Observation, Observed, Observer, Reset};
 use crate::policy::{self, Disposition};
@@ -900,9 +901,11 @@ impl Disk {
         self.unscanned.batch = observation.pending;
         let dropped: Vec<PathBuf> = dropped.into_iter().collect();
         let pending = pending(&self.unscanned.all(&dropped), &observation.waiting);
+        let emptied = |trees: &Trees| emptied_kept_folders(&self.space, trees, &listed);
         if !changes.is_empty()
             || mounts.is_some()
             || !ctimes.is_empty()
+            || !emptied(&engine.trees)?.is_empty()
             || engine.sees_unobserved(&listed, &pending)
         {
             let now_ms = crate::clock::unix_ms();
@@ -914,6 +917,9 @@ impl Disk {
                 engine.observe(&changes, now_ms);
                 engine.read(&read, &observation.unreadable);
                 engine.listed(&listed, pending);
+                for folder in emptied(&engine.trees)? {
+                    engine.trees.recheck_kept_folder(&folder);
+                }
                 engine.read_ctimes(ctimes);
                 Ok(engine.checkpoint(tx)?)
             })?;
@@ -2010,38 +2016,7 @@ fn settle(
 fn list_kept_folders(space: &Space, trees: &mut Trees) -> Result<bool, Stop> {
     let folders = trees.unlisted_kept_folders();
     for folder in &folders {
-        let Some(identity) = trees.local().get(folder).map(|node| node.identity) else {
-            continue;
-        };
-        let Some(EngineLocation::At {
-            base,
-            dirs,
-            name: last,
-        }) = location_of(trees, folder)
-        else {
-            continue;
-        };
-        let dirs = (dirs.iter().chain([&EngineDir {
-            name: last,
-            identity,
-        }]))
-        .map(|dir| {
-            Ok(Dir {
-                name: name(&dir.name)?,
-                id: file_id(dir.identity),
-            })
-        })
-        .collect::<Result<Vec<_>, String>>();
-        let base = match base {
-            EngineBase::Root => Ok(Base::Root),
-            EngineBase::Parked { node, identity } => {
-                name(&node.to_string()).map(|name| Base::Parked {
-                    name,
-                    id: file_id(identity),
-                })
-            }
-        };
-        let (Ok(base), Ok(dirs)) = (base, dirs) else {
+        let Some((base, dirs)) = folder_at(trees, folder) else {
             continue;
         };
         let entries = match space.entries(&base, &dirs) {
@@ -2061,6 +2036,72 @@ fn list_kept_folders(space: &Space, trees: &mut Trees) -> Result<bool, Stop> {
         trees.list_kept_folder(folder, entries);
     }
     Ok(!folders.is_empty())
+}
+
+fn emptied_kept_folders(
+    space: &Space,
+    trees: &Trees,
+    listed: &[PathBuf],
+) -> Result<Vec<NodeId>, Stop> {
+    let mut emptied = Vec::new();
+    for path in listed.iter().filter(|path| !path.as_os_str().is_empty()) {
+        let Some(id) = local_at(trees, path) else {
+            continue;
+        };
+        if !trees.kept_folder(&id) {
+            continue;
+        }
+        let Some((base, dirs)) = folder_at(trees, &id) else {
+            continue;
+        };
+        let entries = match space.entries(&base, &dirs) {
+            Ok(entries) => entries,
+            Err(
+                Unresolved::Missing(_) | Unresolved::NotAFolder(_) | Unresolved::Replaced { .. },
+            ) => continue,
+            Err(unresolved) => return Err(Stop::Io(unresolved.into())),
+        };
+        let left: Option<Vec<&str>> = (entries.iter())
+            .filter(|(name, kind)| !platform_file(name, *kind))
+            .map(|(name, kind)| name.to_str().filter(|_| *kind == Some(EntryKind::File)))
+            .collect();
+        if left.is_some_and(|left| trees.emptied_kept_folder(&id, &left)) {
+            emptied.push(id);
+        }
+    }
+    Ok(emptied)
+}
+
+fn folder_at(trees: &Trees, folder: &NodeId) -> Option<(Base, Vec<Dir>)> {
+    let identity = trees.local().get(folder)?.identity;
+    let Some(EngineLocation::At {
+        base,
+        dirs,
+        name: last,
+    }) = location_of(trees, folder)
+    else {
+        return None;
+    };
+    let dirs = (dirs.iter().chain([&EngineDir {
+        name: last,
+        identity,
+    }]))
+    .map(|dir| {
+        Ok(Dir {
+            name: name(&dir.name)?,
+            id: file_id(dir.identity),
+        })
+    })
+    .collect::<Result<Vec<_>, String>>()
+    .ok()?;
+    let base = match base {
+        EngineBase::Root => Base::Root,
+        EngineBase::Parked { node, identity } => Base::Parked {
+            name: name(&node.to_string()).ok()?,
+            id: file_id(identity),
+        },
+    };
+    Some((base, dirs))
 }
 
 fn held(names: &[(OsString, Option<EntryKind>)]) -> Vec<(&str, Option<Kind>)> {

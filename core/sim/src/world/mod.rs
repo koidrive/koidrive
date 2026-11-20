@@ -1667,7 +1667,10 @@ impl World {
     /// A full rescan. True when L changed.
     fn scan(&mut self, d: usize) -> Result<bool, Failure> {
         self.read_rules_file(d);
-        if self.devices[d].rescan() > 0 {
+        let rescanned = self.devices[d].rescan();
+        let listed = self.devices[d].disk.entries().keys().copied().collect();
+        self.devices[d].relist_kept_folders(&listed);
+        if rescanned > 0 {
             note(
                 &mut self.seen,
                 "rescan lets a problem node be planned again",
@@ -1687,6 +1690,7 @@ impl World {
         };
         let scope = (device.disk.path(folders[folder])).expect("a folder the disk shows");
         let reached = device.engine.scan_at(&device.disk, &scope);
+        device.relist_kept_folders(&reached.observed);
         if reached.widened {
             note(&mut self.seen, "a rescan of a folder widens");
         }
@@ -2136,6 +2140,8 @@ impl World {
                 "rescan lets a problem node be planned again",
             );
         }
+        let listed = device.disk.entries().keys().copied().collect();
+        device.relist_kept_folders(&listed);
         device.persist()
     }
 

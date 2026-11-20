@@ -4089,7 +4089,9 @@ impl Trees {
         }
     }
 
-    pub(crate) fn kept_folder(&self, id: &NodeId) -> bool {
+    /// Whether `id` is a folder this device keeps on disk after another device deleted it, for entries it leaves out
+    /// (section 5.10).
+    pub fn kept_folder(&self, id: &NodeId) -> bool {
         if !self.kept_folders.contains(id) || self.r.live(id).is_some() {
             return false;
         }
@@ -4105,6 +4107,78 @@ impl Trees {
                     .is_some_and(|shape| shape.kind == Kind::Dir)
         }) && (self.local_children_placed_or_parked(id))
             .all(|child| self.left_rules_file(child) || self.excluded(child))
+    }
+
+    /// Whether the kept folder `id` holds nothing this device would keep it for once its platform files and `left`,
+    /// the names a listing found in it beside them, are counted: L holds nothing below it but rules files it kept unedited
+    /// since the delete, and each name in `left` is one of those.
+    pub fn emptied_kept_folder(&self, id: &NodeId, left: &[&str]) -> bool {
+        let taken_along: Vec<&str> = (self.local_children_placed_or_parked(id))
+            .filter_map(|child| Some(self.l.get(child)?.shape.name.as_str()))
+            .collect();
+        self.holds_only_unedited_rules_files(id)
+            && left.iter().all(|name| taken_along.contains(name))
+    }
+
+    fn holds_only_unedited_rules_files(&self, id: &NodeId) -> bool {
+        self.kept_folder(id)
+            && (self.local_children_placed_or_parked(id))
+                .all(|child| self.unedited_kept_rules_file(child))
+    }
+
+    fn unedited_kept_rules_file(&self, id: &NodeId) -> bool {
+        self.kept_rules_file(id)
+            && self.r.get(id).is_some()
+            && (!self.unsent_edits.contains(id) || self.holds_remote_content(id))
+    }
+
+    fn holds_remote_content(&self, id: &NodeId) -> bool {
+        (self.l.get(id).zip(self.r.get(id))).is_some_and(|(local, remote)| {
+            match (&local.shape.content, &remote.shape.content) {
+                (Some(local), Some(remote)) => same_content(local, remote),
+                _ => false,
+            }
+        })
+    }
+
+    /// Takes up the delete of the kept folder `id` again once a listing finds it holding nothing but platform files and
+    /// rules files it kept unedited ([`Trees::emptied_kept_folder`], section 5.10): S takes the folder and those rules
+    /// files where L has them, so the delete R holds sends the folder to the local trash and takes the rules files along.
+    /// Each kept folder above it that holds nothing else is taken up with it.
+    pub fn recheck_kept_folder(&mut self, id: &NodeId) {
+        if !self.holds_only_unedited_rules_files(id) {
+            return;
+        }
+        let mut chain = vec![id.clone()];
+        while let Some(parent) = (chain.last())
+            .and_then(|folder| self.l.get(folder))
+            .map(|node| node.shape.parent.clone())
+            .filter(|parent| {
+                self.kept_folder(parent)
+                    && (self.local_children_placed_or_parked(parent)).all(|child| {
+                        chain.last() == Some(child) || self.unedited_kept_rules_file(child)
+                    })
+            })
+        {
+            chain.push(parent);
+        }
+        for folder in chain.into_iter().rev() {
+            let rules: Vec<NodeId> = (self.local_children_placed_or_parked(&folder))
+                .filter(|child| self.unedited_kept_rules_file(child))
+                .cloned()
+                .collect();
+            for id in std::iter::once(folder).chain(rules) {
+                let shape = self.l.get(&id).map(|node| node.shape.clone());
+                if !self.fits_synced(&id, shape.as_ref()) {
+                    return;
+                }
+                if self.holds_remote_content(&id) {
+                    self.unsent_edits.remove(&id);
+                }
+                self.end_kept_folder(&id);
+                self.set_synced(id, shape);
+            }
+        }
     }
 
     pub(crate) fn keep_folder(&mut self, id: &NodeId) {

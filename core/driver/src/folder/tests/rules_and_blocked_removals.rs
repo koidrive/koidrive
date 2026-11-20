@@ -459,7 +459,7 @@ fn a_remote_delete_of_a_folder_holding_an_entry_l_does_not_know_keeps_the_folder
         b.scan_until(|b| b.folder.scanned);
         b.run(&mut remote);
         b.settle();
-        assert!(site.root.join("held").is_dir(), "{unknown}");
+        assert!(!site.root.join("held").exists(), "{unknown}");
         assert!(b.sent.is_empty(), "{unknown}");
         assert!(remote.names().is_empty(), "{unknown}");
         let view = b.folder.view();
@@ -517,7 +517,7 @@ fn a_remote_delete_of_a_folder_whose_subfolder_holds_an_entry_l_does_not_know_ke
     b.run(&mut remote);
     b.settle();
     b.run(&mut remote);
-    assert!(site.root.join("held/sub").is_dir());
+    assert!(!site.root.join("held").exists());
     assert!(b.sent.is_empty());
     assert!(remote.names().is_empty());
     let view = b.folder.view();
