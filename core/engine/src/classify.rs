@@ -1084,6 +1084,31 @@ impl Trees {
         .last()
     }
 
+    /// The nodes that L, S or R places at the path of `names` below the root, each by exact name: the root for no names.
+    pub fn placed_at(&self, names: &[&str]) -> BTreeSet<NodeId> {
+        let walk = |child: &dyn Fn(&NodeId, &str) -> Option<NodeId>| {
+            (names.iter()).try_fold(self.l.root.clone(), |parent, name| child(&parent, name))
+        };
+        let named =
+            |shape: Option<&Shape>, name: &str| shape.is_some_and(|shape| shape.name == name);
+        [
+            walk(&|parent, name| self.local_child(parent, name).cloned()),
+            walk(&|parent, name| {
+                (self.s_names.holders(parent, name))
+                    .find(|id| named(self.s.live(id), name))
+                    .cloned()
+            }),
+            walk(&|parent, name| {
+                (self.r_names.holders(parent, name))
+                    .find(|id| named(self.r.live(id), name))
+                    .cloned()
+            }),
+        ]
+        .into_iter()
+        .flatten()
+        .collect()
+    }
+
     /// A node of L, placed or parked, with `identity`: the greatest ID when several have it.
     pub fn local_with_identity(&self, identity: &FileIdentity) -> Option<&NodeId> {
         self.locals_with_identity(identity).next_back()

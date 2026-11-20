@@ -228,3 +228,30 @@ fn a_rules_folder_removed_with_a_busy_folder_in_one_batch_holds_no_download_else
     let arrived = until(&mut b, &mut remote, |_, _| notes.exists());
     assert!(arrived, "notes.txt is downloaded while logs stays busy");
 }
+
+#[test]
+fn a_folder_moved_away_from_a_busy_place_holds_no_upload_elsewhere() {
+    let mut remote = Remote::new();
+    let (site, mut b) = busy_logs(&mut remote, &SyncRules::default());
+    let (site_a, mut a) = linked(&mut remote, "a");
+    a.rest(&mut remote);
+    fs::rename(site_a.root.join("logs"), site_a.root.join("archive")).unwrap();
+    fs::create_dir(site_a.root.join("logs")).unwrap();
+    fs::write(site_a.root.join("logs/build.log"), b"building\n").unwrap();
+    a.rescan();
+    a.rest(&mut remote);
+    b.observer.keep_pending(PathBuf::from("logs"));
+    b.pull(&remote);
+    let moved = until(&mut b, &mut remote, |_, _| {
+        site.root.join("archive/app.log").exists()
+    });
+    assert!(moved, "logs moves to archive");
+    fs::write(site.root.join("report.docx"), b"report, edited").unwrap();
+    let edited = |_: &Device, remote: &Remote| {
+        (remote.tree().get("report.docx")).is_some_and(|id| server_size(remote, id) == 14)
+    };
+    assert!(
+        until(&mut b, &mut remote, edited),
+        "the edit outside logs is uploaded while the new logs stays busy"
+    );
+}

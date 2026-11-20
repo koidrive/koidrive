@@ -908,26 +908,19 @@ impl Engine {
         folders.iter().filter_map(|id| self.path_of(id)).collect()
     }
 
-    /// Holds what L, S or R places at or below each of `paths`, at the deepest node L holds on the way to it, until
-    /// the next call ([`Trees::await_scan`]).
+    /// Holds what L, S or R places at or below each of `paths` until the next call ([`Trees::await_scan`]). A
+    /// path where no tree places a node holds nothing.
     pub fn await_scan<'a>(&mut self, paths: impl IntoIterator<Item = &'a PathBuf>) {
         let nodes = (paths.into_iter())
-            .map(|path| {
-                let mut current = self.trees.local().root.clone();
-                for component in path.components() {
-                    let Component::Normal(name) = component else {
-                        break;
-                    };
-                    match name
-                        .to_str()
-                        .and_then(|name| self.trees.local_child(&current, name))
-                    {
-                        Some(child) => current = child.clone(),
-                        None => break,
-                    }
-                }
-                current
+            .filter_map(|path| {
+                (path.components())
+                    .map(|component| match component {
+                        Component::Normal(name) => name.to_str(),
+                        _ => None,
+                    })
+                    .collect::<Option<Vec<&str>>>()
             })
+            .flat_map(|names| self.trees.placed_at(&names))
             .collect();
         self.trees.await_scan(nodes);
     }
