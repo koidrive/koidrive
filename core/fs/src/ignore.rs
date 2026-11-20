@@ -159,7 +159,7 @@ struct Walk {
     bases: Vec<(PathBuf, Vec<FileId>)>,
     restarts: usize,
     relisted: HashSet<PathBuf>,
-    passed: BTreeMap<PathBuf, Seen>,
+    passed: Passed,
     check: Vec<PathBuf>,
     rounds: usize,
     changed: bool,
@@ -168,45 +168,169 @@ struct Walk {
     replaced: BTreeSet<PathBuf>,
 }
 
-struct Seen {
-    id: Option<FileId>,
-    stamp: (i128, i128),
-    racy: bool,
-    listing: u64,
-    needs_walk: bool,
-    done: bool,
-}
+mod passed {
+    use std::collections::{BTreeMap, BTreeSet, HashSet};
+    use std::ffi::{OsStr, OsString};
+    use std::os::fd::BorrowedFd;
+    use std::path::{Path, PathBuf};
 
-impl Seen {
-    fn is(&self, id: &FileId) -> bool {
-        self.id.is_some_and(|own| own.same(id))
+    use super::{digest, listed};
+    use crate::{FileId, stat_fd};
+
+    pub(super) struct Seen {
+        id: Option<FileId>,
+        stamp: (i128, i128),
+        racy: bool,
+        listing: u64,
+        pub(super) needs_walk: bool,
+        pub(super) done: bool,
     }
 
-    fn of(
-        fd: BorrowedFd<'_>,
-        dir: &Path,
-        unopened: &mut BTreeSet<PathBuf>,
-    ) -> Option<(Self, Vec<OsString>)> {
-        let at = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |since| since.as_nanos() as i128);
-        let Ok(stat) = stat_fd(fd) else {
-            unopened.insert(dir.to_path_buf());
-            return None;
-        };
-        let stamp = (stat.mtime_ns, stat.ctime_ns);
-        let names = listed(fd, dir, unopened)?;
-        let seen = Self {
-            id: Some(stat.id),
-            stamp,
-            racy: stamp.0.max(stamp.1) > at - 1_000_000_000,
-            listing: digest(names.iter().map(|(name, ino)| (name.as_os_str(), *ino))),
-            needs_walk: false,
-            done: false,
-        };
-        Some((seen, names.into_iter().map(|(name, _)| name).collect()))
+    impl Seen {
+        pub(super) fn is(&self, id: &FileId) -> bool {
+            self.id.is_some_and(|own| own.same(id))
+        }
+
+        pub(super) fn known(&self) -> bool {
+            self.id.is_some()
+        }
+
+        pub(super) fn stamp(&self) -> (i128, i128) {
+            self.stamp
+        }
+
+        pub(super) fn racy(&self) -> bool {
+            self.racy
+        }
+
+        pub(super) fn listing(&self) -> u64 {
+            self.listing
+        }
+    }
+
+    pub(super) struct Listed {
+        seen: Seen,
+        entries: Vec<(OsString, u64)>,
+    }
+
+    impl Listed {
+        pub(super) fn of(
+            fd: BorrowedFd<'_>,
+            dir: &Path,
+            unopened: &mut BTreeSet<PathBuf>,
+        ) -> Option<Self> {
+            let at = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |since| since.as_nanos() as i128);
+            let Ok(stat) = stat_fd(fd) else {
+                unopened.insert(dir.to_path_buf());
+                return None;
+            };
+            let stamp = (stat.mtime_ns, stat.ctime_ns);
+            let entries = listed(fd, dir, unopened)?;
+            let seen = Seen {
+                id: Some(stat.id),
+                stamp,
+                racy: stamp.0.max(stamp.1) > at - 1_000_000_000,
+                listing: digest(entries.iter().map(|(name, ino)| (name.as_os_str(), *ino))),
+                needs_walk: false,
+                done: false,
+            };
+            Some(Self { seen, entries })
+        }
+
+        pub(super) fn id(&self) -> Option<FileId> {
+            self.seen.id
+        }
+
+        pub(super) fn listing(&self) -> u64 {
+            self.seen.listing
+        }
+
+        pub(super) fn entries(&self) -> &[(OsString, u64)] {
+            &self.entries
+        }
+    }
+
+    #[derive(Default)]
+    pub(super) struct Passed {
+        seen: BTreeMap<PathBuf, Seen>,
+        covered: HashSet<(PathBuf, u64)>,
+    }
+
+    impl Passed {
+        pub(super) fn record(
+            &mut self,
+            dir: &Path,
+            listed: Listed,
+            done: bool,
+            queued: impl Fn(&OsStr) -> bool,
+        ) {
+            if cfg!(debug_assertions) {
+                for (name, ino) in &listed.entries {
+                    let entry = (dir.join(name), *ino);
+                    if queued(name) {
+                        self.covered.insert(entry);
+                    } else {
+                        debug_assert!(
+                            self.covered.contains(&entry),
+                            "the digest saved for {dir:?} covers {name:?}, which no walk inspected or queued"
+                        );
+                    }
+                }
+            }
+            self.seen.insert(
+                dir.to_path_buf(),
+                Seen {
+                    done,
+                    ..listed.seen
+                },
+            );
+        }
+
+        pub(super) fn gone(&mut self, dir: &Path) {
+            if self.seen.contains_key(dir) {
+                return;
+            }
+            let seen = Seen {
+                id: None,
+                stamp: (0, 0),
+                racy: false,
+                listing: 0,
+                needs_walk: true,
+                done: false,
+            };
+            let entries = Vec::new();
+            self.record(dir, Listed { seen, entries }, false, |_| false);
+        }
+
+        pub(super) fn get(&self, dir: &Path) -> Option<&Seen> {
+            self.seen.get(dir)
+        }
+
+        pub(super) fn get_mut(&mut self, dir: &Path) -> Option<&mut Seen> {
+            self.seen.get_mut(dir)
+        }
+
+        pub(super) fn contains_key(&self, dir: &Path) -> bool {
+            self.seen.contains_key(dir)
+        }
+
+        pub(super) fn keys(&self) -> impl DoubleEndedIterator<Item = &PathBuf> {
+            self.seen.keys()
+        }
+
+        pub(super) fn remove(&mut self, dir: &Path) {
+            self.seen.remove(dir);
+        }
+
+        pub(super) fn retain(&mut self, mut keep: impl FnMut(&Path) -> bool) {
+            self.seen.retain(|dir, _| keep(dir));
+        }
     }
 }
+
+use passed::{Listed, Passed};
 
 fn digest<'a>(names: impl IntoIterator<Item = (&'a OsStr, u64)>) -> u64 {
     names.into_iter().fold(0, |sum, (name, ino)| {
@@ -279,7 +403,7 @@ impl Walk {
             bases: Vec::new(),
             restarts,
             relisted: HashSet::new(),
-            passed: BTreeMap::new(),
+            passed: Passed::default(),
             check: Vec::new(),
             rounds: 0,
             changed: false,
@@ -353,7 +477,7 @@ impl Walk {
             match stat {
                 Err(err) if is_gone(&err) && seen.needs_walk => continue,
                 Ok(stat) if !seen.needs_walk && seen.is(&stat.id) => {
-                    if (stat.mtime_ns, stat.ctime_ns) == seen.stamp && !seen.racy {
+                    if (stat.mtime_ns, stat.ctime_ns) == seen.stamp() && !seen.racy() {
                         continue;
                     }
                 }
@@ -364,13 +488,13 @@ impl Walk {
                 return false;
             };
             let mut failed = BTreeSet::new();
-            let Some((now, _)) = Seen::of(fd.as_fd(), &dir, &mut failed) else {
+            let Some(now) = Listed::of(fd.as_fd(), &dir, &mut failed) else {
                 return false;
             };
             if !failed.is_empty() {
                 return false;
             }
-            let mut expected = seen.listing;
+            let mut expected = seen.listing();
             if dir.as_path() == up {
                 expected = expected.wrapping_sub(digest([(child, old)]));
                 if let Ok(stat) = stat_at(fd.as_fd(), child) {
@@ -378,13 +502,11 @@ impl Walk {
                     expected = expected.wrapping_add(digest([(child, ino)]));
                 }
             }
-            if !now.id.is_some_and(|id| seen.is(&id)) || now.listing != expected {
+            if !now.id().is_some_and(|id| seen.is(&id)) || now.listing() != expected {
                 return false;
             }
-            *seen = Seen {
-                done: seen.done,
-                ..now
-            };
+            let done = seen.done;
+            (self.passed).record(&dir, now, done, |name| dir.as_path() == up && name == child);
         }
         above.pop_to(root, 0, cost).is_none()
     }
@@ -397,7 +519,10 @@ impl Walk {
                 return;
             }
         };
-        self.replaced.insert(self.folders[at].dir.clone());
+        let left = &self.folders[at];
+        let child = left.dir.file_name().map(OsStr::to_os_string);
+        let old = u64::try_from(left.id.ino).unwrap_or_default();
+        self.replaced.insert(left.dir.clone());
         self.folders.truncate(at);
         self.reach = None;
         let Some(parent) = self.folders.last_mut() else {
@@ -409,16 +534,36 @@ impl Walk {
         if !self.relisted.insert(parent.dir.clone()) {
             return;
         }
-        let Some((now, names)) = (parent.fd.as_ref())
-            .and_then(|fd| Seen::of(fd.as_fd(), &parent.dir, &mut self.unopened))
+        let Some(now) = (parent.fd.as_ref())
+            .and_then(|fd| Listed::of(fd.as_fd(), &parent.dir, &mut self.unopened))
         else {
             return;
         };
-        let added: Vec<OsString> = (names.into_iter())
-            .filter(|name| parent.names.binary_search(name).is_err())
-            .collect();
-        parent.names.extend(added);
-        self.passed.insert(parent.dir.clone(), now);
+        let mut expected =
+            (self.passed.get(&parent.dir))
+                .zip(child.as_ref())
+                .map(|(seen, child)| {
+                    seen.listing()
+                        .wrapping_sub(digest([(child.as_os_str(), old)]))
+                });
+        let mut added = Vec::new();
+        for (name, ino) in now.entries() {
+            let walked = parent.names.binary_search(name).is_ok();
+            if !walked || child.as_ref() == Some(name) {
+                let entry = digest([(name.as_os_str(), *ino)]);
+                expected = expected.map(|sum| sum.wrapping_add(entry));
+            }
+            if !walked {
+                added.push(name.clone());
+            }
+        }
+        parent.names.extend(added.iter().cloned());
+        let dir = parent.dir.clone();
+        if expected.is_none_or(|sum| sum == now.listing()) {
+            self.passed.record(&dir, now, false, |name| {
+                child.as_deref() == Some(name) || added.iter().any(|new| new == name)
+            });
+        }
     }
 
     fn recheck(
@@ -475,18 +620,18 @@ impl Walk {
             }
         };
         if !seen.needs_walk && seen.done && seen.is(&stat.id) {
-            if (stat.mtime_ns, stat.ctime_ns) == seen.stamp && !seen.racy {
+            if (stat.mtime_ns, stat.ctime_ns) == seen.stamp() && !seen.racy() {
                 return cost;
             }
             cut(Cut::OpeningDir(&dir));
             cost += 1;
             match open_dir_at(above.top(root), name) {
                 Ok(fd) => {
-                    let Some((now, _)) = Seen::of(fd.as_fd(), &dir, &mut self.unopened) else {
+                    let Some(now) = Listed::of(fd.as_fd(), &dir, &mut self.unopened) else {
                         return cost;
                     };
-                    if now.id.is_some_and(|id| seen.is(&id)) && now.listing == seen.listing {
-                        *seen = Seen { done: true, ..now };
+                    if now.id().is_some_and(|id| seen.is(&id)) && now.listing() == seen.listing() {
+                        self.passed.record(&dir, now, true, |_| false);
                         return cost;
                     }
                 }
@@ -504,7 +649,7 @@ impl Walk {
             }
         }
         seen.needs_walk = true;
-        if seen.id.is_some() || stat.file_type == FileType::Directory {
+        if seen.known() || stat.file_type == FileType::Directory {
             self.owed.insert(dir.clone());
         }
         self.changed = true;
@@ -548,7 +693,7 @@ impl Ancestors {
         &mut self,
         root: BorrowedFd<'_>,
         dir: &Path,
-        passed: &BTreeMap<PathBuf, Seen>,
+        passed: &Passed,
         opens: &mut usize,
         stale: &mut Option<PathBuf>,
     ) -> io::Result<bool> {
@@ -581,7 +726,7 @@ impl Ancestors {
             if stale.is_none()
                 && passed
                     .get(&at)
-                    .is_some_and(|seen| seen.id.is_some() && !seen.is(&id))
+                    .is_some_and(|seen| seen.known() && !seen.is(&id))
             {
                 *stale = Some(at);
             }
@@ -1148,7 +1293,7 @@ impl<'r> Pending<'r> {
                             walk.changed = true;
                             walk.folders.truncate(at);
                             walk.reach = None;
-                            walk.passed.retain(|path, _| !path.starts_with(&dir));
+                            walk.passed.retain(|path| !path.starts_with(&dir));
                             match (
                                 walk.folders.last_mut(),
                                 walk.listings.last_mut(),
@@ -1336,14 +1481,7 @@ impl<'r> Pending<'r> {
                         entry
                     }
                     Err(err) if is_gone(&err) => {
-                        walk.passed.entry(path.clone()).or_insert(Seen {
-                            id: None,
-                            stamp: (0, 0),
-                            racy: false,
-                            listing: 0,
-                            needs_walk: true,
-                            done: false,
-                        });
+                        walk.passed.gone(&path);
                         None
                     }
                     Err(_) => {
@@ -1388,10 +1526,13 @@ impl<'r> Pending<'r> {
                     }
                     _ => break 'step Replaced::Path(path),
                 };
-                let Some((seen, names)) = Seen::of(sub.as_fd(), &path, &mut walk.unopened) else {
+                let Some(listed) = Listed::of(sub.as_fd(), &path, &mut walk.unopened) else {
                     continue 'walk;
                 };
-                walk.passed.insert(path.clone(), seen);
+                let names = (listed.entries().iter())
+                    .map(|(name, _)| name.clone())
+                    .collect();
+                walk.passed.record(&path, listed, false, |_| true);
                 walk.push(Folder {
                     dir: path,
                     id: entry.id,
@@ -1718,8 +1859,9 @@ mod rechecks {
         let (child, _) = open_attached(fd.as_fd(), Path::new("ig/a"), &mut |_| {})
             .unwrap()
             .unwrap();
-        let (seen, _) = Seen::of(child.as_fd(), Path::new("ig/a"), &mut walk.unopened).unwrap();
-        walk.passed.insert("ig/a".into(), seen);
+        let listed = Listed::of(child.as_fd(), Path::new("ig/a"), &mut walk.unopened).unwrap();
+        walk.passed
+            .record(Path::new("ig/a"), listed, false, |_| true);
         rules.search.walk = Some(walk);
         rules.search.walks = 1;
         rules.search.pending.insert(key, 1);
@@ -1856,6 +1998,58 @@ mod rechecks {
             search.search(fd.as_fd(), &mut wanted, &HashSet::new(), false, &mut |_| {});
             assert_eq!(wanted[&key], found.map(PathBuf::from), "{moved}");
             assert!(!search.unproven(key), "{moved}");
+        }
+    }
+
+    #[test]
+    fn a_parent_listed_again_after_a_folder_is_left_out_keeps_its_digest_unless_only_that_folder_and_new_names_changed()
+     {
+        for passed_entry_changed in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let root = temp.path();
+            fs::create_dir_all(root.join("ig/z")).unwrap();
+            fs::write(root.join("ig/a"), "a").unwrap();
+            let fd = crate::open_root(root).unwrap();
+            let ig = open_dir_at(fd.as_fd(), OsStr::new("ig")).unwrap();
+            let z = open_dir_at(ig.as_fd(), OsStr::new("z")).unwrap();
+            let mut walk = Walk::new(&BTreeMap::new(), RESTARTS);
+            let before = Listed::of(ig.as_fd(), Path::new("ig"), &mut walk.unopened).unwrap();
+            let saved = before.listing();
+            walk.passed.record(Path::new("ig"), before, false, |_| true);
+            for (dir, fd, names, next) in [
+                ("ig", ig, vec!["a".into(), "z".into()], 2),
+                ("ig/z", z, vec![], 0),
+            ] {
+                let id = stat_fd(fd.as_fd()).unwrap().id;
+                let fd = Some(fd);
+                walk.folders.push(Folder {
+                    dir: dir.into(),
+                    id,
+                    names,
+                    next,
+                    fd,
+                });
+            }
+            fs::rename(root.join("ig/z"), root.join("z.old")).unwrap();
+            fs::create_dir(root.join("ig/z")).unwrap();
+            fs::create_dir(root.join("ig/n")).unwrap();
+            if passed_entry_changed {
+                fs::write(root.join("ig/b"), "b").unwrap();
+                fs::rename(root.join("ig/b"), root.join("ig/a")).unwrap();
+            }
+            walk.leave(Replaced::Folder(1, None));
+            let ig = open_dir_at(fd.as_fd(), OsStr::new("ig")).unwrap();
+            let now = Listed::of(ig.as_fd(), Path::new("ig"), &mut BTreeSet::new()).unwrap();
+            let kept = walk.passed.get(Path::new("ig")).unwrap().listing();
+            let expected = if passed_entry_changed {
+                saved
+            } else {
+                now.listing()
+            };
+            assert_eq!(
+                kept, expected,
+                "a passed entry changed: {passed_entry_changed}"
+            );
         }
     }
 }

@@ -92,7 +92,9 @@
 //! deleted, so it is reported as [`Change::Ignored`]. A miss is reported as a
 //! removal, although a file saved again after such a move has a new identity
 //! and is missed. Before a miss, the search checks the left-out folders it
-//! listed and walks a folder again if it changed or was briefly gone. This
+//! listed and walks a folder again if it changed or was briefly gone. A folder
+//! listed again after a folder in it was left behind keeps its saved digest
+//! unless only that folder and the names added for the walk changed. This
 //! finds an entry moved into a folder the search had passed only where the
 //! folder's modification or change time changes with each entry added to,
 //! removed from or renamed in it. On FAT,

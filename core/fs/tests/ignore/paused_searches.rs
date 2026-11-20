@@ -551,3 +551,50 @@ fn a_search_leaves_a_miss_unproven_when_a_folder_rebuilt_before_every_rescan_out
         );
     }
 }
+
+#[test]
+fn a_search_walks_a_parent_again_when_an_entry_it_passed_changed_before_it_left_a_child_out() {
+    for budget in [6, 10, 16] {
+        let dir = tempfile::tempdir().unwrap();
+        let root = &dir.path().join("space");
+        write(root, KOIIGNORE, "ig/\n");
+        write(root, "f.txt", "f");
+        write(root, "ig/a", "a");
+        for i in 0..30 {
+            write(root, &format!("ig/z/k{i:02}"), "x");
+        }
+        let mut rules = rules().with_search_budget(budget);
+        let mut snapshot = Snapshot::scan_with_rules(root, &mut rules).unwrap();
+        let id = snapshot.entries[Path::new("f.txt")].id;
+        let away = dir.path().join("f.txt");
+        fs::rename(root.join("f.txt"), &away).unwrap();
+        let mut paths = whole().to_vec();
+        for rescan in 1.. {
+            assert!(rescan < 1000, "budget {budget}: the search never ended");
+            let result = snapshot.rescan_with_rules(root, paths, &mut rules).unwrap();
+            if !result.changes.is_empty() {
+                assert_eq!(
+                    result.changes,
+                    [Change::Ignored {
+                        from: "f.txt".into(),
+                        to: "ig/a".into(),
+                        kind: File,
+                        id,
+                    }],
+                    "budget {budget}"
+                );
+                break;
+            }
+            if rescan <= 9 {
+                fs::rename(root.join("ig/z"), dir.path().join(format!("z{rescan}"))).unwrap();
+                for i in 0..30 {
+                    write(root, &format!("ig/z/k{i:02}"), "x");
+                }
+            }
+            if rescan == 9 {
+                fs::rename(&away, root.join("ig/a")).unwrap();
+            }
+            paths = result.unsettled;
+        }
+    }
+}
