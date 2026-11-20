@@ -3505,11 +3505,16 @@ impl World {
                 return fail("R waits for a listing".into());
             }
             let trees = &engine.trees;
+            let in_history = |id: &NodeId, content: &Content| {
+                retained(&self.space, id).contains(&content.manifest_digest)
+            };
             if let Some((id, _)) = (trees.local_entries()).find(|(id, node)| {
-                trees.local().get(id).is_none() && !rules::owned(trees, id, node)
+                trees.local().get(id).is_none()
+                    && !rules::owned(trees, id, node)
+                    && !(node.shape.content.as_ref()).is_some_and(|content| in_history(id, content))
             }) {
                 return fail(format!(
-                    "displaced {id} holds content that neither R nor a write the device owes holds"
+                    "displaced {id} holds content that neither R, a write the device owes, nor the node's server history holds"
                 ));
             }
             let left_out = &unsynced[d];

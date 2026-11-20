@@ -2336,3 +2336,66 @@ fn a_write_held_by_a_node_displaced_during_an_action_stays_counted() {
     );
     assert!(local_writes.contains(&written.manifest_digest));
 }
+
+#[test]
+fn a_stale_displaced_record_cannot_prove_a_local_write_was_kept() {
+    let mut trees = Trees::new("root");
+    let file = NodeId::from("f");
+    let written = content(1, 1);
+    let current = content(2, 1);
+    let shape = Shape {
+        parent: "root".into(),
+        name: "a".into(),
+        kind: Kind::File,
+        content: Some(written.clone()),
+    };
+    let on_server = Shape {
+        content: Some(current.clone()),
+        ..shape.clone()
+    };
+    trees.set_synced(file.clone(), Some(on_server.clone()));
+    trees.set_remote(
+        file.clone(),
+        RemoteNode {
+            made_over: Vec::new(),
+            shape: on_server,
+            trashed: false,
+            content_rev: 2,
+            meta_rev: 1,
+            meta_edit_rev: 1,
+            trash_group: String::new(),
+            version_id: String::new(),
+            edit_rev: 2,
+            pending_for: None,
+            pending_by: None,
+        },
+    );
+    trees.set_local(
+        file.clone(),
+        LocalNode {
+            left_out_when_placed: false,
+            content_from_server: false,
+            shape,
+            identity: identity(2),
+            parked: false,
+        },
+    );
+    trees.ignore_local(&file);
+    let writes = BTreeSet::from([written.manifest_digest.clone()]);
+    let check = |trees: &Trees| {
+        let server = std::iter::once(Some(current.clone()));
+        check_local_writes(trees, &BTreeSet::new(), server, &writes)
+    };
+    check(&trees).unwrap();
+    trees.displace_local(&file);
+    assert!(trees.local().get(&file).is_none());
+    let lost = check(&trees).unwrap_err();
+    assert!(
+        lost.to_string().contains("a local write was lost"),
+        "{lost}"
+    );
+    let mut state = trees.state();
+    state.unsent_edits.insert(file.clone());
+    trees.restore(state).unwrap();
+    check(&trees).unwrap();
+}

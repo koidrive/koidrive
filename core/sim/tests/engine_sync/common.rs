@@ -1452,6 +1452,32 @@ fn acknowledged_shape<'a>(trees: &'a Trees, id: &NodeId) -> Option<&'a Shape> {
     }
 }
 
+fn owned(trees: &Trees, id: &NodeId, node: &LocalNode) -> bool {
+    let Some(content) = node.shape.content.as_ref() else {
+        return true;
+    };
+    (trees.remote().live(id))
+        .and_then(|remote| remote.content.as_ref())
+        .is_some_and(|remote| same_content(remote, content))
+        || trees.unsent_edits().contains(id)
+        || trees.remote().get(id).is_none()
+}
+
+fn check_local_writes(
+    trees: &Trees,
+    waiting: &BTreeSet<NodeId>,
+    server: impl Iterator<Item = Option<ContentKey>>,
+    local_writes: &BTreeSet<Vec<u8>>,
+) -> Result<(), TestCaseError> {
+    let unsent = (trees.local_entries())
+        .filter(|(id, node)| trees.local().get(id).is_some() || owned(trees, id, node))
+        .filter(|(id, _)| trees.ignored(id) || waiting.contains(*id))
+        .map(|(_, node)| node.shape.content);
+    let kept = written(server.chain(unsent), 1);
+    prop_assert!(local_writes.is_subset(&kept), "a local write was lost");
+    Ok(())
+}
+
 fn held(trees: &Trees) -> BTreeSet<(String, Vec<u8>)> {
     trees
         .local_entries()
@@ -3253,20 +3279,19 @@ fn run_ignoring_answering_after(
         );
     }
     let trees = &device.trees;
-    let owned = |id: &NodeId, node: &LocalNode| {
-        let Some(content) = node.shape.content.as_ref() else {
-            return true;
-        };
-        (trees.remote().live(id))
-            .and_then(|remote| remote.content.as_ref())
-            .is_some_and(|remote| same_content(remote, content))
-            || trees.unsent_edits().contains(id)
-            || trees.remote().get(id).is_none()
+    let in_history = |id: &NodeId, content: &ContentKey| {
+        (versions(&space, &id.to_string()).iter()).any(|version| {
+            (version.content.as_ref())
+                .and_then(|held| ContentKey::try_from(held).ok())
+                .is_some_and(|held| same_content(&held, content))
+        })
     };
     for (id, node) in trees.local_entries() {
         prop_assert!(
-            trees.local().get(id).is_some() || owned(id, node),
-            "displaced {} holds content that neither R nor a write the device owes holds",
+            trees.local().get(id).is_some()
+                || owned(trees, id, node)
+                || (node.shape.content.as_ref()).is_some_and(|content| in_history(id, content)),
+            "displaced {} holds content that neither R, a write the device owes, nor the node's server history holds",
             id
         );
     }
@@ -3466,8 +3491,16 @@ fn local_writes_check(
     waiting: &BTreeSet<NodeId>,
     local_writes: &BTreeSet<Vec<u8>>,
 ) -> Result<(), TestCaseError> {
-    let unsent = (device.trees.local().iter())
-        .filter(|(id, _)| (device.trees.ignored(id) || waiting.contains(*id)) && device.on_disk(id))
+    let trees = &device.trees;
+    let unsent = (trees.local_entries())
+        .filter(|(id, node)| {
+            if trees.local().get(id).is_some() {
+                device.on_disk(id)
+            } else {
+                owned(trees, id, node)
+            }
+        })
+        .filter(|(id, _)| trees.ignored(id) || waiting.contains(*id))
         .map(|(_, node)| node.shape.content);
     let in_ignored_folders = (device.ignored.iter())
         .filter(|((holder, below), entry)| {
