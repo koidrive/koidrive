@@ -17,8 +17,8 @@ import time
 
 
 WORKERS = {
-    "koidrive-net": ("core/net/scripts/integration-test.sh", "server"),
-    "koidrive-driver": ("core/driver/scripts/integration-test.sh", "sync"),
+    "koidrive-net": ("core/net/scripts/integration-test.sh", ("server",)),
+    "koidrive-driver": ("core/driver/scripts/integration-test.sh", ("sync", "first_sync_bench")),
 }
 
 
@@ -43,6 +43,7 @@ def parse_args(argv=None):
     parser.add_argument("--features", default="")
     parser.add_argument("--cases", default="")
     parser.add_argument("--ignored", choices=("true", "false", ""), default="false")
+    parser.add_argument("--release", choices=("true", "false", ""), default="false")
     parser.add_argument("--repeat", type=int, default=1)
     parser.add_argument("--parallel", type=int, default=1)
     parser.add_argument("--seed", type=int, required=True)
@@ -61,10 +62,12 @@ def parse_args(argv=None):
     if args.mode == "worker":
         if args.crate not in WORKERS:
             parser.error("worker mode supports koidrive-net and koidrive-driver")
-        target = WORKERS[args.crate][1]
-        if args.test and args.test != target:
-            parser.error(f"{args.crate} worker launcher runs --test {target}")
-        args.test = target
+        targets = WORKERS[args.crate][1]
+        if args.test and args.test not in targets:
+            parser.error(f"{args.crate} worker launcher runs --test " + " or ".join(targets))
+        args.test = args.test or targets[0]
+    if args.release == "true" and (args.mode, args.crate) != ("worker", "koidrive-driver"):
+        parser.error("release applies to the koidrive-driver worker launcher only")
     args.root = args.root.resolve()
     args.out = args.out.resolve()
     return args
@@ -219,6 +222,10 @@ def run_tests(args):
                         environment.pop("KOIDRIVE_TEST_PORT", None)
                         environment["WRANGLER_SEND_METRICS"] = "false"
                         environment["XDG_CONFIG_HOME"] = str(Path(sandbox.name) / "config")
+                        environment["KOIDRIVE_DRIVER_TEST"] = args.test
+                        environment.pop("KOIDRIVE_DRIVER_RELEASE", None)
+                        if args.release == "true":
+                            environment["KOIDRIVE_DRIVER_RELEASE"] = "1"
                     process = subprocess.Popen(command, cwd=args.root, env=environment,
                                                stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
                 except Exception:
@@ -271,7 +278,7 @@ def main(argv=None):
     green = sum(record["result"] == "pass" for record in records)
     repro = [sys.executable, ".heavy-harness/scripts/stress-test-servers.py", "--root", ".", "--out", "heavy-repro",
              "--mode", args.mode, "--crate", args.crate, "--test", args.test, "--filter", args.filter,
-             "--features", args.features, "--cases", args.cases, "--ignored", args.ignored,
+             "--features", args.features, "--cases", args.cases, "--ignored", args.ignored, "--release", args.release,
              "--repeat", str(args.repeat), "--parallel", str(args.parallel), "--seed", str(args.seed)]
     rows += ["", f"**{green} of {args.repeat} runs passed.**", "",
              "Cargo tests and web assets are built before repetitions. Worker runs use the target commit's launcher, copied web assets, and a fresh server copy with isolated Wrangler builds and local state.",
