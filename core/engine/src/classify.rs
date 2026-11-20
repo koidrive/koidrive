@@ -3477,26 +3477,25 @@ impl Trees {
         }
     }
 
-    pub(crate) fn leave_name_out(&mut self, id: &str) {
-        self.names_left_out
-            .get_or_insert_with(id.to_owned(), || false);
+    pub(crate) fn leave_name_out(&mut self, id: &NodeId) {
+        self.names_left_out.get_or_insert_with(id.clone(), || false);
     }
 
-    pub fn name_left_out(&self, id: &str) -> bool {
+    pub fn name_left_out(&self, id: &NodeId) -> bool {
         self.names_left_out.contains_key(id)
     }
 
-    pub(crate) fn send_left_out_rename(&mut self, id: &str) {
+    pub(crate) fn send_left_out_rename(&mut self, id: &NodeId) {
         if let Some(sending) = self.names_left_out.get_mut(id) {
             *sending = true;
         }
     }
 
-    pub(crate) fn left_out_rename_sent(&self, id: &str) -> bool {
+    pub(crate) fn left_out_rename_sent(&self, id: &NodeId) -> bool {
         self.names_left_out.get(id) == Some(&true)
     }
 
-    pub(crate) fn answer_left_out_rename(&mut self, id: &str) {
+    pub(crate) fn answer_left_out_rename(&mut self, id: &NodeId) {
         if self.left_out_rename_sent(id) {
             self.names_left_out.remove(id);
         }

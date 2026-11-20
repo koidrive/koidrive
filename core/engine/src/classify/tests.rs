@@ -1645,14 +1645,14 @@ fn a_listing_that_moves_or_trashes_a_file_whose_name_was_left_out_ends_the_recor
             ..ancestry_remote(1, "held", &["foreign-base"])
         };
         trees.set_remote("f".into(), at("ss"));
-        trees.leave_name_out("f");
-        assert!(trees.name_left_out("f"));
+        trees.leave_name_out(&"f".into());
+        assert!(trees.name_left_out(&"f".into()));
         let listed = RemoteNode {
             trashed,
             ..at("elsewhere")
         };
         trees.set_listed_remote("f".into(), listed);
-        assert!(!trees.name_left_out("f"), "trashed: {trashed}");
+        assert!(!trees.name_left_out(&"f".into()), "trashed: {trashed}");
         assert_eq!(trees.check(), Ok(()));
     }
 }

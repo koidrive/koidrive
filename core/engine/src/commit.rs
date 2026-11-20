@@ -1857,16 +1857,12 @@ impl Commits {
             }
         }
         if ops.is_empty() && released.is_empty() {
-            let renames: Vec<proto::Op> =
-                displaced_renames(trees, &skip, &self.device_name.0, now_ms)
-                    .take(cap)
-                    .collect();
-            for op in &renames {
+            ops.extend(displaced_renames(trees, &skip, &self.device_name.0, now_ms).take(cap));
+            for op in &ops {
                 if let Some(op::Op::Move(moved)) = &op.op {
-                    trees.send_left_out_rename(&moved.node_id);
+                    trees.send_left_out_rename(&NodeId::from(&moved.node_id));
                 }
             }
-            ops.extend(renames);
         }
         if ops.is_empty() {
             self.keep_unsent(trees, released);

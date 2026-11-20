@@ -687,7 +687,7 @@ impl Device {
                 identity: self.identity(),
                 parked: false,
             };
-            let id = self.ids.uuid_v7(NOW as u64);
+            let id = NodeId::from(self.ids.uuid_v7(NOW as u64));
             self.acted.insert(id.clone());
             self.trees.set_local_changed(id, node);
         }

@@ -1827,11 +1827,12 @@ fn a_sent_conflict_rename_keeps_its_record_until_the_answer_even_if_r_or_l_chang
         let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
         trees.settle(commits.aliases());
         let mut effects = Effects::default();
-        let refused = effects
-            .plan(&trees, None, &mut ids, NOW, BatchLimit::ONE)[0]
+        let refused = effects.plan(&trees, None, &mut ids, NOW, BatchLimit::ONE)[0]
             .effect_id
             .clone();
-        effects.taken(&mut trees, &refused, Some(Kind::Dir)).unwrap();
+        effects
+            .taken(&mut trees, &refused, Some(Kind::Dir))
+            .unwrap();
         trees.settle(commits.aliases());
         let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
         let sent = ops(&commit);
@@ -1847,12 +1848,12 @@ fn a_sent_conflict_rename_keeps_its_record_until_the_answer_even_if_r_or_l_chang
             op_result::Code::Applied
         };
         trees.settle(commits.aliases());
-        assert!(trees.name_left_out("n"), "{trashed_remotely}");
+        assert!(trees.name_left_out(&"n".into()), "{trashed_remotely}");
         if !trashed_remotely {
             trees.set_remote("n".into(), remote_at(file(ROOT, &sent.new_name, 1), 6));
         }
         commits.received(result(6, vec![outcome(code)])).unwrap();
         assert!(commits.acknowledge(&mut trees, 6));
-        assert!(!trees.name_left_out("n"), "{trashed_remotely}");
+        assert!(!trees.name_left_out(&"n".into()), "{trashed_remotely}");
     }
 }

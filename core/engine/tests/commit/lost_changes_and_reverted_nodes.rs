@@ -2791,7 +2791,8 @@ fn a_resent_move_answered_after_the_user_moved_the_node_back_sends_that_move_bac
         .unwrap();
     assert!(commits.acknowledge(&mut trees, 6));
     trees.settle(commits.aliases());
-    let next = build(&mut commits, &mut trees, &mut ids).map_or_else(Vec::new, |commit| ops(&commit));
+    let next =
+        build(&mut commits, &mut trees, &mut ids).map_or_else(Vec::new, |commit| ops(&commit));
     let names: Vec<&str> = (next.iter())
         .filter_map(|op| match op {
             op::Op::Move(moved) if moved.node_id == "n" => Some(moved.new_name.as_str()),
