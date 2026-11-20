@@ -10,6 +10,7 @@ fn a_recovery_stored_before_its_cause_was_opens_as_a_rolled_back_store() {
     state.commits.halted = Some(Halt::Recovery {
         cause: RecoveryCause::rewind(4, 1_700_000_000_000),
         policy: None,
+        store_behind_disk: false,
     });
     Store::open(&path)
         .unwrap()
@@ -22,6 +23,7 @@ fn a_recovery_stored_before_its_cause_was_opens_as_a_rolled_back_store() {
     state.commits.halted = Some(Halt::Recovery {
         cause: RecoveryCause::of(RecoveryTrigger::StoreRolledBack),
         policy: None,
+        store_behind_disk: true,
     });
     assert_eq!(store.transaction(|tx| tx.engine_state()).unwrap(), state);
 }

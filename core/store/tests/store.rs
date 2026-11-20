@@ -1372,6 +1372,10 @@ fn engine_state() -> EngineState {
                 engine_shape("root", "forgotten.txt"),
             )]),
             lost_shapes: BTreeMap::from([("lost".into(), engine_shape("root", "lost.txt"))]),
+            unsent_deletes: BTreeMap::from([(
+                "deleted".into(),
+                engine_shape("root", "deleted.txt"),
+            )]),
             outside: nodes(["kept", "lost"]),
             lost: nodes(["lost"]),
             found: BTreeMap::from([("kept".into(), "dist/kept.txt".into())]),
@@ -2006,14 +2010,17 @@ fn a_halt_survives_a_reopen_with_its_commit() {
         Some(Halt::Recovery {
             cause: RecoveryCause::rewind(4, 1_700_000_000_000),
             policy: None,
+            store_behind_disk: false,
         }),
         Some(Halt::Recovery {
             cause: RecoveryCause::of(RecoveryTrigger::StoreOlderThanDisk),
             policy: None,
+            store_behind_disk: true,
         }),
         Some(Halt::Recovery {
             cause: RecoveryCause::rewind(4, 1_700_000_000_000),
             policy: Some(7),
+            store_behind_disk: true,
         }),
         Some(Halt::Policy { code: 7 }),
     ] {

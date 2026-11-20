@@ -661,6 +661,7 @@ fn nothing_is_counted_while_committing_has_stopped() {
                 koidrive_engine::question::RecoveryTrigger::StoreRolledBack,
             ),
             policy: None,
+            store_behind_disk: false,
         }),
         ..Default::default()
     })

@@ -127,10 +127,13 @@ pub enum Halt {
     ReadOnly,
     /// The store cannot account for the server's state (sections 2.8 and 6.4). The commit in flight
     /// is kept as evidence and nothing is planned from this store. `policy` is the code of the
-    /// policy halt the recovery interrupted, which holds again once it ends.
+    /// policy halt the recovery interrupted, which holds again once it ends. `store_behind_disk`
+    /// is set once any cause of this recovery found the store older than the disk, so an entry
+    /// missing from the disk may be an effect the store forgot rather than a delete of the user.
     Recovery {
         cause: RecoveryCause,
         policy: Option<i32>,
+        store_behind_disk: bool,
     },
     /// A policy halt (RFC 0006 section 1): the server refused the commit with `code`, which only
     /// the user or a client update can resolve. The commit in flight is kept with its slot and
@@ -824,14 +827,22 @@ impl Commits {
 
     /// Stops committing for a recovery (section 6.4). The commit in flight is never sent again, and
     /// nothing is planned until [`Commits::recover`]. A policy halt it interrupts holds again once
-    /// the recovery ends.
+    /// the recovery ends, and a later cause keeps that the store was older than the disk.
     pub fn enter_recovery(&mut self, cause: RecoveryCause) {
-        let policy = match *self.halted {
-            Some(Halt::Policy { code }) => Some(code),
-            Some(Halt::Recovery { policy, .. }) => policy,
-            Some(Halt::ReadOnly) | None => None,
+        let (policy, behind) = match *self.halted {
+            Some(Halt::Policy { code }) => (Some(code), false),
+            Some(Halt::Recovery {
+                policy,
+                store_behind_disk,
+                ..
+            }) => (policy, store_behind_disk),
+            Some(Halt::ReadOnly) | None => (None, false),
         };
-        self.halted.set(Some(Halt::Recovery { cause, policy }));
+        self.halted.set(Some(Halt::Recovery {
+            cause,
+            policy,
+            store_behind_disk: behind || cause.trigger == RecoveryTrigger::StoreOlderThanDisk,
+        }));
     }
 
     /// Recovers once R holds the server's tree in the history the device recovers into, and L a
@@ -861,6 +872,13 @@ impl Commits {
         for question in self.questions.get_mut().iter_mut() {
             question.frozen = None;
         }
+        let store_behind_disk = matches!(
+            *self.halted,
+            Some(Halt::Recovery {
+                store_behind_disk: true,
+                ..
+            })
+        );
         self.halted.set(match *self.halted {
             Some(Halt::Recovery {
                 policy: Some(code), ..
@@ -881,6 +899,9 @@ impl Commits {
         self.given_up_nodes.clear();
         self.answer_moves.clear();
         trees.rewound();
+        if store_behind_disk {
+            trees.unprove_waiting_removals();
+        }
         let mut held: BTreeMap<NodeId, RecoveryGroup> = (self.questions.iter())
             .filter_map(|question| match question.kind {
                 QuestionKind::Recovery { group, .. } => Some((group, question)),
@@ -916,11 +937,24 @@ impl Commits {
         for (id, shape) in &agreed {
             trees.sent_edit(id, shape.as_ref().and_then(|shape| shape.content.as_ref()));
         }
-        let agreed = (agreed.into_iter()).filter(|(id, shape)| {
-            !same(trees.synced().live(id), shape.as_ref()) && trees.waiting().get(id).is_none()
-        });
-        for (id, shape) in update_synced(trees, agreed.collect()) {
-            trees.wait(id, shape, Origin::Other);
+        let agreed: Vec<(NodeId, Option<Shape>)> = (agreed.into_iter())
+            .filter(|(id, shape)| {
+                !same(trees.synced().live(id), shape.as_ref()) && trees.waiting().get(id).is_none()
+            })
+            .collect();
+        let unsent: Vec<(NodeId, Shape)> = (agreed.iter())
+            .filter(|(_, shape)| shape.is_none() && !store_behind_disk)
+            .filter_map(|(id, _)| trees.unsent_delete(id).map(|seen| (id.clone(), seen)))
+            .collect();
+        let origin = match store_behind_disk {
+            true => Origin::Unproven,
+            false => Origin::Other,
+        };
+        for (id, shape) in update_synced(trees, agreed) {
+            trees.wait(id, shape, origin);
+        }
+        for (id, seen) in unsent {
+            trees.record_unsent_delete(id, seen);
         }
         let mut groups = recovery::classify(trees, &held, cause);
         if let Some(restored) = groups.get_mut(&RecoveryGroup::CreatedAfterRestorePoint) {
@@ -1115,7 +1149,8 @@ impl Commits {
                     })
                     .collect();
                 for (id, shape) in update_synced(trees, updates) {
-                    trees.wait(id, shape, Origin::Other);
+                    let origin = trees.requeued_origin(&id);
+                    trees.wait(id, shape, origin);
                 }
                 for id in question.holds() {
                     trees.release_missing(id);
@@ -1133,7 +1168,8 @@ impl Commits {
                 }
                 let updates = restored.into_iter().map(|id| (id, None)).collect();
                 for (id, shape) in update_synced(trees, updates) {
-                    trees.wait(id, shape, Origin::Other);
+                    let origin = trees.requeued_origin(&id);
+                    trees.wait(id, shape, origin);
                 }
                 open = guard::deletions(trees, trees.missing());
             }
@@ -1316,6 +1352,7 @@ impl Commits {
             match answer {
                 Answer::Discard => trees.discard(question.holds().cloned(), &question.shown),
                 Answer::Publish | Answer::Keep => trees.approve(question.holds().cloned()),
+                Answer::Restore => trees.restore_unsent_deletes(question.holds()),
                 _ => {}
             }
             updates.extend(recovery::release(trees, &question, answer));
@@ -3113,6 +3150,10 @@ impl Commits {
             .chain(needed.iter().map(|id| (id.clone(), None)))
             .chain(agreed.iter().cloned())
             .collect();
+        let unsent: Vec<(NodeId, Shape)> = (waited.iter())
+            .filter(|(_, waiting)| waiting.shape.is_none() && waiting.origin != Origin::Unproven)
+            .filter_map(|(id, _)| trees.unsent_delete(id).map(|seen| (id.clone(), seen)))
+            .collect();
         let mut still = BTreeSet::new();
         for (id, shape) in update_synced(trees, updates) {
             if needed.contains(&id) {
@@ -3125,6 +3166,9 @@ impl Commits {
             } else if !agreed.iter().any(|(other, _)| *other == id) {
                 trees.wait(id, shape, Origin::Other);
             }
+        }
+        for (id, seen) in unsent {
+            trees.record_unsent_delete(id, seen);
         }
         still
     }
@@ -3151,10 +3195,12 @@ impl Commits {
             Ok(Code::HistoryMismatch) => Failure::Halted(Halt::Recovery {
                 cause: RecoveryCause::of(RecoveryTrigger::SpaceRewound),
                 policy: None,
+                store_behind_disk: false,
             }),
             Ok(Code::StaleDeviceState) => Failure::Halted(Halt::Recovery {
                 cause: RecoveryCause::of(RecoveryTrigger::StoreRolledBack),
                 policy: None,
+                store_behind_disk: false,
             }),
             Ok(Code::ReadOnly) => Failure::Halted(Halt::ReadOnly),
             Ok(Code::AheadOfServer) => Failure::Resync,
@@ -3167,9 +3213,8 @@ impl Commits {
             _ => Failure::Halted(Halt::Policy { code: error.code }),
         };
         match failure {
-            Failure::Halted(halt @ (Halt::Recovery { .. } | Halt::Policy { .. })) => {
-                self.halted.set(Some(halt))
-            }
+            Failure::Halted(Halt::Recovery { cause, .. }) => self.enter_recovery(cause),
+            Failure::Halted(halt @ Halt::Policy { .. }) => self.halted.set(Some(halt)),
             Failure::Resend => {}
             Failure::Halted(halt) => {
                 self.halted.set(Some(halt));
@@ -6845,5 +6890,106 @@ mod compensation_tests {
         let scratch = Scratch::new(&trees);
         let answer = wants[0].as_ref().unwrap();
         assert!((scratch.compensation(answer, &answers, &trees, &wants, &moving)).is_none());
+    }
+}
+
+#[cfg(test)]
+mod unproven_removal_tests {
+    use super::*;
+    use crate::tree::{FileIdentity, LocalNode, RemoteNode};
+
+    fn shape(parent: &str, name: &str, kind: Kind) -> Shape {
+        Shape {
+            parent: parent.into(),
+            name: name.to_owned(),
+            kind,
+            content: None,
+        }
+    }
+
+    fn remote(shape: Shape) -> RemoteNode {
+        RemoteNode {
+            shape,
+            trashed: false,
+            content_rev: 1,
+            meta_rev: 1,
+            meta_edit_rev: 1,
+            trash_group: String::new(),
+            version_id: String::new(),
+            made_over: Vec::new(),
+            edit_rev: 1,
+            pending_for: None,
+            pending_by: None,
+            chunks: Box::default(),
+        }
+    }
+
+    #[test]
+    fn a_mass_deletion_answer_that_requeues_an_unproven_removal_keeps_it_unproven() {
+        for answer in [Answer::Delete, Answer::Restore] {
+            let mut trees = Trees::new("root");
+            let (b, c) = (shape("root", "b", Kind::Dir), shape("b", "c", Kind::Dir));
+            trees.set_remote("p".into(), remote(shape("root", "p", Kind::Dir)));
+            trees.set_remote("b".into(), remote(shape("p", "b", Kind::Dir)));
+            trees.set_remote("c".into(), remote(c.clone()));
+            for (ino, (id, shape)) in [("b", b), ("c", c)].into_iter().enumerate() {
+                let identity = FileIdentity {
+                    ino: ino as u128 + 1,
+                    birth_ns: Some(0),
+                    handle: None,
+                };
+                let node = LocalNode {
+                    shape: shape.clone(),
+                    identity,
+                    parked: false,
+                    left_out_when_placed: false,
+                    content_from_server: true,
+                    chunks: Box::default(),
+                };
+                trees.set_local(id.into(), node);
+                trees.set_synced(id.into(), Some(shape));
+            }
+            trees.miss_local(&"b".into());
+            let mut commits = Commits::default();
+            let mut ids = IdGen::new(1);
+            commits.ask_missing(&mut trees, &mut ids, 1);
+            let question = (commits.questions.iter())
+                .find(|question| question.kind == QuestionKind::AmbiguousDisappearance)
+                .expect("asked")
+                .id
+                .clone();
+            trees.wait("b".into(), None, Origin::Unproven);
+            assert!(commits.decide(&mut trees, &question, answer));
+            commits.ask_missing(&mut trees, &mut ids, 1);
+            let waiting = trees.waiting().get(&"b".into());
+            assert_eq!(
+                waiting.map(|w| w.origin),
+                Some(Origin::Unproven),
+                "{answer:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_recovery_from_a_store_older_than_the_disk_makes_a_waiting_removal_unproven() {
+        for (trigger, origin) in [
+            (RecoveryTrigger::StoreOlderThanDisk, Origin::Unproven),
+            (RecoveryTrigger::SpaceRewound, Origin::Other),
+        ] {
+            let mut trees = Trees::new("root");
+            trees.set_synced("b".into(), Some(shape("root", "b", Kind::Dir)));
+            trees.set_synced("c".into(), Some(shape("b", "c", Kind::Dir)));
+            trees.set_remote("c".into(), remote(shape("root", "c", Kind::Dir)));
+            trees.wait("b".into(), None, Origin::Other);
+            trees.wait("c".into(), Some(shape("b", "c", Kind::Dir)), Origin::Other);
+            let mut commits = Commits::default();
+            let cause = RecoveryCause::of(trigger);
+            commits.enter_recovery(cause);
+            let (log, marks) = (LogRead::default(), Marks::new());
+            let mut ids = IdGen::new(1);
+            commits.recover(&mut trees, 0, false, &cause, &log, &marks, &mut ids, 1);
+            let waiting = trees.waiting().get(&"b".into()).map(|w| w.origin);
+            assert_eq!(waiting, Some(origin), "{trigger:?}");
+        }
     }
 }

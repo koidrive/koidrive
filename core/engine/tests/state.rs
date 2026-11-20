@@ -123,6 +123,7 @@ fn trees_state() -> TreesState {
         removed_from: [("gone".into(), ROOT.into())].into(),
         forgotten_shapes: [("a".into(), dir(ROOT, "x"))].into(),
         lost_shapes: [("a".into(), dir(ROOT, "x"))].into(),
+        unsent_deletes: [("d".into(), dir(ROOT, "y"))].into(),
         outside: ["a".into()].into(),
         lost: ["a".into()].into(),
         found: [("a".into(), "build/a".into())].into(),
@@ -377,6 +378,7 @@ fn commits_state() -> CommitsState {
         halted: Some(Halt::Recovery {
             cause: RecoveryCause::rewind(4, 1_700_000_000_000),
             policy: None,
+            store_behind_disk: false,
         }),
         cap: Some(4),
         split: ["s".into()].into(),

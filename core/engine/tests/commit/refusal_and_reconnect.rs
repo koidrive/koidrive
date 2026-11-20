@@ -382,6 +382,7 @@ fn errors_forget_the_commit_only_when_nothing_was_applied() {
             Failure::Halted(Halt::Recovery {
                 cause: RecoveryCause::of(RecoveryTrigger::SpaceRewound),
                 policy: None,
+                store_behind_disk: false,
             }),
             true,
         ),
@@ -390,6 +391,7 @@ fn errors_forget_the_commit_only_when_nothing_was_applied() {
             Failure::Halted(Halt::Recovery {
                 cause: RecoveryCause::of(RecoveryTrigger::StoreRolledBack),
                 policy: None,
+                store_behind_disk: false,
             }),
             true,
         ),

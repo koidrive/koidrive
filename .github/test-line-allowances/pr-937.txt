@@ -1,0 +1,22 @@
+600
+# A delete made offline around a server loss must stay deleted when another device's Keep or resend brings the node back,
+# whether R learns of it from the log, a listing or a restart, and must give way where that device moved the node, changed
+# its content, or the user answered Restore. Where another device renamed the deleted folder, the file's record waits for
+# the folder and is not downloaded meanwhile, both for a file deleted before its folder and with it, and a file another
+# device changed still downloads. Each recovery test is one of those paths and fails on the engine without the record or
+# with one of its rules removed; the store tests cover the add-only table on a fresh store and on an upgrade.
+# A folder deleted across a rewind to before a file moved into it is recorded only once S drops it, also when that removal
+# waited for the file to leave first, so another device's Keep of the folder does not bring it back.
+# A record ends as soon as R learns, from a delivered change or a listing, that the server trashed or reshaped the node, so
+# a trash and a restore that reach the device before one settle, or a changed node a listing brings, download the node.
+# No record is made by a recovery once any of its causes found the store older than the disk, also after a rewind replaced
+# that cause: the engine test covers both, and the store tests cover the new halt column on a fresh store, before its
+# migration and on an upgrade.
+# A folder removal that such a recovery left waiting for a child records nothing when the child's answer releases it,
+# also after a bootstrap forgets the folder meanwhile; the store tests cover the waiting origin before and after the migration.
+# The mass-deletion question's Delete and Restore answers keep an unproven removal's origin when they requeue it, and a
+# removal a release without provenance left waiting opens as unproven; each has a unit test with a mutant that fails it.
+# A removal already waiting when a recovery finds the store older than the disk becomes unproven, and one waiting through a
+# rewind recovery does not; the unit test fails without the conversion.
+# A Restore acknowledged while S's removal of its folder waited for a child is not a Delete: the engine test lets the engine
+# create that wait and fails when the conversion runs before the recovery forgets which commit made it.

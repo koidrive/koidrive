@@ -125,7 +125,8 @@ impl Tx<'_> {
         }
 
         let mut stmt = self.0.prepare_cached(
-            "SELECT node_id, parent_id, name, kind, content, slot, released FROM waiting_updates",
+            "SELECT node_id, parent_id, name, kind, content, slot, released, unproven
+             FROM waiting_updates",
         )?;
         let mut rows = stmt.query([])?;
         while let Some(row) = next_row!(rows, abandoned) {
@@ -138,10 +139,15 @@ impl Tx<'_> {
                     content: content_key(row.get(4)?)?,
                 }),
             };
-            let origin = match (row.get::<_, Option<u64>>(5)?, row.get::<_, bool>(6)?) {
-                (Some(slot), _) => Origin::Commit(slot),
-                (None, true) => Origin::Released,
-                (None, false) => Origin::Other,
+            let origin = match (
+                row.get::<_, Option<u64>>(5)?,
+                row.get::<_, bool>(6)?,
+                row.get::<_, bool>(7)?,
+            ) {
+                (Some(slot), _, _) => Origin::Commit(slot),
+                (None, true, _) => Origin::Released,
+                (None, false, true) => Origin::Unproven,
+                (None, false, false) => Origin::Other,
             };
             state.trees.waiting.insert(
                 NodeId::from(row.get::<_, String>(0)?),
@@ -253,6 +259,22 @@ impl Tx<'_> {
             state
                 .trees
                 .lost_shapes
+                .insert(NodeId::from(row.get::<_, String>(0)?), shape);
+        }
+        let mut stmt = self
+            .0
+            .prepare_cached("SELECT node_id, parent_id, name, kind, content FROM unsent_deletes")?;
+        let mut rows = stmt.query([])?;
+        while let Some(row) = next_row!(rows, abandoned) {
+            let shape = Shape {
+                parent: NodeId::from(row.get::<_, Option<String>>(1)?.unwrap_or_default()),
+                name: row.get(2)?,
+                kind: kind(row.get(3)?)?,
+                content: content_key(row.get(4)?)?,
+            };
+            state
+                .trees
+                .unsent_deletes
                 .insert(NodeId::from(row.get::<_, String>(0)?), shape);
         }
         let mut stmt = self
@@ -649,7 +671,7 @@ impl Tx<'_> {
             .0
             .query_row(
                 "SELECT accepted, halt, policy_code, recovery_trigger, restore_seq, restore_point_ms,
-                        cap, recovery_policy_code
+                        cap, recovery_policy_code, store_behind_disk
                  FROM commit_state WHERE id = 1",
                 [],
                 |row| {
@@ -660,6 +682,7 @@ impl Tx<'_> {
                         restore_seq: row.get(4)?,
                         restore_point_ms: row.get(5)?,
                         recovery_policy_code: row.get(7)?,
+                        store_behind_disk: row.get(8)?,
                     };
                     Ok((row.get::<_, u64>(0)?, halt, row.get::<_, Option<usize>>(6)?))
                 },
@@ -775,6 +798,7 @@ impl Tx<'_> {
             removed_from,
             forgotten_shapes,
             lost_shapes,
+            unsent_deletes,
             outside,
             lost,
             found,
@@ -870,12 +894,13 @@ impl Tx<'_> {
         self.write_node_map(
             waiting,
             "DELETE FROM waiting_updates WHERE node_id = ?1",
-            "INSERT OR REPLACE INTO waiting_updates (node_id, parent_id, name, kind, content, slot, released)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            "INSERT OR REPLACE INTO waiting_updates
+                 (node_id, parent_id, name, kind, content, slot, released, unproven)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             |put, node, Waiting { shape, origin }| {
                 let slot = match origin {
                     Origin::Commit(slot) => Some(*slot),
-                    Origin::Other | Origin::Released => None,
+                    Origin::Other | Origin::Released | Origin::Unproven => None,
                 };
                 put.execute(params![
                     node,
@@ -891,6 +916,7 @@ impl Tx<'_> {
                         .map(key_bytes),
                     slot,
                     *origin == Origin::Released,
+                    *origin == Origin::Unproven,
                 ])
             },
         )?;
@@ -969,6 +995,21 @@ impl Tx<'_> {
             lost_shapes,
             "DELETE FROM lost_shapes WHERE node_id = ?1",
             "INSERT OR REPLACE INTO lost_shapes (node_id, parent_id, name, kind, content)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            |put, node, shape| {
+                put.execute(params![
+                    node,
+                    non_empty(&shape.parent.to_string()),
+                    shape.name,
+                    node_kind(shape.kind),
+                    shape.content.as_ref().map(key_bytes),
+                ])
+            },
+        )?;
+        self.write_node_map(
+            unsent_deletes,
+            "DELETE FROM unsent_deletes WHERE node_id = ?1",
+            "INSERT OR REPLACE INTO unsent_deletes (node_id, parent_id, name, kind, content)
              VALUES (?1, ?2, ?3, ?4, ?5)",
             |put, node, shape| {
                 put.execute(params![
@@ -1248,7 +1289,7 @@ impl Tx<'_> {
             self.0.execute(
                 "UPDATE commit_state
                  SET halt = ?1, policy_code = ?2, recovery_trigger = ?3, restore_seq = ?4,
-                     restore_point_ms = ?5, recovery_policy_code = ?6
+                     restore_point_ms = ?5, recovery_policy_code = ?6, store_behind_disk = ?7
                  WHERE id = 1",
                 params![
                     halt.halt,
@@ -1256,7 +1297,8 @@ impl Tx<'_> {
                     halt.recovery_trigger,
                     halt.restore_seq,
                     halt.restore_point_ms,
-                    halt.recovery_policy_code
+                    halt.recovery_policy_code,
+                    halt.store_behind_disk
                 ],
             )?;
         }
@@ -1614,6 +1656,7 @@ struct HaltRow {
     restore_seq: Option<u64>,
     restore_point_ms: Option<i64>,
     recovery_policy_code: Option<i32>,
+    store_behind_disk: Option<bool>,
 }
 
 impl HaltRow {
@@ -1630,7 +1673,11 @@ impl HaltRow {
                 policy_code: Some(code),
                 ..HaltRow::default()
             },
-            Some(Halt::Recovery { cause, policy }) => HaltRow {
+            Some(Halt::Recovery {
+                cause,
+                policy,
+                store_behind_disk,
+            }) => HaltRow {
                 halt: named("recovery"),
                 recovery_trigger: named(match cause.trigger {
                     RecoveryTrigger::SpaceRewound => "space_rewound",
@@ -1640,6 +1687,7 @@ impl HaltRow {
                 restore_seq: cause.restore_seq,
                 restore_point_ms: cause.restore_point_ms,
                 recovery_policy_code: policy,
+                store_behind_disk: store_behind_disk.then_some(true),
                 ..HaltRow::default()
             },
         }
@@ -1653,6 +1701,7 @@ impl HaltRow {
             restore_seq,
             restore_point_ms,
             recovery_policy_code,
+            store_behind_disk,
         } = self;
         let trigger = match recovery_trigger.as_deref() {
             None => None,
@@ -1671,6 +1720,7 @@ impl HaltRow {
                     restore_point_ms,
                 },
                 policy: recovery_policy_code,
+                store_behind_disk: store_behind_disk == Some(true),
             }),
             (Some("policy"), Some(code), None) => Some(Halt::Policy { code }),
             _ => {

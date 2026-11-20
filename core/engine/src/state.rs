@@ -278,6 +278,14 @@ pub struct TreesState {
     /// S takes the node again, when L's content changes or L no longer holds the node, and when R
     /// holds the node again.
     pub lost_shapes: BTreeMap<NodeId, Shape>,
+    /// The nodes this device's user deleted that S forgot after a server loss or a history change
+    /// while R lacked them, each with the shape S held, so the delete was never sent. When R holds
+    /// such a node live with that shape again, S takes it once S holds its folder, and the delete
+    /// is sent; until then the record waits and the node is not downloaded. The record ends when S
+    /// takes the node, when R holds it with another shape or in the trash, when L holds it again,
+    /// or when the user answers Restore for it or a folder above it. RFC 0029's journal replaces it
+    /// (GUN-1370).
+    pub unsent_deletes: BTreeMap<NodeId, Shape>,
     /// The nodes whose local copy the user moved into an ignored folder that is no node, and the folders L keeps
     /// for them. L holds each at the position it had before.
     pub outside: BTreeSet<NodeId>,
@@ -526,6 +534,7 @@ pub struct TreesChanges {
     pub removed_from: MapChanges<NodeId, NodeId>,
     pub forgotten_shapes: MapChanges<NodeId, Shape>,
     pub lost_shapes: MapChanges<NodeId, Shape>,
+    pub unsent_deletes: MapChanges<NodeId, Shape>,
     pub outside: SetChanges<NodeId>,
     pub lost: SetChanges<NodeId>,
     pub found: MapChanges<NodeId, PathBuf>,
@@ -575,6 +584,7 @@ impl TreesChanges {
             removed_from,
             forgotten_shapes,
             lost_shapes,
+            unsent_deletes,
             outside,
             lost,
             found,
@@ -620,6 +630,7 @@ impl TreesChanges {
             removed_from: map_changes(&before.removed_from, removed_from),
             forgotten_shapes: map_changes(&before.forgotten_shapes, forgotten_shapes),
             lost_shapes: map_changes(&before.lost_shapes, lost_shapes),
+            unsent_deletes: map_changes(&before.unsent_deletes, unsent_deletes),
             outside: set_changes(&before.outside, outside),
             lost: set_changes(&before.lost, lost),
             found: map_changes(&before.found, found),

@@ -1049,10 +1049,6 @@ fn a_folder_a_rewind_took_while_its_pending_create_was_in_flight_gets_its_name()
 
 #[test]
 fn an_answer_whose_folder_lands_on_a_taken_name_goes_with_what_trashes_its_children_again() {
-    let _red = expect_red(
-        Check::DeleteUndone,
-        "the delete of node 01a1c2c0-39a0-7735-80db-d7e668859a70 on device 0 came undone, and no change its user did not see brought the node back",
-    );
     let phases: Vec<Vec<(usize, Step)>> = vec![
         vec![
             (
@@ -4065,6 +4061,528 @@ fn publishing_a_rename_does_not_overwrite_an_edit_made_before_the_create_result(
     );
     world.phase(5, &[]).unwrap();
     assert!(live_writes(&world).contains(&3));
+}
+
+#[test]
+fn a_file_deleted_offline_across_a_rewind_stays_deleted_when_another_device_keeps_it() {
+    for restart in [false, true] {
+        let mut world = synced(2, &[vec![(0, Step::Backup), (0, file("c.txt"))]]);
+        let rewind = [
+            (0, Step::Rewind),
+            (0, delete(0)),
+            (0, Step::Connect),
+            (0, DELIVER),
+        ];
+        world.run(1, &rewind).unwrap();
+        assert!(
+            !world.devices[0]
+                .engine
+                .trees
+                .state()
+                .unsent_deletes
+                .is_empty()
+        );
+        if restart {
+            world.run(1, &[(0, Step::Crash)]).unwrap();
+        }
+        world.phase(2, &[]).unwrap();
+        assert_eq!(answered(&world), ["recovery answer keeps"]);
+        assert_eq!(live(&world), Vec::<String>::new());
+    }
+}
+
+#[test]
+fn a_file_deleted_offline_across_a_rewind_comes_back_with_an_edit_another_device_keeps() {
+    let mut world = synced(2, &[vec![(0, Step::Backup), (0, file("c.txt"))]]);
+    world
+        .run(1, &[(0, Step::Rewind), (0, delete(0)), (1, overwrite(0))])
+        .unwrap();
+    world.phase(2, &[]).unwrap();
+    assert_eq!(live(&world), ["c.txt"]);
+    assert_eq!(live_writes(&world), [2]);
+}
+
+#[test]
+fn a_folder_deleted_offline_across_a_rewind_comes_back_with_only_the_file_another_device_changed() {
+    let mut world = synced(
+        2,
+        &[vec![
+            (0, Step::Backup),
+            (0, user(0, 0, 0, "b")),
+            (0, user(1, 0, 1, "a")),
+            (0, user(1, 0, 1, "c.txt")),
+        ]],
+    );
+    let (folder, changed) = (index_of(&world, 0, "b").1, index_of(&world, 1, "a").1);
+    let file_id = node_named(&world, "c.txt");
+    world
+        .run(
+            1,
+            &[
+                (0, Step::Rewind),
+                (0, delete(folder)),
+                (1, overwrite(changed)),
+                (1, Step::Connect),
+                (1, DELIVER),
+                (1, Step::Answer(0)),
+                (1, Step::Answer(0)),
+            ],
+        )
+        .unwrap();
+    let mut deleted = std::collections::BTreeSet::new();
+    let steps = [
+        (0, Step::Connect),
+        (0, DELIVER),
+        (0, SCAN),
+        (0, EFFECT),
+        (0, COMMIT),
+        (1, DELIVER),
+        (1, COMMIT),
+    ];
+    for step in steps.iter().cycle().take(70) {
+        world.run(2, std::slice::from_ref(step)).unwrap();
+        let flight = world.devices[0].engine.commits.in_flight();
+        deleted.extend(
+            (flight.iter().flat_map(|flight| &flight.commit.ops)).filter_map(|op| match &op.op {
+                Some(op::Op::Delete(delete)) => Some(delete.node_id.clone()),
+                _ => None,
+            }),
+        );
+    }
+    world.phase(3, &[]).unwrap();
+    assert_eq!(deleted, [file_id].into());
+    assert_eq!(live(&world), ["a", "b"]);
+    assert_eq!(live_writes(&world), [3]);
+}
+
+#[test]
+fn a_copy_removed_while_excluded_is_not_deleted_when_another_device_keeps_it_after_a_rewind() {
+    use koidrive_sim::world::device::Ruling;
+    let mut world = synced(
+        2,
+        &[vec![
+            (0, Step::Backup),
+            (0, user(0, 0, 0, "b")),
+            (0, user(1, 0, 1, "c.txt")),
+        ]],
+    );
+    let folder = index_of(&world, 0, "b").1;
+    world.rule(0, &Ruling::Exclude(vec!["c.txt"])).unwrap();
+    world
+        .run(
+            1,
+            &[
+                (0, SCAN),
+                (0, delete(folder)),
+                (0, SCAN),
+                (0, Step::Rewind),
+                (0, Step::Connect),
+                (0, DELIVER),
+            ],
+        )
+        .unwrap();
+    world.rule(0, &Ruling::Exclude(Vec::new())).unwrap();
+    world
+        .run(
+            1,
+            &[
+                (0, SCAN),
+                (1, Step::Connect),
+                (1, DELIVER),
+                (1, Step::Answer(0)),
+            ],
+        )
+        .unwrap();
+    world.phase(2, &[]).unwrap();
+    assert_eq!(answered(&world), ["recovery answer keeps"]);
+    assert_eq!(live(&world), ["b", "c.txt"]);
+}
+
+#[test]
+fn a_file_deleted_offline_across_a_server_restore_stays_deleted_when_its_author_sends_it_again() {
+    let mut world = synced(2, &[vec![(0, Step::Backup), (1, file("c.txt"))]]);
+    world.run(1, &[(0, Step::Restore), (0, delete(0))]).unwrap();
+    world.phase(2, &[]).unwrap();
+    assert_eq!(answered(&world), Vec::<&str>::new());
+    assert_eq!(live(&world), Vec::<String>::new());
+}
+
+#[test]
+fn a_file_deleted_offline_across_a_rewind_stays_deleted_when_a_listing_brings_back_another_devices_keep()
+ {
+    let mut world = synced(2, &[vec![(0, Step::Backup), (0, file("c.txt"))]]);
+    world
+        .run(
+            1,
+            &[
+                (0, Step::Rewind),
+                (0, delete(0)),
+                (0, Step::Connect),
+                (0, DELIVER),
+                (0, Step::Drop),
+                (1, Step::Connect),
+                (1, DELIVER),
+                (1, Step::Answer(0)),
+                (1, COMMIT),
+                (1, COMMIT),
+                (1, DELIVER),
+            ],
+        )
+        .unwrap();
+    assert_eq!(answered(&world), ["recovery answer keeps"]);
+    world.truncate_log();
+    world.run(2, &[(0, Step::Connect), (0, DELIVER)]).unwrap();
+    assert!(world.seen.contains_key("resume finds the log truncated"));
+    world.phase(3, &[]).unwrap();
+    assert_eq!(live(&world), Vec::<String>::new());
+}
+
+#[test]
+fn a_file_in_a_folder_deleted_offline_across_a_rewind_follows_another_devices_rename() {
+    let mut world = synced(
+        2,
+        &[vec![
+            (0, Step::Backup),
+            (0, user(0, 0, 0, "b")),
+            (0, user(1, 0, 1, "c.txt")),
+        ]],
+    );
+    let (folder, child) = (index_of(&world, 0, "b").1, index_of(&world, 1, "c.txt").1);
+    world
+        .run(
+            1,
+            &[
+                (0, Step::Rewind),
+                (0, delete(folder)),
+                (0, Step::Connect),
+                (0, DELIVER),
+                (1, rename(index_of(&world, 1, "b").1, "ss")),
+                (1, Step::Connect),
+                (1, DELIVER),
+                (1, Step::Answer(0)),
+                (1, Step::Answer(0)),
+                (1, COMMIT),
+                (1, COMMIT),
+                (1, DELIVER),
+                (1, DELIVER),
+                (0, DELIVER),
+                (0, DELIVER),
+                (1, user(3, child, 1, "a")),
+                (1, SCAN),
+                (1, COMMIT),
+                (1, COMMIT),
+                (1, DELIVER),
+                (0, DELIVER),
+            ],
+        )
+        .unwrap();
+    world.phase(2, &[]).unwrap();
+    assert_eq!(live(&world), ["a", "ss"]);
+}
+
+#[test]
+fn a_file_deleted_offline_across_a_rewind_comes_back_at_the_place_another_device_moved_it_to() {
+    for (parent, folder, name) in [(1, "b", "a"), (2, "ss", "c.txt")] {
+        let mut world = synced(
+            2,
+            &[
+                vec![(0, user(0, 0, 0, "b")), (0, user(0, 0, 0, "ss"))],
+                vec![(0, Step::Backup), (0, user(1, 0, 1, "c.txt"))],
+            ],
+        );
+        let id = node_named(&world, "c.txt");
+        let (a, b) = (
+            index_of(&world, 0, "c.txt").1,
+            index_of(&world, 1, "c.txt").1,
+        );
+        world
+            .run(
+                2,
+                &[
+                    (0, Step::Rewind),
+                    (0, delete(a)),
+                    (0, Step::Connect),
+                    (0, DELIVER),
+                    (1, user(3, b, parent, name)),
+                    (1, Step::Connect),
+                    (1, DELIVER),
+                    (1, Step::Answer(0)),
+                ],
+            )
+            .unwrap();
+        world.phase(3, &[]).unwrap();
+        let returned = world.space().node(&id).unwrap();
+        assert_eq!(returned.status, NodeStatus::Live as i32, "{parent}/{name}");
+        assert_eq!(returned.name, name);
+        let place = world.space().node(&returned.parent_id).unwrap();
+        assert_eq!(place.name, folder);
+    }
+}
+
+#[test]
+fn a_file_another_device_publishes_stays_when_its_folder_deleted_across_a_rewind_is_restored() {
+    let restore = [
+        (0, Step::Answer(1)),
+        (0, COMMIT),
+        (0, EFFECT),
+        (0, EFFECT),
+        (0, SCAN),
+    ];
+    let keep = [
+        (1, Step::Connect),
+        (1, DELIVER),
+        (1, Step::Answer(0)),
+        (1, COMMIT),
+        (1, COMMIT),
+        (1, DELIVER),
+    ];
+    for late in [false, true] {
+        let mut world = synced(
+            2,
+            &[
+                vec![(0, user(0, 0, 0, "b"))],
+                vec![(0, Step::Backup), (1, user(1, 0, 1, "c.txt"))],
+            ],
+        );
+        let folder = index_of(&world, 0, "b").1;
+        let rewind = [
+            (0, Step::Rewind),
+            (0, delete(folder)),
+            (0, Step::Connect),
+            (0, DELIVER),
+        ];
+        world.run(2, &rewind).unwrap();
+        match late {
+            false => world.run(2, &restore).and_then(|()| world.run(2, &keep)),
+            true => world
+                .run(2, &keep)
+                .and_then(|()| world.run(2, &restore[..1])),
+        }
+        .unwrap();
+        world.run(2, &[(0, DELIVER)]).unwrap();
+        world.phase(3, &[]).unwrap();
+        assert_eq!(
+            answered(&world),
+            ["recovery answer keeps", "recovery answer restores"]
+        );
+        assert_eq!(live(&world), ["b", "c.txt"], "{late}");
+    }
+}
+
+#[test]
+fn a_file_deleted_before_its_folder_across_a_rewind_stays_deleted_when_another_device_renames_it() {
+    let mut world = synced(
+        2,
+        &[
+            vec![(0, user(0, 0, 0, "b"))],
+            vec![(0, Step::Backup), (1, user(1, 0, 1, "c.txt"))],
+        ],
+    );
+    let (folder_id, file_id) = (node_named(&world, "b"), node_named(&world, "c.txt"));
+    let file = index_of(&world, 0, "c.txt").1;
+    let rewind = [
+        (0, Step::Rewind),
+        (0, delete(file)),
+        (0, Step::Connect),
+        (0, DELIVER),
+    ];
+    world.run(2, &rewind).unwrap();
+    let folder = index_of(&world, 0, "b").1;
+    let keep = [
+        (0, delete(folder)),
+        (0, SCAN),
+        (1, rename(index_of(&world, 1, "b").1, "ss")),
+        (1, Step::Connect),
+        (1, DELIVER),
+        (1, Step::Answer(0)),
+        (1, COMMIT),
+        (1, COMMIT),
+        (1, DELIVER),
+        (0, DELIVER),
+    ];
+    world.run(2, &keep).unwrap();
+    let mut deletes = Vec::new();
+    for step in [(0, SCAN), (0, EFFECT), (0, COMMIT), (0, DELIVER)]
+        .iter()
+        .cycle()
+        .take(16)
+    {
+        world.run(2, std::slice::from_ref(step)).unwrap();
+        let flight = world.devices[0].engine.commits.in_flight();
+        for op in flight.iter().flat_map(|flight| &flight.commit.ops) {
+            if let Some(op::Op::Delete(delete)) = &op.op
+                && !deletes.contains(delete)
+            {
+                deletes.push(delete.clone());
+            }
+        }
+    }
+    world.phase(3, &[]).unwrap();
+    let mut sent: Vec<(&str, usize)> = (deletes.iter())
+        .map(|delete| (delete.node_id.as_str(), delete.unseen.len()))
+        .collect();
+    sent.sort();
+    let mut expected = [(folder_id.as_str(), 0), (file_id.as_str(), 0)];
+    expected.sort();
+    assert_eq!(sent, expected);
+    let status = |id: &str| world.space().node(id).map(|node| (node.name, node.status));
+    assert_eq!(
+        status(&folder_id),
+        Some(("ss".into(), NodeStatus::Live as i32))
+    );
+    assert_eq!(
+        status(&file_id),
+        Some(("c.txt".into(), NodeStatus::Trashed as i32))
+    );
+}
+
+#[test]
+fn a_folder_deleted_across_a_rewind_waits_for_another_devices_rename_before_deleting_its_file() {
+    for edit in [false, true] {
+        let mut world = synced(
+            2,
+            &[
+                vec![(0, file("a"))],
+                vec![
+                    (0, Step::Backup),
+                    (0, user(0, 0, 0, "b")),
+                    (0, user(1, 0, 1, "c.txt")),
+                ],
+            ],
+        );
+        let folder = index_of(&world, 0, "b").1;
+        let mut rewind = vec![
+            (0, Step::Rewind),
+            (0, delete(folder)),
+            (0, Step::Connect),
+            (0, DELIVER),
+            (1, rename(index_of(&world, 1, "b").1, "ss")),
+        ];
+        if edit {
+            rewind.push((1, overwrite(index_of(&world, 1, "c.txt").1)));
+        }
+        world.run(1, &rewind).unwrap();
+        assert_eq!(
+            world.devices[0].engine.trees.state().unsent_deletes.len(),
+            2
+        );
+        let keep = [
+            (1, Step::Connect),
+            (1, DELIVER),
+            (1, Step::Answer(0)),
+            (1, Step::Answer(0)),
+            (1, COMMIT),
+            (1, COMMIT),
+            (1, DELIVER),
+        ];
+        world.run(2, &keep).unwrap();
+        let steps = [
+            (0, Step::Connect),
+            (0, DELIVER),
+            (0, EFFECT),
+            (0, SCAN),
+            (0, COMMIT),
+            (0, DELIVER),
+        ];
+        for step in steps.iter().cycle().take(18) {
+            world.run(3, std::slice::from_ref(step)).unwrap();
+            let disk = &world.devices[0].disk;
+            let written = (disk.visible().iter()).any(|ino| disk.entries()[ino].name == "c.txt");
+            assert!(edit || !written, "{step:?}");
+        }
+        world.phase(4, &[]).unwrap();
+        let expected: &[&str] = if edit {
+            &["a", "c.txt", "ss"]
+        } else {
+            &["a", "ss"]
+        };
+        assert_eq!(live(&world), expected, "{edit}");
+    }
+}
+
+#[test]
+fn a_file_deleted_with_its_folder_across_a_rewind_stays_deleted_when_another_device_renames_it() {
+    let mut world = synced(
+        2,
+        &[
+            vec![(0, user(0, 0, 0, "b"))],
+            vec![(0, Step::Backup), (1, user(1, 0, 1, "c.txt"))],
+        ],
+    );
+    let folder = index_of(&world, 0, "b").1;
+    world
+        .run(
+            2,
+            &[
+                (0, Step::Rewind),
+                (0, delete(folder)),
+                (0, Step::Connect),
+                (0, DELIVER),
+                (1, rename(index_of(&world, 1, "b").1, "ss")),
+                (1, Step::Connect),
+                (1, DELIVER),
+                (1, Step::Answer(0)),
+                (1, Step::Answer(0)),
+                (1, COMMIT),
+                (1, COMMIT),
+                (1, DELIVER),
+                (0, DELIVER),
+                (0, Step::Answer(0)),
+            ],
+        )
+        .unwrap();
+    world.phase(3, &[]).unwrap();
+    assert_eq!(
+        answered(&world),
+        [
+            "recovery answer deletes",
+            "recovery answer keeps",
+            "recovery answer publishes"
+        ]
+    );
+    assert_eq!(live(&world), ["ss"]);
+}
+
+#[test]
+fn a_folder_deleted_across_a_rewind_to_before_a_file_moved_into_it_stays_deleted_when_another_device_keeps_it()
+ {
+    for keep in [false, true] {
+        let mut world = synced(
+            2,
+            &[
+                vec![(0, file("c.txt"))],
+                vec![(0, Step::Backup), (0, user(0, 0, 0, "b"))],
+                vec![(0, user(3, 0, 1, "c.txt"))],
+            ],
+        );
+        let (folder_id, file_id) = (node_named(&world, "b"), node_named(&world, "c.txt"));
+        let folder = index_of(&world, 0, "b").1;
+        let rewind = [
+            (0, Step::Rewind),
+            (0, delete(folder)),
+            (0, Step::Connect),
+            (0, DELIVER),
+        ];
+        world.run(3, &rewind).unwrap();
+        if keep {
+            let keep = [
+                (1, Step::Connect),
+                (1, DELIVER),
+                (1, Step::Answer(0)),
+                (1, COMMIT),
+                (1, COMMIT),
+                (1, DELIVER),
+                (0, DELIVER),
+            ];
+            world.run(3, &keep).unwrap();
+        }
+        world.phase(4, &[]).unwrap();
+        let status = |id: &str| world.space().node(id).map(|node| node.status);
+        assert_eq!(status(&file_id), Some(NodeStatus::Trashed as i32));
+        let folder = keep.then_some(NodeStatus::Trashed as i32);
+        assert_eq!(status(&folder_id), folder);
+        assert!(live(&world).is_empty());
+    }
 }
 
 fn open_recovery(world: &World, d: usize) -> usize {
