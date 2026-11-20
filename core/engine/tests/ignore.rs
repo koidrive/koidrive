@@ -2851,6 +2851,7 @@ fn a_moved_out_file_whose_create_is_in_flight_keeps_its_record_until_the_result_
             }],
             ..Default::default()
         },
+        move_bases: BTreeMap::new(),
         deletes: BTreeMap::new(),
         restores: BTreeMap::new(),
         owners: BTreeMap::new(),
