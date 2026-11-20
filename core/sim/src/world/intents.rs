@@ -1436,16 +1436,21 @@ mod tests {
             parent: Some(parent),
             name: "n".into(),
         };
-        let kept = |parent: u128, write: i64, owed: bool, restored: bool| {
+        let kept = |created: u128, parent: u128, write: i64, owed: bool, restored: bool| {
             let mut intents = Intents::new(2);
             for nodes in &mut intents.nodes {
                 nodes.insert(10, [NodeId::from("f")].into());
                 nodes.insert(11, [NodeId::from("g")].into());
                 nodes.insert(1, [NodeId::from("n")].into());
+                nodes.insert(2, [NodeId::from("m")].into());
             }
-            for value in [place(10), content(1), Value::Live] {
+            for value in [place(created), content(1), Value::Live] {
                 let created = intents.record(1, 1, 1, "create", value);
                 intents.seen[0].insert(created, 1);
+            }
+            if created != 10 {
+                let other = intents.record(1, 1, 2, "create", place(10));
+                intents.seen[0].insert(other, 1);
             }
             let trashed = Value::Trashed {
                 subtree: vec![1],
@@ -1467,15 +1472,17 @@ mod tests {
             intents.answered(1, 6, 1, Value::Live, Answered::Owed, true);
             intents.check(&gone, |d| restored && d == 0, |_, _| false)
         };
-        assert_eq!(kept(10, 1, true, false), Ok(()));
-        for (parent, write, owed, restored, lost) in [
-            (11, 1, true, false, "node n of the publish"),
-            (10, 2, false, false, "node n of the publish"),
-            (10, 2, true, false, "write 2 of the publish"),
-            (10, 1, true, true, "write 1 of the publish"),
-            (10, 1, false, true, "node n of the publish"),
+        assert_eq!(kept(10, 10, 1, true, false), Ok(()));
+        for (created, parent, write, owed, restored, lost) in [
+            (10, 11, 1, true, false, "node n of the publish"),
+            (11, 10, 1, true, false, "node n of the publish"),
+            (10, 10, 2, false, false, "node n of the publish"),
+            (10, 10, 2, true, false, "write 2 of the publish"),
+            (10, 10, 1, true, true, "write 1 of the publish"),
+            (10, 10, 1, false, true, "node n of the publish"),
         ] {
-            let kept = kept(parent, write, owed, restored).expect_err("the delete did not see it");
+            let kept = (kept(created, parent, write, owed, restored))
+                .expect_err("the delete did not see it");
             assert!(kept.0.contains(lost), "{}", kept.0);
         }
     }
