@@ -1023,6 +1023,62 @@ fn a_file_missing_from_a_disk_the_store_was_older_than_is_downloaded_once_anothe
 }
 
 #[test]
+fn a_waiting_folder_removal_from_a_store_older_than_the_disk_records_no_delete() {
+    for bootstrap in [false, true] {
+        let folder = dir(ROOT, "b");
+        let mut trees = trees(
+            &[],
+            &[("b", folder.clone()), ("c", file("b", "c", 1))],
+            &[live("c", file(ROOT, "c", 1))],
+        );
+        let cause = RecoveryCause::of(RecoveryTrigger::StoreOlderThanDisk);
+        let (mut commits, mut ids) = recovered_after(&mut trees, 0, cause);
+        assert!(trees.waiting().contains_key(&"b".into()));
+        if bootstrap {
+            let none = BTreeMap::new();
+            trees.forget_lost(
+                vec![],
+                vec![],
+                vec![],
+                vec![],
+                vec![],
+                none,
+                &Default::default(),
+                0,
+                0,
+            );
+        }
+        let child = asked(&commits, RecoveryGroup::DeletedOnThisDevice, &["c"]);
+        assert!(commits.decide(&mut trees, &child.id, Answer::Restore));
+        assert_eq!(
+            ops(&mut commits, &mut trees, &mut ids),
+            [],
+            "bootstrap {bootstrap}"
+        );
+        assert!(
+            trees.synced().get(&"b".into()).is_none(),
+            "bootstrap {bootstrap}"
+        );
+        assert!(
+            trees.state().unsent_deletes.is_empty(),
+            "bootstrap {bootstrap}"
+        );
+        trees.set_remote("b".into(), server_version(folder, "", &[], 2));
+        trees.settle(commits.aliases());
+        assert_eq!(
+            ops(&mut commits, &mut trees, &mut ids),
+            [],
+            "bootstrap {bootstrap}"
+        );
+        let done = effects(&mut trees, &mut ids);
+        assert!(
+            done.iter().any(|(node, _)| node == "b"),
+            "bootstrap {bootstrap}: {done:?}"
+        );
+    }
+}
+
+#[test]
 fn a_file_the_rewind_removed_that_the_server_holds_at_its_place_under_another_id_is_linked() {
     let mut written = file(ROOT, "new", 2);
     written.content.as_mut().expect("a file").mtime_ns = 1_794_268_740_123_456_789;

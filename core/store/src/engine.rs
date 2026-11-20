@@ -125,7 +125,8 @@ impl Tx<'_> {
         }
 
         let mut stmt = self.0.prepare_cached(
-            "SELECT node_id, parent_id, name, kind, content, slot, released FROM waiting_updates",
+            "SELECT node_id, parent_id, name, kind, content, slot, released, store_behind_disk
+             FROM waiting_updates",
         )?;
         let mut rows = stmt.query([])?;
         while let Some(row) = next_row!(rows, abandoned) {
@@ -138,10 +139,15 @@ impl Tx<'_> {
                     content: content_key(row.get(4)?)?,
                 }),
             };
-            let origin = match (row.get::<_, Option<u64>>(5)?, row.get::<_, bool>(6)?) {
-                (Some(slot), _) => Origin::Commit(slot),
-                (None, true) => Origin::Released,
-                (None, false) => Origin::Other,
+            let origin = match (
+                row.get::<_, Option<u64>>(5)?,
+                row.get::<_, bool>(6)?,
+                row.get::<_, bool>(7)?,
+            ) {
+                (Some(slot), _, _) => Origin::Commit(slot),
+                (None, true, _) => Origin::Released,
+                (None, false, true) => Origin::StoreBehindDisk,
+                (None, false, false) => Origin::Other,
             };
             state.trees.waiting.insert(
                 NodeId::from(row.get::<_, String>(0)?),
@@ -888,12 +894,13 @@ impl Tx<'_> {
         self.write_node_map(
             waiting,
             "DELETE FROM waiting_updates WHERE node_id = ?1",
-            "INSERT OR REPLACE INTO waiting_updates (node_id, parent_id, name, kind, content, slot, released)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            "INSERT OR REPLACE INTO waiting_updates
+                 (node_id, parent_id, name, kind, content, slot, released, store_behind_disk)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             |put, node, Waiting { shape, origin }| {
                 let slot = match origin {
                     Origin::Commit(slot) => Some(*slot),
-                    Origin::Other | Origin::Released => None,
+                    Origin::Other | Origin::Released | Origin::StoreBehindDisk => None,
                 };
                 put.execute(params![
                     node,
@@ -909,6 +916,7 @@ impl Tx<'_> {
                         .map(key_bytes),
                     slot,
                     *origin == Origin::Released,
+                    *origin == Origin::StoreBehindDisk,
                 ])
             },
         )?;

@@ -943,8 +943,12 @@ impl Commits {
             .filter(|(_, shape)| shape.is_none() && !store_behind_disk)
             .filter_map(|(id, _)| trees.unsent_delete(id).map(|seen| (id.clone(), seen)))
             .collect();
+        let origin = match store_behind_disk {
+            true => Origin::StoreBehindDisk,
+            false => Origin::Other,
+        };
         for (id, shape) in update_synced(trees, agreed) {
-            trees.wait(id, shape, Origin::Other);
+            trees.wait(id, shape, origin);
         }
         for (id, seen) in unsent {
             trees.record_unsent_delete(id, seen);
@@ -3142,7 +3146,9 @@ impl Commits {
             .chain(agreed.iter().cloned())
             .collect();
         let unsent: Vec<(NodeId, Shape)> = (waited.iter())
-            .filter(|(_, waiting)| waiting.shape.is_none())
+            .filter(|(_, waiting)| {
+                waiting.shape.is_none() && waiting.origin != Origin::StoreBehindDisk
+            })
             .filter_map(|(id, _)| trees.unsent_delete(id).map(|seen| (id.clone(), seen)))
             .collect();
         let mut still = BTreeSet::new();

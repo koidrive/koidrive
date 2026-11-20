@@ -9,9 +9,16 @@ upgrade_case!(store_behind_disk, |store| {
                 policy: None,
                 store_behind_disk: true,
             };
+            let removal = koidrive_engine::classify::Waiting {
+                shape: None,
+                origin: koidrive_engine::classify::Origin::StoreBehindDisk,
+            };
             state.commits.halted = Some(halt);
+            state.trees.waiting.insert("n".into(), removal.clone());
             tx.set_engine_state(&state)?;
-            assert_eq!(tx.engine_state()?.commits.halted, Some(halt));
+            let stored = tx.engine_state()?;
+            assert_eq!(stored.commits.halted, Some(halt));
+            assert_eq!(stored.trees.waiting.get(&"n".into()), Some(&removal));
             Ok::<_, koidrive_store::Error>(())
         })
         .unwrap();
