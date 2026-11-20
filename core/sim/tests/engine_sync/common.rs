@@ -2948,7 +2948,11 @@ fn run_ignoring_answering_after(
         .filter_map(|(id, reason)| {
             let target = commits.aliases().get(id)?;
             let along = match (reason, effects.blocked().get(id)) {
-                (Stuck::MergedInto(into), _) if into == target => &[][..],
+                (Stuck::MergedInto(into), _)
+                    if into == target || names_the_live_holder(&device.trees, id, into) =>
+                {
+                    &[][..]
+                }
                 (
                     Stuck::Parked,
                     Some(Effect::RemoveDir {
@@ -3170,6 +3174,59 @@ fn observed_merge_residue(device: &Device, commits: &Commits) -> MergeResidue {
             ))
     })
     .unwrap_or_else(|never: std::convert::Infallible| match never {})
+}
+
+fn names_the_live_holder(trees: &Trees, folder: &NodeId, into: &NodeId) -> bool {
+    trees.local().get(folder).is_some_and(|local| {
+        trees.remote().live(into).is_some_and(|live| {
+            live.parent == local.shape.parent && name_key(&live.name) == name_key(&local.shape.name)
+        })
+    })
+}
+
+#[test]
+fn a_merged_folder_is_held_only_by_the_live_entry_at_its_name_key() {
+    let root = NodeId::from("root");
+    let shape = |name: &str| Shape {
+        parent: root.clone(),
+        name: name.into(),
+        kind: Kind::Dir,
+        content: None,
+    };
+    let remote = |shape| RemoteNode {
+        shape,
+        trashed: false,
+        content_rev: 1,
+        meta_rev: 1,
+        meta_edit_rev: 1,
+        trash_group: String::new(),
+        version_id: String::new(),
+        made_over: Vec::new(),
+        edit_rev: 1,
+        pending_for: None,
+        pending_by: None,
+        chunks: Box::default(),
+    };
+    let mut trees = Trees::new(root.clone());
+    let local = LocalNode {
+        left_out_when_placed: false,
+        content_from_server: false,
+        shape: shape("ss"),
+        identity: FileIdentity {
+            ino: 1,
+            birth_ns: Some(0),
+            handle: None,
+        },
+        parked: false,
+        chunks: Box::default(),
+    };
+    trees.set_local("merged".into(), local);
+    trees.set_remote("holder".into(), remote(shape("SS")));
+    trees.set_remote("other".into(), remote(shape("b")));
+    trees.settle(&Default::default());
+    let merged = NodeId::from("merged");
+    assert!(names_the_live_holder(&trees, &merged, &"holder".into()));
+    assert!(!names_the_live_holder(&trees, &merged, &"other".into()));
 }
 
 fn held_on_disk(
