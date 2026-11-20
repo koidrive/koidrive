@@ -1202,3 +1202,37 @@ fn a_word_save_through_excluded_temp_files_keeps_one_document() {
         assert_eq!(report, before, "rescan {rescan}");
     }
 }
+
+#[test]
+fn a_file_moved_to_an_excluded_name_keeps_its_node_when_a_new_file_takes_its_old_name() {
+    clock::freeze();
+    let mut remote = Remote::new();
+    let (site, mut a) = linked(&mut remote, "a");
+    let original = site.root.join("report.docx");
+    let archive = site.root.join("archived.docx");
+    a.create(
+        &mut remote,
+        &site.root.join(".koiignore"),
+        b"archived.docx\n",
+    );
+    a.create(&mut remote, &original, b"version one");
+    a.rest(&mut remote);
+    let before = live_id(&server_nodes(&remote), "report.docx");
+    let node = NodeId::from(&before);
+    fs::rename(&original, &archive).unwrap();
+    a.rescan();
+    a.scan_until(|a| a.folder.engine.path_of(&node).as_deref() == Some(Path::new("archived.docx")));
+    a.rest(&mut remote);
+    assert_eq!(server_bytes(&remote, &before), b"version one");
+
+    fs::write(&original, b"independent new file").unwrap();
+    a.rescan();
+    a.rest(&mut remote);
+    assert_eq!(fs::read(&archive).unwrap(), b"version one");
+    assert_eq!(
+        server_bytes(&remote, &before),
+        b"version one",
+        "{:?}",
+        server_nodes(&remote)
+    );
+}

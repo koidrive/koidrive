@@ -1365,7 +1365,9 @@ impl Engine {
         let mut saves: Vec<Save> = (self.renamed_away.iter())
             .filter_map(|(id, (parent, name, renamed))| {
                 let excluded = (self.path_of(id)).is_some_and(|path| {
-                    names(&path).is_some_and(|names| self.trees.ignores(&names, Kind::File))
+                    path.extension()
+                        .is_some_and(|extension| extension.eq_ignore_ascii_case("tmp"))
+                        && names(&path).is_some_and(|names| self.trees.ignores(&names, Kind::File))
                 });
                 let removed = match excluded {
                     true => *renamed,
