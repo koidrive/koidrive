@@ -1233,6 +1233,10 @@ impl Trees {
         self.write_out_journal(&id);
         self.journal.r_holds(&id);
         self.take_remote_intents(&id, &mut node);
+        if (self.unsent_deletes.get(&id)).is_some_and(|seen| node.trashed || !node.shape.same(seen))
+        {
+            self.unsent_deletes.remove(&id);
+        }
         let made_here = made != Made::Elsewhere;
         let edit = matches!(made, Made::Edit | Made::Answer);
         if edit {
@@ -6744,15 +6748,15 @@ impl Trees {
             .collect();
         returned.sort();
         for (_, id) in returned {
-            let (Some(seen), Some(node)) = (self.unsent_deletes.get(&id), self.r.get(&id)) else {
+            let Some(node) = self
+                .r
+                .get(&id)
+                .filter(|_| self.unsent_deletes.contains_key(&id))
+            else {
                 continue;
             };
             let shape = node.shape.clone();
-            if node.trashed
-                || !shape.same(seen)
-                || self.l.get(&id).is_some()
-                || self.s.get(&id).is_some()
-            {
+            if self.l.get(&id).is_some() || self.s.get(&id).is_some() {
                 self.unsent_deletes.remove(&id);
                 continue;
             }
