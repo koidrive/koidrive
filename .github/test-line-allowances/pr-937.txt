@@ -1,4 +1,4 @@
-195
+218
 # A delete made offline around a server loss must stay deleted when another device's Keep or resend brings the node back,
 # whether R learns of it from the log, a listing or a restart, and must give way where that device moved the node, changed
 # its content, or the user answered Restore. Where another device renamed the deleted folder, the file's record waits for
@@ -7,3 +7,5 @@
 # with one of its rules removed; the store tests cover the add-only table on a fresh store and on an upgrade.
 # A folder deleted across a rewind to before a file moved into it is recorded only once S drops it, also when that removal
 # waited for the file to leave first, so another device's Keep of the folder does not bring it back.
+# A record ends as soon as R learns that the server trashed or reshaped the node, so a trash and a restore from it that
+# reach the device before one settle download the node instead of deleting it again.

@@ -955,6 +955,24 @@ fn publishing_a_file_moved_out_of_a_folder_restored_in_the_same_pass_sends_its_c
 }
 
 #[test]
+fn a_file_deleted_across_a_rewind_that_the_server_trashes_and_restores_before_a_settle_is_downloaded()
+ {
+    let deleted = file(ROOT, "c", 1);
+    let mut trees = trees(&[("c", deleted.clone())], &[("c", deleted.clone())], &[]);
+    trees.remove_local(&"c".into());
+    let (mut commits, mut ids) = recovered(&mut trees, 0);
+    assert_eq!(trees.state().unsent_deletes.len(), 1);
+    let mut trashed = server_version(deleted.clone(), "", &[], 2);
+    trashed.trashed = true;
+    trees.set_remote("c".into(), trashed);
+    trees.set_remote("c".into(), server_version(deleted, "", &[], 3));
+    trees.settle(commits.aliases());
+    assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
+    let done = effects(&mut trees, &mut ids);
+    assert!(matches!(&done[..], [(node, _)] if node == "c"), "{done:?}");
+}
+
+#[test]
 fn a_file_the_rewind_removed_that_the_server_holds_at_its_place_under_another_id_is_linked() {
     let mut written = file(ROOT, "new", 2);
     written.content.as_mut().expect("a file").mtime_ns = 1_794_268_740_123_456_789;
