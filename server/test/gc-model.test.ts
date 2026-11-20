@@ -725,6 +725,7 @@ async function check(world: World): Promise<void> {
 
 async function quiesce(world: World): Promise<void> {
   for (const flight of r2.flights.splice(0)) land(flight);
+  await swapCompaction(world);
   for (let pass = 0; pass < 3; pass++) {
     await act(world, { t: "clock", ms: 31 * DAY });
     for (let runs = 0; ; runs++) {
@@ -758,6 +759,8 @@ const commit = fc.record({
 const collect = fc.record({ t: fc.constant("gc" as const), retire: fc.constantFrom<Retirement>("ok", "ok", "refused", "lostBefore", "lostAfter", "oldCode"), del: outcome });
 const compact = fc.record({ t: fc.constant("compact" as const), phase: fc.constantFrom("start" as const, "swap" as const), pack: index });
 const drop = fc.record({ t: fc.constant("drop" as const), version: index });
+const crash = fc.constant({ t: "crash" as const });
+const rewind = fc.record({ t: fc.constant("rewind" as const), point: index, from: fc.constantFrom("newest" as const, "oldest" as const, "drop" as const) });
 const clock = fc.record({ t: fc.constant("clock" as const), ms: fc.constantFrom(MINUTE, MINUTE, MINUTE, 30 * MINUTE, 2 * HOUR, DAY, 7 * DAY, 31 * DAY) });
 const pausePoint = fc.constantFrom<Pause>("head", "put", "list", "retire", "retirePacks", "delete");
 const simple: fc.Arbitrary<Simple> = fc.oneof(
@@ -772,8 +775,8 @@ const simple: fc.Arbitrary<Simple> = fc.oneof(
   { weight: 4, arbitrary: collect },
   { weight: 2, arbitrary: fc.record({ t: fc.constant("land" as const), flight: index }) },
   { weight: 2, arbitrary: fc.constant({ t: "export" as const }) },
-  { weight: 1, arbitrary: fc.constant({ t: "crash" as const }) },
-  { weight: 3, arbitrary: fc.record({ t: fc.constant("rewind" as const), point: index, from: fc.constantFrom("newest" as const, "oldest" as const, "drop" as const) }) },
+  { weight: 1, arbitrary: crash },
+  { weight: 3, arbitrary: rewind },
   { weight: 2, arbitrary: fc.record({ t: fc.constant("targets" as const), chunk: fc.nat({ max: TEXTS.length - 1 }) }) },
   { weight: 2, arbitrary: fc.record({ t: fc.constant("download" as const), target: index }) },
   { weight: 4, arbitrary: clock },
@@ -797,7 +800,7 @@ const step: fc.Arbitrary<Step> = fc.oneof(
         t: fc.constant("race" as const),
         outer: fc.oneof(commit, collect, put),
         at: pausePoint,
-        inner: fc.array(fc.oneof(prepare, put, pack, commit, collect, drop, clock, compact), { minLength: 1, maxLength: 2 }),
+        inner: fc.array(fc.oneof(prepare, put, pack, commit, collect, drop, clock, compact, crash, rewind), { minLength: 1, maxLength: 2 }),
         innerAt: pausePoint,
       },
       { requiredKeys: ["t", "outer", "at", "inner"] },
@@ -1101,6 +1104,14 @@ const scenarios: Step[][] = [
     gc,
     minute,
     { t: "rewind", point: 3 },
+  ],
+  [
+    minute,
+    { t: "prepare", chunks: [0, 1] },
+    { t: "pack", plans: [0, 1], outcome: "ok" },
+    { t: "commit", file: 0, receipts: [0], extra: [2], refused: true },
+    { t: "clock", ms: 6 * DAY - HOUR },
+    { t: "race", outer: { t: "commit", file: 0, receipts: [1], extra: [], refused: true }, at: "head", inner: [{ t: "clock", ms: 2 * DAY }, { t: "prepare", chunks: [1] }, gc] },
   ],
 ];
 

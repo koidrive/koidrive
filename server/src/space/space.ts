@@ -1166,7 +1166,7 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
           if (await verifyChunkGrant(this.spaceKey, "receipt", object, receipt.size, receipt.token, nowMs)) valid = true;
           if (first) continue;
           const v2 = await verifyPackedReceipt(this.spaceKey, object, receipt.size, receipt.token, nowMs);
-          if (v2 && uuidv7Ms(v2.at.packId) > nowMs - PACK_RECEIPT_AGE_MS && this.packTakesLocations(v2.at)) first = v2;
+          if (v2 && this.packTakesLocations(v2.at, nowMs)) first = v2;
         }
         if (valid) receipted.push(object);
         else if (first?.expired) expired.push({ object, size: chunk.size, at: first.at });
@@ -1186,20 +1186,22 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
         located.push(...rows.filter(({ at }) => at.packSize === head?.size));
       }
       this.recordConfirmed(checked, nowMs);
-      this.recordLocations(located, nowMs);
+      this.recordLocations(located);
       return receipted;
     }
 
-    private packTakesLocations(at: PackLocation): boolean {
+    private packTakesLocations(at: PackLocation, nowMs: number): boolean {
+      if (uuidv7Ms(at.packId) <= nowMs - PACK_RECEIPT_AGE_MS) return false;
       const pack = this.sql.exec("SELECT state, size FROM packs WHERE pack_id = ?", at.packId).toArray()[0];
       return !pack || (pack.state === PackState.LIVE && pack.size === at.packSize);
     }
 
-    private recordLocations(located: readonly Located[], nowMs: number): void {
+    private recordLocations(located: readonly Located[]): void {
       if (located.length === 0) return;
+      const nowMs = this.clock();
       this.db.transactionSync(() => {
         for (const { object, size, at } of located) {
-          if (!this.packTakesLocations(at)) continue;
+          if (!this.packTakesLocations(at, nowMs)) continue;
           const moved = this.sql.exec(
             `UPDATE chunks SET pack_id = ?, pack_offset = ?, hold_until_ms = MAX(hold_until_ms, ?)
              WHERE hash = ? AND state = ? AND incarnation = ? AND pack_id IS NULL AND head_checked = 0`,
