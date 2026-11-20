@@ -255,7 +255,7 @@ mod tests {
         let (at_socket, anywhere) = watcher.join().unwrap();
         let seen = sightings.load(Ordering::Relaxed);
         assert!(
-            seen >= 20,
+            binds >= 200 && seen >= 20,
             "the watcher saw the socket {seen} times in {binds} binds"
         );
         assert_eq!(at_socket, BTreeSet::from([0o600]));
