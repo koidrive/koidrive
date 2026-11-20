@@ -243,6 +243,20 @@ while True:
         with patch.dict(self.environment, CARGO_TARGET_AARCH64_APPLE_DARWIN_RUNNER="qemu"):
             self.refused("CARGO_TARGET_AARCH64_APPLE_DARWIN_RUNNER is set")
 
+    def test_a_build_target_variable_is_refused(self):
+        with patch.dict(self.environment, CARGO_BUILD_TARGET="x86_64-unknown-linux-gnu"):
+            self.refused("CARGO_BUILD_TARGET is set")
+
+    def test_a_build_target_is_refused(self):
+        with (self.root / ".cargo/config.toml").open("a") as config:
+            config.write("[build]\ntarget = 'x86_64-unknown-linux-gnu'\n")
+        self.refused(r"config\.toml sets build\.target")
+
+    def test_an_include_is_refused(self):
+        config = self.root / ".cargo/config.toml"
+        config.write_text("include = ['env.toml']\n" + config.read_text())
+        self.refused(r"config\.toml includes other configs")
+
     def test_an_env_table_is_refused(self):
         with (self.root / ".cargo/config.toml").open("a") as config:
             config.write("[env]\nPROPTEST_RNG_SEED = '42'\n")

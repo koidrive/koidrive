@@ -93,8 +93,9 @@ def parse_args(argv=None):
 
 def unsupported_cargo_config(root, environment, runner):
     home = Path(environment.get("CARGO_HOME", Path.home() / ".cargo")).resolve()
-    if runner in environment:
-        return f"{runner} is set"
+    for name in (runner, "CARGO_BUILD_TARGET"):
+        if name in environment:
+            return f"{name} is set"
     read = []
     for directory, cargo in ((directory, directory / ".cargo") for directory in (root, *root.parents)):
         if cargo.resolve() == home:
@@ -113,6 +114,10 @@ def unsupported_cargo_config(root, environment, runner):
         config = tomllib.loads(path.read_text())
         if "env" in config:
             return f"{path} sets [env]"
+        if "include" in config:
+            return f"{path} includes other configs"
+        if "target" in config.get("build", {}):
+            return f"{path} sets build.target"
         if any("runner" in table for table in config.get("target", {}).values() if isinstance(table, dict)):
             return f"{path} sets a target runner"
     return None
@@ -124,7 +129,7 @@ def capture_tests(args, environment):
     unsupported = unsupported_cargo_config(args.root, environment, runner)
     if unsupported:
         raise RuntimeError(f"Parallel and Worker repetitions support only a Cargo config at the repository root "
-                           f"without [env] or a target runner, plus such a config in CARGO_HOME, but {unsupported}; "
+                           f"without [env], include, build.target or a target runner, plus such a config in CARGO_HOME, but {unsupported}; "
                            "run the repetitions serially with Cargo instead")
     command = ["cargo", "test", "--locked", "-p", args.crate, *(["--features", args.features] if args.features else []),
                *(["--test", args.test] if args.test else ["--tests"])]
