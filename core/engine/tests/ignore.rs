@@ -3250,3 +3250,28 @@ fn a_new_folder_whose_synced_child_is_parked_is_not_held_back_by_its_server_path
     });
     assert_eq!(ops(&mut trees), [made]);
 }
+
+#[test]
+fn a_new_file_in_a_reverted_folder_the_server_keeps_at_an_excluded_path_is_left_out() {
+    for synced_at in ["blocked", "a"] {
+        let mut trees = trees(&[
+            (
+                "a",
+                Some(dir(ROOT, "c")),
+                Some(dir(ROOT, synced_at)),
+                Some(dir(ROOT, "blocked")),
+            ),
+            ("f", Some(file("a", "f", 1)), None, None),
+        ]);
+        trees.revert("a".into());
+        trees.set_rules(&AT_ROOT, Source::Koiignore, rules("/blocked/\n"));
+        trees.settle(&Default::default());
+        assert!(trees.excluded(&"f".into()), "{synced_at}");
+        assert_eq!(ops(&mut trees), [], "{synced_at}");
+        assert_eq!(nodes(&effects(&mut trees)), ["a"], "{synced_at}");
+        let a = &trees.local().get(&"a".into()).unwrap().shape;
+        assert_eq!(a, &dir(ROOT, "blocked"), "{synced_at}");
+        assert!(trees.excluded(&"f".into()), "{synced_at}");
+        assert_eq!(ops(&mut trees), [], "{synced_at}");
+    }
+}

@@ -4888,10 +4888,8 @@ impl Trees {
                 return None;
             }
             let folder = &self.l.get(current)?.shape;
-            let placed = self.acknowledged(current).or_else(|| self.s.live(current));
-            let moved = placed.is_some_and(|synced| !folder.same_position(synced));
             let unlinked = self.kept_folders.contains(current);
-            if !moved
+            if !self.moves_on_the_server(current)
                 && !unlinked
                 && let Some(apart) = self.held_apart_from_l(current)
             {
@@ -4909,6 +4907,13 @@ impl Trees {
             current = &folder.parent;
         }
         None
+    }
+
+    fn moves_on_the_server(&self, id: &NodeId) -> bool {
+        let placed = self.acknowledged(id).or_else(|| self.s.live(id));
+        !self.reverted.contains(id)
+            && (self.l.get(id).zip(placed))
+                .is_some_and(|(local, placed)| !local.shape.same_position(placed))
     }
 
     pub(crate) fn left_out_on_the_server(&self, id: &NodeId) -> bool {
