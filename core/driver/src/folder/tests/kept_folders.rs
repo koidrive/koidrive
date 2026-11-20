@@ -2159,7 +2159,9 @@ fn a_rules_file_edited_while_its_emptied_kept_folder_waits_to_go_survives_a_purg
         let edited = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let edits = edited.clone();
         b.folder.disk.set_hook(Box::new(move |cut| {
-            if cut == crate::disk::Cut::AfterPlan && !edits.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            if cut == crate::disk::Cut::AfterPlan
+                && !edits.swap(true, std::sync::atomic::Ordering::SeqCst)
+            {
                 fs::write(&target, b".env\n*.log\n").unwrap();
             }
         }));
