@@ -11,7 +11,7 @@ upgrade_case!(store_behind_disk, |store| {
             };
             let removal = koidrive_engine::classify::Waiting {
                 shape: None,
-                origin: koidrive_engine::classify::Origin::StoreBehindDisk,
+                origin: koidrive_engine::classify::Origin::Unproven,
             };
             state.commits.halted = Some(halt);
             state.trees.waiting.insert("n".into(), removal.clone());

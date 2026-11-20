@@ -944,7 +944,7 @@ impl Commits {
             .filter_map(|(id, _)| trees.unsent_delete(id).map(|seen| (id.clone(), seen)))
             .collect();
         let origin = match store_behind_disk {
-            true => Origin::StoreBehindDisk,
+            true => Origin::Unproven,
             false => Origin::Other,
         };
         for (id, shape) in update_synced(trees, agreed) {
@@ -1146,7 +1146,8 @@ impl Commits {
                     })
                     .collect();
                 for (id, shape) in update_synced(trees, updates) {
-                    trees.wait(id, shape, Origin::Other);
+                    let origin = trees.requeued_origin(&id);
+                    trees.wait(id, shape, origin);
                 }
                 for id in question.holds() {
                     trees.release_missing(id);
@@ -1164,7 +1165,8 @@ impl Commits {
                 }
                 let updates = restored.into_iter().map(|id| (id, None)).collect();
                 for (id, shape) in update_synced(trees, updates) {
-                    trees.wait(id, shape, Origin::Other);
+                    let origin = trees.requeued_origin(&id);
+                    trees.wait(id, shape, origin);
                 }
                 open = guard::deletions(trees, trees.missing());
             }
@@ -3146,9 +3148,7 @@ impl Commits {
             .chain(agreed.iter().cloned())
             .collect();
         let unsent: Vec<(NodeId, Shape)> = (waited.iter())
-            .filter(|(_, waiting)| {
-                waiting.shape.is_none() && waiting.origin != Origin::StoreBehindDisk
-            })
+            .filter(|(_, waiting)| waiting.shape.is_none() && waiting.origin != Origin::Unproven)
             .filter_map(|(id, _)| trees.unsent_delete(id).map(|seen| (id.clone(), seen)))
             .collect();
         let mut still = BTreeSet::new();
@@ -6885,5 +6885,83 @@ mod compensation_tests {
         let scratch = Scratch::new(&trees);
         let answer = wants[0].as_ref().unwrap();
         assert!((scratch.compensation(answer, &answers, &trees, &wants, &moving)).is_none());
+    }
+}
+
+#[cfg(test)]
+mod unproven_removal_tests {
+    use super::*;
+    use crate::tree::{FileIdentity, LocalNode, RemoteNode};
+
+    fn shape(parent: &str, name: &str, kind: Kind) -> Shape {
+        Shape {
+            parent: parent.into(),
+            name: name.to_owned(),
+            kind,
+            content: None,
+        }
+    }
+
+    fn remote(shape: Shape) -> RemoteNode {
+        RemoteNode {
+            shape,
+            trashed: false,
+            content_rev: 1,
+            meta_rev: 1,
+            meta_edit_rev: 1,
+            trash_group: String::new(),
+            version_id: String::new(),
+            made_over: Vec::new(),
+            edit_rev: 1,
+            pending_for: None,
+            pending_by: None,
+            chunks: Box::default(),
+        }
+    }
+
+    #[test]
+    fn a_mass_deletion_answer_that_requeues_an_unproven_removal_keeps_it_unproven() {
+        for answer in [Answer::Delete, Answer::Restore] {
+            let mut trees = Trees::new("root");
+            let (b, c) = (shape("root", "b", Kind::Dir), shape("b", "c", Kind::Dir));
+            trees.set_remote("p".into(), remote(shape("root", "p", Kind::Dir)));
+            trees.set_remote("b".into(), remote(shape("p", "b", Kind::Dir)));
+            trees.set_remote("c".into(), remote(c.clone()));
+            for (ino, (id, shape)) in [("b", b), ("c", c)].into_iter().enumerate() {
+                let identity = FileIdentity {
+                    ino: ino as u128 + 1,
+                    birth_ns: Some(0),
+                    handle: None,
+                };
+                let node = LocalNode {
+                    shape: shape.clone(),
+                    identity,
+                    parked: false,
+                    left_out_when_placed: false,
+                    content_from_server: true,
+                    chunks: Box::default(),
+                };
+                trees.set_local(id.into(), node);
+                trees.set_synced(id.into(), Some(shape));
+            }
+            trees.miss_local(&"b".into());
+            let mut commits = Commits::default();
+            let mut ids = IdGen::new(1);
+            commits.ask_missing(&mut trees, &mut ids, 1);
+            let question = (commits.questions.iter())
+                .find(|question| question.kind == QuestionKind::AmbiguousDisappearance)
+                .expect("asked")
+                .id
+                .clone();
+            trees.wait("b".into(), None, Origin::Unproven);
+            assert!(commits.decide(&mut trees, &question, answer));
+            commits.ask_missing(&mut trees, &mut ids, 1);
+            let waiting = trees.waiting().get(&"b".into());
+            assert_eq!(
+                waiting.map(|w| w.origin),
+                Some(Origin::Unproven),
+                "{answer:?}"
+            );
+        }
     }
 }

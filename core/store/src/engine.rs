@@ -125,7 +125,7 @@ impl Tx<'_> {
         }
 
         let mut stmt = self.0.prepare_cached(
-            "SELECT node_id, parent_id, name, kind, content, slot, released, store_behind_disk
+            "SELECT node_id, parent_id, name, kind, content, slot, released, unproven
              FROM waiting_updates",
         )?;
         let mut rows = stmt.query([])?;
@@ -146,7 +146,7 @@ impl Tx<'_> {
             ) {
                 (Some(slot), _, _) => Origin::Commit(slot),
                 (None, true, _) => Origin::Released,
-                (None, false, true) => Origin::StoreBehindDisk,
+                (None, false, true) => Origin::Unproven,
                 (None, false, false) => Origin::Other,
             };
             state.trees.waiting.insert(
@@ -895,12 +895,12 @@ impl Tx<'_> {
             waiting,
             "DELETE FROM waiting_updates WHERE node_id = ?1",
             "INSERT OR REPLACE INTO waiting_updates
-                 (node_id, parent_id, name, kind, content, slot, released, store_behind_disk)
+                 (node_id, parent_id, name, kind, content, slot, released, unproven)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             |put, node, Waiting { shape, origin }| {
                 let slot = match origin {
                     Origin::Commit(slot) => Some(*slot),
-                    Origin::Other | Origin::Released | Origin::StoreBehindDisk => None,
+                    Origin::Other | Origin::Released | Origin::Unproven => None,
                 };
                 put.execute(params![
                     node,
@@ -916,7 +916,7 @@ impl Tx<'_> {
                         .map(key_bytes),
                     slot,
                     *origin == Origin::Released,
-                    *origin == Origin::StoreBehindDisk,
+                    *origin == Origin::Unproven,
                 ])
             },
         )?;

@@ -92,9 +92,10 @@ pub enum Origin {
     /// No commit: a Discard, a restore the mass-delete guard made, an effect, an update both sides
     /// agree on, or loss recovery.
     Other,
-    /// Recovery while the store was older than the disk: a removal that proves no delete of this
-    /// device's user, so it records no unsent delete.
-    StoreBehindDisk,
+    /// A removal that proves no delete of this device's user, so it records no unsent delete: one
+    /// that recovery made while the store was older than the disk, or one a release that kept no
+    /// such records left waiting.
+    Unproven,
     /// The shape S held for a node it gave up together with an excluded folder (design section
     /// 5.10). It stands in for S until S can hold the node again.
     Released,
@@ -5288,6 +5289,13 @@ impl Trees {
         self.waiting.take_all()
     }
 
+    pub(crate) fn requeued_origin(&self, id: &NodeId) -> Origin {
+        match self.waiting.get(id).map(|waiting| waiting.origin) {
+            Some(Origin::Unproven) => Origin::Unproven,
+            _ => Origin::Other,
+        }
+    }
+
     pub(crate) fn wait(&mut self, id: NodeId, shape: Option<Shape>, origin: Origin) {
         self.mark(&id);
         self.waiting.insert(id, Waiting { shape, origin });
@@ -6257,10 +6265,7 @@ impl Trees {
                 self.forgotten_shapes.insert(id.clone(), shape);
             }
             if waits {
-                let origin = match self.waiting.get(&id).map(|w| w.origin) {
-                    Some(Origin::StoreBehindDisk) => Origin::StoreBehindDisk,
-                    _ => Origin::Other,
-                };
+                let origin = self.requeued_origin(&id);
                 self.wait(id, None, origin);
             } else {
                 self.remember_lost_shape(&id);
@@ -6470,9 +6475,10 @@ impl Trees {
     }
 
     pub(crate) fn unsent_delete(&self, id: &NodeId) -> Option<Shape> {
-        let behind = (self.waiting.get(id)).is_some_and(|w| w.origin == Origin::StoreBehindDisk);
-        let deleted =
-            self.l.get(id).is_none() && self.r.get(id).is_none() && !self.unobserved(id) && !behind;
+        let deleted = self.l.get(id).is_none()
+            && self.r.get(id).is_none()
+            && !self.unobserved(id)
+            && self.requeued_origin(id) != Origin::Unproven;
         self.s.live(id).filter(|_| deleted).cloned()
     }
 

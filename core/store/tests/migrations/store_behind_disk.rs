@@ -34,15 +34,20 @@ fn a_recovery_stored_before_it_kept_the_store_behind_the_disk_opens_as_one_that_
 }
 
 #[test]
-fn a_waiting_removal_stored_before_it_kept_the_store_behind_the_disk_opens_as_it_was() {
+fn a_removal_stored_waiting_before_its_provenance_was_kept_opens_as_unproven() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("state.db");
     let mut state = engine_state();
-    let removal = |origin| Waiting {
-        shape: None,
-        origin,
+    let moved = EngineShape {
+        parent: "root".into(),
+        name: "report.txt".into(),
+        kind: Kind::File,
+        content: None,
     };
-    state.trees.waiting.insert("n".into(), removal(Origin::Other));
+    let update = |shape, origin| Waiting { shape, origin };
+    state.trees.waiting.insert("n".into(), update(None, Origin::Other));
+    state.trees.waiting.insert("m".into(), update(None, Origin::Commit(3)));
+    state.trees.waiting.insert("o".into(), update(Some(moved), Origin::Other));
     Store::open(&path)
         .unwrap()
         .transaction(|tx| tx.set_engine_state(&state))
@@ -50,9 +55,10 @@ fn a_waiting_removal_stored_before_it_kept_the_store_behind_the_disk_opens_as_it
     store_before(&path, "store_behind_disk");
 
     let mut store = Store::open(&path).unwrap();
+    state.trees.waiting.insert("n".into(), update(None, Origin::Unproven));
     assert_eq!(store.transaction(|tx| tx.engine_state()).unwrap(), state);
     let before = state.clone();
-    state.trees.waiting.insert("n".into(), removal(Origin::StoreBehindDisk));
+    state.trees.waiting.insert("n".into(), update(None, Origin::Other));
     store
         .transaction(|tx| tx.update_engine_state(&before, &state))
         .unwrap();
