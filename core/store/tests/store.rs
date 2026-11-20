@@ -1399,6 +1399,7 @@ fn engine_state() -> EngineState {
                 },
             )]),
             displaced_while_creating: Default::default(),
+            readmitted_from: Default::default(),
             missing: nodes(["displaced"]),
             edited_here: BTreeMap::from([("e".into(), 6)]),
             moved_here: BTreeMap::from([

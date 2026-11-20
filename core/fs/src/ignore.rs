@@ -1882,9 +1882,7 @@ impl Space {
                 && stat.id == identity)
                 .then(|| std::fs::File::from(file))
         };
-        if identity.birth_ns.is_none() {
-            return None;
-        }
+        identity.birth_ns?;
         if let Some(file) = at.and_then(open) {
             return Some(file);
         }

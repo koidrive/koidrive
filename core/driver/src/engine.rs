@@ -95,6 +95,12 @@ pub(crate) enum Applied {
     Gap,
 }
 
+enum Replacement {
+    OtherCopy,
+    Uncertain,
+    NewIdentity,
+}
+
 impl Engine {
     /// The engine state of the space whose root node is `root`, as the store holds it. A space that never stored an
     /// ID generator gets one with a random seed.
@@ -1135,17 +1141,23 @@ impl Engine {
                 (Observed::Reidentified { path, id }, _)
                     if let Some(node) = local_at(&self.trees, path)
                         && self.trees.ignored_local().contains(&node)
-                        && let Some(local) = self.trees.local().get(&node)
-                        && self.replacement_is_held(&node, path, file_identity(*id)) =>
+                        && let Some(local) = self.trees.local().get(&node) =>
                 {
-                    lost = Observed::Removed {
-                        path: path.clone(),
-                        kind: match local.shape.kind {
-                            Kind::Dir => EntryKind::Dir,
-                            Kind::File => EntryKind::File,
-                        },
+                    let kind = match local.shape.kind {
+                        Kind::Dir => EntryKind::Dir,
+                        Kind::File => EntryKind::File,
                     };
-                    (&lost, Some(node))
+                    match self.replacement(&node, path, kind, *id, verifies) {
+                        Replacement::OtherCopy => {
+                            lost = Observed::Removed {
+                                path: path.clone(),
+                                kind,
+                            };
+                            (&lost, Some(node))
+                        }
+                        Replacement::Uncertain => continue,
+                        Replacement::NewIdentity => (&changes[at], None),
+                    }
                 }
                 (change, before) => (change, before),
             };
@@ -1630,10 +1642,18 @@ impl Engine {
             .collect()
     }
 
-    fn replacement_is_held(&self, node: &NodeId, path: &Path, identity: FileIdentity) -> bool {
+    fn replacement(
+        &self,
+        node: &NodeId,
+        path: &Path,
+        kind: EntryKind,
+        id: FileId,
+        verifies: &dyn Fn(&Path, VolumeId, FileId) -> bool,
+    ) -> Replacement {
         let found = self.trees.found_local();
         let at = found.get(node).map_or(path, PathBuf::as_path);
-        self.trees.locals_with_identity(&identity).any(|other| {
+        let identity = file_identity(id);
+        if self.trees.locals_with_identity(&identity).any(|other| {
             other != node
                 && self.trees.local().get(other).is_some()
                 && if let Some(other_at) = found.get(other) {
@@ -1641,7 +1661,50 @@ impl Engine {
                 } else {
                     same_volume(&self.trees, &self.mounts, other, at)
                 }
-        })
+        }) {
+            return Replacement::OtherCopy;
+        }
+        let mut displaced = self
+            .trees
+            .displaced_local()
+            .iter()
+            .filter(|(other, held)| {
+                held.ino == identity.ino
+                    && (held.birth_ns.is_none()
+                        || identity.birth_ns.is_none()
+                        || held.birth_ns == identity.birth_ns)
+                    && (held.handle.is_none()
+                        || identity.handle.is_none()
+                        || held.handle == identity.handle)
+                    && holds_kind(&self.trees, other, kind)
+            })
+            .map(|(other, _)| other)
+            .peekable();
+        if displaced.peek().is_none() {
+            return Replacement::NewIdentity;
+        }
+        let Some(volume) = found
+            .get(node)
+            .and_then(|at| self.volume_at(at))
+            .filter(|&volume| verifies(at, volume, id))
+        else {
+            return Replacement::Uncertain;
+        };
+        let mut possible = displaced.filter(|other| {
+            self.copy_volumes
+                .get(other)
+                .is_none_or(|proof| proof.volume == volume)
+        });
+        let Some(other) = possible.next() else {
+            return Replacement::NewIdentity;
+        };
+        if possible.next().is_none()
+            && self.displaced_at(Some(volume), kind, &identity, false) == Some(other)
+        {
+            Replacement::OtherCopy
+        } else {
+            Replacement::Uncertain
+        }
     }
 
     pub(super) fn volume_at(&self, path: &Path) -> Option<VolumeId> {
