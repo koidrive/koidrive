@@ -1451,16 +1451,11 @@ fn still_discarded_in(
 
 fn removed_by_user_from(device: &Device, id: &NodeId) -> bool {
     let trees = &device.trees;
-    (trees.remote().iter()).any(|(child, node)| {
-        !node.trashed
-            && node.shape.parent == *id
+    (device.removed_from.iter()).any(|(child, from)| {
+        trees.remote().live(child).is_some()
             && trees.local().get(child).is_none()
-            && (device
-                .removed_from
-                .get(child)
-                .is_some_and(|from| from == id)
-                || device.removed_from.contains_key(child)
-                    && acknowledged_shape(trees, child).is_some_and(|agreed| agreed.parent == *id))
+            && (from == id
+                || acknowledged_shape(trees, child).is_some_and(|agreed| agreed.parent == *id))
             && (acknowledged_shape(trees, child).is_some() || trees.excluded(child))
             && !kept_by_r7(device, child)
     })

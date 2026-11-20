@@ -2827,14 +2827,12 @@ impl Trees {
         deleting: &BTreeSet<NodeId>,
         seen: &mut BTreeSet<&'a NodeId>,
     ) -> bool {
-        let excluded_removals = (self.removed_from.iter())
+        let removals = (self.removed_from.iter())
             .filter(|(child, folder)| {
-                *folder == id
-                    && self.excluded(child)
-                    && (self.r.live(child)).is_some_and(|remote| remote.parent == *id)
+                *folder == id && (self.acknowledged(child).is_some() || self.excluded(child))
             })
             .map(|(child, _)| child);
-        self.s_children(id).chain(excluded_removals).all(|child| {
+        self.s_children(id).chain(removals).all(|child| {
             self.l.get(child).is_some()
                 || deleting.contains(child)
                 || self
