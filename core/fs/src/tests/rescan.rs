@@ -1279,3 +1279,61 @@ fn a_scan_stopped_while_it_looks_for_entries_an_unreadable_folder_took_in_publis
         assert_eq!(snapshot, before);
     }
 }
+
+#[test]
+fn a_waiting_file_restored_by_an_inconclusive_confirmation_keeps_waiting() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    fs::create_dir(root.join("box")).unwrap();
+    fs::create_dir(root.join("src")).unwrap();
+    fs::write(root.join("src/report.docx"), "report").unwrap();
+    let lock =
+        |mode| fs::set_permissions(root.join("box"), fs::Permissions::from_mode(mode)).unwrap();
+    lock(0o000);
+    let blocked = blocks_reads(
+        "a_waiting_file_restored_by_an_inconclusive_confirmation_keeps_waiting",
+        fs::read_dir(root.join("box")).map(|_| ()),
+    );
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    let mut snapshot = Snapshot::scan(root).unwrap();
+    lock(0o755);
+    if !blocked {
+        return;
+    }
+    fs::rename(root.join("src/report.docx"), root.join("box/report.docx")).unwrap();
+    lock(0o000);
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    let mut changes = snapshot.rescan(root, [PathBuf::new()]).unwrap().changes;
+    let mut looks = 0;
+    let confirming = snapshot.rescan_with(root, [PathBuf::from("src")], None, &mut |cut| {
+        if matches!(cut, Cut::Confirming(path) if path == Path::new("src")) {
+            looks += 1;
+            if looks == 2 {
+                fs::write(root.join("src/other.txt"), "other").unwrap();
+            }
+        }
+    });
+    changes.extend(confirming.unwrap().changes);
+    changes.extend(snapshot.rescan(root, [PathBuf::new()]).unwrap().changes);
+    lock(0o755);
+    let released = snapshot
+        .rescan(root, [PathBuf::from("box")])
+        .unwrap()
+        .changes;
+    assert!(
+        !changes
+            .iter()
+            .any(|change| matches!(change, Change::Removed { .. })),
+        "{changes:?}"
+    );
+    assert!(
+        released.contains(&Change::Renamed {
+            from: "src/report.docx".into(),
+            to: "box/report.docx".into(),
+            kind: EntryKind::File,
+        }),
+        "{released:?}"
+    );
+}

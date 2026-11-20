@@ -2490,6 +2490,7 @@ impl Snapshot {
                             .filter_map(|path| {
                                 if !covered(&path)
                                     || (unreadable.iter()).any(|blocked| path.starts_with(blocked))
+                                    || (path.ancestors()).any(|above| settling.contains(above))
                                 {
                                     return Some(path);
                                 }
