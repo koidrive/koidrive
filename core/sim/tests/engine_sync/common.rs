@@ -1935,8 +1935,18 @@ fn acted_below(
             local.shape.same(shape) || taken_along.is_some_and(|kept| local.shape.same(&kept))
         };
         let unapplied = |remote: &Shape| {
-            let renamed = (1..=3)
-                .any(|attempt| remote.name == conflict_name(&local.shape.name, "me", NOW, attempt));
+            let marker = conflict_name("", "me", NOW, 1);
+            let marker = marker.strip_suffix(')').unwrap_or(&marker);
+            let attempt = remote.name.rfind(marker).and_then(|at| {
+                let number = remote.name[at + marker.len()..].split(')').next()?;
+                match number.strip_prefix(' ') {
+                    Some(number) => number.parse().ok(),
+                    None => number.is_empty().then_some(1),
+                }
+            });
+            let renamed = attempt.is_some_and(|attempt| {
+                remote.name == conflict_name(&local.shape.name, "me", NOW, attempt)
+            });
             (renamed && trees.reverted().contains(entry)).then(|| Shape {
                 name: local.shape.name.clone(),
                 ..remote.clone()
