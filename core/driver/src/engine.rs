@@ -129,7 +129,7 @@ impl Engine {
         }
         let recovering = matches!(self.commits.halted(), Some(Halt::Recovery { .. }));
         self.trees.backfill(
-            self.commits.in_flight().map(|flight| &flight.commit),
+            self.commits.in_flight(),
             recovering,
             crate::driver::now_ms() as u64,
         );

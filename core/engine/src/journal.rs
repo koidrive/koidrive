@@ -1137,6 +1137,22 @@ impl Journal {
         }
     }
 
+    pub(crate) fn remote_held_before(&mut self, node: &NodeId, field: Field, older: &[IntentId]) {
+        let key = (node.to_owned(), field);
+        let entries = self.history.get_or_insert_with(key, Vec::new);
+        let missing: Vec<HistoryEntry> = (older.iter())
+            .filter(|intent| !entries.iter().any(|entry| entry.intent == **intent))
+            .map(|&intent| HistoryEntry {
+                intent,
+                applied_at_ms: 0,
+                in_local: false,
+            })
+            .collect();
+        entries.splice(0..0, missing);
+        let over = entries.len().saturating_sub(HISTORY_KEPT);
+        entries.drain(..over);
+    }
+
     pub(crate) fn trim_history(&mut self, node: &NodeId, field: Field, implied: &HistoryEntry) {
         let key = (node.to_owned(), field);
         if self.history.get(&key).and_then(|entries| entries.last()) != Some(implied) {
