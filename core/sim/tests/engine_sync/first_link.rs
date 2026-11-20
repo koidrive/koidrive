@@ -161,7 +161,7 @@ fn sent_move_check_of(parent: &str, name: &str, pending_for: &str) -> Result<(),
         None,
         "me",
         &BTreeMap::new(),
-        false,
+        None,
     )
 }
 
@@ -177,6 +177,10 @@ fn refused_name_check(
         status: 1,
         ..Default::default()
     };
+    let refused_at = left_out.then(|| RenamedOver {
+        parent: NodeId::from(&state.parent_id),
+        name: state.name.clone(),
+    });
     let mut moved = Move {
         node_id: "x".into(),
         new_parent_id: "home".into(),
@@ -200,7 +204,7 @@ fn refused_name_check(
         Some(&remote),
         "me",
         &BTreeMap::new(),
-        left_out,
+        refused_at.as_ref(),
     );
     if let Err(error) = &checked {
         assert!(
@@ -219,6 +223,13 @@ fn a_conflict_rename_of_a_name_the_disk_refused_passes_the_sent_move_check_only_
     assert!(refused_name_check(true, |_, state| state.status = 2).is_err());
     assert!(refused_name_check(true, |_, state| state.name = "b".into()).is_err());
     assert!(refused_name_check(true, |moved, _| moved.from = None).is_err());
+    assert!(
+        refused_name_check(true, |moved, state| {
+            state.name = "b".into();
+            moved.from.as_mut().unwrap().name = state.name.clone();
+        })
+        .is_err()
+    );
 }
 
 fn owed_rename_check_with(
@@ -255,7 +266,7 @@ fn owed_rename_check_with(
         Some(&remote),
         "me",
         &BTreeMap::new(),
-        false,
+        None,
     )
 }
 
@@ -331,7 +342,7 @@ fn finish_check_of(to: &str, from: &str, name: &str, mark: &str) -> Result<(), T
         Some(&held),
         "me",
         &BTreeMap::new(),
-        false,
+        None,
     )
 }
 

@@ -20,7 +20,7 @@ use koidrive_engine::question::{Answer, Question, QuestionKind};
 
 use koidrive_engine::restore::{Outcome, Rejection, Resolved, RestoreIntent};
 
-use koidrive_engine::state::StateError;
+use koidrive_engine::state::{RenamedOver, StateError};
 
 use koidrive_engine::tree::{
     ContentKey, FileIdentity, Kind, LocalNode, Names, NodeId, RemoteNode, Shape, same,
@@ -1768,17 +1768,17 @@ fn sent_move_check(
     remote: Option<&RemoteNode>,
     device: &str,
     merged_into: &BTreeMap<NodeId, NodeId>,
-    name_left_out: bool,
+    refused_at: Option<&RenamedOver>,
 ) -> Result<(), TestCaseError> {
-    let refused_name = name_left_out
-        && moved.pending_for.is_empty()
-        && remote.is_some_and(|node| {
-            !node.trashed
-                && node.shape.parent == moved.new_parent_id
-                && (moved.from.as_ref()).is_some_and(|from| {
-                    from.parent_id == node.shape.parent && from.name == node.shape.name
-                })
-        });
+    let refused_name = refused_at.is_some_and(|place| {
+        moved.pending_for.is_empty()
+            && moved.new_parent_id == place.parent
+            && remote.is_some_and(|node| {
+                !node.trashed && node.shape.parent == place.parent && node.shape.name == place.name
+            })
+            && (moved.from.as_ref())
+                .is_some_and(|from| from.parent_id == place.parent && from.name == place.name)
+    });
     if refused_name {
         return Ok(());
     }
@@ -2562,6 +2562,11 @@ fn run_ignoring_answering_after(
             {
                 let synced = device.trees.synced().get(id);
                 let remote = device.trees.remote().get(id);
+                let refused_at = if device.trees.name_left_out(id) {
+                    device.trees.state().names_left_out.remove(id).flatten()
+                } else {
+                    None
+                };
                 sent_move_check(
                     moved,
                     &local.shape,
@@ -2569,7 +2574,7 @@ fn run_ignoring_answering_after(
                     remote,
                     &me.device_id,
                     &merged_into,
-                    device.trees.name_left_out(id),
+                    refused_at.as_ref(),
                 )?;
             }
             if matches!(
@@ -2833,15 +2838,20 @@ fn run_ignoring_answering_after(
         (local.get(id)).is_some_and(|node| unreachable(id, &node.shape))
             && (remote.live(id)).is_none_or(|shape| unreachable(id, shape) || kept_from_remote(id))
     };
-    let stays_parked = |id: &NodeId| {
+    let stays_parked = |id: &NodeId, kind| {
+        let left_out = waits_on_left_out(&device, id);
+        if kind == Kind::File && left_out {
+            return reported.contains_key(id);
+        }
         waiting.contains(id)
-            || waits_on_left_out(&device, id)
+            || left_out
             || device.trees.ignored(id)
                 && reported.contains_key(id)
                 && (!device.trees.reverted().contains(id) || nowhere(id))
     };
     prop_assert!(
-        (device.trees.local().iter()).all(|(id, node)| !node.parked || stays_parked(id)),
+        (device.trees.local().iter())
+            .all(|(id, node)| !node.parked || stays_parked(id, node.shape.kind)),
         "a parked node is neither on its way out nor reported"
     );
     let server: Vec<(NodeId, Option<koidrive_engine::tree::Shape>)> = space
