@@ -1,0 +1,2 @@
+25
+# The sim model judges a first-link Discard by KOI-1007's rulings, and each ruling has a unit test of the model's own judgment: a change inside a held folder is that held folder's alone, membership in a taken-along folder is decided at the Discard that took it along, and a conflict name the device has not applied yet is no change. The battery checks the engine against the model but cannot show the model reads a ruling right, so no existing test covers these.
