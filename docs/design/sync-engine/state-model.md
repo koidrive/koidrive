@@ -87,6 +87,7 @@ Some remote states cannot be reached one move at a time, such as two files that 
 - A parked file re-keyed this way keeps its entry name in the parked directory, the ID it was parked under, until it leaves. Effects address it by that name.
 - A folder L deletes while a node under it is parked is reverted, so it is created again and the node moves into it.
 - A node whose S update waits (§2.7) is not planned, unless it is reverted (§2.6) and the update keeps it in S or L no longer holds it. When it blocks a placement it is parked too, and the effects then place it at its R position. A local rename it held onto a name another node needs is not kept.
+- A folder the person discarded on a first link that is the user's again (§6.4) and blocks a placement is parked too. Its create is sent from its local position while it is still parked, as for a parked node with an unuploaded edit, and the effects then move it to the position R gives it.
 
 ## 2.6 Building a commit
 

@@ -5,7 +5,7 @@
 
 use koidrive_engine::classify::{Origin, Trees, Waiting};
 use koidrive_engine::commit::{Commits, Failure, Halt, Reconnect};
-use koidrive_engine::effects::{BatchLimit, Effect, Effects, Stuck, stuck};
+use koidrive_engine::effects::{BatchLimit, Effect, Effects, Location, Stuck, stuck};
 use koidrive_engine::first_link::{History, PriorSync, adopt};
 use koidrive_engine::ids::IdGen;
 use koidrive_engine::ignore::{RuleFile, Source};
@@ -4415,6 +4415,121 @@ fn a_user_folder_parked_below_a_folder_the_server_added_keeps_the_discarded_fold
     assert!(
         (planned.iter()).all(|record| record.node != "x"),
         "the server folder leaves the folder that is the user's again: {planned:?}"
+    );
+}
+
+#[test]
+fn a_reclaimed_folder_parked_for_a_server_file_is_created_parked_and_takes_rs_name() {
+    let mut trees = trees(
+        &[("f", dir(ROOT, "new")), ("l-x", dir(ROOT, "server"))],
+        &[("x", dir(ROOT, "server"))],
+    );
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(7));
+    commits.first_link(&mut trees, &mut ids, NOW, PriorSync::Shown);
+    trees.settle(commits.aliases());
+    assert!(commits.decide(&mut trees, &question(&commits).id, Answer::Discard));
+    assert!(ops(&mut commits, &mut trees, &mut ids).is_empty());
+    let mut moved = trees.local().get(&"x".into()).unwrap().clone();
+    moved.shape.parent = "f".into();
+    trees.set_local_changed("x".into(), moved);
+    trees.settle(commits.aliases());
+    assert!(trees.reclaimed(&"f".into()));
+    let server = trees.remote().get(&"x".into()).unwrap().clone();
+    let taking = RemoteNode {
+        shape: file(ROOT, "new", 5),
+        ..server.clone()
+    };
+    trees.set_remote("n".into(), taking);
+    trees.settle(commits.aliases());
+
+    let mut effects = Effects::default();
+    let park = (effects.plan(&trees, commits.in_flight(), &mut ids, NOW, BatchLimit::ONE))
+        .first()
+        .cloned()
+        .unwrap();
+    assert_eq!(park.node, "f");
+    assert!(matches!(
+        park.effect,
+        Effect::Move {
+            to: Location::Parked(_),
+            ..
+        }
+    ));
+    (effects.done(&mut trees, commits.in_flight(), &park.effect_id, None)).unwrap();
+    trees.settle(commits.aliases());
+    assert!(trees.local().get(&"f".into()).unwrap().parked);
+    let download = (effects.plan(&trees, commits.in_flight(), &mut ids, NOW, BatchLimit::ONE))
+        .first()
+        .cloned()
+        .unwrap();
+    assert_eq!(download.node, "n");
+    assert_eq!(download.after, Some(file(ROOT, "new", 5)));
+    let identity = FileIdentity {
+        ino: 901,
+        birth_ns: Some(0),
+        handle: None,
+    };
+    (effects.done(
+        &mut trees,
+        commits.in_flight(),
+        &download.effect_id,
+        Some(identity),
+    ))
+    .unwrap();
+    trees.settle(commits.aliases());
+
+    assert_eq!(
+        ops(&mut commits, &mut trees, &mut ids),
+        [("create dir", "f".to_owned()), ("move", "x".to_owned())]
+    );
+    let created = RemoteNode {
+        shape: dir(ROOT, "new (conflict)"),
+        ..server.clone()
+    };
+    trees.set_remote("f".into(), created);
+    let moved = RemoteNode {
+        shape: dir("f", "server"),
+        ..server
+    };
+    trees.set_remote("x".into(), moved);
+    let renamed = OpResult {
+        code: op_result::Code::AppliedRenamed as i32,
+        name: "new (conflict)".into(),
+        ..Default::default()
+    };
+    let applied = OpResult {
+        code: op_result::Code::Applied as i32,
+        ..Default::default()
+    };
+    let result = CommitResult {
+        seq: 2,
+        results: vec![renamed, applied],
+        ..Default::default()
+    };
+    commits.received(result).unwrap();
+    assert!(commits.acknowledge(&mut trees, 2));
+    trees.settle(commits.aliases());
+    let out = (effects.plan(&trees, commits.in_flight(), &mut ids, NOW, BatchLimit::ONE))
+        .first()
+        .cloned()
+        .unwrap();
+    assert_eq!(out.node, "f");
+    assert!(matches!(
+        out.effect,
+        Effect::Move {
+            from: Location::Parked(_),
+            ..
+        }
+    ));
+    assert_eq!(out.after, Some(dir(ROOT, "new (conflict)")));
+    (effects.done(&mut trees, commits.in_flight(), &out.effect_id, None)).unwrap();
+    trees.settle(commits.aliases());
+    let placed = trees.local().get(&"f".into()).unwrap();
+    assert!(!placed.parked);
+    assert_eq!(placed.shape, dir(ROOT, "new (conflict)"));
+    assert_eq!(
+        trees.local().get(&"n".into()).unwrap().shape,
+        file(ROOT, "new", 5)
     );
 }
 
