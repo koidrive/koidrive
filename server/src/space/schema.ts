@@ -130,6 +130,15 @@ export const MIGRATIONS: readonly Migration[] = [
     if (!columns.includes("git_tracked")) sql.exec("ALTER TABLE nodes ADD COLUMN git_tracked INTEGER NOT NULL DEFAULT 0");
     if (!columns.includes("git_tracked_rev")) sql.exec("ALTER TABLE nodes ADD COLUMN git_tracked_rev INTEGER NOT NULL DEFAULT 0");
   },
+  (sql) => {
+    const columns = sql.exec("SELECT name FROM pragma_table_info('chunks')").toArray().map((row) => row.name);
+    if (!columns.includes("pack_id")) sql.exec("ALTER TABLE chunks ADD COLUMN pack_id TEXT");
+    if (!columns.includes("pack_offset")) sql.exec("ALTER TABLE chunks ADD COLUMN pack_offset INTEGER");
+    sql.exec("CREATE INDEX IF NOT EXISTS chunks_pack ON chunks(pack_id) WHERE pack_id IS NOT NULL");
+    sql.exec(`CREATE TABLE IF NOT EXISTS packs (pack_id TEXT PRIMARY KEY, size INTEGER NOT NULL, state INTEGER NOT NULL,
+      live_count INTEGER NOT NULL, live_bytes INTEGER NOT NULL, hold_until_ms INTEGER NOT NULL)`);
+    sql.exec("CREATE INDEX IF NOT EXISTS packs_sparse ON packs(live_bytes) WHERE state = 2 AND live_bytes * 2 < size");
+  },
 ];
 
 export const LEGACY_INTENTS_DUE = "legacy_intents_due";
@@ -141,3 +150,4 @@ export function migrate(sql: Sql): void {
 export const NodeKindValue = { DIR: 1, FILE: 2 } as const;
 export const NodeStatusValue = { LIVE: 1, TRASHED: 2 } as const;
 export const ChunkState = { PENDING: 1, LIVE: 2, DELETING: 3 } as const;
+export const PackState = { LIVE: 2 } as const;

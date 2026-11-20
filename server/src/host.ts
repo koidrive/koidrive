@@ -48,7 +48,8 @@ export interface PutOptions {
 
 export interface ObjectStore {
   head(key: string): Promise<StoredObject | null>;
-  get(key: string): Promise<StoredObjectBody | null>;
+  /** With a range, the body holds only those bytes, and size stays the whole object's size. */
+  get(key: string, options?: { range: { offset: number; length: number } | { suffix: number } }): Promise<StoredObjectBody | null>;
   put(key: string, value: ReadableStream | ArrayBuffer | ArrayBufferView | string | null, options?: PutOptions): Promise<unknown>;
   list(options: { prefix: string; cursor?: string; limit: number }): Promise<ObjectList>;
   delete(keys: string | string[]): Promise<void>;

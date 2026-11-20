@@ -12,9 +12,9 @@ import { sha256 } from "../src/crypto";
 import { fromHex, toHex, uuidv7 } from "../src/ids";
 import { HOLD_MS, type Session, SpaceDO } from "../src/space-do";
 import { ChunkState } from "../src/space/schema";
-import { chunkKey, versionChunks, type VersionRow } from "../src/space/store";
+import { chunkKey, packKey, versionChunks, type VersionRow } from "../src/space/store";
 import saved from "./gc-model.cases.json";
-import { content, op, TestClient } from "./helpers";
+import { content, op, packFixture, spaceKeyOf, TestClient } from "./helpers";
 import { simulatedPitr } from "./pitr";
 
 declare module "vitest" {
@@ -30,7 +30,7 @@ const BASE = "https://koidrive.test";
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
 const DAY = 24 * HOUR;
-const CHUNK_KEY = /^spaces\/[^/]+\/chunks\//;
+const MODELLED_KEY = /^spaces\/[^/]+\/(chunks|packs)\//;
 const TEXTS = ["alpha", "bravo", "charlie"];
 const FILES = 2;
 const LIST_PAGE = 2;
@@ -45,6 +45,7 @@ type Simple =
   | { t: "prepare"; chunks: number[] }
   | { t: "put"; plan: number; outcome: Outcome }
   | { t: "bundle"; plans: number[]; outcome: Outcome }
+  | { t: "pack"; plans: number[]; outcome: Outcome }
   | { t: "commit"; file: number; receipts: number[]; extra: number[]; dup?: boolean; refused?: boolean }
   | { t: "sync"; file: number; chunks: number[] }
   | { t: "trash"; file: number }
@@ -94,6 +95,7 @@ async function pause(at: Pause): Promise<void> {
 
 interface World {
   spaceId: string;
+  spaceKey: Uint8Array;
   session: Session;
   files: string[];
   plans: { chunk: number; url: string }[];
@@ -149,7 +151,7 @@ function installModelR2(): void {
   const bucket = env.BUCKET;
   const real = { put: bucket.put.bind(bucket), get: bucket.get.bind(bucket), head: bucket.head.bind(bucket), delete: bucket.delete.bind(bucket), list: bucket.list.bind(bucket) };
   vi.spyOn(bucket, "put").mockImplementation((async (key: string, value: Parameters<R2Bucket["put"]>[1], options?: R2PutOptions) => {
-    if (!CHUNK_KEY.test(key)) return real.put(key, value, options);
+    if (!MODELLED_KEY.test(key)) return real.put(key, value, options);
     const bytes = new Uint8Array(await new Response(value).arrayBuffer());
     if (options?.sha256 !== undefined && options.sha256 !== toHex(await sha256(bytes))) {
       throw new Error("put: The SHA-256 checksum you specified did not match what we received.");
@@ -161,22 +163,24 @@ function installModelR2(): void {
     return described(key);
   }) as never);
   vi.spyOn(bucket, "head").mockImplementation((async (key: string) => {
-    if (!CHUNK_KEY.test(key)) return real.head(key);
+    if (!MODELLED_KEY.test(key)) return real.head(key);
     const found = described(key);
     await pause("head");
     return found;
   }) as never);
   vi.spyOn(bucket, "get").mockImplementation((async (key: string, options?: R2GetOptions) => {
-    if (!CHUNK_KEY.test(key)) return real.get(key, options);
+    if (!MODELLED_KEY.test(key)) return real.get(key, options);
     const found = described(key);
-    const bytes = r2.objects.get(key)?.bytes;
+    const stored = r2.objects.get(key)?.bytes;
+    const range = options?.range as { offset: number; length: number } | undefined;
+    const bytes = range ? stored?.slice(range.offset, range.offset + range.length) : stored;
     return found && bytes ? { ...found, body: new Blob([bytes]).stream(), arrayBuffer: async () => bytes.slice().buffer } : null;
   }) as never);
   vi.spyOn(bucket, "delete").mockImplementation((async (keys: string | string[]) => {
     const all = typeof keys === "string" ? [keys] : keys;
-    const others = all.filter((key) => !CHUNK_KEY.test(key));
+    const others = all.filter((key) => !MODELLED_KEY.test(key));
     if (others.length > 0) await real.delete(others);
-    const modelled = all.filter((key) => CHUNK_KEY.test(key));
+    const modelled = all.filter((key) => MODELLED_KEY.test(key));
     if (modelled.length === 0) return;
     const spaceId = modelled[0]!.split("/")[1]!;
     const retired = await retiredKeys(spaceId);
@@ -186,7 +190,7 @@ function installModelR2(): void {
   }) as never);
   vi.spyOn(bucket, "list").mockImplementation((async (options?: R2ListOptions) => {
     const prefix = options?.prefix ?? "";
-    if (!CHUNK_KEY.test(prefix)) return real.list(options);
+    if (!MODELLED_KEY.test(prefix)) return real.list(options);
     const keys = [...r2.objects.keys()].filter((key) => key.startsWith(prefix) && key > (options?.cursor ?? "")).sort();
     const page = keys.slice(0, Math.min(options?.limit ?? 1000, LIST_PAGE));
     const truncated = page.length < keys.length;
@@ -260,7 +264,7 @@ async function newWorld(): Promise<World> {
   if (!created.ok) throw new Error(created.message);
   const spaceId = created.value.spaceId;
   const session: Session = { deviceId: owner.deviceId, userId: owner.userId, deviceName: "Laptop", kind: "device", scope: null, role: "owner", maxFormat: 1, origin: BASE };
-  const world: World = { spaceId, session, files: Array.from({ length: FILES }, () => uuidv7()), plans: [], receipts: [], targets: [], present: [], points: [], drops: [], history: [], lastUsedMs: new Map() };
+  const world: World = { spaceId, spaceKey: await spaceKeyOf(space(spaceId)), session, files: Array.from({ length: FILES }, () => uuidv7()), plans: [], receipts: [], targets: [], present: [], points: [], drops: [], history: [], lastUsedMs: new Map() };
   await snapshot(world);
   return world;
 }
@@ -327,6 +331,20 @@ async function act(world: World, step: Step): Promise<boolean> {
       if (!response.ok) return false;
       for (const result of fromBinary(ChunkBundleResultSchema, body).results) if (result.receipt) world.receipts.push(result.receipt);
       return true;
+    }
+    case "pack": {
+      const nowMs = Date.now();
+      const usable = step.plans.flatMap((i) => pick(world.plans, i) ?? []).filter((plan) => Number(new URL(plan.url).searchParams.get("ticket")!.split(".")[1]) >= nowMs);
+      const chosen = [...new Map(usable.map((plan) => [plan.chunk, plan])).values()];
+      if (chosen.length === 0) return false;
+      const packed = chosen.map((plan) => ({ incarnation: new URL(plan.url).searchParams.get("inc")!, bytes: chunks[plan.chunk]!.bytes }));
+      const pack = await packFixture(spaceId, world.spaceKey, packed);
+      r2.put = step.outcome;
+      const written = await env.BUCKET.put(pack.key, pack.bytes, { onlyIf: { etagDoesNotMatch: "*" } })
+        .then(() => true, () => false)
+        .finally(() => (r2.put = "ok"));
+      if (written) world.receipts.push(...pack.receipts);
+      return written;
     }
     case "commit": {
       const receipts = step.receipts.flatMap((i) => pick(world.receipts, i) ?? []);
@@ -485,9 +503,14 @@ async function snapshot(world: World): Promise<void> {
   const atMs = Date.now();
   const used = await runInDurableObject(space(world.spaceId), (_instance, state) => {
     simulatedPitr.snapshot(state, atMs);
-    return state.storage.sql.exec("SELECT hash, incarnation FROM chunks WHERE refcount > 0").toArray().map((row) => ({ hex: toHex(new Uint8Array(row.hash as ArrayBuffer)), incarnation: row.incarnation }));
+    return state.storage.sql
+      .exec("SELECT hash, incarnation, pack_id FROM chunks WHERE refcount > 0")
+      .toArray()
+      .map((row) => ({ hex: toHex(new Uint8Array(row.hash as ArrayBuffer)), incarnation: row.incarnation, packId: row.pack_id }));
   });
-  const keys = used.flatMap(({ hex, incarnation }) => (incarnation === null ? [] : [chunkKey(world.spaceId, hex, String(incarnation))]));
+  const keys = used.flatMap(({ hex, incarnation, packId }) =>
+    packId !== null ? [packKey(world.spaceId, String(packId))] : incarnation === null ? [] : [chunkKey(world.spaceId, hex, String(incarnation))],
+  );
   world.lastUsedMs = new Map([...world.lastUsedMs, ...used.map(({ hex }): [string, number] => [hex, atMs])]);
   world.points.push(atMs);
   world.history.push({ atMs, keys, lastUsedMs: world.lastUsedMs });
@@ -495,46 +518,76 @@ async function snapshot(world: World): Promise<void> {
 
 interface ChunkRow {
   hex: string;
+  size: number;
   state: number;
   refcount: number;
   incarnation: string | null;
   headChecked: boolean;
   zeroSinceMs: number | null;
+  packId: string | null;
+  packOffset: number;
 }
 
-async function chunkRows(world: World): Promise<{ rows: ChunkRow[]; references: Map<string, number> }> {
+interface PackRow {
+  packId: string;
+  state: number;
+  liveCount: number;
+  liveBytes: number;
+}
+
+async function chunkRows(world: World): Promise<{ rows: ChunkRow[]; packs: PackRow[]; references: Map<string, number> }> {
   return runInDurableObject(space(world.spaceId), (_instance, state) => {
     const sql = state.storage.sql;
     const rows = sql
-      .exec("SELECT hash, state, refcount, incarnation, head_checked, zero_since_ms FROM chunks")
+      .exec("SELECT hash, size, state, refcount, incarnation, head_checked, zero_since_ms, pack_id, pack_offset FROM chunks")
       .toArray()
       .map((row) => ({
         hex: toHex(new Uint8Array(row.hash as ArrayBuffer)),
+        size: Number(row.size),
         state: Number(row.state),
         refcount: Number(row.refcount),
         incarnation: row.incarnation === null ? null : String(row.incarnation),
         headChecked: row.head_checked === 1,
         zeroSinceMs: row.zero_since_ms === null ? null : Number(row.zero_since_ms),
+        packId: row.pack_id === null ? null : String(row.pack_id),
+        packOffset: Number(row.pack_offset),
       }));
+    const packs = sql
+      .exec("SELECT pack_id, state, live_count, live_bytes FROM packs")
+      .toArray()
+      .map((row) => ({ packId: String(row.pack_id), state: Number(row.state), liveCount: Number(row.live_count), liveBytes: Number(row.live_bytes) }));
     const references = new Map<string, number>();
     for (const version of sql.exec("SELECT * FROM versions").toArray() as unknown as VersionRow[]) {
       for (const hex of new Set(versionChunks(sql, version).map((chunk) => toHex(chunk.hash)))) references.set(hex, (references.get(hex) ?? 0) + 1);
     }
-    return { rows, references };
+    return { rows, packs, references };
   });
+}
+
+function storedBytes(world: World, row: ChunkRow): { at: string; bytes?: Uint8Array } {
+  if (row.packId !== null) {
+    const key = packKey(world.spaceId, row.packId);
+    return { at: `${key} at ${row.packOffset}`, bytes: r2.objects.get(key)?.bytes.slice(row.packOffset, row.packOffset + row.size) };
+  }
+  if (row.incarnation === null) return { at: "its missing incarnation" };
+  const key = chunkKey(world.spaceId, row.hex, row.incarnation);
+  return { at: key, bytes: r2.objects.get(key)?.bytes };
 }
 
 async function check(world: World): Promise<void> {
   const violations = r2.violations.splice(0);
   const retired = new Set([...(await retiredKeys(world.spaceId)), ...r2.retired]);
-  const { rows, references } = await chunkRows(world);
+  const { rows, packs, references } = await chunkRows(world);
   for (const row of rows) {
     const key = row.incarnation === null ? undefined : chunkKey(world.spaceId, row.hex, row.incarnation);
-    if (row.state !== ChunkState.DELETING && key !== undefined && retired.has(key)) violations.push(`chunk ${row.hex} is in state ${row.state} on the retired key ${key}`);
-    if (row.state === ChunkState.LIVE || (row.state === ChunkState.PENDING && row.headChecked)) {
-      const stored = key === undefined ? undefined : r2.objects.get(key);
-      if (!stored) violations.push(`chunk ${row.hex} is in state ${row.state} but R2 has no object at ${key ?? "its missing incarnation"}`);
-      else if (toHex(await sha256(stored.bytes)) !== row.hex) violations.push(`R2 holds other bytes at ${key}`);
+    if (row.packId === null && row.state !== ChunkState.DELETING && key !== undefined && retired.has(key)) violations.push(`chunk ${row.hex} is in state ${row.state} on the retired key ${key}`);
+    if (row.packId !== null && (row.state === ChunkState.DELETING || row.incarnation === null || row.headChecked)) {
+      violations.push(`chunk ${row.hex} is in pack ${row.packId} with state ${row.state}, incarnation ${row.incarnation} and head_checked ${row.headChecked}`);
+    }
+    if (row.state === ChunkState.LIVE || (row.state === ChunkState.PENDING && (row.headChecked || row.packId !== null))) {
+      const stored = storedBytes(world, row);
+      if (!stored.bytes) violations.push(`chunk ${row.hex} is in state ${row.state} but R2 has no object at ${stored.at}`);
+      else if (toHex(await sha256(stored.bytes)) !== row.hex) violations.push(`R2 holds other bytes at ${stored.at}`);
     }
     if (row.refcount > 0 && row.state !== ChunkState.LIVE) violations.push(`chunk ${row.hex} has refcount ${row.refcount} in state ${row.state}`);
     const lastUsedMs = world.lastUsedMs.get(row.hex);
@@ -548,13 +601,23 @@ async function check(world: World): Promise<void> {
     for (const key of keys) if (retired.has(key) || !r2.objects.has(key)) violations.push(`the state at ${atMs} has a used chunk on ${key}, which is ${retired.has(key) ? "retired" : "gone"}`);
   }
   for (const hex of references.keys()) if (!rows.some((row) => row.hex === hex)) violations.push(`a version uses chunk ${hex}, which has no row`);
+  for (const pack of packs) {
+    const on = rows.filter((row) => row.packId === pack.packId && (row.state === ChunkState.PENDING || row.state === ChunkState.LIVE));
+    const counted = { liveCount: on.length, liveBytes: on.reduce((sum, row) => sum + row.size, 0) };
+    if (pack.liveCount !== counted.liveCount || pack.liveBytes !== counted.liveBytes) violations.push(`pack ${pack.packId} counts ${JSON.stringify(pack)}, but its rows add up to ${JSON.stringify(counted)}`);
+  }
+  for (const row of rows) {
+    if (row.packId !== null && packs.find((pack) => pack.packId === row.packId)?.state !== 2) violations.push(`chunk ${row.hex} points at pack ${row.packId}, which has no live packs row`);
+  }
   for (const { hex, atMs } of world.present) {
     const row = rows.find((one) => one.hex === hex);
-    if (Date.now() >= atMs + HOLD_MS || row?.state === ChunkState.LIVE || (row?.state === ChunkState.PENDING && row.incarnation !== null && row.headChecked)) continue;
+    if (Date.now() >= atMs + HOLD_MS || row?.state === ChunkState.LIVE || (row?.state === ChunkState.PENDING && row.incarnation !== null && (row.headChecked || row.packId !== null))) continue;
     violations.push(`chunk ${hex} was answered PRESENT at ${atMs}, but a commit without its receipt would be refused: ${row ? `state ${row.state}, head_checked ${row.headChecked}` : "it has no row"}`);
   }
   if (violations.length > 0) throw new Error(violations.join("\n"));
 }
+
+const leftForPackGc = { row: (row: ChunkRow) => row.packId !== null, key: (key: string) => key.split("/")[2] === "packs" };
 
 async function quiesce(world: World): Promise<void> {
   for (const flight of r2.flights.splice(0)) land(flight);
@@ -568,9 +631,9 @@ async function quiesce(world: World): Promise<void> {
     }
   }
   const { rows } = await chunkRows(world);
-  const left = rows.filter((row) => row.state !== ChunkState.LIVE || row.refcount === 0).map((row) => `${row.hex} in state ${row.state}`);
+  const left = rows.filter((row) => !leftForPackGc.row(row) && (row.state !== ChunkState.LIVE || row.refcount === 0)).map((row) => `${row.hex} in state ${row.state}`);
   const keys = new Set(rows.flatMap((row) => (row.incarnation === null ? [] : [chunkKey(world.spaceId, row.hex, row.incarnation)])));
-  const garbage = [...r2.objects.keys()].filter((key) => key.startsWith(`spaces/${world.spaceId}/`) && !keys.has(key));
+  const garbage = [...r2.objects.keys()].filter((key) => key.startsWith(`spaces/${world.spaceId}/`) && !keys.has(key) && !leftForPackGc.key(key));
   expect({ left, garbage }).toEqual({ left: [], garbage: [] });
 }
 
@@ -579,6 +642,7 @@ const chunkSet = fc.uniqueArray(fc.integer({ min: 0, max: TEXTS.length - 1 }), {
 const outcome = fc.oneof({ weight: 4, arbitrary: fc.constant<Outcome>("ok") }, fc.constantFrom<Outcome>("lostApplied", "lostInflight"));
 const prepare = fc.record({ t: fc.constant("prepare" as const), chunks: chunkSet });
 const put = fc.record({ t: fc.constant("put" as const), plan: index, outcome });
+const pack = fc.record({ t: fc.constant("pack" as const), plans: fc.array(index, { minLength: 1, maxLength: 3 }), outcome });
 const commit = fc.record({
   t: fc.constant("commit" as const),
   file: fc.nat({ max: FILES - 1 }),
@@ -594,6 +658,7 @@ const simple: fc.Arbitrary<Simple> = fc.oneof(
   { weight: 3, arbitrary: prepare },
   { weight: 6, arbitrary: put },
   { weight: 1, arbitrary: fc.record({ t: fc.constant("bundle" as const), plans: fc.array(index, { minLength: 1, maxLength: 3 }), outcome }) },
+  { weight: 3, arbitrary: pack },
   { weight: 4, arbitrary: commit },
   { weight: 2, arbitrary: fc.record({ t: fc.constant("sync" as const), file: fc.nat({ max: FILES - 1 }), chunks: chunkSet }) },
   { weight: 1, arbitrary: fc.record({ t: fc.constant("trash" as const), file: fc.nat({ max: FILES - 1 }) }) },
@@ -625,7 +690,7 @@ const step: fc.Arbitrary<Step> = fc.oneof(
         t: fc.constant("race" as const),
         outer: fc.oneof(commit, collect, put),
         at: pausePoint,
-        inner: fc.array(fc.oneof(prepare, put, commit, collect, drop, clock), { minLength: 1, maxLength: 2 }),
+        inner: fc.array(fc.oneof(prepare, put, pack, commit, collect, drop, clock), { minLength: 1, maxLength: 2 }),
         innerAt: pausePoint,
       },
       { requiredKeys: ["t", "outer", "at", "inner"] },
@@ -820,6 +885,37 @@ const scenarios: Step[][] = [
     { t: "clock", ms: 59 * MINUTE },
     gc,
     { t: "download", target: 0 },
+  ],
+  [
+    minute,
+    { t: "prepare", chunks: [0, 1] },
+    { t: "pack", plans: [0, 1], outcome: "ok" },
+    { t: "commit", file: 0, receipts: [0, 1], extra: [] },
+    { t: "targets", chunk: 0 },
+    { t: "targets", chunk: 1 },
+    { t: "download", target: 0 },
+    { t: "download", target: 1 },
+  ],
+  [minute, { t: "prepare", chunks: [0, 1, 2] }, { t: "pack", plans: [0, 1, 2], outcome: "ok" }, { t: "clock", ms: 2 * HOUR }, { t: "commit", file: 0, receipts: [0, 1, 2], extra: [] }],
+  [
+    minute,
+    { t: "prepare", chunks: [0, 1, 2] },
+    { t: "put", plan: 2, outcome: "ok" },
+    { t: "pack", plans: [1], outcome: "ok" },
+    { t: "commit", file: 0, receipts: [0, 1], extra: [2], refused: true },
+    { t: "sync", file: 0, chunks: [0, 1] },
+  ],
+  [
+    minute,
+    { t: "prepare", chunks: [0] },
+    { t: "pack", plans: [0], outcome: "ok" },
+    { t: "pack", plans: [0], outcome: "ok" },
+    { t: "commit", file: 0, receipts: [0, 1], extra: [] },
+    minute,
+    day,
+    { t: "rewind", point: 3 },
+    gc,
+    { t: "rewind", point: 0 },
   ],
 ];
 

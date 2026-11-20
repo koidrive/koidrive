@@ -8,6 +8,7 @@ import { errorText } from "../errors";
 import { CreateShareLinkRequestSchema, ShareInfoSchema, ShareLinkListSchema, ShareLinkSchema, ShareListingSchema, ShareUnlockRequestSchema } from "../gen/koidrive/v1/share_pb";
 import { BadRequest, errorReply, readMessage, reply } from "../http";
 import type { ObjectStore } from "../host";
+import { sha256 } from "../crypto";
 import { isUuidV7, toHex } from "../ids";
 import { account, space } from "../stubs";
 import { clientKey } from "./limiter";
@@ -75,7 +76,18 @@ function contentDisposition(name: string): string {
 
 class ChunkCheckFailed extends Error {}
 
+async function openPackedChunk(objects: ObjectStore, chunk: ShareFile["chunks"][number], offset: number): Promise<ReadableStream<Uint8Array>> {
+  const object = await objects.get(chunk.key, { range: { offset, length: chunk.size } });
+  if (!object) throw new ChunkCheckFailed(`pack ${chunk.key} is missing`);
+  const bytes = new Uint8Array(await new Response(object.body).arrayBuffer());
+  if (bytes.length !== chunk.size || toHex(await sha256(bytes)) !== chunk.hashHex) {
+    throw new ChunkCheckFailed(`pack ${chunk.key} holds other bytes than chunk ${chunk.hashHex} at offset ${offset}`);
+  }
+  return new Blob([bytes]).stream();
+}
+
 async function openChunk(objects: ObjectStore, chunk: ShareFile["chunks"][number]): Promise<ReadableStream<Uint8Array>> {
+  if (chunk.offset !== undefined) return openPackedChunk(objects, chunk, chunk.offset);
   const object = await objects.get(chunk.key);
   if (!object) throw new ChunkCheckFailed(`chunk object ${chunk.key} is missing`);
   const stored = object.checksums.sha256;

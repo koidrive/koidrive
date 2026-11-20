@@ -23,7 +23,7 @@ import { DEFAULT_EXPIRY_MS, LINK_ID, MAX_ACTIVE_LINKS, SESSION_MS, SHARE_LOCK_MS
 import type { SpaceDO } from "../src/space-do";
 import { chunkKey } from "../src/space/store";
 import worker from "../src/worker";
-import { content, freezeClock, op, TestClient } from "./helpers";
+import { content, freezeClock, op, packFixture, spaceKeyOf, targetIncarnation, TestClient } from "./helpers";
 import { simulatedPitr } from "./pitr";
 
 simulatedPitr.install();
@@ -645,6 +645,31 @@ describe("share links: downloads (RFC 0005 section 7)", () => {
     expect(failure).toBeDefined();
     expect(decoder.decode(new Uint8Array(bytes))).toBe("first-");
     expect(error.mock.calls.map((args) => String(args[1]))).toEqual([expect.stringContaining("has 13 bytes, expected 7")]);
+  });
+
+  it("serves a file whose chunks are packed and single, and refuses one whose pack range holds a corrupted byte", async () => {
+    const { spaceId, ids, device } = await newSpace();
+    const made = await content("packed-head-", "packed-tail-", "single-end");
+    const plan = await device.call({ case: "prepareUpload", value: { chunks: made.content.chunks } });
+    if (plan.case !== "prepareUpload") throw new Error("prepareUpload failed");
+    const packed = plan.value.chunks.slice(0, 2).map((chunk, i) => ({ incarnation: targetIncarnation(chunk.target!.url), bytes: made.bytes[i]! }));
+    const pack = await packFixture(spaceId, await spaceKeyOf(space(spaceId)), packed);
+    await env.BUCKET.put(pack.key, pack.bytes);
+    await device.uploadParts(await content("single-end"));
+    const nodeId = uuidv7();
+    await device.commit([op.create(nodeId, ids.docs, "mixed.bin", made.content)], { receipts: pack.receipts });
+    const shared = await link(spaceId, { nodeId: ids.docs });
+    const get = () => pub(`/v1/share/${shared.linkId}/file/${nodeId}`, { ip: newIp() });
+    expect((await get()).text).toBe("packed-head-packed-tail-single-end");
+
+    const corrupted = pack.bytes.slice();
+    corrupted[3]! ^= 1;
+    await env.BUCKET.put(pack.key, corrupted);
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const refused = await get();
+    expect(refused.status).toBe(502);
+    expect(refused.text).not.toContain("packed");
+    expect(error.mock.calls.map((args) => String(args[1]))).toEqual([expect.stringContaining("holds other bytes than chunk")]);
   });
 
   it("refuses a file with more chunks than one download covers", async () => {

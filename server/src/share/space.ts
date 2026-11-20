@@ -9,7 +9,7 @@ import type { Sql } from "../host";
 import { isUuidV7, toHex } from "../ids";
 import type { ResolvedLink, ShareOutcome } from "./links";
 import { NodeKindValue, NodeStatusValue, ChunkState } from "../space/schema";
-import { chunkKey, getMeta, getNode, getVersion, type NodeRow, PAGE_CHUNKS, rows, versionChunks } from "../space/store";
+import { chunkKey, packKey, getMeta, getNode, getVersion, type NodeRow, PAGE_CHUNKS, rows, versionChunks } from "../space/store";
 
 export const LISTING_PAGE = 500;
 export const MAX_DOWNLOAD_CHUNKS = PAGE_CHUNKS;
@@ -21,7 +21,7 @@ const encoder = new TextEncoder();
 export interface ShareFile {
   name: string;
   size: number;
-  chunks: { key: string; hashHex: string; size: number }[];
+  chunks: { key: string; hashHex: string; size: number; offset?: number }[];
   historyId: string;
 }
 
@@ -134,20 +134,20 @@ export function shareFile(sql: Sql, spaceId: string, rootId: string, nodeId: str
   if (version.chunk_count > MAX_DOWNLOAD_CHUNKS) {
     return refuse(Error_Code.LIMIT_EXCEEDED, `this file has more than ${MAX_DOWNLOAD_CHUNKS} chunks, too many to download through a link`, 413);
   }
-  const keys = new Map<string, string>();
+  const places = new Map<string, { key: string; offset?: number }>();
   const chunks: ShareFile["chunks"] = [];
   for (const chunk of versionChunks(sql, version)) {
     const hashHex = toHex(chunk.hash);
-    let key = keys.get(hashHex);
-    if (key === undefined) {
-      const row = sql.exec("SELECT state, incarnation FROM chunks WHERE hash = ?", chunk.hash).toArray()[0];
+    let place = places.get(hashHex);
+    if (place === undefined) {
+      const row = sql.exec("SELECT state, incarnation, pack_id, pack_offset FROM chunks WHERE hash = ?", chunk.hash).toArray()[0];
       if (row?.state !== ChunkState.LIVE || row.incarnation === null) {
         return refuse(Error_Code.RETRY_LATER, "part of this file is not stored right now; retry later", 503);
       }
-      key = chunkKey(spaceId, hashHex, String(row.incarnation));
-      keys.set(hashHex, key);
+      place = row.pack_id === null ? { key: chunkKey(spaceId, hashHex, String(row.incarnation)) } : { key: packKey(spaceId, String(row.pack_id)), offset: Number(row.pack_offset) };
+      places.set(hashHex, place);
     }
-    chunks.push({ key, hashHex, size: chunk.size });
+    chunks.push({ ...place, hashHex, size: chunk.size });
   }
   return { ok: true, value: { name: node.name, size: version.size, chunks, historyId: String(getMeta(sql, "history_id")) } };
 }

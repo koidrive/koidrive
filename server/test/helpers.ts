@@ -8,11 +8,13 @@ import { type CommitResult, type Op, OpSchema, UploadReceiptSchema, type UploadR
 import { type RpcRequest, RpcRequestSchema, type RpcResponse, RpcResponseSchema } from "../src/gen/koidrive/v1/messages_pb";
 import { type ChunkRef, ChunkRefSchema, type Content, ContentSchema, type NodeState } from "../src/gen/koidrive/v1/model_pb";
 import { ChunkPlan_Action, type Error as RpcError } from "../src/gen/koidrive/v1/rpc_pb";
-import { sha256, signChunkGrant } from "../src/crypto";
+import { encodePack } from "../src/chunk-pack";
+import { sha256, signChunkGrant, signPackedReceipt } from "../src/crypto";
 import { toHex, uuidv7 } from "../src/ids";
 import type { Session, SpaceDO } from "../src/space-do";
 import { MIGRATIONS } from "../src/space/schema";
-import { chunkKey, encodeChunkList } from "../src/space/store";
+import { GRANT_MS } from "../src/space/limits";
+import { chunkKey, encodeChunkList, packKey } from "../src/space/store";
 
 export const ORIGIN = "https://koidrive.test";
 export const OWNER = uuidv7();
@@ -71,6 +73,31 @@ export async function storedObjects(spaceId: string, hash: Uint8Array | string):
 }
 
 type Stub = Awaited<ReturnType<typeof newSpace>>["stub"];
+
+export function spaceKeyOf(stub: Stub): Promise<Uint8Array> {
+  return runInDurableObject(stub, (_instance, state) => new Uint8Array(state.storage.sql.exec("SELECT value FROM meta WHERE key = 'space_key'").one().value as ArrayBuffer));
+}
+
+export async function packFixture(
+  spaceId: string,
+  spaceKey: Uint8Array,
+  chunks: { incarnation: string; bytes: Uint8Array }[],
+  init: { packId?: string; expiresAtMs?: number } = {},
+): Promise<{ packId: string; key: string; bytes: Uint8Array; receipts: UploadReceipt[] }> {
+  const packId = init.packId ?? uuidv7();
+  const expiresAtMs = init.expiresAtMs ?? Date.now() + GRANT_MS;
+  const hashed = await Promise.all(chunks.map(async (chunk) => ({ ...chunk, hash: await sha256(chunk.bytes) })));
+  const bytes = encodePack(hashed.map(({ hash, bytes }) => ({ hash, data: bytes })));
+  const receipts: UploadReceipt[] = [];
+  let offset = 0;
+  for (const { incarnation, bytes: data, hash } of hashed) {
+    const at = { packId, offset, packSize: bytes.length };
+    const token = await signPackedReceipt(spaceKey, { spaceId, hashHex: toHex(hash), incarnation }, data.length, at, expiresAtMs);
+    receipts.push(create(UploadReceiptSchema, { hash, size: data.length, token }));
+    offset += data.length;
+  }
+  return { packId, key: packKey(spaceId, packId), bytes, receipts };
+}
 
 export function freezeClock(instance: SpaceDO, atMs: number): void {
   let nowMs = atMs;

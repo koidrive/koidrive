@@ -57,10 +57,10 @@ import {
 import type { SessionCheck } from "../account/account";
 import type { AccountDO } from "../account-do";
 import { verifyAccessToken } from "../auth";
-import { type ChunkObject, signChunkGrant, verifyChunkGrant } from "../crypto";
+import { type ChunkObject, type PackLocation, type PackedRead, signChunkGrant, signPackedGet, verifyChunkGrant, verifyPackedReceipt } from "../crypto";
 import { errorText } from "../errors";
 import type { Database, ObjectState, ObjectStore, Socket, Sql, SqlRow } from "../host";
-import { fromHex, isUuidV7, toHex, uuidv7 } from "../ids";
+import { fromHex, isUuidV7, toHex, uuidv7, uuidv7Ms } from "../ids";
 import { GIT_TRACKED } from "../features";
 import { policy } from "../policy";
 import { causeOf } from "../cause";
@@ -75,11 +75,12 @@ import type { ShareInfo, ShareListing } from "../gen/koidrive/v1/share_pb";
 import type { ShareOutcome } from "../share/links";
 import { checkFence, checkLinkRoot, type DownloadFence, type ShareFile, shareFile, shareInfo, shareListing } from "../share/space";
 import type { Pitr } from "./pitr";
-import { ChunkState } from "./schema";
+import { ChunkState, PackState } from "./schema";
 import { backfillLegacyIntents, readIntents, trashHeld } from "./intents";
 import { readUsage } from "./usage";
 import {
   chunkKey,
+  packKey,
   parseChunkKey,
   getMeta,
   getVersion,
@@ -106,6 +107,7 @@ import {
   MAX_OPS,
   MAX_CHUNKS_PER_CALL,
   MAX_HEAD_CHECKS,
+  PACK_RECEIPT_AGE_MS,
   MIN_CHUNK_GRACE_DAYS,
   MAX_MISSING_LISTED,
   MAX_SERVER_FRAME,
@@ -165,7 +167,13 @@ function withoutGitTracked(message: ServerMessage): ServerMessage {
 }
 
 function confirmedPending(row: SqlRow): boolean {
-  return row.state === ChunkState.PENDING && row.incarnation !== null && row.head_checked === 1;
+  return row.state === ChunkState.PENDING && row.incarnation !== null && (row.head_checked === 1 || typeof row.pack_id === "string");
+}
+
+interface Located {
+  object: ChunkObject;
+  size: number;
+  at: PackLocation;
 }
 
 function oldestUsableBookmarkMs(nowMs: number): number {
@@ -796,7 +804,13 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
       const cached = getMeta(this.sql, "r2_stored");
       let counted = cached === undefined ? undefined : (JSON.parse(String(cached)) as { day: number; bytes: number; objects: number });
       if (counted?.day !== day) {
-        const row = this.sql.exec("SELECT COUNT(*) AS objects, COALESCE(SUM(size), 0) AS bytes FROM chunks WHERE state != ?", ChunkState.PENDING).one();
+        const row = this.sql
+          .exec(
+            `SELECT (SELECT COUNT(*) FROM chunks WHERE state != ?1 AND pack_id IS NULL) + (SELECT COUNT(*) FROM packs) AS objects,
+               (SELECT COALESCE(SUM(size), 0) FROM chunks WHERE state != ?1 AND pack_id IS NULL) + (SELECT COALESCE(SUM(size), 0) FROM packs) AS bytes`,
+            ChunkState.PENDING,
+          )
+          .one();
         counted = { day, bytes: Number(row.bytes), objects: Number(row.objects) };
       }
       setMeta(this.sql, "r2_stored", JSON.stringify({ day: counted.day, bytes: counted.bytes, objects: counted.objects, hour }));
@@ -1044,7 +1058,8 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
         }
       }
       const nowMs = this.clock();
-      const { confirmed, receipted } = await this.confirmUploads(referenced, commit.receipts, nowMs);
+      const receipted = await this.confirmUploads(referenced, commit.receipts, nowMs);
+      const receiptedAt = new Map(receipted.map((object) => [object.hashHex, object.incarnation]));
 
       const done = await this.inStampOrder(() => this.db.transactionSync((): { result: CommitResult; record?: CommitRecord; rearm?: boolean } => {
         if (this.revoked(session.deviceId)) fail(Error_Code.UNAUTHENTICATED, "device revoked");
@@ -1056,11 +1071,13 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
 
         const missing: Uint8Array[] = [];
         for (const [hex, chunk] of referenced) {
-          const row = this.sql.exec("SELECT size, state, incarnation FROM chunks WHERE hash = ?", chunk.hash).toArray()[0];
+          const row = this.sql.exec("SELECT size, state, incarnation, head_checked, pack_id FROM chunks WHERE hash = ?", chunk.hash).toArray()[0];
           const ready =
             row &&
             row.size === chunk.size &&
-            (row.state === ChunkState.LIVE || (row.state === ChunkState.PENDING && row.incarnation !== null && confirmed.get(hex) === row.incarnation));
+            (row.state === ChunkState.LIVE ||
+              confirmedPending(row) ||
+              (row.state === ChunkState.PENDING && row.incarnation !== null && receiptedAt.get(hex) === row.incarnation));
           if (!ready) missing.push(chunk.hash);
         }
         if (missing.length > 0) {
@@ -1125,39 +1142,78 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
       referenced: Map<string, ChunkRef>,
       receipts: readonly UploadReceipt[],
       nowMs: number,
-    ): Promise<{ confirmed: Map<string, string>; receipted: ChunkObject[] }> {
+    ): Promise<ChunkObject[]> {
       const spaceId = this.spaceId;
-      const confirmed = new Map<string, string>();
-      const unconfirmed: { object: ChunkObject; size: number }[] = [];
       const receipted: ChunkObject[] = [];
+      const located: Located[] = [];
+      const unconfirmed: { object: ChunkObject; size: number }[] = [];
+      const expired: Located[] = [];
       const receiptsByHash = Map.groupBy(receipts, (receipt) => toHex(receipt.hash));
       for (const [hex, chunk] of referenced) {
-        const row = this.sql.exec("SELECT size, state, incarnation, head_checked FROM chunks WHERE hash = ?", chunk.hash).toArray()[0];
+        const row = this.sql.exec("SELECT size, state, incarnation, head_checked, pack_id FROM chunks WHERE hash = ?", chunk.hash).toArray()[0];
         if (!row || row.size !== chunk.size || row.state !== ChunkState.PENDING || row.incarnation === null) continue;
+        if (confirmedPending(row)) continue;
         const object = { spaceId, hashHex: hex, incarnation: String(row.incarnation) };
-        if (confirmedPending(row)) {
-          confirmed.set(hex, object.incarnation);
-          continue;
-        }
         let valid = false;
+        let packed: PackLocation | undefined;
+        let stale: PackLocation | undefined;
         for (const receipt of receiptsByHash.get(hex) ?? []) {
           if (receipt.size !== chunk.size) continue;
           if (await verifyChunkGrant(this.spaceKey, "receipt", object, receipt.size, receipt.token, nowMs)) valid = true;
+          const v2 = await verifyPackedReceipt(this.spaceKey, object, receipt.size, receipt.token, nowMs);
+          if (!v2 || uuidv7Ms(v2.at.packId) <= nowMs - PACK_RECEIPT_AGE_MS) continue;
+          if (v2.expired) stale ??= v2.at;
+          else packed ??= v2.at;
         }
-        if (valid) {
-          confirmed.set(hex, object.incarnation);
-          receipted.push(object);
-        } else unconfirmed.push({ object, size: chunk.size });
+        if (valid) receipted.push(object);
+        else if (packed) located.push({ object, size: chunk.size, at: packed });
+        else if (stale) expired.push({ object, size: chunk.size, at: stale });
+        else unconfirmed.push({ object, size: chunk.size });
       }
+      let heads = MAX_HEAD_CHECKS;
       const checked: ChunkObject[] = [];
-      for (const { object, size } of unconfirmed.slice(0, MAX_HEAD_CHECKS)) {
+      for (const { object, size } of unconfirmed) {
+        if (heads-- <= 0) break;
         const head = await this.objects.head(chunkKey(spaceId, object.hashHex, object.incarnation));
-        if (head?.size !== size) continue;
-        confirmed.set(object.hashHex, object.incarnation);
-        checked.push(object);
+        if (head?.size === size) checked.push(object);
+      }
+      for (const [packId, rows] of Map.groupBy(expired, ({ at }) => at.packId)) {
+        if (heads-- <= 0) break;
+        const head = await this.objects.head(packKey(spaceId, packId));
+        located.push(...rows.filter(({ at }) => at.packSize === head?.size));
       }
       this.recordConfirmed(checked, nowMs);
-      return { confirmed, receipted };
+      this.recordLocations(located, nowMs);
+      return receipted;
+    }
+
+    private recordLocations(located: readonly Located[], nowMs: number): void {
+      if (located.length === 0) return;
+      this.db.transactionSync(() => {
+        for (const { object, size, at } of located) {
+          const pack = this.sql.exec("SELECT state, size FROM packs WHERE pack_id = ?", at.packId).toArray()[0];
+          if (pack && (pack.state !== PackState.LIVE || pack.size !== at.packSize)) continue;
+          const moved = this.sql.exec(
+            `UPDATE chunks SET pack_id = ?, pack_offset = ?, hold_until_ms = MAX(hold_until_ms, ?)
+             WHERE hash = ? AND state = ? AND incarnation = ? AND pack_id IS NULL AND head_checked = 0`,
+            at.packId,
+            at.offset,
+            nowMs + HOLD_MS,
+            fromHex(object.hashHex)!,
+            ChunkState.PENDING,
+            object.incarnation,
+          ).rowsWritten;
+          if (moved === 0) continue;
+          this.sql.exec(
+            `INSERT INTO packs (pack_id, size, state, live_count, live_bytes, hold_until_ms) VALUES (?, ?, ?, 1, ?, 0)
+             ON CONFLICT (pack_id) DO UPDATE SET live_count = live_count + 1, live_bytes = live_bytes + excluded.live_bytes`,
+            at.packId,
+            at.packSize,
+            PackState.LIVE,
+            size,
+          );
+        }
+      });
     }
 
     private recordConfirmed(objects: readonly ChunkObject[], nowMs: number): void {
@@ -1177,6 +1233,10 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
 
     private chunkUrl(session: Session, object: ChunkObject, ticket: string): string {
       return `${session.origin}/v1/spaces/${object.spaceId}/chunks/${object.hashHex}?inc=${object.incarnation}&ticket=${ticket}`;
+    }
+
+    private packedUrl(session: Session, read: PackedRead, ticket: string): string {
+      return `${session.origin}/v1/spaces/${read.spaceId}/chunks/${read.hashHex}?pack=${read.packId}&off=${read.offset}&len=${read.size}&ticket=${ticket}`;
     }
 
     private allocateIncarnation(): string {
@@ -1201,7 +1261,7 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
       const actions = this.db.transactionSync(() => {
         this.checkOpen();
         return chunks.map((chunk): { action: ChunkPlan_Action; incarnation?: string } => {
-          const row = this.sql.exec("SELECT size, state, incarnation, head_checked FROM chunks WHERE hash = ?", chunk.hash).toArray()[0];
+          const row = this.sql.exec("SELECT size, state, incarnation, head_checked, pack_id FROM chunks WHERE hash = ?", chunk.hash).toArray()[0];
           if (!row) {
             const incarnation = this.allocateIncarnation();
             this.sql.exec(
@@ -1247,19 +1307,24 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
       const expiresAtMs = this.clock() + GRANT_MS;
       const found = this.db.transactionSync(() =>
         request.hashes.map((hash) => {
-          const row = this.sql.exec("SELECT state, incarnation FROM chunks WHERE hash = ?", hash).toArray()[0];
+          const row = this.sql.exec("SELECT state, incarnation, size, pack_id, pack_offset FROM chunks WHERE hash = ?", hash).toArray()[0];
           if (row?.state !== ChunkState.LIVE || row.incarnation === null) return undefined;
           this.sql.exec("UPDATE chunks SET hold_until_ms = MAX(hold_until_ms, ?) WHERE hash = ? AND refcount = 0", expiresAtMs, hash);
-          return { spaceId, hashHex: toHex(hash), incarnation: String(row.incarnation) };
+          const hashHex = toHex(hash);
+          if (row.pack_id === null) return { kind: "single" as const, object: { spaceId, hashHex, incarnation: String(row.incarnation) } };
+          return { kind: "packed" as const, read: { spaceId, hashHex, packId: String(row.pack_id), offset: Number(row.pack_offset), size: Number(row.size) } };
         }),
       );
       const missing = request.hashes.filter((_hash, i) => !found[i]);
       if (missing.length > 0) throw new CallFailure(Error_Code.MISSING_CHUNKS, "some chunks are not stored", missing);
       const targets = [];
       for (const [i, hash] of request.hashes.entries()) {
-        const object = found[i]!;
-        const ticket = await signChunkGrant(this.spaceKey, "get", object, 0, expiresAtMs);
-        const target = create(TargetSchema, { url: this.chunkUrl(session, object, ticket), method: "GET", expiresAtMs: BigInt(expiresAtMs) });
+        const one = found[i]!;
+        const url =
+          one.kind === "packed"
+            ? this.packedUrl(session, one.read, await signPackedGet(this.spaceKey, one.read, expiresAtMs))
+            : this.chunkUrl(session, one.object, await signChunkGrant(this.spaceKey, "get", one.object, 0, expiresAtMs));
+        const target = create(TargetSchema, { url, method: "GET", expiresAtMs: BigInt(expiresAtMs) });
         targets.push(create(ChunkTargetSchema, { hash, target }));
       }
       return create(DownloadTargetsSchema, { targets });
@@ -1421,7 +1486,7 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
       const marked = this.db.transactionSync(() => {
         const hashes = this.sql
           .exec(
-            `SELECT hash FROM chunks WHERE refcount = 0 AND hold_until_ms < ?
+            `SELECT hash FROM chunks WHERE refcount = 0 AND hold_until_ms < ? AND pack_id IS NULL
                AND (state = 1 OR (state = 2 AND zero_since_ms < ?)) LIMIT ?`,
             nowMs,
             nowMs - settings.chunk_grace_days * DAY_MS,
@@ -1551,13 +1616,13 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
         }
         for (const { hashHex, incarnation } of args.retired) {
           this.sql.exec(
-            "UPDATE chunks SET state = ?, incarnation = NULL, head_checked = 0 WHERE hash = ? AND incarnation = ?",
+            "UPDATE chunks SET state = ?, incarnation = NULL, head_checked = 0 WHERE hash = ? AND incarnation = ? AND pack_id IS NULL",
             ChunkState.PENDING,
             fromHex(hashHex)!,
             incarnation,
           );
         }
-        this.sql.exec("UPDATE chunks SET state = ?, incarnation = NULL, head_checked = 0 WHERE state = ?", ChunkState.PENDING, ChunkState.DELETING);
+        this.sql.exec("UPDATE chunks SET state = ?, incarnation = NULL, head_checked = 0 WHERE state = ? AND pack_id IS NULL", ChunkState.PENDING, ChunkState.DELETING);
         const holdUntil = args.completedAtMs + this.settings().chunk_grace_days * DAY_MS;
         this.sql.exec("UPDATE chunks SET state = ?, hold_until_ms = ? WHERE refcount = 0", ChunkState.PENDING, holdUntil);
         this.sql.exec("DELETE FROM rewind_markers");

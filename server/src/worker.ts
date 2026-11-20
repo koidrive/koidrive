@@ -35,7 +35,7 @@ import { CHUNK_BUNDLES, featuresOf } from "./features";
 import type { ObjectStore } from "./host";
 import { BadRequest, errorReply, readMessage, reply, responseOutcome } from "./http";
 import { countedBucket, countedEgress } from "./report/meter";
-import { type ChunkObject, deriveSpaceKey, signChunkGrant, verifyChunkGrant } from "./crypto";
+import { type ChunkObject, deriveSpaceKey, signChunkGrant, verifyChunkGrant, verifyPackedGet } from "./crypto";
 import { fromHex, isUuidV7 } from "./ids";
 import { type Capability, policy } from "./policy";
 import { platformFailure } from "./quota";
@@ -43,7 +43,7 @@ import { routeName } from "./routes";
 import { shareRoute } from "./share/routes";
 import { GRANT_MS, MAX_CHUNK_BYTES, MAX_CLIENT_FRAME } from "./space/limits";
 import { CONNECT_HEADER, type Connect } from "./space/session";
-import { chunkKey, INCARNATION } from "./space/store";
+import { chunkKey, INCARNATION, packKey } from "./space/store";
 import { STORAGE } from "./storage";
 import { account, space, traffic } from "./stubs";
 import { PROTO_MAX, PROTO_MIN, SERVER_COMMIT, SERVER_VERSION } from "./version";
@@ -150,6 +150,7 @@ async function spaceKey(env: Env, spaceId: string): Promise<Uint8Array> {
 async function chunk(request: Request, env: Env, objects: ObjectStore, spaceId: string, hex: string): Promise<Response> {
   const params = new URL(request.url).searchParams;
   const ticket = params.get("ticket") ?? "";
+  if (request.method === "GET" && params.has("pack")) return packedChunk(request, env, objects, spaceId, hex, params);
   const incarnation = params.get("inc") ?? "";
   if (!INCARNATION.test(incarnation)) return errorReply(request, Error_Code.FORBIDDEN, "invalid or expired ticket");
   const object: ChunkObject = { spaceId, hashHex: hex, incarnation };
@@ -174,6 +175,24 @@ async function chunk(request: Request, env: Env, objects: ObjectStore, spaceId: 
   const stored = await storeChunk(objects, await spaceKey(env, spaceId), object, size, ticket, request.body, nowMs);
   if (stored.receipt) return reply(request, UploadReceiptSchema, stored.receipt);
   return reply(request, ErrorSchema, stored.error!, stored.status);
+}
+
+async function packedChunk(request: Request, env: Env, objects: ObjectStore, spaceId: string, hashHex: string, params: URLSearchParams): Promise<Response> {
+  const [packId, offset, size] = ["pack", "off", "len"].map((name) => params.get(name) ?? "");
+  const read = { spaceId, hashHex, packId: packId!, offset: Number(offset), size: Number(size) };
+  const valid =
+    isUuidV7(read.packId) &&
+    /^\d{1,15}$/.test(offset!) &&
+    /^\d{1,15}$/.test(size!) &&
+    (await verifyPackedGet(await spaceKey(env, spaceId), read, params.get("ticket") ?? "", Date.now()));
+  if (!valid) return errorReply(request, Error_Code.FORBIDDEN, "invalid or expired download ticket");
+  const stored = await objects.get(packKey(spaceId, read.packId), { range: { offset: read.offset, length: read.size } });
+  if (!stored) return errorReply(request, Error_Code.INVALID_ARGUMENT, "chunk not found", 404);
+  const bytes = new Uint8Array(await new Response(stored.body).arrayBuffer());
+  if (bytes.length !== read.size) return errorReply(request, Error_Code.RETRY_LATER, "chunk storage returned a short read; retry the download", 503);
+  return new Response(bytes, {
+    headers: { "Content-Type": "application/octet-stream", "Content-Length": String(read.size), "Cache-Control": "private, max-age=3600" },
+  });
 }
 
 async function storeChunk(

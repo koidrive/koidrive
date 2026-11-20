@@ -77,6 +77,10 @@ export function chunkKey(spaceId: string, hashHex: string, incarnation: string):
   return `spaces/${spaceId}/chunks/${hashHex.slice(0, 2)}/${hashHex}/${incarnation}`;
 }
 
+export function packKey(spaceId: string, packId: string): string {
+  return `spaces/${spaceId}/packs/${packId}`;
+}
+
 export function parseChunkKey(spaceId: string, key: string): { hashHex: string; incarnation: string } | undefined {
   const match = /^([0-9a-f]{2})\/([0-9a-f]{64})\/([^/]+)$/.exec(key.slice(`spaces/${spaceId}/chunks/`.length));
   if (!key.startsWith(`spaces/${spaceId}/chunks/`) || !match || !match[2]!.startsWith(match[1]!) || !INCARNATION.test(match[3]!)) return undefined;
