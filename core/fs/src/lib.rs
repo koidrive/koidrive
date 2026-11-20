@@ -91,9 +91,19 @@
 //! listings and stats only. Found there, it was moved and nothing was
 //! deleted, so it is reported as [`Change::Ignored`]. A miss is reported as a
 //! removal, although a file saved again after such a move has a new identity
-//! and is missed. A miss of a search that ended before it looked everywhere
+//! and is missed. Before a miss, the search checks the left-out folders it
+//! listed and walks a folder again if it changed or was briefly gone. A folder
+//! listed again after a folder in it was left behind keeps its saved digest
+//! unless only that folder and the names added for the walk changed. This
+//! finds an entry moved into a folder the search had passed only where the
+//! folder's modification or change time changes with each entry added to,
+//! removed from or renamed in it. On FAT,
+//! exFAT and some network shares, such a miss is reported as a removal. A
+//! miss of a search that ended before it looked everywhere
 //! ([`Rules::end_search`]), or that could not open a left-out folder or
-//! left behind one that kept being replaced ([`Rules::coverage`]), is
+//! left behind one that kept being replaced, or whose last round of checks
+//! queued a path any stat showed as a folder and no walk finished
+//! ([`Rules::coverage`]), is
 //! reported as [`Change::Missing`], which design §5.10 holds for a question
 //! to the user. The search does not look in [`PRIVATE_DIR`] or in the
 //! built-in platform files.

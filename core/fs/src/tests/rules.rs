@@ -331,7 +331,7 @@ fn one_search_finds_files_moved_behind_it_or_into_a_new_scope_past_a_locked_file
 }
 
 #[test]
-fn a_search_opens_each_folder_of_a_wide_folder_past_the_open_folder_cap_once() {
+fn a_search_opens_each_folder_of_a_wide_folder_past_the_open_folder_cap_at_most_twice() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().join("space");
     let wide: PathBuf = ["ig"].into_iter().chain(["d"; 15]).collect();
@@ -376,8 +376,255 @@ fn a_search_opens_each_folder_of_a_wide_folder_past_the_open_folder_cap_once() {
     );
     let (folders, entries) = (16 + 100, 16 + 200);
     assert_eq!(opened.len(), folders);
-    assert_eq!(opened.values().sum::<usize>(), folders);
-    assert_eq!(looked, entries);
+    assert!(opened.values().all(|opens| *opens <= 2), "{opened:?}");
+    assert!(looked <= entries + folders, "{looked}");
+}
+
+#[test]
+fn a_search_looks_again_when_a_passed_folder_comes_back() {
+    for (away, at_stat) in [
+        (Some("ig/a"), false),
+        (Some("ig/a/child"), false),
+        (Some("ig/a/child"), true),
+        (None, false),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("space");
+        for path in [
+            "ig/a/child/keep",
+            "ig/m/x",
+            "ig/z/keep",
+            ".koiignore",
+            "f.txt",
+        ] {
+            let path = root.join(path);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(
+                &path,
+                if path.ends_with(".koiignore") {
+                    "ig\n"
+                } else {
+                    "f"
+                },
+            )
+            .unwrap();
+        }
+        let mut rules = Rules::new(Box::new(Lines::default())).with_search_budget(usize::MAX);
+        let mut snapshot = Snapshot::scan_with_rules(&root, &mut rules).unwrap();
+        let id = snapshot.entries[Path::new("f.txt")].id;
+        let to = "ig/a/child/f.txt";
+        fs::rename(root.join("f.txt"), root.join("ig/z/f.txt")).unwrap();
+        let mut moved = false;
+        let mut parked = false;
+        let mut back = false;
+        let scan = snapshot
+            .rescan_under(
+                &root,
+                [PathBuf::new()],
+                &BTreeSet::new(),
+                None,
+                Some(&mut rules),
+                &|| false,
+                &|_| {},
+                Keep::Unplaced,
+                &mut |cut| match cut {
+                    Cut::Searching(path)
+                        if at_stat && !parked && path == Path::new("ig/a/child") =>
+                    {
+                        fs::rename(root.join("ig/a/child"), root.join("ig/parked")).unwrap();
+                        parked = true;
+                    }
+                    Cut::Searching(path) if !moved && path == Path::new("ig/m/x") => {
+                        if parked {
+                            fs::rename(root.join("ig/parked"), root.join("ig/a/child")).unwrap();
+                            back = true;
+                        }
+                        fs::rename(root.join("ig/z/f.txt"), root.join(to)).unwrap();
+                        moved = true;
+                    }
+                    Cut::Confirming(path) if moved && !back => {
+                        let Some(away) = away.map(Path::new) else {
+                            return;
+                        };
+                        if !parked && path == Path::new("ig/a/child") {
+                            fs::rename(root.join(away), root.join("ig/parked")).unwrap();
+                            parked = true;
+                        } else if parked {
+                            fs::rename(root.join("ig/parked"), root.join(away)).unwrap();
+                            back = true;
+                        }
+                    }
+                    _ => {}
+                },
+                &MarkLog::default(),
+            )
+            .unwrap();
+        assert_eq!(
+            scan.changes,
+            [Change::Ignored {
+                from: "f.txt".into(),
+                to: to.into(),
+                kind: EntryKind::File,
+                id,
+            }],
+            "temporary removal of {away:?}, at its stat: {at_stat}"
+        );
+        assert!(away.is_none() || back);
+    }
+}
+
+#[test]
+fn a_search_stops_checking_a_folder_that_a_file_replaced() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("space");
+    for (path, text) in [
+        ("ig/x/keep", "k"),
+        ("ig/z/keep", "k"),
+        (".koiignore", "ig\n"),
+        ("f.txt", "f"),
+    ] {
+        let path = root.join(path);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, text).unwrap();
+    }
+    let mut rules = Rules::new(Box::new(Lines::default())).with_search_budget(usize::MAX);
+    let mut snapshot = Snapshot::scan_with_rules(&root, &mut rules).unwrap();
+    fs::remove_file(root.join("f.txt")).unwrap();
+    let mut gone = false;
+    let mut checks = 0;
+    let scan = snapshot
+        .rescan_under(
+            &root,
+            [PathBuf::new()],
+            &BTreeSet::new(),
+            None,
+            Some(&mut rules),
+            &|| false,
+            &|_| {},
+            Keep::Unplaced,
+            &mut |cut| match cut {
+                Cut::Searching(path) if !gone && path == Path::new("ig/x") => {
+                    fs::remove_dir_all(root.join("ig/x")).unwrap();
+                    gone = true;
+                }
+                Cut::Searching(path) if path == Path::new("ig/z") => {
+                    fs::write(root.join("ig/x"), "x").unwrap();
+                }
+                Cut::Confirming(path) if path == Path::new("ig/z") => checks += 1,
+                _ => {}
+            },
+            &MarkLog::default(),
+        )
+        .unwrap();
+    assert_eq!(
+        scan.changes,
+        [Change::Removed {
+            path: "f.txt".into(),
+            kind: EntryKind::File,
+        }]
+    );
+    assert!(rules.coverage().everywhere(), "{:?}", rules.coverage());
+    assert_eq!(checks, 2);
+}
+
+#[test]
+fn a_search_notices_a_parent_replaced_around_the_checks_of_its_children() {
+    let parent_away: &[(&str, &str)] = &[("ig/p", "ig/q"), ("ig/new", "ig/p")];
+    let children_too: &[(&str, &str)] = &[
+        ("ig/p/a", "ig/new/a"),
+        ("ig/p/b", "ig/new/b"),
+        ("ig/p", "ig/q"),
+        ("ig/new", "ig/p"),
+    ];
+    let child_away: &[(&str, &str)] = &[("ig/p/b", "ig/c/b")];
+    for (at, last_round, renames, to) in [
+        ("ig/p/b", false, parent_away, "ig/q/f.txt"),
+        ("ig/p/a", false, children_too, "ig/q/f.txt"),
+        ("ig/p/b", true, parent_away, "ig/q/f.txt"),
+        ("ig/p/b", true, child_away, "ig/c/b/f.txt"),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("space");
+        for path in [
+            "ig/c/keep",
+            "ig/p/a/keep",
+            "ig/p/b/keep",
+            "ig/z/keep",
+            ".koiignore",
+            "f.txt",
+        ] {
+            let path = root.join(path);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(
+                &path,
+                if path.ends_with(".koiignore") {
+                    "ig\n"
+                } else {
+                    "f"
+                },
+            )
+            .unwrap();
+        }
+        let mut rules = Rules::new(Box::new(Lines::default())).with_search_budget(usize::MAX);
+        let mut snapshot = Snapshot::scan_with_rules(&root, &mut rules).unwrap();
+        let id = snapshot.entries[Path::new("f.txt")].id;
+        let outside = dir.path().join("f.txt");
+        fs::rename(root.join("f.txt"), &outside).unwrap();
+        let mut round = 0;
+        let scan = snapshot
+            .rescan_under(
+                &root,
+                [PathBuf::new()],
+                &BTreeSet::new(),
+                None,
+                Some(&mut rules),
+                &|| false,
+                &|_| {},
+                Keep::Unplaced,
+                &mut |cut| {
+                    let Cut::Confirming(path) = cut else {
+                        return;
+                    };
+                    if path == Path::new("ig/c") {
+                        round += 1;
+                        if last_round && round < 4 {
+                            fs::write(root.join(format!("ig/c/{round}")), "x").unwrap();
+                        }
+                    } else if path == Path::new(at)
+                        && outside.exists()
+                        && (!last_round || round == 4)
+                    {
+                        fs::create_dir(root.join("ig/new")).unwrap();
+                        for (from, into) in renames {
+                            fs::rename(root.join(from), root.join(into)).unwrap();
+                        }
+                        fs::rename(&outside, root.join(to)).unwrap();
+                    }
+                },
+                &MarkLog::default(),
+            )
+            .unwrap();
+        let expected = if last_round {
+            Change::Missing {
+                path: "f.txt".into(),
+                kind: EntryKind::File,
+                id,
+            }
+        } else {
+            Change::Ignored {
+                from: "f.txt".into(),
+                to: to.into(),
+                kind: EntryKind::File,
+                id,
+            }
+        };
+        assert_eq!(
+            scan.changes,
+            [expected],
+            "{at}, last round {last_round}, {renames:?}"
+        );
+        assert!(!outside.exists());
+    }
 }
 
 #[test]
@@ -444,5 +691,79 @@ fn a_search_starts_over_when_a_folder_is_replaced_between_its_stat_and_its_open(
         if every {
             assert_eq!(rules.coverage().replaced, BTreeSet::from(["ig/a".into()]));
         }
+    }
+}
+
+#[test]
+fn a_search_leaves_a_miss_unproven_when_a_folder_queued_in_the_last_round_is_lost_before_its_walk()
+{
+    for (file_in_its_place, missed_first) in [(false, false), (true, false), (false, true)] {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("space");
+        for (path, text) in [
+            ("ig/a/keep", "k"),
+            ("ig/m/keep", "k"),
+            ("ig/z/keep", "k"),
+            (".koiignore", "ig\n"),
+            ("f.txt", "f"),
+        ] {
+            let path = root.join(path);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(&path, text).unwrap();
+        }
+        let mut rules = Rules::new(Box::new(Lines::default())).with_search_budget(usize::MAX);
+        let mut snapshot = Snapshot::scan_with_rules(&root, &mut rules).unwrap();
+        let away = dir.path().join("f.txt");
+        let hidden = dir.path().join("z");
+        fs::rename(root.join("f.txt"), &away).unwrap();
+        let (mut writes, mut checks, mut lost) = (0, 0, false);
+        let scan = snapshot
+            .rescan_under(
+                &root,
+                [PathBuf::new()],
+                &BTreeSet::new(),
+                None,
+                Some(&mut rules),
+                &|| false,
+                &|_| {},
+                Keep::Unplaced,
+                &mut |cut| match cut {
+                    Cut::Confirming(path) if path == Path::new("ig/m") && writes < 3 => {
+                        writes += 1;
+                        fs::write(root.join(format!("ig/m/w{writes}")), "w").unwrap();
+                    }
+                    Cut::Confirming(path) if path == Path::new("ig/z") => {
+                        checks += 1;
+                        if checks == 4 {
+                            if missed_first {
+                                fs::rename(&hidden, root.join("ig/z")).unwrap();
+                            }
+                            fs::rename(&away, root.join("ig/z/f.txt")).unwrap();
+                        }
+                    }
+                    Cut::Searching(path)
+                        if missed_first && checks == 0 && path == Path::new("ig/z") =>
+                    {
+                        fs::rename(root.join("ig/z"), &hidden).unwrap();
+                    }
+                    Cut::Searching(path) if checks == 4 && !lost && path == Path::new("ig/z") => {
+                        lost = true;
+                        fs::rename(root.join("ig/z"), root.join("ig/a/z")).unwrap();
+                        if file_in_its_place {
+                            fs::write(root.join("ig/z"), "x").unwrap();
+                        }
+                    }
+                    _ => {}
+                },
+                &MarkLog::default(),
+            )
+            .unwrap();
+        assert!(lost && root.join("ig/a/z/f.txt").exists());
+        assert!(
+            matches!(scan.changes.as_slice(), [Change::Missing { path, .. }] if path == Path::new("f.txt")),
+            "a file in its place: {file_in_its_place}, missed first: {missed_first}: {:?}",
+            scan.changes
+        );
+        assert!(rules.coverage().replaced.contains(Path::new("ig/z")));
     }
 }

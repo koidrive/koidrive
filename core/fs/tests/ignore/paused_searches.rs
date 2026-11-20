@@ -295,47 +295,176 @@ fn a_folder_replaced_above_the_open_folders_of_a_paused_search_keeps_the_move() 
 }
 
 #[test]
-fn a_search_keeps_a_move_while_folders_on_its_way_move_or_keep_being_replaced() {
+fn a_search_checks_passed_folders_past_the_open_folder_cap() {
+    let deep = (0..20).fold("ig/a".to_string(), |path, i| format!("{path}/c{i}"));
+    for (to, move_at) in [(&deep[..], 1), (&deep[..], 2), ("ig/a", 1), (&deep[..], 0)] {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        write(root, KOIIGNORE, "ig/\n");
+        write(root, "f.txt", "f");
+        write(root, &format!("{to}/keep"), "k");
+        for i in 0..20 {
+            write(root, &format!("ig/m{i:02}/x"), "x");
+        }
+        write(root, "ig/z/box/keep", "k");
+        let mut rules = rules().with_search_budget(50);
+        let mut snapshot = Snapshot::scan_with_rules(root, &mut rules).unwrap();
+        let id = snapshot.entries[Path::new("f.txt")].id;
+        let mut paths = whole().to_vec();
+        fs::rename(root.join("f.txt"), root.join("ig/z/box/f.txt")).unwrap();
+        let changes = (1..400)
+            .find_map(|rescan| {
+                let result = snapshot
+                    .rescan_with_rules(root, std::mem::take(&mut paths), &mut rules)
+                    .unwrap();
+                paths = result.unsettled;
+                if !result.changes.is_empty() {
+                    return Some(result.changes);
+                }
+                if rescan == move_at {
+                    fs::rename(root.join("ig/z/box"), root.join(to).join("box")).unwrap();
+                }
+                None
+            })
+            .expect("the search ends");
+        let to = if move_at == 0 { "ig/z" } else { to };
+        assert_eq!(
+            changes,
+            [Change::Ignored {
+                from: "f.txt".into(),
+                to: PathBuf::from(format!("{to}/box/f.txt")),
+                kind: File,
+                id,
+            }],
+            "move after rescan {move_at}"
+        );
+    }
+}
+
+#[test]
+fn a_search_finds_a_renamed_ignored_folder_after_churn_settles() {
+    for (budget, rebuild, rename) in [
+        (1, true, true),
+        (2, true, true),
+        (3, true, true),
+        (2, false, true),
+        (2, true, false),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        write(root, KOIIGNORE, "dist/\nold/\n");
+        write(root, "f.txt", "f");
+        let build = || {
+            for i in 0..20 {
+                write(root, &format!("dist/assets/chunk{i:02}.js"), "x");
+            }
+        };
+        build();
+        for i in 0..40 {
+            write(root, &format!("old/inbox/a{i:02}"), "x");
+        }
+        let mut rules = rules().with_search_budget(budget);
+        let mut snapshot = Snapshot::scan_with_rules(root, &mut rules).unwrap();
+        let id = snapshot.entries[Path::new("f.txt")].id;
+        let mut paths = whole().to_vec();
+        fs::rename(root.join("f.txt"), root.join("old/inbox/f.txt")).unwrap();
+        let changes = (1..1000)
+            .find_map(|rescan| {
+                let result = snapshot
+                    .rescan_with_rules(root, std::mem::take(&mut paths), &mut rules)
+                    .unwrap();
+                paths = result.unsettled;
+                if !result.changes.is_empty() {
+                    return Some(result.changes);
+                }
+                if rebuild && rescan < 10 {
+                    fs::remove_dir_all(root.join("dist")).unwrap();
+                    build();
+                }
+                if rename && rescan == 10 {
+                    fs::rename(root.join("old/inbox"), root.join("old/inbox-2026")).unwrap();
+                }
+                None
+            })
+            .expect("the search ends");
+        let to = if rename {
+            "old/inbox-2026"
+        } else {
+            "old/inbox"
+        };
+        assert_eq!(
+            changes,
+            [Change::Ignored {
+                from: "f.txt".into(),
+                to: PathBuf::from(format!("{to}/f.txt")),
+                kind: File,
+                id,
+            }],
+            "budget {budget}, rebuild {rebuild}, rename {rename}"
+        );
+    }
+}
+
+#[test]
+fn a_search_keeps_a_move_while_ignored_folders_move_or_keep_being_replaced() {
     fn mv(root: &Path, from: &str, to: &str) {
         fs::rename(root.join(from), root.join(to)).unwrap();
     }
     type Fill = fn(usize) -> String;
     type Churn = dyn Fn(&Path, usize);
-    let cases: [(Fill, &str, &str, &Churn); 3] = [
+    type Moved = Option<(&'static str, &'static str)>;
+    type Budgets = &'static [usize];
+    const EVERY: Budgets = &[3, 4, 5, 6, 7, 10, 20];
+    let cases: [(Fill, Moved, &Churn, Budgets); 5] = [
         (
             |i| format!("ig/p/box/a{i:02}"),
-            "ig/p/box/f.txt",
-            "ig/a/box/f.txt",
+            Some(("ig/p/box/f.txt", "ig/a/box/f.txt")),
             &|root, rescan| {
                 if rescan == 1 {
                     mv(root, "ig/p/box", "ig/a/box");
                 }
             },
+            EVERY,
         ),
         (
             |i| format!("ig/inbox/a{i:02}"),
-            "ig/inbox/f.txt",
-            "ig/inbox-2/f.txt",
+            Some(("ig/inbox/f.txt", "ig/inbox-2/f.txt")),
             &|root, rescan| match rescan {
                 1 => mv(root, "ig/inbox", "ig/inbox-1"),
                 2 => mv(root, "ig/inbox-1", "ig/inbox-2"),
                 _ => {}
             },
+            EVERY,
         ),
         (
             |i| format!("ig/m/k{i:02}/x"),
-            "ig/m/k39/f.txt",
-            "ig/old001/k39/f.txt",
+            Some(("ig/m/k39/f.txt", "ig/old001/k39/f.txt")),
             &|root, rescan| {
                 mv(root, "ig/m", &format!("ig/old{rescan:03}"));
                 for i in 0..40 {
                     write(root, &format!("ig/m/k{i:02}/x"), "x");
                 }
             },
+            EVERY,
+        ),
+        (
+            |i| format!("ig/lib/p{:02}/f{}", i / 4, i % 4),
+            None,
+            &|root, rescan| write(root, &format!("ig/a/w{rescan}"), "x"),
+            EVERY,
+        ),
+        (
+            |i| format!("ig/lib/p{:02}/f{}", i / 4, i % 4),
+            None,
+            &|root, _| {
+                fs::remove_dir_all(root.join("ig/a")).unwrap();
+                write(root, "ig/a/keep", "k");
+            },
+            &[13, 17, 20, 200],
         ),
     ];
-    for (fill, start, to, churn) in cases {
-        for budget in [10, 20] {
+    for (fill, moved, churn, budgets) in cases {
+        for &budget in budgets {
             let dir = tempfile::tempdir().unwrap();
             let root = dir.path();
             write(root, KOIIGNORE, "ig/\n");
@@ -347,7 +476,10 @@ fn a_search_keeps_a_move_while_folders_on_its_way_move_or_keep_being_replaced() 
             let mut rules = rules().with_search_budget(budget);
             let mut snapshot = Snapshot::scan_with_rules(root, &mut rules).unwrap();
             let id = snapshot.entries[Path::new("f.txt")].id;
-            fs::rename(root.join("f.txt"), root.join(start)).unwrap();
+            match moved {
+                Some((start, _)) => fs::rename(root.join("f.txt"), root.join(start)).unwrap(),
+                None => fs::remove_file(root.join("f.txt")).unwrap(),
+            }
             let mut paths = whole().to_vec();
             let changes = (1..2000)
                 .find_map(|rescan| {
@@ -358,14 +490,111 @@ fn a_search_keeps_a_move_while_folders_on_its_way_move_or_keep_being_replaced() 
                     paths = result.unsettled;
                     Some(result.changes).filter(|changes| !changes.is_empty())
                 })
-                .unwrap_or_else(|| panic!("{start} budget {budget}: the search never ended"));
-            let moved = Change::Ignored {
-                from: "f.txt".into(),
-                to: to.into(),
-                kind: File,
-                id,
+                .unwrap_or_else(|| panic!("{moved:?} budget {budget}: the search never ended"));
+            let expected = match moved {
+                Some((_, to)) => Change::Ignored {
+                    from: "f.txt".into(),
+                    to: to.into(),
+                    kind: File,
+                    id,
+                },
+                None => removed("f.txt", File),
             };
-            assert_eq!(changes, [moved], "{start} budget {budget}");
+            assert_eq!(changes, [expected], "{moved:?} budget {budget}");
+            assert!(
+                moved.is_some() || rules.coverage().everywhere(),
+                "budget {budget}: {:?}",
+                rules.coverage()
+            );
+        }
+    }
+}
+
+#[test]
+fn a_search_leaves_a_miss_unproven_when_a_folder_rebuilt_before_every_rescan_outgrows_the_budget() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write(root, KOIIGNORE, "ig/\n");
+    write(root, "f.txt", "f");
+    write(root, "ig/a/keep", "k");
+    for i in 0..40 {
+        write(root, &format!("ig/lib/p{:02}/f{}", i / 4, i % 4), "x");
+    }
+    let mut rules = rules().with_search_budget(16);
+    let mut snapshot = Snapshot::scan_with_rules(root, &mut rules).unwrap();
+    fs::remove_file(root.join("f.txt")).unwrap();
+    let mut paths = whole().to_vec();
+    let changes = (1..2000)
+        .find_map(|_| {
+            let result = snapshot
+                .rescan_with_rules(root, paths.clone(), &mut rules)
+                .unwrap();
+            fs::remove_dir_all(root.join("ig/a")).unwrap();
+            for i in 0..12 {
+                write(root, &format!("ig/a/w{i:02}"), "x");
+            }
+            paths = result.unsettled;
+            Some(result.changes).filter(|changes| !changes.is_empty())
+        })
+        .expect("the search never ended");
+    let coverage = rules.coverage();
+    assert!(
+        coverage.replaced.contains(Path::new("ig/a")),
+        "{coverage:?}"
+    );
+    if cfg!(target_os = "macos") {
+        assert_eq!(changes, [removed("f.txt", File)]);
+    } else {
+        assert!(
+            matches!(changes.as_slice(), [Change::Missing { path, kind: File, .. }] if path == Path::new("f.txt")),
+            "{changes:?}"
+        );
+    }
+}
+
+#[test]
+fn a_search_walks_a_parent_again_when_an_entry_it_passed_changed_before_it_left_a_child_out() {
+    for budget in [6, 10, 16] {
+        let dir = tempfile::tempdir().unwrap();
+        let root = &dir.path().join("space");
+        write(root, KOIIGNORE, "ig/\n");
+        write(root, "f.txt", "f");
+        write(root, "ig/a", "a");
+        for i in 0..30 {
+            write(root, &format!("ig/z/k{i:02}"), "x");
+        }
+        let mut rules = rules().with_search_budget(budget);
+        let mut snapshot = Snapshot::scan_with_rules(root, &mut rules).unwrap();
+        let id = snapshot.entries[Path::new("f.txt")].id;
+        let away = dir.path().join("f.txt");
+        fs::rename(root.join("f.txt"), &away).unwrap();
+        let mut paths = whole().to_vec();
+        for rescan in 1.. {
+            assert!(rescan < 1000, "budget {budget}: the search never ended");
+            let result = snapshot.rescan_with_rules(root, paths, &mut rules).unwrap();
+            if !result.changes.is_empty() {
+                assert_eq!(
+                    result.changes,
+                    [Change::Ignored {
+                        from: "f.txt".into(),
+                        to: "ig/a".into(),
+                        kind: File,
+                        id,
+                    }],
+                    "budget {budget}"
+                );
+                break;
+            }
+            if rescan <= 9 {
+                fs::rename(root.join("ig/z"), dir.path().join(format!("z{rescan}"))).unwrap();
+                for i in 0..30 {
+                    write(root, &format!("ig/z/k{i:02}"), "x");
+                }
+            }
+            if rescan == 9 {
+                fs::rename(&away, root.join("ig/a")).unwrap();
+            }
+            paths = result.unsettled;
         }
     }
 }
