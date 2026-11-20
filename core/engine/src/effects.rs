@@ -1063,6 +1063,20 @@ pub fn stuck(
                 .filter(|(id, _)| !stuck.contains_key(*id))
                 .filter_map(|(id, parent)| Some(((*id).clone(), root(&stuck, parent)?))),
         );
+        behind.extend(
+            (trees.dirty_others().iter())
+                .filter(|id| !stuck.contains_key(*id) && !trees.held(id) && !renaming.contains(*id))
+                .filter_map(|id| {
+                    let local = trees.local().get(id).filter(|node| !node.parked)?;
+                    let known = [trees.acknowledged(id), trees.remote().live(id)];
+                    let mut known = known.into_iter().flatten().peekable();
+                    known.peek()?;
+                    if known.any(|shape| shape.parent == local.shape.parent) {
+                        return None;
+                    }
+                    Some((id.clone(), root(&stuck, &local.shape.parent)?))
+                }),
+        );
         if behind.is_empty() {
             return stuck;
         }

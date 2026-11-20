@@ -687,7 +687,8 @@ cases = ["{1:064}"]
         rules_leave_out = "a_first_link_sends_nothing_the_rules_leave_out_for_a_while_until_the_person_publishes_it"
         od1d0 = "d1d0430345fa" + "0" * 52
         n62f7 = "62f7a056c8c4" + "0" * 52
-        restored_late = next(text for entry in entries for text in entry["examples"] if "01a1c2c0-39a0-7353-a331-565b5a0660d9" in text)
+        restored_late = ("planned creates or moves wait on a parent that neither the server holds, nor the plan places, nor a pending change brings: "
+                         "[(\"01a1c2c0-39a0-7353-a331-565b5a0660d9\", \"01a1c2c0-39a0-7001-b241-9db23951df99\")].")
         queued = next(entry for entry in entries if entry["file"].startswith("GUN-1233-G-"))["examples"][0]
         parked = "a parked node is neither on its way out nor reported at core/sim/tests/engine_sync/common.rs:2074."
         excluded_left = ("assertion failed: `(left == right)` \n  left: `[\"01a1c2c0-39a0-7122-aa2f-19dfbfa03020\"]`,\n"
@@ -784,7 +785,7 @@ cases = ["{1:064}"]
             (lose_coarse, example(d1f04) + "\n" + undone, d1f04, []),
             (lose_coarse, head_only_undone(lose_coarse, d1f04), d1f04, []),
             (lose_coarse, taken, d1f04, [("D", "GUN-984", None)]),
-            (takes_along, example(tb5bf), tb5bf, [("T", "GUN-1046", ["b5bf582a739d", "143726c8b880"])]),
+            (takes_along, example(tb5bf), tb5bf, [("Z", "GUN-1386", ["b5bf582a739d", "56f9d5884fef"])]),
             (takes_along, example(tb5bf), other, []),
             (rewinds_and_rollbacks, example(tb5bf), tb5bf, []),
             (takes_along, example(tb5bf) + "\n" + undone, tb5bf, []),
@@ -797,7 +798,7 @@ cases = ["{1:064}"]
             (folder, replayed(l14fe) + "\n" + undone, l14fe, []),
             (folder, head_only_undone(folder, l14fe), l14fe, []),
             (lose_coarse, replayed(l14fe), l14fe, []),
-            (takes_along, restored_late, t1437, [("T", "GUN-1046", ["b5bf582a739d", "143726c8b880"])]),
+            (takes_along, restored_late, t1437, []),
             (takes_along, restored_late, other, []),
             (rewinds_and_rollbacks, restored_late, t1437, []),
             (takes_along, restored_late + "\n" + undone, t1437, []),

@@ -2656,6 +2656,9 @@ impl World {
                     .map(|(id, node)| (node.identity.ino, id.clone()))
                     .collect();
                 commits.build(trees, ids, NOW as u64, &history, device_id, cursor.clone());
+                if let Err(why) = commits.check_buildable() {
+                    panic!("{why}");
+                }
                 let ops = commits.in_flight().map(|flight| &flight.commit.ops);
                 for placed in ops.map_or_else(Vec::new, |ops| excluded_op(trees, ops)) {
                     let why = format!(

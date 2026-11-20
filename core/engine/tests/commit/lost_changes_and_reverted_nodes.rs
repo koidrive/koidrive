@@ -381,6 +381,344 @@ fn two_reverted_files_that_block_each_other_are_placed_through_parking() {
     assert!(trees.reverted().is_empty());
 }
 
+fn a_folder_deleted_around_a_parked_folder(lost: bool) -> (Trees, Commits, IdGen) {
+    let mut trees = trees(&[synced("d", dir(ROOT, "d")), synced("f", dir("d", "f"))]);
+    trees.set_local(
+        "f".into(),
+        LocalNode {
+            parked: true,
+            ..local(dir("d", "f"), 2)
+        },
+    );
+    trees.remove_local(&"d".into());
+    trees.remove_remote(&"d".into());
+    trees.remove_remote(&"f".into());
+    if lost {
+        trees.forget_lost(
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Default::default(),
+            &Default::default(),
+            0,
+            0,
+        );
+    }
+    trees.settle(&Default::default());
+    (trees, Commits::default(), IdGen::new(1))
+}
+
+#[test]
+fn a_folder_the_server_lost_and_the_user_deleted_around_a_parked_folder_is_created_again_once() {
+    let (mut trees, mut commits, mut ids) = a_folder_deleted_around_a_parked_folder(true);
+    let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
+    let created: Vec<(String, String, String)> = (ops(&commit).into_iter())
+        .filter_map(|op| match op {
+            op::Op::CreateDir(create) => Some((create.node_id, create.parent_id, create.name)),
+            _ => None,
+        })
+        .collect();
+    let at = |node: &str, parent: &str, name: &str| (node.into(), parent.into(), name.into());
+    assert_eq!(created, [at("d", ROOT, "d"), at("f", "d", "f")]);
+    assert_eq!(ops(&commit).len(), 2);
+    trees.set_remote("d".into(), remote(dir(ROOT, "d")));
+    trees.set_remote("f".into(), remote(dir("d", "f")));
+    acknowledge(
+        &mut commits,
+        &mut trees,
+        vec![outcome(op_result::Code::Applied); 2],
+    );
+    assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
+    assert!(trees.reverted().contains(&"d".into()));
+    effects_for(&mut trees, &mut ids, "d");
+    assert_eq!(
+        trees.local().get(&"d".into()).unwrap().shape,
+        dir(ROOT, "d")
+    );
+    let f = trees.local().get(&"f".into()).unwrap();
+    assert!(!f.parked);
+    assert_eq!(f.shape, dir("d", "f"));
+    assert_eq!(trees.work(), vec![]);
+    assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
+}
+
+#[test]
+fn a_folder_another_device_deleted_around_a_parked_folder_is_not_created_again() {
+    let (mut trees, mut commits, mut ids) = a_folder_deleted_around_a_parked_folder(false);
+    assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
+    assert_eq!(effects_for(&mut trees, &mut ids, "f").len(), 1);
+    assert_eq!(trees.local().get(&"f".into()), None);
+    assert_eq!(trees.synced().get(&"d".into()), None);
+    assert_eq!(trees.work(), vec![]);
+    assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
+}
+
+#[test]
+fn a_folder_deleted_around_a_parked_folder_is_created_again_once_a_scan_stops_holding_it() {
+    let (mut trees, mut commits, mut ids) = a_folder_deleted_around_a_parked_folder(true);
+    trees.await_scan([vec!["d".to_owned()]]);
+    assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
+    trees.await_scan(Vec::<Vec<String>>::new());
+    trees.settle(commits.aliases());
+    let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
+    assert!(
+        matches!(ops(&commit)[..], [op::Op::CreateDir(ref d), op::Op::CreateDir(ref f)] if d.node_id == "d" && f.node_id == "f")
+    );
+}
+
+fn applied(trees: &mut Trees, commits: &mut Commits, commit: &proto::Commit) {
+    for op in ops(commit) {
+        let (id, shape) = match op {
+            op::Op::CreateDir(c) => (c.node_id, dir(&c.parent_id, &c.name)),
+            op::Op::CreateFile(c) => {
+                let digest = c.content.unwrap().manifest_digest[0];
+                (c.node_id, file(&c.parent_id, &c.name, digest))
+            }
+            op => panic!("unexpected {op:?}"),
+        };
+        trees.set_remote(id.as_str().into(), remote(shape));
+    }
+    let n = commit.ops.len();
+    acknowledge(commits, trees, vec![outcome(op_result::Code::Applied); n]);
+}
+
+#[test]
+fn nested_lost_folders_deleted_around_a_parked_file_are_created_again_top_down() {
+    let mut trees = trees(&[
+        synced("z", dir(ROOT, "z")),
+        synced("y", dir("z", "y")),
+        synced("f", file("y", "f", 1)),
+    ]);
+    trees.set_local(
+        "f".into(),
+        LocalNode {
+            parked: true,
+            ..local(file("y", "f", 2), 3)
+        },
+    );
+    trees.remove_local(&"y".into());
+    trees.remove_local(&"z".into());
+    for id in ["z", "y", "f"] {
+        trees.remove_remote(&id.into());
+    }
+    trees.forget_lost(
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Default::default(),
+        &Default::default(),
+        0,
+        0,
+    );
+    trees.settle(&Default::default());
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
+    let created: Vec<(String, String)> = (ops(&commit).into_iter())
+        .map(|op| match op {
+            op::Op::CreateDir(c) => (c.node_id, c.parent_id),
+            op::Op::CreateFile(c) => (c.node_id, c.parent_id),
+            op => panic!("unexpected {op:?}"),
+        })
+        .collect();
+    let at = |node: &str, parent: &str| (node.to_owned(), parent.to_owned());
+    assert_eq!(created, [at("z", ROOT), at("y", "z"), at("f", "y")]);
+    applied(&mut trees, &mut commits, &commit);
+    assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
+    for id in ["z", "y", "f"] {
+        effects_for(&mut trees, &mut ids, id);
+    }
+    trees.settle(commits.aliases());
+    assert_eq!(
+        trees.local().get(&"f".into()).unwrap().shape,
+        file("y", "f", 2)
+    );
+    assert_eq!(trees.work(), vec![]);
+    assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
+}
+
+fn parked_in_a_never_sent_folder_the_user_deleted() -> Trees {
+    let mut trees = trees(&[]);
+    trees.set_local("d".into(), local(dir(ROOT, "d"), 1));
+    trees.set_local(
+        "f".into(),
+        LocalNode {
+            parked: true,
+            ..local(file("d", "f", 4), 2)
+        },
+    );
+    trees.settle(&Default::default());
+    trees.remove_local(&"d".into());
+    trees.settle(&Default::default());
+    trees
+}
+
+fn stays_parked_and_reported(trees: &mut Trees, id: &str) {
+    let held = |trees: &Trees| -> Vec<(NodeId, Shape, bool)> {
+        (trees.local().iter())
+            .map(|(id, node)| (id.clone(), node.shape.clone(), node.parked))
+            .collect()
+    };
+    let before = held(trees);
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    for _ in 0..2 {
+        assert_eq!(build(&mut commits, trees, &mut ids), None);
+        for (at, _, _) in held(trees) {
+            assert_eq!(effects_for(trees, &mut ids, &at.to_string()), []);
+        }
+        trees.settle(commits.aliases());
+        assert_eq!(held(trees), before);
+    }
+    assert!(trees.local().get(&id.into()).unwrap().parked);
+    let stuck =
+        koidrive_engine::effects::stuck(trees, &Effects::default(), None, &Default::default());
+    assert_eq!(
+        stuck.get(&id.into()),
+        Some(&koidrive_engine::effects::Stuck::Parked)
+    );
+}
+
+#[test]
+fn a_parked_file_whose_never_sent_folder_the_user_deleted_stays_parked_and_reported() {
+    stays_parked_and_reported(&mut parked_in_a_never_sent_folder_the_user_deleted(), "f");
+}
+
+#[test]
+fn a_parked_folder_whose_never_sent_folder_the_user_deleted_stays_parked_with_what_it_holds() {
+    let mut trees = trees(&[]);
+    trees.set_local("d".into(), local(dir(ROOT, "d"), 1));
+    trees.set_local(
+        "p".into(),
+        LocalNode {
+            parked: true,
+            ..local(dir("d", "p"), 2)
+        },
+    );
+    trees.set_local("f".into(), local(file("p", "f", 4), 4));
+    trees.settle(&Default::default());
+    trees.remove_local(&"d".into());
+    trees.settle(&Default::default());
+    stays_parked_and_reported(&mut trees, "p");
+}
+
+#[test]
+fn a_replaced_never_sent_folder_keeps_its_parked_file_parked() {
+    let mut trees = trees(&[]);
+    trees.set_local("d".into(), local(dir(ROOT, "d"), 1));
+    trees.set_local(
+        "f".into(),
+        LocalNode {
+            parked: true,
+            ..local(file("d", "f", 4), 2)
+        },
+    );
+    trees.settle(&Default::default());
+    trees.displace_local(&"d".into(), false);
+    trees.settle(&Default::default());
+    stays_parked_and_reported(&mut trees, "f");
+}
+
+#[test]
+fn a_parked_file_under_two_deleted_parked_folders_stays_parked() {
+    let mut trees = trees(&[]);
+    trees.set_local("d".into(), local(dir(ROOT, "d"), 1));
+    trees.set_local("p".into(), local(dir("d", "p"), 2));
+    trees.set_local("e".into(), local(dir("p", "e"), 3));
+    trees.set_local(
+        "f".into(),
+        LocalNode {
+            parked: true,
+            ..local(file("e", "f", 4), 4)
+        },
+    );
+    trees.settle(&Default::default());
+    trees.remove_local(&"e".into());
+    let p = trees.local().get(&"p".into()).unwrap().clone();
+    trees.set_local("p".into(), LocalNode { parked: true, ..p });
+    trees.remove_local(&"d".into());
+    trees.settle(&Default::default());
+    stays_parked_and_reported(&mut trees, "f");
+    stays_parked_and_reported(&mut trees, "p");
+}
+
+#[test]
+fn a_parked_file_whose_lost_folder_the_rules_now_leave_out_stays_parked_and_reported() {
+    let mut trees = trees(&[synced("d", dir(ROOT, "d")), synced("f", file("d", "f", 1))]);
+    trees.set_local(
+        "f".into(),
+        LocalNode {
+            parked: true,
+            ..local(file("d", "f", 4), 2)
+        },
+    );
+    trees.remove_local(&"d".into());
+    trees.remove_remote(&"d".into());
+    trees.remove_remote(&"f".into());
+    trees.forget_lost(
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Default::default(),
+        &Default::default(),
+        0,
+        0,
+    );
+    trees.set_rules(
+        &[] as &[&str],
+        koidrive_engine::ignore::Source::Koiignore,
+        Some(RuleFile::parse(b"/d/\n")),
+    );
+    trees.settle(&Default::default());
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
+    assert_eq!(effects_for(&mut trees, &mut ids, "f"), []);
+    let f = trees.local().get(&"f".into()).unwrap();
+    assert!(f.parked);
+    assert_eq!(f.shape.parent, "d");
+    let stuck =
+        koidrive_engine::effects::stuck(&trees, &Effects::default(), None, &Default::default());
+    assert_eq!(
+        stuck.get(&"f".into()),
+        Some(&koidrive_engine::effects::Stuck::Parked)
+    );
+}
+
+fn with_rules(trees: &mut Trees, rules: Option<&[u8]>) {
+    let source = koidrive_engine::ignore::Source::Koiignore;
+    trees.set_rules(&[] as &[&str], source, rules.map(RuleFile::parse));
+    trees.settle(&Default::default());
+}
+
+#[test]
+fn a_move_into_a_parked_folder_with_no_free_place_is_reported_behind_it() {
+    let mut trees = trees(&[synced("f", dir(ROOT, "f"))]);
+    trees.set_local(
+        "d".into(),
+        LocalNode {
+            parked: true,
+            ..local(dir(ROOT, "d"), 2)
+        },
+    );
+    trees.revert("d".into());
+    trees.set_local_changed("f".into(), local(dir("d", "f"), 1));
+    trees.settle(&Default::default());
+    let mut commits = Commits::default();
+    assert_eq!(
+        commits.build(&mut trees, &mut IdGen::new(1), NOW, HISTORY, "me", 7),
+        None
+    );
+    let stuck =
+        koidrive_engine::effects::stuck(&trees, &Effects::default(), None, &Default::default());
+    assert_eq!(
+        stuck.get(&"f".into()),
+        Some(&koidrive_engine::effects::Stuck::Behind("d".into()))
+    );
+}
 #[test]
 fn a_folder_deleted_around_a_parked_node_is_brought_back_for_it() {
     for name in ["f", "F"] {
@@ -2800,4 +3138,150 @@ fn a_resent_move_answered_after_the_user_moved_the_node_back_sends_that_move_bac
         })
         .collect();
     assert_eq!(names, ["a"]);
+}
+
+mod parked_nodes_and_rules {
+    use super::*;
+    use proptest::prelude::*;
+
+    type Scenario = (
+        Vec<(usize, bool, bool)>,
+        Vec<(usize, bool)>,
+        Vec<(usize, bool)>,
+        u8,
+    );
+
+    fn scenario() -> impl Strategy<Value = Scenario> {
+        (
+            proptest::collection::vec((0..4usize, any::<bool>(), any::<bool>()), 1..7),
+            proptest::collection::vec((0..8usize, any::<bool>()), 0..4),
+            proptest::collection::vec((0..8usize, any::<bool>()), 1..3),
+            0..4u8,
+        )
+    }
+
+    fn remote_path(trees: &Trees, id: &NodeId) -> Vec<String> {
+        let mut names = Vec::new();
+        let mut at = id.clone();
+        while let Some(shape) = trees.remote().live(&at) {
+            names.push(shape.name.clone());
+            at = shape.parent.clone();
+        }
+        names.reverse();
+        names
+    }
+
+    fn take_out(trees: &mut Trees, id: &NodeId, displace: bool) {
+        let children: Vec<NodeId> = (trees.local().iter())
+            .filter(|(_, node)| node.shape.parent == *id && !node.parked)
+            .map(|(child, _)| child.clone())
+            .collect();
+        for child in children {
+            take_out(trees, &child, displace);
+        }
+        match displace {
+            true => trees.displace_local(id, false),
+            false => trees.remove_local(id),
+        }
+    }
+
+    proptest! {
+        #![proptest_config(koidrive_test_support::battery_config(
+            concat!(env!("CARGO_MANIFEST_DIR"), "/tests/commit.proptest-regressions"),
+            256,
+        ))]
+        #[test]
+        fn a_parked_node_is_sent_only_where_its_folders_and_the_rules_allow(
+            (shapes, removals, picked, timing) in scenario()
+        ) {
+            let mut trees = trees(&[]);
+            let mut paths: Vec<Vec<String>> = Vec::new();
+            let mut parents: Vec<Option<usize>> = Vec::new();
+            let mut kinds = Vec::new();
+            for (i, (parent, is_dir, parked)) in shapes.iter().enumerate() {
+                let folders: Vec<usize> = (0..i).rev().filter(|&j| kinds[j] == Kind::Dir && paths[j].len() < 3).collect();
+                let parent = folders.get(parent % (folders.len() + 1)).copied();
+                let name = ["a", "b", "f"][i % 3].to_owned() + &i.to_string();
+                let parent_id = parent.map_or(ROOT.to_owned(), |j| format!("n{j}"));
+                let shape = if *is_dir { dir(&parent_id, &name) } else { file(&parent_id, &name, 4) };
+                let mut path = parent.map_or(Vec::new(), |j| paths[j].clone());
+                path.push(name);
+                paths.push(path);
+                parents.push(parent);
+                kinds.push(shape.kind);
+                let node = LocalNode { parked: *parked, ..local(shape, i as u128 + 1) };
+                trees.set_local(format!("n{i}").as_str().into(), node);
+            }
+            let above = |i: usize| std::iter::successors(Some(i), |&j| parents[j]).collect::<Vec<_>>();
+            let rules: String = (picked.iter())
+                .map(|(i, at_root)| {
+                    let path = &paths[i % paths.len()];
+                    match at_root {
+                        true => format!("/{}\n", path.last().unwrap()),
+                        false => format!("/{}\n", path.join("/")),
+                    }
+                })
+                .collect();
+            let rules = Some(rules.as_bytes());
+            if timing & 1 == 0 {
+                with_rules(&mut trees, rules);
+            }
+            trees.settle(&Default::default());
+            let folders: Vec<usize> = (0..paths.len()).filter(|&i| kinds[i] == Kind::Dir).collect();
+            let mut removed = std::collections::BTreeSet::new();
+            for (pick, displace) in removals.iter().filter(|_| !folders.is_empty()) {
+                let j = folders[pick % folders.len()];
+                let id = NodeId::from(format!("n{j}").as_str());
+                if trees.local().get(&id).is_some_and(|node| !node.parked) {
+                    take_out(&mut trees, &id, *displace);
+                    removed.insert(j);
+                }
+            }
+            trees.settle(&Default::default());
+            if timing & 2 != 0 {
+                let before = trees;
+                trees = Trees::new(ROOT);
+                for (id, node) in before.local().iter() {
+                    trees.set_local(id.clone(), node.clone());
+                }
+                trees.restore(before.state()).unwrap();
+                trees.rules_scanned();
+            }
+            with_rules(&mut trees, rules);
+            let (mut commits, mut ids) = (Commits::default(), IdGen::new(100));
+            let mut settled = false;
+            for _ in 0..8 {
+                let Some(commit) = build(&mut commits, &mut trees, &mut ids) else {
+                    settled = true;
+                    break;
+                };
+                applied(&mut trees, &mut commits, &commit);
+                for (id, _) in trees.remote().iter().map(|(id, node)| (id.clone(), node.clone())).collect::<Vec<_>>() {
+                    let path = remote_path(&trees, &id);
+                    let kind = trees.remote().live(&id).unwrap().kind;
+                    prop_assert!(!trees.ignores(&path, kind), "{:?} sent to {:?}", id, path);
+                    let i: usize = id.to_string()[1..].parse().unwrap();
+                    prop_assert!(!trees.ignores(&paths[i], kinds[i]), "{:?} kept at {:?} sent", id, paths[i]);
+                    let gone = above(i).into_iter().find(|j| removed.contains(j));
+                    prop_assert!(gone.is_none(), "{:?} sent though n{:?} was deleted before it reached the server", id, gone);
+                }
+                let held: Vec<NodeId> = trees.local().iter().map(|(id, _)| id.clone()).collect();
+                for id in held {
+                    effects_for(&mut trees, &mut ids, &id.to_string());
+                }
+                trees.settle(commits.aliases());
+            }
+            prop_assert!(settled, "the builds did not settle");
+            for (i, path) in paths.iter().enumerate() {
+                let id = NodeId::from(format!("n{i}").as_str());
+                let reachable = above(i).into_iter().all(|j| {
+                    let at = NodeId::from(format!("n{j}").as_str());
+                    !removed.contains(&j) && !shapes[j].2 && !trees.ignored(&at)
+                });
+                if trees.local().get(&id).is_some() && reachable {
+                    prop_assert!(trees.remote().live(&id).is_some(), "n{} at {:?} was never sent", i, path);
+                }
+            }
+        }
+    }
 }

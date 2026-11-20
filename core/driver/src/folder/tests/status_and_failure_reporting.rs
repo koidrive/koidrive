@@ -747,3 +747,39 @@ fn a_next_try_that_has_passed_is_not_shown_as_the_next_try() {
     );
 }
 
+#[test]
+fn the_status_reports_a_parked_folder_whose_never_sent_folder_was_deleted() {
+    let mut remote = Remote::new();
+    let (site, a) = linked(&mut remote, "a");
+    drop(a);
+    fs::create_dir_all(site.root.join("d/p")).unwrap();
+    let named = |a: &Device, name: &str| {
+        (a.folder.engine.trees.local().iter())
+            .find(|(_, node)| node.shape.name == name)
+            .map(|(id, _)| id.clone())
+    };
+    let mut a = site.start();
+    a.scan_until(|a| named(a, "p").is_some());
+    let p = named(&a, "p").unwrap();
+    let trees = &mut a.folder.engine.trees;
+    let kept = trees.parked_name(&p).to_string();
+    let parked = (site.root.join(".koidrive/parked")).join(&kept);
+    fs::create_dir_all(parked.parent().unwrap()).unwrap();
+    fs::rename(site.root.join("d/p"), &parked).unwrap();
+    let mut node = trees.local().get(&p).unwrap().clone();
+    node.parked = true;
+    trees.set_local(p.clone(), node);
+    fs::remove_dir(site.root.join("d")).unwrap();
+    a.scan_until(|a| named(a, "d").is_none());
+    a.connect(&remote);
+    a.run(&mut remote);
+    a.settle();
+    a.run(&mut remote);
+    assert!(remote.names().is_empty());
+    assert!(names(&site.root).is_empty());
+    assert!(parked.is_dir());
+    let problem = format!(
+        "1 item could not be synced: \"p\" (the folder it was in was deleted before it reached the server; it is kept in \".koidrive/parked/{kept}\")"
+    );
+    assert_eq!(a.folder.view().problem, Some(problem));
+}

@@ -2453,6 +2453,9 @@ fn run_ignoring_answering_after(
             last_seq,
         );
         let built = built.cloned();
+        if let Err(why) = commits.check_buildable() {
+            panic!("{why}");
+        }
         prop_assert!(
             device.trees.synced().check(Names::ByKey).is_ok(),
             "S is not a valid tree"

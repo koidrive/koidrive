@@ -209,6 +209,7 @@ pub struct Commits {
     accepted: Marked<u64>,
     in_flight: Marked<Option<InFlight>>,
     problems: TrackedSet<NodeId>,
+    unbuildable: BTreeMap<NodeId, NodeId>,
     halted: Marked<Option<Halt>>,
     /// The most ops the next commit holds after a `LIMIT_EXCEEDED`, doubled back towards
     /// [`MAX_OPS`] by every acknowledged commit.
@@ -320,6 +321,7 @@ impl Commits {
             granted: _,
             confirmed: _,
             device_name: _,
+            unbuildable: _,
         } = self;
         CommitsChanges {
             accepted: accepted.take_changed().copied(),
@@ -426,6 +428,7 @@ impl Commits {
             accepted: accepted.into(),
             in_flight: in_flight.into(),
             problems: problems.into(),
+            unbuildable: BTreeMap::new(),
             halted: halted.into(),
             cap: cap.into(),
             split: split.into(),
@@ -666,6 +669,24 @@ impl Commits {
     /// after the next rescan or a user action.
     pub fn problems(&self) -> &TrackedSet<NodeId> {
         &self.problems
+    }
+
+    /// The nodes whose planned create or move waits on a folder that neither the server holds, nor
+    /// a planned op places, nor a pending change brings, each with that folder, as the last full
+    /// build found them. No later build sends them while that stays so.
+    pub fn unbuildable(&self) -> &BTreeMap<NodeId, NodeId> {
+        &self.unbuildable
+    }
+
+    /// Fails with a description of [`Commits::unbuildable`] when it is not empty.
+    pub fn check_buildable(&self) -> Result<(), String> {
+        if self.unbuildable.is_empty() {
+            return Ok(());
+        }
+        let wedged: Vec<_> = self.unbuildable.iter().collect();
+        Err(format!(
+            "planned creates or moves wait on a parent that neither the server holds, nor the plan places, nor a pending change brings: {wedged:?}"
+        ))
     }
 
     pub fn clear_problem(&mut self, node: &NodeId) -> bool {
@@ -1694,7 +1715,10 @@ impl Commits {
             .filter(|id| creates.contains(*id) && !ready.contains(*id))
             .collect();
         let mut window = 2 * cap;
-        let (planned, deletes, deletions, reverts, cycle_reverts, given_up, retrashed, owners) = loop {
+        let (
+            (planned, deletes, deletions, reverts, cycle_reverts, given_up, retrashed, owners),
+            unbuildable,
+        ) = loop {
             let mut seeds = ready.iter().peekable();
             let mut next: BinaryHeap<Reverse<(usize, &NodeId)>> =
                 aliased.iter().map(|id| Reverse((1, *id))).collect();
@@ -1754,7 +1778,7 @@ impl Commits {
                     device_id,
                 )
             };
-            let (planned, exact) = planned_from(picked, bound);
+            let (planned, exact, unbuildable) = planned_from(picked, bound);
             if exact {
                 debug_assert!(
                     bound.is_none()
@@ -1762,10 +1786,11 @@ impl Commits {
                         || planned == planned_from(creates.iter().collect(), None).0,
                     "a windowed plan commits what a plan of every create commits"
                 );
-                break planned;
+                break (planned, unbuildable);
             }
             window *= 4;
         };
+        self.unbuildable = unbuildable;
         for id in given_up {
             if let Some(node) = trees.remote().get(&id)
                 && !self.given_up_nodes.contains_key(&id)
@@ -4029,7 +4054,7 @@ fn wedged(
     scratch: &Scratch,
     moving: &BTreeSet<NodeId>,
     skip: impl Fn(&NodeId) -> bool,
-) -> Vec<(NodeId, NodeId)> {
+) -> BTreeMap<NodeId, NodeId> {
     let targets: BTreeMap<&NodeId, (&NodeId, Fit)> = (wants.iter().flatten())
         .filter_map(|want| match want {
             Want::Create { id, shape, .. } => {
@@ -4053,8 +4078,9 @@ fn wedged(
         loop {
             let pending = matches!(trees.class(at), Class::Remote | Class::Concurrent);
             let create = trees.dirty_creates().contains(at);
-            if skip(at)
+            if (skip(at) && !trees.waiting().contains_key(at))
                 || trees.is_discarded(at)
+                || trees.stays_parked(at)
                 || (pending && !trees.excluded(at))
                 || (create && (trees.excluded(at) || trees.held(at)))
             {
@@ -4523,7 +4549,7 @@ fn plan(
     answers: &BTreeSet<NodeId>,
     answer_moves: &TrackedSet<NodeId>,
     device_id: &str,
-) -> (Planned, bool) {
+) -> (Planned, bool, BTreeMap<NodeId, NodeId>) {
     let mut wants = Vec::new();
     if !restores.is_empty() {
         let mut groups: BTreeMap<&str, usize> = BTreeMap::new();
@@ -4589,11 +4615,19 @@ fn plan(
         if within.is_none() && bound.is_some_and(|(_, bound)| id >= bound) {
             within = Some(wants.len());
         }
+        let synced = trees.acknowledged(id);
+        if let Some(shape) = synced.filter(|_| trees.created_again(id)) {
+            wants.push(Want::Create {
+                id: id.clone(),
+                shape: shape.clone(),
+                pending_for: None,
+            });
+            continue;
+        }
         let class = trees.acknowledged_class(id);
         if !matches!(class, Class::Local | Class::Concurrent) {
             continue;
         }
-        let synced = trees.acknowledged(id);
         let Some((local, local_chunks)) = trees
             .local()
             .get(id)
@@ -4626,6 +4660,7 @@ fn plan(
                         name: at.name.clone(),
                         ..local.clone()
                     },
+                    None if trees.stays_parked(id) => continue,
                     None => local.clone(),
                 };
                 let pending_for = (trees.lost_position(id).is_none())
@@ -5394,6 +5429,7 @@ fn plan(
             }
         }
     };
+    let mut unbuildable = BTreeMap::new();
     if !capped {
         for want in wants.iter().flatten() {
             if let Want::Move { id, .. } = want
@@ -5403,12 +5439,8 @@ fn plan(
                 cycle_reverts.push(id.clone());
             }
         }
-        if cfg!(debug_assertions) && bound.is_none() {
-            let wedged = wedged(trees, &wants, &scratch, &moving, &skip);
-            assert!(
-                wedged.is_empty(),
-                "planned creates or moves wait on a parent that neither the server holds, nor the plan places, nor a pending change brings: {wedged:?}"
-            );
+        if bound.is_none() {
+            unbuildable = wedged(trees, &wants, &scratch, &moving, &skip);
         }
     }
     let exact = !deferred.get()
@@ -5430,6 +5462,7 @@ fn plan(
             owners,
         ),
         exact,
+        unbuildable,
     )
 }
 

@@ -77,15 +77,17 @@ impl Folder {
             Stream::Following { .. } => FolderState::CatchingUp,
         };
         let quoted_item = |id: &NodeId| {
-            (self.item_path(id)).map_or_else(
-                || format!("node {id}"),
-                |path| koidrive_fs::quoted(&path).to_string(),
-            )
+            (self.item_path(id))
+                .or_else(|| (trees.local().get(id)).map(|node| PathBuf::from(&node.shape.name)))
+                .map_or_else(
+                    || format!("node {id}"),
+                    |path| koidrive_fs::quoted(&path).to_string(),
+                )
         };
         let mut reasons: BTreeMap<&NodeId, Vec<String>> = BTreeMap::new();
         let mut restart = (self.engine.effects.blocked().keys())
             .any(|node| !self.denied.contains_key(node))
-            || !held.is_empty();
+            || held.keys().any(|id| !trees.stays_parked(id));
         for id in self.engine.effects.blocked().keys() {
             let why = (self.effect_failures.get(id)).map_or("it failed earlier", |(_, why)| why);
             let why = format!("the server's change could not be made here: {why}");
@@ -107,6 +109,13 @@ impl Folder {
                         .to_owned()
                 }
             };
+            reasons.entry(id).or_default().push(why);
+        }
+        for (id, folder) in self.engine.commits.unbuildable() {
+            let why = format!(
+                "it waits for {}, which neither the server nor this device holds",
+                quoted_item(folder)
+            );
             reasons.entry(id).or_default().push(why);
         }
         let kept_in = |id: &NodeId| {
@@ -132,6 +141,10 @@ impl Folder {
                         None => why,
                     }
                 }
+                Stuck::Parked if trees.stays_parked(id) => format!(
+                    "the folder it was in was deleted before it reached the server; {}",
+                    kept.unwrap_or_default()
+                ),
                 Stuck::Parked => format!("it has no free place here; {}", kept.unwrap_or_default()),
                 Stuck::Behind(node) if held.get(node) == Some(&Stuck::Parked) => format!(
                     "waits for {}, which has no free place here; {}",
