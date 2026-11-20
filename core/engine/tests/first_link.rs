@@ -5882,17 +5882,43 @@ mod a_server_file_moved_into_an_asked_folder {
     #[test]
     fn a_server_file_deleted_before_a_scan_sees_it_is_not_asked_about_again_and_comes_back_with_its_taken_along_folder()
      {
-        let (mut c, mut t, mut i) = server_folder_moved_in_while_left_out();
-        let asked = question(&c).id;
-        assert!(c.decide(&mut t, &asked, Answer::Discard));
-        t.remove_local(&"sc".into());
-        t.settle(&Default::default());
-        assert_eq!(settle(&mut c, &mut t, &mut i), []);
-        assert!(
-            c.questions().iter().all(|open| open.answer.is_some()),
-            "{:?}",
-            c.questions()
-        );
+        for unseen in [
+            "",
+            "while a scan is pending",
+            "renamed by the server out of the rules",
+        ] {
+            let (mut c, mut t, mut i) = server_folder_moved_in_while_left_out();
+            let asked = question(&c).id;
+            assert!(c.decide(&mut t, &asked, Answer::Discard));
+            t.remove_local(&"sc".into());
+            match unseen {
+                "while a scan is pending" => {
+                    t.listed(&[], Pending::new([["new", "ignored"]]));
+                }
+                "renamed by the server out of the rules" => {
+                    t.set_rules(
+                        &[] as &[&str],
+                        Source::Koiignore,
+                        Some(RuleFile::parse(b"hidden\n")),
+                    );
+                    on_the_server(&mut t, "sc", |node| node.shape.name = "hidden".into());
+                }
+                _ => {}
+            }
+            t.settle(&Default::default());
+            assert_eq!(settle(&mut c, &mut t, &mut i), [], "{unseen}");
+            assert!(
+                c.questions().iter().all(|open| open.answer.is_some()),
+                "{unseen}: {:?}",
+                c.questions()
+            );
+            if unseen.is_empty() {
+                assert_sc_comes_back(&t);
+            }
+        }
+    }
+
+    fn assert_sc_comes_back(t: &Trees) {
         assert!(
             t.remote()
                 .get(&"sc".into())

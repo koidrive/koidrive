@@ -2337,10 +2337,12 @@ impl Trees {
     }
 
     /// Takes out of L a node this device's user removed from the disk. A node R holds that the
-    /// rules let sync is recorded with the folder L held it in ([`TreesState::removed_from`]).
+    /// rules let sync and that the device observes is recorded with the folder L held it in
+    /// ([`TreesState::removed_from`]); an unobserved one downloads again (section 5.10).
     pub fn remove_local(&mut self, id: &NodeId) {
         let left_out = self.excluded(id) && self.ignored_in_remote(id);
-        let removed = (self.l.get(id)).filter(|_| self.r.live(id).is_some() && !left_out);
+        let removed = (self.l.get(id))
+            .filter(|_| self.r.live(id).is_some() && !left_out && !self.unobserved.contains(id));
         if let Some(local) = removed {
             let folder = local.shape.parent.clone();
             self.removed_from.insert(id.to_owned(), folder);
@@ -3848,7 +3850,6 @@ impl Trees {
         self.held_for_scan = held_for_scan;
         for released in groups {
             for id in self.take_released(released).into_iter().rev() {
-                self.removed_from.remove(&id);
                 self.mark(&id);
                 self.released.push(id);
             }
