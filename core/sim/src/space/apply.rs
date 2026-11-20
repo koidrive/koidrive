@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use koidrive_engine::names::{conflict_name, is_reserved_at_root, name_key, normalize_name};
 use koidrive_proto::v1::{
@@ -57,6 +57,9 @@ pub(super) struct Applier<'a> {
     remap: HashMap<String, String>,
     touched: Vec<String>,
     touched_set: BTreeSet<String>,
+    targets: BTreeSet<String>,
+    named: BTreeSet<String>,
+    revived_ancestors: BTreeMap<String, Node>,
     restore_place_id: Option<[u8; 16]>,
 }
 
@@ -68,6 +71,9 @@ impl<'a> Applier<'a> {
             remap: HashMap::new(),
             touched: Vec::new(),
             touched_set: BTreeSet::new(),
+            targets: BTreeSet::new(),
+            named: BTreeSet::new(),
+            revived_ancestors: BTreeMap::new(),
             restore_place_id: None,
         }
     }
@@ -76,7 +82,19 @@ impl<'a> Applier<'a> {
         let mut results = Vec::with_capacity(ops.len());
         for (index, op) in ops.iter().enumerate() {
             results.push(self.apply_op(op, index)?);
+            let named = match &op.op {
+                Some(op::Op::CreateDir(op)) => Some(&op.node_id),
+                Some(op::Op::CreateFile(op)) => Some(&op.node_id),
+                Some(op::Op::UpdateContent(op)) => Some(&op.node_id),
+                Some(op::Op::Move(op)) => Some(&op.node_id),
+                Some(op::Op::Restore(op)) => Some(&op.node_id),
+                Some(op::Op::Delete(_)) | Some(op::Op::MarkGitTracked(_)) | None => None,
+            };
+            if let Some(node_id) = named {
+                self.named.insert(self.id(node_id));
+            }
         }
+        self.retrash_unneeded_ancestors();
         let changes = self
             .touched
             .iter()
@@ -143,6 +161,11 @@ impl<'a> Applier<'a> {
     }
 
     fn touch(&mut self, node_id: &str) {
+        self.report(node_id);
+        self.targets.insert(node_id.to_string());
+    }
+
+    fn report(&mut self, node_id: &str) {
         if self.touched_set.insert(node_id.to_string()) {
             self.touched.push(node_id.to_string());
         }
@@ -311,12 +334,37 @@ impl<'a> Applier<'a> {
             cur = self.st.nodes.get(n.parent_id.as_deref().unwrap_or(""));
         }
         for n in chain.into_iter().rev() {
+            let ancestor = !self.targets.contains(&n.node_id);
+            if ancestor {
+                self.revived_ancestors.insert(n.node_id.clone(), n.clone());
+            }
             self.revive_one(
                 &n.node_id,
                 n.parent_id.as_deref().expect("a trashed node has a parent"),
                 &n.name,
                 "",
             );
+            if ancestor {
+                self.targets.remove(&n.node_id);
+            }
+        }
+    }
+
+    fn retrash_unneeded_ancestors(&mut self) {
+        let mut needed = BTreeSet::new();
+        for target in self.targets.iter().chain(&self.named) {
+            let mut cur = self.st.nodes.get(target);
+            while let Some(node) = cur.filter(|n| n.status == NodeStatus::Live) {
+                if !needed.insert(node.node_id.clone()) {
+                    break;
+                }
+                cur = node.parent_id.as_ref().and_then(|id| self.st.nodes.get(id));
+            }
+        }
+        for (node_id, before) in std::mem::take(&mut self.revived_ancestors) {
+            if self.st.nodes[&node_id].status == NodeStatus::Live && !needed.contains(&node_id) {
+                self.st.nodes.insert(node_id, before);
+            }
         }
     }
 
@@ -807,7 +855,7 @@ impl<'a> Applier<'a> {
         stored.meta_edit_rev = seq;
         stored.meta_edit_dev = dev.clone();
         stored.meta_dev = dev;
-        self.touch(&node.node_id);
+        self.report(&node.node_id);
         false
     }
 

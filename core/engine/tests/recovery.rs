@@ -5975,3 +5975,188 @@ fn a_folder_deleted_around_a_parked_folder_after_a_rewind_is_created_again_once_
         }
     }
 }
+
+fn p7_after_another_device_trashed_the_destinations_old_folder(keep_require_head: bool) {
+    use koidrive_proto::v1::{Commit, CreateDir, Delete, NodeStatus, Op, Resume};
+    use koidrive_sim::space::{Role, Session, SpaceDo};
+    let session = |device: &str| Session {
+        device_id: device.into(),
+        user_id: "user".into(),
+        device_name: device.into(),
+        role: Role::Owner,
+        max_format: 1,
+    };
+    let mkdir = |node_id: &str, parent_id: &str, name: &str| Op {
+        op: Some(op::Op::CreateDir(CreateDir {
+            node_id: node_id.into(),
+            parent_id: parent_id.into(),
+            name: name.into(),
+            ..Default::default()
+        })),
+        ..Default::default()
+    };
+    let delete = |node_id: &str| Op {
+        op: Some(op::Op::Delete(Delete {
+            node_id: node_id.into(),
+            ..Default::default()
+        })),
+        ..Default::default()
+    };
+    let mut space = SpaceDo::new(11, NOW as i64);
+    let root = space.space_id().to_owned();
+    let mut ids = IdGen::new(31);
+    let [a, c, b, e, x, d] = std::array::from_fn(|_| ids.uuid_v7(NOW));
+    let mut other = |space: &mut SpaceDo, ops: Vec<Op>| {
+        let commit = Commit {
+            commit_id: ids.uuid_v7(NOW),
+            history_id: space.history_id().into(),
+            device_seq: space.device_seq("other") + 1,
+            base_seq: space.head_seq(),
+            ops,
+            ..Default::default()
+        };
+        space
+            .commit(&session("other"), NOW as i64, &commit)
+            .unwrap();
+    };
+    let learn = |trees: &mut Trees, space: &SpaceDo| {
+        for node in (space.nodes().into_iter()).filter(|node| node.node_id != space.space_id()) {
+            let (id, held) = RemoteNode::from_state(&node).unwrap();
+            trees.set_remote(id, held);
+        }
+    };
+    let made = [
+        (&a, &root, "old"),
+        (&c, &a, "c"),
+        (&b, &c, "child"),
+        (&e, &c, "e"),
+        (&x, &root, "x"),
+        (&d, &x, "d"),
+    ];
+    other(
+        &mut space,
+        made.iter()
+            .map(|(id, parent, name)| mkdir(id, parent, name))
+            .collect(),
+    );
+    other(&mut space, vec![delete(&a)]);
+    let mut trees = Trees::new(&root);
+    let local = [
+        (&a, &root, "new"),
+        (&c, &a, "c"),
+        (&b, &c, "child"),
+        (&e, &c, "e"),
+        (&x, &root, "x"),
+        (&d, &e, "d"),
+    ];
+    for (ino, ((id, parent, name), (_, synced_parent, synced_name))) in
+        local.iter().zip(made).enumerate()
+    {
+        let identity = FileIdentity {
+            ino: ino as u128 + 1,
+            birth_ns: Some(0),
+            handle: None,
+        };
+        let node = LocalNode {
+            left_out_when_placed: false,
+            content_from_server: false,
+            shape: dir(parent, name),
+            identity,
+            parked: false,
+            chunks: Box::default(),
+        };
+        trees.set_local(id.as_str().into(), node);
+        trees.set_synced(id.as_str().into(), Some(dir(synced_parent, synced_name)));
+    }
+    learn(&mut trees, &space);
+    trees.rules_scanned();
+    trees.settle(&Default::default());
+    let mut base = space.head_seq();
+    let (mut commits, mut ids) = recovered(&mut trees, 0);
+    let answer = |commits: &mut Commits, trees: &mut Trees| {
+        for question in commits.questions().to_vec() {
+            commits.decide(trees, &question.id, Answer::Publish);
+        }
+        trees.settle(commits.aliases());
+    };
+    answer(&mut commits, &mut trees);
+    for (id, shape) in [(&e, dir(&root, "e")), (&b, dir(&d, "child"))] {
+        let mut moved = trees
+            .local()
+            .get(&NodeId::from(id.as_str()))
+            .unwrap()
+            .clone();
+        moved.shape = shape;
+        trees.set_local(id.as_str().into(), moved);
+    }
+    trees.settle(commits.aliases());
+    other(&mut space, vec![delete(&x)]);
+    let trashed_at = space.head_seq();
+    for _ in 0..8 {
+        answer(&mut commits, &mut trees);
+        let Some(built) = commits.build(&mut trees, &mut ids, NOW, space.history_id(), "me", base)
+        else {
+            break;
+        };
+        let commit = Commit {
+            require_head: built.require_head && keep_require_head,
+            ..built.clone()
+        };
+        match space.commit(&session("me"), NOW as i64, &commit) {
+            Ok(done) => {
+                commits.received(done.result.clone()).unwrap();
+                learn(&mut trees, &space);
+                assert!(commits.acknowledge(&mut trees, done.result.seq));
+            }
+            Err(error) => {
+                commits.failed(&mut trees, &error).unwrap();
+                learn(&mut trees, &space);
+            }
+        }
+        trees.settle(commits.aliases());
+        base = space.head_seq();
+    }
+    effects(&mut trees, &mut ids);
+    assert_eq!(
+        commits.build(&mut trees, &mut ids, NOW, space.history_id(), "me", base),
+        None
+    );
+    let live = |id: &str| space.node(id).map(|node| node.status() == NodeStatus::Live);
+    assert_eq!(
+        [live(&x), live(&d), live(&b)],
+        [Some(false), Some(true), Some(true)]
+    );
+    let x_id = NodeId::from(x.as_str());
+    assert!(trees.local().get(&x_id).is_none());
+    assert!(trees.remote().get(&x_id).is_some_and(|node| node.trashed));
+    let resume = Resume {
+        history_id: space.history_id().into(),
+        ..Default::default()
+    };
+    let logged: Vec<bool> = (space.resume(&resume).unwrap().into_iter())
+        .filter(|record| record.seq >= trashed_at)
+        .flat_map(|record| record.changes)
+        .filter_map(|change| match change.change {
+            Some(change_record::Change::Node(state)) if state.node_id == x => {
+                Some(state.status() == NodeStatus::Live)
+            }
+            _ => None,
+        })
+        .collect();
+    assert!(
+        logged.first() == Some(&false) && !logged.contains(&true),
+        "{logged:?}"
+    );
+}
+
+#[test]
+fn a_folder_another_device_trashed_stays_trashed_everywhere_when_a_carried_destination_moves_out_of_it()
+ {
+    p7_after_another_device_trashed_the_destinations_old_folder(true);
+}
+
+#[test]
+fn a_folder_another_device_trashed_stays_trashed_everywhere_when_a_commit_built_before_the_trash_moves_a_destination_out_of_it()
+ {
+    p7_after_another_device_trashed_the_destinations_old_folder(false);
+}

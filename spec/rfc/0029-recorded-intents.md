@@ -118,6 +118,8 @@ A carried op whose node, or the parent it moves or creates into, is trashed:
 
 An op that is not carried follows R8. An old client's `resend` and `from` keep RFC 0018's and RFC 0019's answers on the trash.
 
+R8 revives trashed folders op by op, but a commit keeps a revival only while its own changes need it. After the commit's last op, the server checks each folder that is live then and that an op of the commit brought back from the trash as an ancestor of the node or parent the op touched. When no live node that an op of the commit created, moved, restored, changed or named, other than by a `Delete`, is at or below the folder, where an op names the node it acts on and the folder a `CreateDir` merged into, the folder goes back to the trash in the same transaction with the row it had just before the last op of the commit that revived it: its trash group, its deletion time and device (RFC 0023), its revisions, its field and status intents, and its `held` list, together with what other ops of the commit added to that group's `held` list. When an op added to that list, the folder also takes the meta revision the addition gave the group's other members, so it reads as if it had stayed in the trash, and its deletion device stays the one RFC 0023 gives it. The commit's `changes`, and its log record at `seq`, carry each such folder's `NodeState` as trashed and never as live, so the sending device learns of the trash at once and no device sees the folder live. This amends spec v0 R8. A carried op into a trashed parent is answered by the rules above before this check.
+
 §3.3 to §3.6 read each field's own intent: on a create, the entry of `Op.fields` for that field, else `Op.intent`. A create or `Move` into a trashed or purged folder is carried there only when every place and status intent it sends is carried; otherwise it is not carried, since a user's own place or status that no delete saw keeps the node, as in R7.
 
 ### 3.5 Conflict copies from carried content
@@ -332,7 +334,8 @@ UUIDv5 is RFC 9562 §5.5. `field` is `place`, `content` or `status`. The key is:
 - a create into a purged folder whose place or status intent is its own user's is `APPLIED` under the nearest live ancestor even when the tombstone lists its other intent;
 - a create on an existing id whose fields do not all hold its intents and values is `REJECTED` `ID_EXISTS`;
 - a same-intent `Delete` with a larger `held` adds it to the trash and writes a change record, and an unchanged retry writes none;
-- `NodeState.trash_held` exports the trash's `held`, and an RFC 0004 §5 rebuild keeps it.
+- `NodeState.trash_held` exports the trash's `held`, and an RFC 0004 §5 rebuild keeps it;
+- a folder that a commit revived only as an ancestor goes back to the trash with the row it had just before the last op that revived it when a later op of the commit moves the change out or deletes it again; a later `Delete` of the folder in the same commit keeps the trash it made, a `held` list another op added to the folder's group stays with the folder's meta revision raised to match, the folder and the folders above it stay live when an op other than a `Delete` names a live node at or below it or a change stays inside it, and a retry gets the same result.
 
 ## 10. Cost
 
@@ -360,6 +363,7 @@ UUIDv5 is RFC 9562 §5.5. `field` is `place`, `content` or `status`. The key is:
 - **Content ancestry (§3.8, §5.4 case 2).** An edit replays over the version it was made over, not over R's current content. A replay of a version that the current chain already includes is superseded.
 - **Carried copies (§3.3, §3.5, §3.6).** A copy of a lost write that lands before a delete of its folder moves to the nearest live ancestor, or goes to the trash with the folder when the deleting user saw the write. A re-keyed conflict copy of carried content is never taken for a user's node. A lost conflict copy whose content the new R holds on another node is not created again.
 - **Recovery copies (§5.5).** A lost copy of a write that a server file holds is not created again while the server holds it. An offline edit of that file, answered Publish or Discard before or after the copy, leaves one file per write. A same-bytes offline rewrite becomes `held`, so a later edit is made over that value.
+- **Revivals a commit no longer needs (§3.4).** A commit that moves a node through a folder another device trashed, and then moves the node or its parent out, leaves the folder in the trash. This holds whether the trash was there before the commit was built or arrived after.
 - **Merges (§5.2).** A folder merged into another is not created again after a loss.
 - **A lost change against a later delete (§4).** The delete wins, and a lost edit comes back as a conflict copy.
 - **Pending names (§6).** Only the owner finishes a pending name. A created file carries its mark. A stand-in name is told apart from a name the user chose.
