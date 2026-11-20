@@ -1881,11 +1881,7 @@ impl Engine {
         }
         for id in doomed.into_iter().rev() {
             match (displaced.contains(&id), missing) {
-                (true, _) => {
-                    let created =
-                        (self.commits.in_flight()).is_some_and(|flight| flight.creates(&id));
-                    self.trees.displace_removed_local(&id, created)
-                }
+                (true, _) => self.trees.displace_local(&id),
                 (false, true) => self.trees.miss_local(&id),
                 (false, false) => self.trees.remove_local(&id),
             }
@@ -5635,6 +5631,30 @@ mod tests {
                 assert_eq!(at, draft);
             }
         }
+    }
+
+    #[test]
+    fn a_scan_keeps_the_displaced_copy_after_the_server_loses_it() {
+        let (_dir, mut engine) = mapper();
+        let folder = Observed::Created {
+            path: "f.txt".into(),
+            kind: EntryKind::Dir,
+            id: ino(3),
+            linked: false,
+            content: None,
+            marked_node: None,
+        };
+        let identity = FileId::stored(2, Some(10), None);
+        engine.observe(&[created("f.txt", identity, false, 7)], 0);
+        synced_everywhere(&mut engine);
+        let (file, stored, _) = holding(&engine, "f.txt").unwrap();
+        engine.trees.ignore_local(&file);
+        engine.trees.remove_remote(&file);
+        engine.trees.set_synced(file.clone(), None);
+        engine.observe(&[folder], 1_000);
+        assert_eq!(engine.trees.displaced_local().get(&file), Some(&stored));
+        engine.observe(&[created("recovered.txt", identity, false, 7)], 1_100);
+        assert_eq!(holding(&engine, "recovered.txt"), Some((file, stored, 7)));
     }
 
     #[test]

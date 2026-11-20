@@ -331,7 +331,8 @@ impl Tx<'_> {
                 .insert(NodeId::from(row.get::<_, String>(0)?));
         }
         let mut stmt = self.0.prepare_cached(
-            "SELECT node_id, ino, ino_high, birth_ns, lost, handle, found FROM recorded_nodes",
+            "SELECT node_id, ino, ino_high, birth_ns, lost, handle, found, awaiting_create
+             FROM recorded_nodes",
         )?;
         let mut rows = stmt.query([])?;
         while let Some(row) = next_row!(rows, abandoned) {
@@ -343,6 +344,9 @@ impl Tx<'_> {
                         birth_ns: row.get(3)?,
                         handle: row.get::<_, Option<i64>>(5)?.map(|handle| handle as u64),
                     };
+                    if row.get(7)? {
+                        state.trees.displaced_while_creating.insert(node.clone());
+                    }
                     state.trees.displaced.insert(node, identity);
                 }
                 None => {
@@ -836,6 +840,7 @@ impl Tx<'_> {
             lost,
             found,
             displaced,
+            displaced_while_creating,
             missing,
             edited_here,
             moved_here,
@@ -1037,7 +1042,7 @@ impl Tx<'_> {
                 ])
             },
         )?;
-        self.write_recorded(outside, lost, found, displaced)?;
+        self.write_recorded(outside, lost, found, displaced, displaced_while_creating)?;
         self.write_set(
             missing,
             "DELETE FROM missing_nodes WHERE node_id = ?1",
@@ -1489,6 +1494,7 @@ impl Tx<'_> {
         lost: &SetChanges<NodeId>,
         found: &MapChanges<NodeId, PathBuf>,
         displaced: &MapChanges<NodeId, FileIdentity>,
+        displaced_while_creating: &SetChanges<NodeId>,
     ) -> Result<()> {
         let mut remove = self
             .0
@@ -1500,8 +1506,11 @@ impl Tx<'_> {
             remove.execute(params![node.to_string(), displaced])?;
         }
         let mut put = self.0.prepare_cached(
-            "INSERT OR REPLACE INTO recorded_nodes (node_id, displaced, ino, ino_high, birth_ns, lost, handle)
-             VALUES (?1, 1, ?2, ?3, ?4, 0, ?5)",
+            "INSERT INTO recorded_nodes (node_id, displaced, ino, ino_high, birth_ns, lost, handle)
+             VALUES (?1, 1, ?2, ?3, ?4, 0, ?5)
+             ON CONFLICT (node_id, displaced) DO UPDATE
+             SET ino = excluded.ino, ino_high = excluded.ino_high,
+                 birth_ns = excluded.birth_ns, handle = excluded.handle",
         )?;
         for (node, held) in displaced {
             if let Some(held) = held {
@@ -1514,6 +1523,12 @@ impl Tx<'_> {
                     held.handle.map(|handle| handle as i64)
                 ])?;
             }
+        }
+        let mut awaiting_create = self.0.prepare_cached(
+            "UPDATE recorded_nodes SET awaiting_create = ?2 WHERE node_id = ?1 AND displaced = 1",
+        )?;
+        for (node, held) in displaced_while_creating {
+            awaiting_create.execute(params![node.to_string(), held])?;
         }
         let mut put = self.0.prepare_cached(
             "INSERT OR IGNORE INTO recorded_nodes (node_id, displaced, ino_high, lost) VALUES (?1, 0, 0, 0)",

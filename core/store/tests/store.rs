@@ -1398,6 +1398,7 @@ fn engine_state() -> EngineState {
                     handle: None,
                 },
             )]),
+            displaced_while_creating: Default::default(),
             missing: nodes(["displaced"]),
             edited_here: BTreeMap::from([("e".into(), 6)]),
             moved_here: BTreeMap::from([
@@ -2872,6 +2873,43 @@ fn a_store_from_before_inodes_took_128_bits_keeps_every_identity() {
             Ok::<_, Error>(())
         })
         .unwrap();
+}
+
+#[test]
+fn a_displaced_record_waiting_for_its_create_survives_reopen_until_cleared() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.db");
+    let id = NodeId::from("n");
+    let mut state = EngineState::default();
+    state.trees.displaced.insert(
+        id.clone(),
+        FileIdentity {
+            ino: 3,
+            birth_ns: Some(4),
+            handle: None,
+        },
+    );
+    state.trees.displaced_while_creating.insert(id.clone());
+    Store::open(&path)
+        .unwrap()
+        .transaction(|tx| tx.set_engine_state(&state))
+        .unwrap();
+
+    let mut store = Store::open(&path).unwrap();
+    let changes = &mut state.trees;
+    changes.displaced.get_mut(&id).unwrap().handle = Some(5);
+    store
+        .transaction(|tx| {
+            tx.set_engine_state(&state)?;
+            assert_eq!(tx.engine_state()?, state);
+            Ok::<_, Error>(())
+        })
+        .unwrap();
+    state.trees.displaced_while_creating.clear();
+    store.transaction(|tx| tx.set_engine_state(&state)).unwrap();
+    drop(store);
+    let mut store = Store::open(&path).unwrap();
+    assert_eq!(store.transaction(|tx| tx.engine_state()).unwrap(), state);
 }
 
 #[test]

@@ -1678,7 +1678,7 @@ impl Commits {
         if self.in_flight.is_some() {
             return None;
         }
-        trees.end_unheld_displacements();
+        trees.end_unconfirmed_displacements();
         trees.watch_positions([]);
         if self.halted.is_none() {
             trees.resend_folders_of_changes();

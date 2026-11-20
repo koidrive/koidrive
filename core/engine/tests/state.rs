@@ -129,6 +129,7 @@ fn trees_state() -> TreesState {
         lost: ["a".into()].into(),
         found: [("a".into(), "build/a".into())].into(),
         displaced: Default::default(),
+        displaced_while_creating: Default::default(),
         missing: Default::default(),
         edited_here: [("a".into(), 1)].into(),
         moved_here: [(

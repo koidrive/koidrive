@@ -35,6 +35,7 @@ CREATE TABLE recorded_nodes_by_kind (
     lost INTEGER NOT NULL DEFAULT 0 CHECK (lost IN (0, 1)),
     handle INTEGER CHECK (ino IS NOT NULL OR handle IS NULL),
     found BLOB CHECK (displaced = 0 OR found IS NULL),
+    awaiting_create INTEGER NOT NULL DEFAULT 0 CHECK (awaiting_create IN (0, displaced)),
     PRIMARY KEY (node_id, displaced),
     CHECK ((displaced = 1) = (ino IS NOT NULL)),
     CHECK (ino IS NOT NULL OR birth_ns IS NULL)
