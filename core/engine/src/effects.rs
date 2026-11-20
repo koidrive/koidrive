@@ -716,7 +716,7 @@ impl Effects {
         &self,
         trees: &Trees,
         in_flight: Option<&InFlight>,
-        merged: &BTreeMap<NodeId, NodeId>,
+        merged: &TrackedMap<NodeId, NodeId>,
         effect_id: &str,
         held: &[(&str, Option<Kind>)],
     ) -> bool {
@@ -746,7 +746,7 @@ impl Effects {
         &mut self,
         trees: &mut Trees,
         in_flight: Option<&InFlight>,
-        merged: &BTreeMap<NodeId, NodeId>,
+        merged: &TrackedMap<NodeId, NodeId>,
         effect_id: &str,
         held: &[(&str, Option<Kind>)],
     ) -> Result<(), EffectError> {

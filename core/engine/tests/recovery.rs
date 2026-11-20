@@ -5726,7 +5726,7 @@ fn discarding_a_never_sent_folder_keeps_it_around_an_unobserved_file_the_rules_e
         let (mut commits, mut ids) = recovered(&mut trees, 0);
         let shown: Vec<_> = made.iter().map(|(id, _)| *id).collect();
         let question = asked(&commits, RecoveryGroup::CreatedOnThisDevice, &shown);
-        assert!(commits.decide(&question.id, Answer::Discard));
+        assert!(commits.decide(&mut trees, &question.id, Answer::Discard));
         assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
         trees.settle(commits.aliases());
 

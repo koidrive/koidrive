@@ -2964,7 +2964,7 @@ fn a_purged_folder_kept_for_an_excluded_file_sends_nothing_after_rename_or_resta
         .kept(
             &mut trees,
             None,
-            &BTreeMap::new(),
+            &Default::default(),
             &id,
             &[("c.txt", Some(Kind::File))],
         )
