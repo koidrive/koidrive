@@ -287,7 +287,7 @@ describe("RFC 0006 principals, capabilities and device routes", () => {
     await runInDurableObject(account(), (_instance, state) => {
       for (const id of extra) {
         state.storage.sql.exec(
-          "INSERT INTO devices (device_id, user_id, name, platform, created_at_ms, refresh_hash, list_seq) VALUES (?, ?, 'Extra', 'linux', ?, ?, (SELECT MAX(list_seq) + 1 FROM devices))",
+          "INSERT INTO devices (device_id, user_id, name, platform, created_at_ms, refresh_hash, list_seq) VALUES (?, ?, 'Extra', 'linux', ?, ?, (SELECT COALESCE(MAX(list_seq), 0) + 1 FROM devices))",
           id,
           owner.userId,
           Date.now(),
@@ -319,7 +319,7 @@ describe("RFC 0006 principals, capabilities and device routes", () => {
     await runInDurableObject(account(), (_instance, state) => {
       for (const id of extra) {
         state.storage.sql.exec(
-          "INSERT INTO devices (device_id, user_id, name, platform, created_at_ms, refresh_hash, list_seq) VALUES (?, ?, 'Extra', 'linux', ?, ?, (SELECT MAX(list_seq) + 1 FROM devices))",
+          "INSERT INTO devices (device_id, user_id, name, platform, created_at_ms, refresh_hash, list_seq) VALUES (?, ?, 'Extra', 'linux', ?, ?, (SELECT COALESCE(MAX(list_seq), 0) + 1 FROM devices))",
           id,
           owner.userId,
           Date.now(),
@@ -857,14 +857,14 @@ describe("RFC 0007 name limits and space list pages", () => {
   it("frees a space name again when the space behind it cannot be set up", async () => {
     const token = (await getOwner()).access!.token;
     const name = `Broken ${uuidv7()}`;
+    const unavailable = vi.fn((_method: string) => Promise.reject(new Error("the Space DO is unavailable")));
     await runInDurableObject(account(), (instance) => {
       const spaces = (instance as unknown as { env: Env }).env.SPACE;
-      vi.spyOn(spaces, "get").mockImplementationOnce(
-        () => ({ init: () => Promise.reject(new Error("the Space DO is unavailable")) }) as unknown as ReturnType<typeof spaces.get>,
-      );
+      vi.spyOn(spaces, "get").mockImplementationOnce(() => ({ metered: unavailable }) as unknown as ReturnType<typeof spaces.get>);
     });
     vi.spyOn(console, "error").mockImplementation(() => {});
     expect(await send("/v1/spaces", { token, body: body(CreateSpaceRequestSchema, { name }) })).toEqual({ status: 500, code: Error_Code.INTERNAL });
+    expect(unavailable.mock.calls.map(([method]) => method)).toEqual(["init"]);
     const listed = (await spacePages(token)).flatMap((page) => page.spaces);
     expect(listed.some((space) => space.name === name)).toBe(false);
     const created = await call("/v1/spaces", { token, body: body(CreateSpaceRequestSchema, { name }) }, SpaceInfoSchema);
@@ -874,19 +874,22 @@ describe("RFC 0007 name limits and space list pages", () => {
   it("frees a space name when the Account DO aborts during the create, after its storage was flushed", async () => {
     const token = (await getOwner()).access!.token;
     const name = `Interrupted ${uuidv7()}`;
+    let aborted = false;
     await runInDurableObject(account(), (instance, state) => {
       const spaces = (instance as unknown as { env: Env }).env.SPACE;
       vi.spyOn(spaces, "get").mockImplementationOnce(
         () =>
           ({
-            init: async () => {
+            metered: async () => {
               await state.storage.sync();
+              aborted = true;
               state.abort("interrupted while the Space DO was being set up");
             },
           }) as unknown as ReturnType<typeof spaces.get>,
       );
     });
     await send("/v1/spaces", { token, body: body(CreateSpaceRequestSchema, { name }) }).catch(() => undefined);
+    expect(aborted).toBe(true);
     expect((await send("/v1/spaces", { token, body: body(CreateSpaceRequestSchema, { name }) })).status).toBe(201);
   });
 
@@ -952,7 +955,7 @@ describe("RFC 0007 name limits and space list pages", () => {
     await runInDurableObject(account(), (_instance, state) => {
       for (const id of extra) {
         state.storage.sql.exec(
-          "INSERT INTO spaces (space_id, name, owner_id, created_at_ms, format_version, list_seq) VALUES (?, ?, ?, ?, 1, (SELECT MAX(list_seq) + 1 FROM spaces))",
+          "INSERT INTO spaces (space_id, name, owner_id, created_at_ms, format_version, list_seq) VALUES (?, ?, ?, ?, 1, (SELECT COALESCE(MAX(list_seq), 0) + 1 FROM spaces))",
           id,
           "\u0001".repeat(255),
           owner.userId,
