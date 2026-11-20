@@ -1,9 +1,6 @@
 class = "O"
 issue = "GUN-1407"
-tests = [
-    "a_first_link_discard_keeps_a_folder_the_user_changes_after_the_server_drops_part_of_it",
-    "a_first_link_discard_takes_along_only_the_server_entries_the_user_leaves_alone",
-]
+tests = ["a_first_link_discard_keeps_a_folder_the_user_changes_after_the_server_drops_part_of_it"]
 message = '''<id> was discarded and is created on the server with no later answer to publish it at \S+\.rs:<line>\.'''
 examples = [
     "01a1c2c0-39a0-780a-953a-eb70673e29cb was discarded and is created on the server with no later answer to publish it at core/sim/tests/engine_sync/common.rs:2632.",
@@ -26,6 +23,5 @@ cases = [
     "be25d5b4bab36abfbd5e9ade6b89514358299339b5d4387e707ca8e8024f63a7",
     "c27b9ff4a984178fdf2c44adb2df19c08e0aad1a50d95d44bf8907bee4a53595",
     "f29877ea9b64339176d4db3ec81c8ee0344090fd09510096a4bedd092b2d4f04",
-    "f503fc7e7661a1017cb43cbb7aa55b8b8133c4df87a1c02112816bb18b5d862d",
     "faede4649b830cddc6ab812453c1982f636a4f7f17687358265e7b86ea44b980",
 ]
