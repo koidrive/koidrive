@@ -651,6 +651,9 @@ impl Device {
     fn receive(&mut self, changes: &[ChangeRecord], answered: bool) {
         for change in changes {
             apply(&mut self.trees, std::slice::from_ref(change));
+            if let Some(change_record::Change::Purged(purged)) = &change.change {
+                self.acted.remove(&NodeId::from(&purged.node_id));
+            }
             let Some(change_record::Change::Node(state)) = &change.change else {
                 continue;
             };
