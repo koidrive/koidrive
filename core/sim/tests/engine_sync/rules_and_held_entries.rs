@@ -688,7 +688,7 @@ fn a_node_moved_into_an_ignored_folder_that_is_no_node_keeps_its_entry() {
     let device = an_edit_moved_into_b(false, true);
     let c = "c".into();
     assert_eq!(device.trees.local().get(&c).unwrap().shape.parent, "a");
-    assert!(device.trees.recorded_local(&c) && device.on_ignored_disk(&c));
+    assert!(device.trees.recorded_local(&c) && !device.on_disk(&c));
     assert_eq!(
         device.ignored[&unobserved_edit()].content,
         Some(content(1, 1))
@@ -751,7 +751,7 @@ fn an_ignored_folder_the_rules_let_in_is_found_with_the_copy_the_user_moved_into
 fn an_edit_removed_replaced_or_moved_out_and_lost_does_not_count_as_kept() {
     let edit = written([Some(content(1, 1))].into_iter(), 1);
     let c = "c".into();
-    for case in ["unlink", "replace", "move and drop"] {
+    for case in ["unlink", "replace", "move and drop", "disk copy only"] {
         let mut device = an_edit_moved_into_b(false, true);
         let path = unobserved_edit();
         assert!(local_writes_check(&device, &[], &BTreeSet::new(), &edit).is_ok());
@@ -764,13 +764,16 @@ fn an_edit_removed_replaced_or_moved_out_and_lost_does_not_count_as_kept() {
                     .ignored
                     .insert(("a".into(), vec!["c.txt".into()]), entry);
                 device.rescan();
-                assert!(!device.on_ignored_disk(&c));
+                assert!(device.on_disk(&c));
                 assert_eq!(
                     device.trees.local().get(&c).unwrap().shape.content,
                     Some(content(1, 1))
                 );
             }
-            device.trees.remove_local(&c);
+            match case {
+                "disk copy only" => device.rescan(),
+                _ => device.trees.remove_local(&c),
+            }
         }
         let result = local_writes_check(&device, &[], &BTreeSet::new(), &edit);
         assert!(
@@ -845,4 +848,27 @@ fn deleting_around_a_hidden_copy_keeps_its_folder_and_deletes_included_children(
     assert!(device.trees.local_child(&p, "ss").is_none());
     assert!(device.ignored.contains_key(&(p, vec!["A".into()])));
     assert!(device.ignored.contains_key(&unobserved_edit()));
+}
+
+#[test]
+fn a_hidden_copy_an_ancestor_rename_lets_in_is_found_by_the_next_listing() {
+    let mut device = an_edit_moved_into_b(false, true);
+    device.rule(&Ruling::File(vec!["/p/b"]));
+    let c = "c".into();
+    device.act(&act(3, 1, 0, 6, 0));
+    device.trees.settle(&Default::default());
+    device.list_moved();
+    assert_eq!(local_path(&device.trees, &c), ["ss", "b", "c.txt"]);
+    assert!(device.on_disk(&c) && device.ignored.is_empty());
+}
+
+#[test]
+fn a_folder_deleted_around_only_a_moved_away_entry_leaves_nothing_on_disk() {
+    let mut device = an_edit_moved_into_b(false, true);
+    let a: NodeId = "a".into();
+    device.act(&act(0, 0, 1, 2, 0));
+    assert!(device.ignored.contains_key(&(a.clone(), vec!["b".into()])));
+    device.act(&act(4, 0, 0, 0, 0));
+    assert!(device.trees.local().get(&a).is_some() && !device.on_disk(&a));
+    assert!(!device.ignored.keys().any(|(holder, _)| *holder == a));
 }

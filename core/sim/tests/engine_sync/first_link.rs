@@ -860,6 +860,7 @@ fn keep_rule_walk_reaches_a_deleted_folder(server_took_the_move: bool) -> bool {
         kept_back: BTreeSet::new(),
         relocated: BTreeMap::new(),
         ignored: IgnoredDisk::default(),
+        off_disk: BTreeSet::new(),
     };
     let state = |id: &str, parent: &str| NodeState {
         node_id: id.into(),
@@ -918,6 +919,7 @@ fn keep_rule_keeps_a_deleted_folder(server_renames_it: bool) -> bool {
         kept_back: BTreeSet::new(),
         relocated: BTreeMap::new(),
         ignored: IgnoredDisk::default(),
+        off_disk: BTreeSet::new(),
     };
     let change = |name: &str| ChangeRecord {
         change: Some(change_record::Change::Node(NodeState {
