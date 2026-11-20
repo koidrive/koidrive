@@ -16,7 +16,6 @@ prost.workspace = true
 sha2 = "0.11.1"
 
 [dev-dependencies]
-koidrive-engine = { path = "../engine", features = ["check-provenance"] }
 koidrive-test-support = { path = "../test-support" }
 proptest = "1.12.0"
 serde_json = "1"

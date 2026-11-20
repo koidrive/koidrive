@@ -2,11 +2,20 @@
 
 use std::borrow::Cow;
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::state::{ContentProvenance, ContentVersion, MapChanges};
 use crate::tree::{NodeId, RemoteNode, Tree, read_entries};
 
 const IMPLIED: &str = "R holds every node whose provenance it implies";
+
+static CHECKED: AtomicBool = AtomicBool::new(cfg!(test));
+
+/// Makes the trees created or restored from here on keep every content provenance record in full beside the ones R
+/// implies, and panic when the two answer a read, a write, a state or a change set differently. For tests.
+pub fn check_content_provenance() {
+    CHECKED.store(true, Ordering::Relaxed);
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Implied {
@@ -34,36 +43,53 @@ impl Implied {
 }
 
 #[derive(Clone, Debug, Default)]
+struct Full {
+    records: BTreeMap<NodeId, ContentProvenance>,
+    taken: BTreeMap<NodeId, ContentProvenance>,
+}
+
+#[derive(Clone, Debug)]
 pub(crate) struct Provenances {
     held: BTreeMap<NodeId, ContentProvenance>,
     implied: BTreeMap<NodeId, Implied>,
     before: BTreeMap<NodeId, Option<ContentProvenance>>,
-    #[cfg(any(test, feature = "check-provenance"))]
-    full: BTreeMap<NodeId, ContentProvenance>,
-    #[cfg(any(test, feature = "check-provenance"))]
-    taken: BTreeMap<NodeId, ContentProvenance>,
+    full: Option<Box<Full>>,
+}
+
+impl Default for Provenances {
+    fn default() -> Self {
+        Self {
+            held: BTreeMap::new(),
+            implied: BTreeMap::new(),
+            before: BTreeMap::new(),
+            full: CHECKED.load(Ordering::Relaxed).then(Box::default),
+        }
+    }
 }
 
 impl Provenances {
-    pub(crate) fn restored(
+    pub(crate) fn restore(
+        &mut self,
         records: BTreeMap<NodeId, ContentProvenance>,
         r: &Tree<RemoteNode>,
-    ) -> Self {
-        let mut provenances = Self {
-            #[cfg(any(test, feature = "check-provenance"))]
-            full: records.clone(),
-            #[cfg(any(test, feature = "check-provenance"))]
-            taken: records.clone(),
+    ) {
+        let checked = self.full.is_some() || CHECKED.load(Ordering::Relaxed);
+        *self = Self {
+            full: checked.then(|| {
+                Box::new(Full {
+                    records: records.clone(),
+                    taken: records.clone(),
+                })
+            }),
             ..Self::default()
         };
         for (id, record) in records {
             if let Some(implied) = r.get(&id).and_then(|remote| Implied::of(&record, remote)) {
-                provenances.implied.insert(id, implied);
+                self.implied.insert(id, implied);
             } else {
-                provenances.held.insert(id, record);
+                self.held.insert(id, record);
             }
         }
-        provenances
     }
 
     pub(crate) fn get(
@@ -73,12 +99,13 @@ impl Provenances {
     ) -> Option<Cow<'_, ContentProvenance>> {
         read_entries(1);
         let record = self.view(id, r);
-        #[cfg(any(test, feature = "check-provenance"))]
-        assert_eq!(
-            record.as_deref(),
-            self.full.get(id),
-            "the provenance of {id:?}"
-        );
+        if let Some(full) = &self.full {
+            assert_eq!(
+                record.as_deref(),
+                full.records.get(id),
+                "the provenance of {id:?}"
+            );
+        }
         record
     }
 
@@ -103,21 +130,24 @@ impl Provenances {
         mut change: impl FnMut(&mut ContentProvenance),
     ) {
         if !insert && !self.held.contains_key(id) && !self.implied.contains_key(id) {
-            #[cfg(any(test, feature = "check-provenance"))]
-            assert!(!self.full.contains_key(id), "the provenance of {id:?}");
+            if let Some(full) = &self.full {
+                assert!(!full.records.contains_key(id), "the provenance of {id:?}");
+            }
             return;
         }
         self.touch(id, r);
         self.materialize(id, r);
-        #[cfg(any(test, feature = "check-provenance"))]
-        change(self.full.entry(id.clone()).or_default());
+        if let Some(full) = &mut self.full {
+            change(full.records.entry(id.clone()).or_default());
+        }
         change(self.held.entry(id.clone()).or_default());
         self.imply(id, r);
     }
 
     pub(crate) fn insert(&mut self, id: NodeId, r: &Tree<RemoteNode>, record: ContentProvenance) {
-        #[cfg(any(test, feature = "check-provenance"))]
-        self.full.insert(id.clone(), record.clone());
+        if let Some(full) = &mut self.full {
+            full.records.insert(id.clone(), record.clone());
+        }
         self.touch(&id, r);
         self.implied.remove(&id);
         self.held.insert(id.clone(), record);
@@ -131,9 +161,10 @@ impl Provenances {
                 && record.edit_bases.is_empty()
                 && record.unversioned_bases.is_empty()
         };
-        #[cfg(any(test, feature = "check-provenance"))]
-        if self.full.get(id).is_some_and(empty) {
-            self.full.remove(id);
+        if let Some(full) = &mut self.full
+            && full.records.get(id).is_some_and(empty)
+        {
+            full.records.remove(id);
         }
         if self.held.get(id).is_some_and(empty) {
             self.touch(id, r);
@@ -161,8 +192,13 @@ impl Provenances {
             return;
         };
         let record = implied.record(r.get(id).expect(IMPLIED));
-        #[cfg(any(test, feature = "check-provenance"))]
-        assert_eq!(Some(&record), self.full.get(id), "the provenance of {id:?}");
+        if let Some(full) = &self.full {
+            assert_eq!(
+                Some(&record),
+                full.records.get(id),
+                "the provenance of {id:?}"
+            );
+        }
         self.held.insert(id.clone(), record);
     }
 
@@ -190,8 +226,9 @@ impl Provenances {
                 .iter()
                 .map(|(id, implied)| (id.clone(), implied.record(r.get(id).expect(IMPLIED)))),
         );
-        #[cfg(any(test, feature = "check-provenance"))]
-        assert_eq!(records, self.full, "the provenance records");
+        if let Some(full) = &self.full {
+            assert_eq!(records, full.records, "the provenance records");
+        }
         records
     }
 
@@ -206,11 +243,10 @@ impl Provenances {
                 (record != held).then_some((id, record))
             })
             .collect();
-        #[cfg(any(test, feature = "check-provenance"))]
-        {
-            let expected = crate::state::map_changes(&self.taken, &self.full);
+        if let Some(full) = &mut self.full {
+            let expected = crate::state::map_changes(&full.taken, &full.records);
             assert_eq!(changes, expected, "the provenance changes");
-            self.taken = self.full.clone();
+            full.taken = full.records.clone();
         }
         changes
     }

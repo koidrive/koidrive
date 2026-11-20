@@ -14,6 +14,7 @@ use crate::first_link;
 use crate::ignore::{Key, LocalRules, Matcher, RuleFile, is_rules_file};
 use crate::names::{name_key, nfc, same_name};
 use crate::provenance::Provenances;
+pub use crate::provenance::check_content_provenance;
 use crate::question::Frozen;
 use crate::state::{
     Agreed, ContentProvenance, ContentValue, ContentVersion, FinishOrigin, KeptCause, KeptEntries,
@@ -7857,7 +7858,7 @@ impl Trees {
         self.kept_nodes = kept_nodes.into();
         self.unseen_changes = unseen_changes.into();
         self.replaced_versions = replaced_versions.into();
-        self.content_provenance = Provenances::restored(content_provenance, &self.r);
+        self.content_provenance.restore(content_provenance, &self.r);
         self.resends = resends.into();
         self.local_changes = local_changes.into();
         self.lost_positions = lost_positions.into();
