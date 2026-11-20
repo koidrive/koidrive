@@ -4020,10 +4020,11 @@ impl Trees {
             }
         }
         let mut above = BTreeSet::new();
-        let chains = (tops.iter().map(|top| self.local_chain(top).skip(1)))
-            .chain((self.left_folders.iter()).map(|folder| self.local_chain(folder).skip(0)));
-        for chain in chains {
-            for folder in chain {
+        let starts = (tops.iter())
+            .filter_map(|top| self.l.get(top).map(|node| &node.shape.parent))
+            .chain(self.left_folders.iter());
+        for start in starts {
+            for folder in self.local_chain(start) {
                 if *folder == self.l.root
                     || self.l.get(folder).is_none()
                     || self.known_to_server(folder)
