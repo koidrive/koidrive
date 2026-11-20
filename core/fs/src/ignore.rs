@@ -315,28 +315,40 @@ impl Walk {
         &mut self,
         root: BorrowedFd<'_>,
         dir: PathBuf,
+        above: &mut Option<(PathBuf, OwnedFd, Vec<FileId>)>,
         cut: &mut dyn FnMut(Cut<'_>),
     ) -> usize {
-        let (Some(seen), Some(parent), Some(name)) =
-            (self.passed.get_mut(&dir), dir.parent(), dir.file_name())
-        else {
+        let (Some(parent), Some(name)) = (dir.parent(), dir.file_name()) else {
             return 1;
         };
-        let cost = dir.components().count();
+        let mut cost = 1;
+        if above.as_ref().is_some_and(|(at, _, _)| at != parent) {
+            cost += self.confirm_parent(root, above);
+        }
+        let Some(seen) = self.passed.get_mut(&dir) else {
+            return cost;
+        };
         cut(Cut::Confirming(&dir));
-        let attached = open_attached(root, parent, &mut |_| {}).and_then(|above| {
-            let Some((fd, chain)) = above else {
-                return Ok(None);
+        if above.is_none() {
+            cost += parent.components().count();
+            *above = match open_attached(root, parent, &mut |_| {}) {
+                Ok(Some((fd, chain))) => Some((parent.to_path_buf(), fd, chain)),
+                Ok(None) => {
+                    self.changed |= !std::mem::replace(&mut seen.needs_walk, true);
+                    return cost;
+                }
+                Err(_) => {
+                    self.unopened.insert(dir);
+                    return cost;
+                }
             };
-            match stat_at(fd.as_fd(), name) {
-                Ok(stat) => Ok(Some((fd, chain, stat))),
-                Err(err) if is_gone(&err) => Ok(None),
-                Err(err) => Err(err),
-            }
-        });
-        let (above, chain, stat) = match attached {
-            Ok(Some(attached)) => attached,
-            Ok(None) => {
+        }
+        let Some((_, above, chain)) = above.as_ref() else {
+            return cost;
+        };
+        let stat = match stat_at(above.as_fd(), name) {
+            Ok(stat) => stat,
+            Err(err) if is_gone(&err) => {
                 self.changed |= !std::mem::replace(&mut seen.needs_walk, true);
                 return cost;
             }
@@ -345,7 +357,6 @@ impl Walk {
                 return cost;
             }
         };
-        let mut cost = cost;
         if !seen.needs_walk && stat.id.same(&seen.id) {
             if (stat.mtime_ns, stat.ctime_ns) == seen.stamp && !seen.racy {
                 return cost;
@@ -377,8 +388,27 @@ impl Walk {
         self.listings.push(Listing {
             dir: parent.to_path_buf(),
             names: vec![name.to_os_string()],
-            chain: Some(chain),
+            chain: Some(chain.clone()),
         });
+        cost
+    }
+
+    fn confirm_parent(
+        &mut self,
+        root: BorrowedFd<'_>,
+        above: &mut Option<(PathBuf, OwnedFd, Vec<FileId>)>,
+    ) -> usize {
+        let Some((at, _, chain)) = above.take() else {
+            return 0;
+        };
+        let cost = at.components().count();
+        match open_attached(root, &at, &mut |_| {}) {
+            Ok(Some((_, now))) if same_chain(&chain, &now) => {}
+            Err(_) => {
+                self.unopened.insert(at);
+            }
+            _ => self.changed = true,
+        }
         cost
     }
 }
@@ -828,6 +858,7 @@ impl<'r> Pending<'r> {
         let mut left = if bounded { *budget } else { usize::MAX };
         let mut looked = false;
         let mut checked = false;
+        let mut parent = None;
         'walk: while (left > 0 || !looked) && !pending.is_empty() {
             let walk = walking.get_or_insert_with(|| {
                 *walks += 1;
@@ -911,9 +942,15 @@ impl<'r> Pending<'r> {
                             let Some((dir, chain)) = walk.bases.pop() else {
                                 if let Some(dir) = walk.check.pop() {
                                     looked = true;
-                                    left = left.saturating_sub(walk.recheck(root, dir, cut));
+                                    left = left.saturating_sub(walk.recheck(
+                                        root,
+                                        dir,
+                                        &mut parent,
+                                        cut,
+                                    ));
                                     continue 'walk;
                                 }
+                                left = left.saturating_sub(walk.confirm_parent(root, &mut parent));
                                 if walk.rounds == 0 || (walk.changed && walk.rounds < CHECKS) {
                                     walk.rounds += 1;
                                     walk.changed = false;
@@ -1070,12 +1107,16 @@ impl<'r> Pending<'r> {
                 let restarts = walk.restarts + 1;
                 *walks += 1;
                 *walking = Some(Walk::new(ignored, restarts));
+                parent = None;
                 for needs in pending.values_mut() {
                     *needs = *walks;
                 }
                 continue 'walk;
             }
             walk.leave(replaced);
+        }
+        if let Some(walk) = walking.as_mut() {
+            walk.confirm_parent(root, &mut parent);
         }
         if pending.is_empty() {
             *walking = None;

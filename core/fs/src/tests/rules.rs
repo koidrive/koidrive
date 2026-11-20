@@ -459,6 +459,68 @@ fn a_search_looks_again_when_a_passed_folder_comes_back() {
 }
 
 #[test]
+fn a_search_notices_a_parent_replaced_between_the_checks_of_its_children() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("space");
+    for path in [
+        "ig/p/a/keep",
+        "ig/p/b/keep",
+        "ig/z/keep",
+        ".koiignore",
+        "f.txt",
+    ] {
+        let path = root.join(path);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(
+            &path,
+            if path.ends_with(".koiignore") {
+                "ig\n"
+            } else {
+                "f"
+            },
+        )
+        .unwrap();
+    }
+    let mut rules = Rules::new(Box::new(Lines::default())).with_search_budget(usize::MAX);
+    let mut snapshot = Snapshot::scan_with_rules(&root, &mut rules).unwrap();
+    let id = snapshot.entries[Path::new("f.txt")].id;
+    let outside = dir.path().join("f.txt");
+    fs::rename(root.join("f.txt"), &outside).unwrap();
+    let scan = snapshot
+        .rescan_under(
+            &root,
+            [PathBuf::new()],
+            &BTreeSet::new(),
+            None,
+            Some(&mut rules),
+            &|| false,
+            &|_| {},
+            Keep::Unplaced,
+            &mut |cut| {
+                if let Cut::Confirming(path) = cut
+                    && path == Path::new("ig/p/b")
+                    && outside.exists()
+                {
+                    fs::rename(root.join("ig/p"), root.join("ig/q")).unwrap();
+                    fs::create_dir(root.join("ig/p")).unwrap();
+                    fs::rename(&outside, root.join("ig/q/f.txt")).unwrap();
+                }
+            },
+            &MarkLog::default(),
+        )
+        .unwrap();
+    assert_eq!(
+        scan.changes,
+        [Change::Ignored {
+            from: "f.txt".into(),
+            to: "ig/q/f.txt".into(),
+            kind: EntryKind::File,
+            id,
+        }]
+    );
+}
+
+#[test]
 fn a_search_starts_over_when_a_folder_is_replaced_between_its_stat_and_its_open() {
     for (moved, recreated, every) in [
         (true, false, false),
