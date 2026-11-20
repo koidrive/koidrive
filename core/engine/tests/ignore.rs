@@ -3275,3 +3275,33 @@ fn a_new_file_in_a_reverted_folder_the_server_keeps_at_an_excluded_path_is_left_
         assert_eq!(ops(&mut trees), [], "{synced_at}");
     }
 }
+
+#[test]
+fn a_new_folder_left_out_on_the_server_once_its_last_synced_entry_moves_out_is_unobserved() {
+    let mut trees = trees(&[
+        synced("p", dir(ROOT, "p")),
+        ("new", Some(dir("p", "new")), None, None),
+        (
+            "f",
+            Some(file("new", "f", 1)),
+            Some(file(ROOT, "f", 1)),
+            Some(file(ROOT, "f", 1)),
+        ),
+    ]);
+    trees.set_rules(&AT_ROOT, Source::Koiignore, rules("/blocked/\n"));
+    trees.set_remote(
+        "p".into(),
+        RemoteNode {
+            meta_rev: 8,
+            meta_edit_rev: 8,
+            ..remote(dir(ROOT, "blocked"))
+        },
+    );
+    trees.settle(&Default::default());
+    let new = NodeId::from("new");
+    assert!(!trees.excluded(&new) && !trees.unobserved(&new));
+    trees.set_local("f".into(), local(file(ROOT, "f", 1), 3));
+    trees.settle(&Default::default());
+    assert!(trees.excluded(&new));
+    assert!(trees.unobserved(&new));
+}
