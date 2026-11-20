@@ -24,6 +24,7 @@ use koidrive_engine::restore::{Outcome, Rejection, Resolved, RestoreIntent};
 
 use koidrive_engine::state::{RenamedOver, StateError};
 
+use koidrive_engine::tracked::TrackedMap;
 use koidrive_engine::tree::{
     ContentKey, FileIdentity, Kind, LocalNode, Names, NodeId, RemoteNode, Shape, same,
 };
@@ -2946,10 +2947,12 @@ fn run_ignoring_answering_after(
     let refused_merges: BTreeSet<NodeId> = reported
         .iter()
         .filter_map(|(id, reason)| {
-            let target = commits.aliases().get(id)?;
+            if !commits.aliases().contains_key(id) {
+                return None;
+            }
             let along = match (reason, effects.blocked().get(id)) {
                 (Stuck::MergedInto(into), _)
-                    if into == target || names_the_live_holder(&device.trees, id, into) =>
+                    if holds_the_merged_folder(&device.trees, commits.aliases(), id, into) =>
                 {
                     &[][..]
                 }
@@ -3176,16 +3179,23 @@ fn observed_merge_residue(device: &Device, commits: &Commits) -> MergeResidue {
     .unwrap_or_else(|never: std::convert::Infallible| match never {})
 }
 
-fn names_the_live_holder(trees: &Trees, folder: &NodeId, into: &NodeId) -> bool {
+fn holds_the_merged_folder(
+    trees: &Trees,
+    aliases: &TrackedMap<NodeId, NodeId>,
+    folder: &NodeId,
+    into: &NodeId,
+) -> bool {
     trees.local().get(folder).is_some_and(|local| {
-        trees.remote().live(into).is_some_and(|live| {
-            live.parent == local.shape.parent && name_key(&live.name) == name_key(&local.shape.name)
-        })
+        aliases.contains_key(&local.shape.parent) && aliases.get(folder) == Some(into)
+            || trees.remote().live(into).is_some_and(|live| {
+                live.parent == local.shape.parent
+                    && name_key(&live.name) == name_key(&local.shape.name)
+            })
     })
 }
 
 #[test]
-fn a_merged_folder_is_held_only_by_the_live_entry_at_its_name_key() {
+fn a_merged_folder_is_held_by_its_key_holder_or_its_alias_under_a_merged_parent() {
     let root = NodeId::from("root");
     let shape = |name: &str| Shape {
         parent: root.clone(),
@@ -3220,13 +3230,43 @@ fn a_merged_folder_is_held_only_by_the_live_entry_at_its_name_key() {
         parked: false,
         chunks: Box::default(),
     };
+    let inner = LocalNode {
+        shape: Shape {
+            parent: "p".into(),
+            ..shape("in")
+        },
+        identity: FileIdentity {
+            ino: 3,
+            ..local.identity
+        },
+        ..local.clone()
+    };
+    let parent = LocalNode {
+        shape: shape("p"),
+        identity: FileIdentity {
+            ino: 2,
+            ..local.identity
+        },
+        ..local.clone()
+    };
     trees.set_local("merged".into(), local);
+    trees.set_local("p".into(), parent);
+    trees.set_local("inner".into(), inner);
     trees.set_remote("holder".into(), remote(shape("SS")));
     trees.set_remote("other".into(), remote(shape("b")));
     trees.settle(&Default::default());
-    let merged = NodeId::from("merged");
-    assert!(names_the_live_holder(&trees, &merged, &"holder".into()));
-    assert!(!names_the_live_holder(&trees, &merged, &"other".into()));
+    let aliases = TrackedMap::from(BTreeMap::from([
+        (NodeId::from("merged"), NodeId::from("other")),
+        (NodeId::from("p"), NodeId::from("holder")),
+        (NodeId::from("inner"), NodeId::from("gone")),
+    ]));
+    let holds = |folder: &str, into: &str| {
+        holds_the_merged_folder(&trees, &aliases, &folder.into(), &into.into())
+    };
+    assert!(holds("merged", "holder"));
+    assert!(!holds("merged", "other"));
+    assert!(holds("inner", "gone"));
+    assert!(!holds("inner", "other"));
 }
 
 fn held_on_disk(

@@ -434,6 +434,14 @@ fn a_folder_another_device_deletes_beside_a_reported_merge_folder_frees_it_to_up
 }
 
 #[test]
+fn a_folder_renamed_here_away_from_a_reported_merge_folder_frees_it_to_upload_as_a_new_folder() {
+    let world = freeing_the_name_key_uploads_a_reported_merge_folder_as_new(|world| {
+        vec![(0, rename(target(world, 0, &["a"]), 0, "b"))]
+    });
+    assert!(live_node_at(&world, &["b"]).is_some());
+}
+
+#[test]
 fn a_folder_another_device_renames_away_from_a_reported_merge_folder_frees_it_to_upload_as_a_new_folder()
  {
     freeing_the_name_key_uploads_a_reported_merge_folder_as_new(on_the_live_folder(1, |live| {

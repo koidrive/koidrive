@@ -3531,8 +3531,14 @@ impl World {
                 let source_on_server = nodes.iter().any(|(id, node)| id == source && !node.trashed);
                 if source_on_server
                     || !engine.commits.aliases().contains_key(source)
-                    || engine.commits.aliases().get(source) != Some(target)
-                        && !nodes.iter().any(|(id, node)| id == target && !node.trashed)
+                    || !engine.trees.local().get(source).is_some_and(|local| {
+                        engine.commits.aliases().contains_key(&local.shape.parent)
+                            && engine.commits.aliases().get(source) == Some(target)
+                            || engine.trees.remote().live(target).is_some_and(|live| {
+                                live.parent == local.shape.parent
+                                    && name_key(&live.name) == name_key(&local.shape.name)
+                            })
+                    })
                     || engine.trees.kept_folder(source)
                     || engine.trees.local().get(source).is_none_or(|local| {
                         local.parked || !holds_only_left_out_inos(local.identity.ino)
