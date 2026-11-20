@@ -4813,3 +4813,25 @@ fn a_copy_the_rules_leave_out_around_a_server_rename_waits_for_a_scan_once_they_
         assert!(!sends_delete_of_d(trees), "{renamed_back_first}");
     }
 }
+
+#[test]
+fn a_folder_kept_after_a_purge_for_entries_the_rules_leave_out_stays_observed_when_the_rules_are_read_again()
+ {
+    let mut trees = trees(&[
+        synced("a", dir(ROOT, "a")),
+        synced("x", file("a", "x.txt", 1)),
+    ]);
+    trees.set_rules(&AT_ROOT, Source::Koiignore, rules("*.txt\n"));
+    trees.rules_scanned();
+    place(&mut trees, "a", ROOT, "b");
+    trees.settle(&Default::default());
+    trees.remove_remote(&"x".into());
+    trees.remove_remote(&"a".into());
+    trees.settle(&Default::default());
+    assert!(trees.kept_folder(&"a".into()));
+    assert!(!trees.unobserved(&"a".into()));
+    trees.set_rules(&AT_ROOT, Source::Koiignore, rules("*.txt\n*.log\n"));
+    trees.settle(&Default::default());
+    assert!(trees.kept_folder(&"a".into()));
+    assert!(!trees.unobserved(&"a".into()));
+}
