@@ -6971,7 +6971,10 @@ impl Trees {
         {
             return Err(StateError::NotPastPosition(id.clone()));
         }
-        if let Some(id) = (state.synced_positions.keys()).find(|id| self.r.get(id).is_none()) {
+        if let Some(id) = (state.synced_positions.keys())
+            .take_while(|_| go_on())
+            .find(|id| self.r.get(id).is_none())
+        {
             return Err(StateError::NotSyncedPosition(id.clone()));
         }
         if let Some(id) = state
