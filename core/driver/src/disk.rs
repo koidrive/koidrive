@@ -1963,6 +1963,7 @@ fn settle(
             } if (engine.effects).keeps(
                 &engine.trees,
                 engine.commits.in_flight(),
+                engine.commits.aliases(),
                 &record.effect_id,
                 &held(names),
             ) =>
@@ -1972,6 +1973,7 @@ fn settle(
                     .kept(
                         &mut engine.trees,
                         engine.commits.in_flight(),
+                        engine.commits.aliases(),
                         &record.effect_id,
                         &held,
                     )

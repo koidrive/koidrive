@@ -706,8 +706,9 @@ impl Effects {
         Ok(())
     }
 
-    /// Whether the effect in flight removes a folder that R holds trashed, purged or never held, and that the commit
-    /// in flight does not create, and this device syncs no entry of `held`,
+    /// Whether the effect in flight removes a folder that R holds trashed, purged or never held, that the commit in
+    /// flight does not create, and whose create the server did not merge into a folder of `merged`, and this device
+    /// syncs no entry of `held`,
     /// the names and kinds of what the folder holds beside the files it takes along: the rules in force exclude each
     /// file or folder, or L holds it as a node this device leaves out, such as a kept entry, and an entry of no kind,
     /// such as a symlink, is never synced. [`Effects::kept`] then keeps it.
@@ -715,6 +716,7 @@ impl Effects {
         &self,
         trees: &Trees,
         in_flight: Option<&InFlight>,
+        merged: &BTreeMap<NodeId, NodeId>,
         effect_id: &str,
         held: &[(&str, Option<Kind>)],
     ) -> bool {
@@ -727,6 +729,7 @@ impl Effects {
         matches!(record.effect, Effect::RemoveDir { .. })
             && trees.remote().live(&record.node).is_none()
             && !in_flight.is_some_and(|flight| flight.creates(&record.node))
+            && !merged.contains_key(&record.node)
             && held.iter().all(|(name, kind)| {
                 let mut entry = folder.clone();
                 entry.push(name);
@@ -743,10 +746,11 @@ impl Effects {
         &mut self,
         trees: &mut Trees,
         in_flight: Option<&InFlight>,
+        merged: &BTreeMap<NodeId, NodeId>,
         effect_id: &str,
         held: &[(&str, Option<Kind>)],
     ) -> Result<(), EffectError> {
-        if !self.keeps(trees, in_flight, effect_id, held) {
+        if !self.keeps(trees, in_flight, merged, effect_id, held) {
             return Err(EffectError::NotKept(effect_id.to_owned()));
         }
         let record = self.take(effect_id)?;

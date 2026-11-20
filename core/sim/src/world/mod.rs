@@ -1893,6 +1893,7 @@ impl World {
                         && effects.keeps(
                             trees,
                             commits.in_flight(),
+                            commits.aliases(),
                             &record.effect_id,
                             &names_and_kinds(&held),
                         ) =>
@@ -1905,6 +1906,7 @@ impl World {
                     effects.kept(
                         trees,
                         commits.in_flight(),
+                        commits.aliases(),
                         &record.effect_id,
                         &names_and_kinds(&held),
                     )

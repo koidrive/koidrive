@@ -2221,11 +2221,18 @@ fn run_ignoring_answering_after(
                         .iter()
                         .map(|(name, kind)| (name.as_str(), *kind))
                         .collect();
-                    if effects.keeps(&device.trees, commits.in_flight(), &record.effect_id, &held) {
+                    if effects.keeps(
+                        &device.trees,
+                        commits.in_flight(),
+                        commits.aliases(),
+                        &record.effect_id,
+                        &held,
+                    ) {
                         effects
                             .kept(
                                 &mut device.trees,
                                 commits.in_flight(),
+                                commits.aliases(),
                                 &record.effect_id,
                                 &held,
                             )
