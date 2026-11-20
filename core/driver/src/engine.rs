@@ -1819,8 +1819,10 @@ pub(crate) struct Stored {
 
 impl Stored {
     pub fn new(root: &str) -> Self {
+        let mut trees = Trees::new(root);
+        trees.skip_provenance_check();
         Stored {
-            trees: Trees::new(root),
+            trees,
             state: EngineState::default(),
             ids: None,
             cursor: None,

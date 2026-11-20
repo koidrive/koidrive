@@ -12,6 +12,7 @@ pub mod ids;
 pub mod ignore;
 pub mod names;
 mod node_id;
+mod provenance;
 pub mod question;
 mod recovery;
 pub mod restore;

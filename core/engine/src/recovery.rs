@@ -308,9 +308,13 @@ pub(crate) fn release(
         let synced = trees.synced().live(id);
         let content = if trees.made_over_remote(id) {
             server.content
-        } else if let Some(on_disk) = on_disk.filter(|_| newer_than(trees.source_version_id(id))) {
+        } else if let Some(on_disk) =
+            on_disk.filter(|_| newer_than(trees.source_version_id(id).as_deref()))
+        {
             on_disk.content
-        } else if let Some(synced) = synced.filter(|_| newer_than(trees.synced_version_id(id))) {
+        } else if let Some(synced) =
+            synced.filter(|_| newer_than(trees.synced_version_id(id).as_deref()))
+        {
             synced.content
         } else {
             server.content

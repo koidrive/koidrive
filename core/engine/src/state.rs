@@ -777,7 +777,7 @@ fn set_changes<K: Ord + Clone>(before: &BTreeSet<K>, after: &BTreeSet<K>) -> Set
         .collect()
 }
 
-fn map_changes<K: Ord + Clone, V: Clone + PartialEq>(
+pub(crate) fn map_changes<K: Ord + Clone, V: Clone + PartialEq>(
     before: &BTreeMap<K, V>,
     after: &BTreeMap<K, V>,
 ) -> MapChanges<K, V> {

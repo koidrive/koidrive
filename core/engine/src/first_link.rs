@@ -155,7 +155,7 @@ fn synced_versions(trees: &Trees) -> impl Iterator<Item = (&NodeId, Option<i64>)
     (trees.synced().iter())
         .filter(|(_, shape)| shape.kind == Kind::File)
         .map(|(id, _)| {
-            let version_ms = trees.synced_version_id(id).and_then(crate::ids::unix_ms);
+            let version_ms = (trees.synced_version_id(id)).and_then(|id| crate::ids::unix_ms(&id));
             (id, version_ms.and_then(|ms| i64::try_from(ms).ok()))
         })
 }
