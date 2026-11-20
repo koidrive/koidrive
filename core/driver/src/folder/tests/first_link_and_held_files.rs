@@ -167,7 +167,10 @@ fn a_question_the_engine_holds_without_its_row_is_shown_and_answered_once_the_fo
     assert_eq!(b.folder.view().questions, 0);
 }
 
-fn discarded_held_folder_with(unknown: &str) -> (Remote, Site, Device, PathBuf) {
+fn discarded_held_folder_with(
+    unknown: &str,
+    arrives_after_scan: bool,
+) -> (Remote, Site, Device, PathBuf) {
     let mut remote = Remote::new();
     let site = synced_before(&mut remote, "b");
     let (site_a, mut a) = linked(&mut remote, "a");
@@ -175,6 +178,13 @@ fn discarded_held_folder_with(unknown: &str) -> (Remote, Site, Device, PathBuf) 
     fs::create_dir(site.root.join("held")).unwrap();
     fs::write(site.root.join("held/a.txt"), b"listed").unwrap();
     let entry = site.root.join("held").join(unknown);
+    let make_entry = || match unknown {
+        "link" => std::os::unix::fs::symlink("/etc/hosts", &entry).unwrap(),
+        _ => fs::write(&entry, b"unobserved").unwrap(),
+    };
+    if !arrives_after_scan {
+        make_entry();
+    }
     let sync = SyncRules {
         include: Vec::new(),
         exclude: vec!["*.log".into()],
@@ -186,9 +196,8 @@ fn discarded_held_folder_with(unknown: &str) -> (Remote, Site, Device, PathBuf) 
     b.run(&mut remote);
     b.settle();
     b.run(&mut remote);
-    match unknown {
-        "link" => std::os::unix::fs::symlink("/etc/hosts", &entry).unwrap(),
-        _ => fs::write(&entry, b"unobserved").unwrap(),
+    if arrives_after_scan {
+        make_entry();
     }
     answer(&site, Answer::Discard);
     let step = b.folder.requested();
@@ -207,13 +216,19 @@ fn discarded_held_folder_with(unknown: &str) -> (Remote, Site, Device, PathBuf) 
 
 #[test]
 fn discarding_a_folder_with_an_unobserved_excluded_entry_keeps_it_without_a_problem() {
-    for unknown in ["build.log", "link"] {
-        let (_, site, b, entry) = discarded_held_folder_with(unknown);
+    for (unknown, after_scan) in ["build.log", "link"]
+        .into_iter()
+        .flat_map(|name| [(name, false), (name, true)])
+    {
+        let (_, site, b, entry) = discarded_held_folder_with(unknown, after_scan);
         assert!(
             b.sent.is_empty(),
             "{unknown}: nothing is sent for a discarded entry"
         );
-        assert!(fs::symlink_metadata(&entry).is_ok(), "{unknown} is kept");
+        match unknown {
+            "link" => assert_eq!(fs::read_link(entry).unwrap(), Path::new("/etc/hosts")),
+            _ => assert_eq!(fs::read(entry).unwrap(), b"unobserved"),
+        }
         assert!(!site.root.join("held/a.txt").exists());
         assert_eq!(trashed(&site.root).len(), 1, "{unknown}");
         let view = b.folder.view();
@@ -222,14 +237,14 @@ fn discarding_a_folder_with_an_unobserved_excluded_entry_keeps_it_without_a_prob
             (FolderState::UpToDate, 0),
             "{unknown}"
         );
-        assert_eq!(view.problem, None, "{unknown}");
+        assert_eq!(view.problem, None, "{unknown}, after_scan={after_scan}");
         assert!(b.folder.stuck_effects.is_empty() && b.folder.effect_failures.is_empty());
     }
 }
 
 #[test]
 fn a_stuck_folder_the_person_deletes_drops_its_failure_entries() {
-    let (mut remote, site, mut b, entry) = discarded_held_folder_with("unseen.txt");
+    let (mut remote, site, mut b, entry) = discarded_held_folder_with("unseen.txt", true);
     assert!(!b.folder.stuck_effects.is_empty() && !b.folder.effect_failures.is_empty());
     assert_eq!(fs::read(entry).unwrap(), b"unobserved");
     let problem = b.folder.view().problem.unwrap();
