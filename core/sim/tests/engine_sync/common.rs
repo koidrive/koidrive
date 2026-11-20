@@ -686,6 +686,7 @@ impl Device {
                 },
                 identity: self.identity(),
                 parked: false,
+                chunks: Box::default(),
             };
             let id = NodeId::from(self.ids.uuid_v7(NOW as u64));
             self.acted.insert(id.clone());
