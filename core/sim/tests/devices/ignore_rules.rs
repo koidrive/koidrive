@@ -2609,14 +2609,15 @@ fn an_edit_moved_out_of_a_displaced_folder_follows_the_server_after_the_server_l
             vec![],
         ];
         let world = converge_excluding(&[vec![], vec!["*.txt"]], &phases).unwrap();
-        let contents = |device| {
+        let files = |device| {
             (files_on(&world, device).into_iter())
-                .filter_map(|(_, content)| content)
+                .filter(|(_, content)| content.is_some())
                 .collect::<Vec<_>>()
         };
-        for content in contents(1) {
+        let (first, second) = (files(0), files(1));
+        for (_, content) in &second {
             assert!(
-                contents(0).contains(&content),
+                first.iter().any(|(_, held)| held == content),
                 "works {works}: device 0 never gets device 1's {content:?}"
             );
         }
@@ -2627,6 +2628,7 @@ fn an_edit_moved_out_of_a_displaced_folder_follows_the_server_after_the_server_l
             );
             assert!(world.devices[1].disk.binned(2), "works {works}");
         } else {
+            assert_eq!(first, second, "works {works}: restored files differ");
             assert!(world.devices[0].disk.shows(2), "works {works}");
         }
     }
