@@ -332,7 +332,7 @@ impl Trees {
                 continue;
             };
             if self.l.get(&id).is_none() {
-                if self.user_deleted(&id) {
+                if !self.asked.contains(&id) {
                     self.delete_acknowledged(&id);
                 }
                 continue;
@@ -505,7 +505,13 @@ impl Trees {
         }
         let seen_list = self.acknowledged_seen_list(id);
         let base = self.acknowledged_intent(id, Field::Status);
-        self.journal.user_delete(id, seen_list, base);
+        self.record_user_delete(id, seen_list, base);
+    }
+
+    fn record_user_delete(&mut self, id: &NodeId, seen_list: Vec<Seen>, base: Option<IntentId>) {
+        if !self.unobserved(id) {
+            self.journal.user_delete(id, seen_list, base);
+        }
     }
 
     fn acknowledged_seen_list(&self, id: &NodeId) -> Vec<Seen> {
@@ -948,10 +954,6 @@ impl Trees {
         self.kept_folders.contains(id) && self.r.live(id).is_none()
     }
 
-    fn user_deleted(&self, id: &NodeId) -> bool {
-        !self.unobserved(id) && !self.asked.contains(id)
-    }
-
     /// Takes a node its user deleted out of L. A node R or S holds, or one a sent or held row may have put on the
     /// server, gets a status row with the seen list of what L held for it and the nodes below it (RFC 0029 §5.1),
     /// unless the rules leave it out or an open question holds it, since the device then saw no delete of the user;
@@ -966,13 +968,13 @@ impl Trees {
                 for field in Field::ALL {
                     self.journal.end(id, field);
                 }
-            } else if self.user_deleted(id) {
+            } else if !self.asked.contains(id) {
                 let seen_list = self.seen_list(id);
                 let base = (self.r.live(id).and(self.r.get(id)))
                     .and_then(|remote| remote_intent_of(remote, Field::Status))
                     .map(|intent| intent.id)
                     .or_else(|| (self.synced_intents(id)?.status).map(|intent| intent.id));
-                self.journal.user_delete(id, seen_list, base);
+                self.record_user_delete(id, seen_list, base);
             }
         }
         self.remove_local(id);

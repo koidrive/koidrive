@@ -7126,3 +7126,46 @@ fn a_published_folder_whose_child_another_device_moves_before_the_commit_is_aske
 fn in_flight(commits: &Commits) -> Option<&str> {
     (commits.in_flight()).map(|flight| flight.commit.commit_id.as_str())
 }
+
+#[test]
+fn a_delete_answer_records_no_status_row_for_an_entry_the_rules_leave_out() {
+    let files: Vec<(&str, Shape)> = vec![
+        ("d", dir(ROOT, "d")),
+        ("c", file("d", "c", 1)),
+        ("n", dir("d", "node_modules")),
+        ("x", file("n", "x.js", 1)),
+    ];
+    let remote: Vec<Remote> = files.iter().map(|(id, s)| live(id, s.clone())).collect();
+    let mut trees = trees(&files, &files, &remote);
+    let rules = RuleFile::parse(b"node_modules/\n");
+    trees.set_rules(&[] as &[&str; 0], Source::Koiignore, Some(rules));
+    trees.settle(&Default::default());
+    trees.rules_scanned();
+    for id in ["x", "n", "c", "d"] {
+        trees.remove_local(&id.into());
+    }
+    let behind = RecoveryCause::of(RecoveryTrigger::StoreOlderThanDisk);
+    let (mut commits, mut ids) = recovered_after(&mut trees, 0, behind);
+    let question = asked(
+        &commits,
+        RecoveryGroup::DeletedOnThisDevice,
+        &["c", "d", "n", "x"],
+    );
+    trees.backfill(None, false, NOW);
+    assert!(commits.decide(&mut trees, &question.id, Answer::Delete));
+    assert_eq!(
+        ops(&mut commits, &mut trees, &mut ids),
+        [("delete", "c".to_owned())]
+    );
+    let status =
+        |id: &str| (trees.journal_row(&id.into(), Field::Status)).map(|row| row.value.clone());
+    assert_eq!(status("c"), Some(Value::Status { live: false }));
+    for id in ["n", "x"] {
+        assert!(trees.unobserved(&id.into()), "{id}");
+        assert_eq!(
+            status(id),
+            None,
+            "{id} is left out by the rules, so the user deleted nothing there"
+        );
+    }
+}
