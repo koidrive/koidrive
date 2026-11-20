@@ -162,9 +162,48 @@ fn a_synced_file_added_to_a_kept_folder_uploads_it_as_a_new_folder() {
         ["app", "app/todo.txt"]
     );
     assert_ne!(tree["app"], old, "a new folder, not the one another device deleted");
+    let placed_in_old = (b.folder.engine.trees.journal_rows()).any(|(_, row)| {
+        matches!(&row.value, koidrive_engine::journal::Value::Place(place) if place.parent == old)
+    });
+    assert!(!placed_in_old);
     let nodes = server_nodes(&remote);
     assert!(nodes.contains(&("app".into(), old, false)), "{nodes:?}");
     assert_kept(&site, &b, &ignored);
+}
+
+#[test]
+fn a_folder_this_device_made_keeps_no_journal_rows_once_it_is_kept() {
+    let mut remote = Remote::new();
+    let (site_a, mut a) = linked(&mut remote, "a");
+    let site = Site::new(&remote, "b");
+    let mut b = site.start_with(&ignore_rules());
+    b.connect(&remote);
+    b.scan_until(|b| b.folder.scanned);
+    fs::create_dir_all(site.root.join("app")).unwrap();
+    fs::write(site.root.join("app/README.md"), b"synced").unwrap();
+    let env = site.root.join("app/.env");
+    fs::write(&env, local_only(&env)).unwrap();
+    b.rescan();
+    b.scan_until(|device| !device.work.is_empty());
+    settled(&mut b, &mut remote);
+    let old = live_id(&server_nodes(&remote), "app");
+    let rows = |b: &Device| {
+        (b.folder.engine.trees.journal_rows())
+            .filter(|((node, _), _)| *node == old)
+            .count()
+    };
+    assert!(rows(&b) > 0);
+    a.pull(&remote);
+    a.run(&mut remote);
+    a.settle();
+    a.run(&mut remote);
+    fs::remove_dir_all(site_a.root.join("app")).unwrap();
+    a.scan_until(|a| !a.work.is_empty());
+    a.run(&mut remote);
+    b.pull(&remote);
+    settled(&mut b, &mut remote);
+    assert_kept(&site, &b, &[".env"]);
+    assert_eq!(rows(&b), 0);
 }
 
 #[test]
