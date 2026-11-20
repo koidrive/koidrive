@@ -724,7 +724,7 @@ fn a_parked_reverted_folder_no_tree_holds_is_created_as_a_new_node_for_a_folder_
     assert_ne!(d, "d");
     assert_eq!(
         placed(&commit.unwrap()),
-        [at(&d, ROOT, "d"), at("f", &d, "f")]
+        [created(&d, ROOT, "d"), moved("f", &d, "f")]
     );
 }
 
@@ -3295,12 +3295,12 @@ mod parked_nodes_and_rules {
     }
 }
 
-fn placed(commit: &proto::Commit) -> Vec<(String, String, String)> {
+fn placed(commit: &proto::Commit) -> Vec<(&'static str, String, String, String)> {
     (ops(commit).into_iter())
         .filter_map(|op| match op {
-            op::Op::CreateDir(c) => Some((c.node_id, c.parent_id, c.name)),
-            op::Op::CreateFile(c) => Some((c.node_id, c.parent_id, c.name)),
-            op::Op::Move(m) => Some((m.node_id, m.new_parent_id, m.new_name)),
+            op::Op::CreateDir(c) => Some(("create", c.node_id, c.parent_id, c.name)),
+            op::Op::CreateFile(c) => Some(("create", c.node_id, c.parent_id, c.name)),
+            op::Op::Move(m) => Some(("move", m.node_id, m.new_parent_id, m.new_name)),
             _ => None,
         })
         .collect()
@@ -3313,8 +3313,17 @@ fn folder_named(trees: &Trees, name: &str) -> String {
         .unwrap()
 }
 
-fn at(node: &str, parent: &str, name: &str) -> (String, String, String) {
-    (node.to_owned(), parent.to_owned(), name.to_owned())
+fn created(node: &str, parent: &str, name: &str) -> (&'static str, String, String, String) {
+    (
+        "create",
+        node.to_owned(),
+        parent.to_owned(),
+        name.to_owned(),
+    )
+}
+
+fn moved(node: &str, parent: &str, name: &str) -> (&'static str, String, String, String) {
+    ("move", node.to_owned(), parent.to_owned(), name.to_owned())
 }
 
 #[test]
@@ -3328,25 +3337,64 @@ fn a_reverted_folder_no_tree_holds_is_created_as_a_new_node_for_a_file_made_in_i
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
     let d = folder_named(&trees, "d");
     assert_ne!(d, "d");
-    assert_eq!(placed(&commit), [at(&d, ROOT, "d"), at("f", &d, "f")]);
+    assert_eq!(
+        placed(&commit),
+        [created(&d, ROOT, "d"), created("f", &d, "f")]
+    );
 }
 
 #[test]
-fn a_reverted_folder_no_tree_holds_is_created_outermost_first_for_a_file_two_folders_down() {
+fn reverted_folders_no_tree_holds_are_created_outermost_first_for_a_file_two_folders_down() {
     let mut trees = trees(&[]);
     trees.set_local("d".into(), local(dir(ROOT, "d"), 1));
     trees.revert("d".into());
     trees.set_local("e".into(), local(dir("d", "e"), 2));
+    trees.revert("e".into());
     trees.set_local("f".into(), local(file("e", "f", 4), 3));
     trees.settle(&Default::default());
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
-    let d = folder_named(&trees, "d");
+    let (d, e) = (folder_named(&trees, "d"), folder_named(&trees, "e"));
     assert_ne!(d, "d");
+    assert_ne!(e, "e");
     assert_eq!(
         placed(&commit),
-        [at(&d, ROOT, "d"), at("e", &d, "e"), at("f", "e", "f")]
+        [
+            created(&d, ROOT, "d"),
+            created(&e, &d, "e"),
+            created("f", &e, "f")
+        ]
     );
+}
+
+#[test]
+fn a_reverted_folder_only_the_trash_holds_is_brought_back_by_a_file_made_in_it() {
+    let mut trees = trees(&[(
+        "d",
+        Some(dir(ROOT, "d")),
+        None,
+        Some(trashed(dir(ROOT, "d"))),
+    )]);
+    trees.revert("d".into());
+    trees.set_local("f".into(), local(file("d", "f", 4), 9));
+    trees.settle(&Default::default());
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
+    assert_eq!(placed(&commit), [created("f", "d", "f")]);
+}
+
+#[test]
+fn a_reverted_folder_that_holds_only_an_excluded_file_is_neither_created_nor_brought_back() {
+    for in_trash in [None, Some(trashed(dir(ROOT, "d")))] {
+        let mut trees = trees(&[("d", Some(dir(ROOT, "d")), None, in_trash)]);
+        trees.revert("d".into());
+        trees.set_local("s".into(), local(file("d", ".DS_Store", 4), 2));
+        trees.settle(&Default::default());
+        assert!(trees.excluded(&"s".into()));
+        let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+        assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
+        assert!(trees.local().get(&"d".into()).is_some());
+    }
 }
 
 #[test]
@@ -3360,7 +3408,7 @@ fn a_reverted_folder_another_device_trashed_stays_under_the_keep_rule_for_a_file
     trees.settle(&Default::default());
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
-    assert_eq!(placed(&commit), [at("f", "d", "f")]);
+    assert_eq!(placed(&commit), [created("f", "d", "f")]);
     applied(&mut trees, &mut commits, &commit);
     effects_for(&mut trees, &mut ids, "u");
     trees.settle(commits.aliases());
@@ -3386,11 +3434,38 @@ fn a_folder_merged_into_another_is_not_made_a_new_node_for_a_file_made_in_it() {
     trees.set_local("g".into(), local(file("a", "new", 2), 9));
     trees.settle(commits.aliases());
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
-    assert_eq!(placed(&commit), [at("g", "b", "new")]);
+    assert_eq!(placed(&commit), [created("g", "b", "new")]);
     assert!(trees.local().get(&"a".into()).is_some());
     applied(&mut trees, &mut commits, &commit);
     trees.settle(commits.aliases());
     assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
+}
+
+#[test]
+fn a_merged_folder_moved_into_a_reverted_folder_no_tree_holds_stays_merged() {
+    let mut trees = trees(&[
+        ("a", Some(dir(ROOT, "a")), None, None),
+        synced("b", dir(ROOT, "elsewhere")),
+    ]);
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    build(&mut commits, &mut trees, &mut ids).unwrap();
+    trees.set_local("d".into(), local(dir(ROOT, "d"), 9));
+    trees.revert("d".into());
+    trees.set_local_changed("a".into(), local(dir("d", "a"), 1));
+    trees.set_remote("b".into(), remote(dir(ROOT, "a")));
+    let merged = OpResult {
+        node_id: "b".into(),
+        ..outcome(op_result::Code::MergedInto)
+    };
+    acknowledge(&mut commits, &mut trees, vec![merged]);
+    trees.set_local("g".into(), local(file("a", "new", 2), 10));
+    trees.settle(commits.aliases());
+    let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
+    let d = folder_named(&trees, "d");
+    assert_eq!(
+        placed(&commit),
+        [created(&d, ROOT, "d"), created("g", "b", "new")]
+    );
 }
 #[test]
 fn a_parked_reverted_folder_no_tree_holds_is_created_while_still_parked_when_its_place_is_taken() {
@@ -3410,7 +3485,10 @@ fn a_parked_reverted_folder_no_tree_holds_is_created_while_still_parked_when_its
     let d = folder_named(&trees, "d");
     assert_ne!(d, "d");
     assert!(trees.local().get(&d.as_str().into()).unwrap().parked);
-    assert_eq!(placed(&commit), [at(&d, ROOT, "d"), at("f", &d, "f")]);
+    assert_eq!(
+        placed(&commit),
+        [created(&d, ROOT, "d"), moved("f", &d, "f")]
+    );
     let renamed = OpResult {
         name: "d (conflict)".into(),
         ..outcome(op_result::Code::AppliedRenamed)
@@ -3431,4 +3509,35 @@ fn a_parked_reverted_folder_no_tree_holds_is_created_while_still_parked_when_its
     assert_eq!(local("f").shape, dir(&d, "f"));
     assert_eq!(local("x").shape, file(ROOT, "d", 1));
     assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
+}
+
+#[test]
+fn a_parked_reverted_folder_no_tree_holds_stays_parked_while_the_server_gives_its_place_to_another_node()
+ {
+    let mut trees = trees(&[
+        synced("f", dir(ROOT, "f")),
+        (
+            "h",
+            Some(dir(ROOT, "elsewhere")),
+            Some(dir(ROOT, "old")),
+            Some(remote(dir(ROOT, "d"))),
+        ),
+    ]);
+    trees.set_local(
+        "d".into(),
+        LocalNode {
+            parked: true,
+            ..local(dir(ROOT, "d"), 9)
+        },
+    );
+    trees.revert("d".into());
+    trees.set_local_changed("f".into(), local(dir("d", "f"), 1));
+    trees.settle(&Default::default());
+    trees.await_scan([vec!["elsewhere".to_owned()]]);
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    build(&mut commits, &mut trees, &mut ids);
+    let d = folder_named(&trees, "d");
+    assert_ne!(d, "d");
+    assert_eq!(effects_for(&mut trees, &mut ids, &d), []);
+    assert!(trees.local().get(&d.as_str().into()).unwrap().parked);
 }

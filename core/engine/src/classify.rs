@@ -2361,6 +2361,13 @@ impl Trees {
         self.forget_local(id);
     }
 
+    pub(crate) fn unknown_folder_holds_nodes(&self, id: &NodeId) -> bool {
+        self.acknowledged(id).is_none()
+            && self.s.get(id).is_none()
+            && self.r.get(id).is_none()
+            && (self.local_children_placed_or_parked(id)).any(|child| !self.excluded(child))
+    }
+
     /// Whether a parked node stays parked because none of L, S and R holds the folder it was in,
     /// as for one deleted before it reached the server (section 2.5).
     pub fn stays_parked(&self, id: &NodeId) -> bool {
@@ -2934,7 +2941,11 @@ impl Trees {
         let create = self.lost_creates.contains(&id);
         let resend = self.resends.contains(&id);
         let unsent = self.unsent_edits.contains(&id);
+        let reverted = self.reverted.contains(&id);
         self.set_local(id.clone(), child);
+        if reverted {
+            self.reverted.insert(id.clone());
+        }
         if let Some(position) = position {
             self.lost_positions.insert(id.clone(), position);
         }
