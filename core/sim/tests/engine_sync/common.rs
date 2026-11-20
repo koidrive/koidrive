@@ -1635,11 +1635,13 @@ fn server_copy(
     kept: &mut BTreeMap<NodeId, koidrive_engine::tree::Shape>,
 ) -> bool {
     let trees = &device.trees;
-    let (Some(local), Some(remote)) = (trees.local().get(id), trees.remote().get(id)) else {
+    let remote = (trees.remote().get(id).map(|remote| &remote.shape))
+        .or_else(|| acknowledged_shape(trees, id).filter(|_| !discarded.contains_key(id)));
+    let (Some(local), Some(remote)) = (trees.local().get(id), remote) else {
         return false;
     };
     let mut below = BTreeMap::new();
-    let copy = match (&local.shape.content, &remote.shape.content) {
+    let copy = match (&local.shape.content, &remote.content) {
         (Some(local), Some(remote)) => {
             koidrive_engine::tree::same_content(local, remote) || from_server.contains(id)
         }
