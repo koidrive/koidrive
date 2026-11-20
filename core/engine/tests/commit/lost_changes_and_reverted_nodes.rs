@@ -3621,3 +3621,61 @@ fn a_reverted_folder_no_tree_holds_is_kept_for_a_parked_file_moved_into_it_whose
         );
     }
 }
+
+fn merged_into_d_then(purged: bool) -> (Commits, Trees, IdGen, proto::Commit) {
+    let mut trees = trees(&[
+        ("n", Some(dir(ROOT, "ss")), None, None),
+        synced("d", dir(ROOT, "A")),
+        synced("b", dir(ROOT, "b")),
+    ]);
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    let first = build(&mut commits, &mut trees, &mut ids).unwrap();
+    assert!(matches!(&ops(&first)[..], [op::Op::CreateDir(c)] if c.node_id == "n"));
+    trees.set_remote("d".into(), remote_at(dir(ROOT, "ss"), 2));
+    let merged = OpResult {
+        node_id: "d".into(),
+        ..outcome(op_result::Code::MergedInto)
+    };
+    acknowledge(&mut commits, &mut trees, vec![merged]);
+    assert!(trees.reverted().contains(&"n".into()));
+    trees.set_local("s".into(), local(dir("n", "ß"), 4));
+    trees.set_local_changed("b".into(), local(dir("s", "b"), 3));
+    trees.set_remote("b".into(), trashed(dir(ROOT, "b")));
+    trees.settle(commits.aliases());
+    trees.remove_remote(&"b".into());
+    match purged {
+        true => trees.remove_remote(&"d".into()),
+        false => trees.set_remote("d".into(), trashed(dir(ROOT, "ss"))),
+    }
+    trees.settle(commits.aliases());
+    let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
+    (commits, trees, ids, commit)
+}
+
+#[test]
+fn a_folder_merged_into_a_folder_the_server_then_purges_is_created_again_with_what_it_holds() {
+    let (mut commits, mut trees, mut ids, commit) = merged_into_d_then(true);
+    let n = folder_named(&trees, "ss");
+    assert_ne!(n, "n");
+    assert_eq!(
+        placed(&commit),
+        [
+            created(&n, ROOT, "ss"),
+            created("s", &n, "ß"),
+            created("b", "s", "b")
+        ]
+    );
+    assert!(!commits.aliases().contains_key(&"n".into()));
+    applied(&mut trees, &mut commits, &commit);
+    assert_eq!(build(&mut commits, &mut trees, &mut ids).map(|c| ops(&c)), None);
+}
+
+#[test]
+fn a_folder_merged_into_a_folder_the_server_then_trashes_stays_merged() {
+    let (commits, _, _, commit) = merged_into_d_then(false);
+    assert!(commits.aliases().contains_key(&"n".into()));
+    assert_eq!(
+        placed(&commit),
+        [created("s", "d", "ß"), created("b", "s", "b")]
+    );
+}

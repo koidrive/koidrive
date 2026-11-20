@@ -3779,7 +3779,8 @@ fn rebase(
         if held
             && trees.remote().live(id).is_none()
             && (trees.edited(id)
-                || (trees.unknown_folder_holds_nodes(id) && !aliases.contains_key(id)))
+                || (trees.unknown_folder_holds_nodes(id)
+                    && (aliases.get(id)).is_none_or(|into| trees.remote().get(into).is_none())))
             && !trees.excluded(id)
             && !trees.held(id)
         {
