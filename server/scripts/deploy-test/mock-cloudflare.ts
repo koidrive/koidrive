@@ -40,6 +40,7 @@ export class MockCloudflare {
   githubStatus = 200;
   githubDelayMs = 0;
   workerListDelayMs = 0;
+  readonly stalledBodies: string[] = [];
   readonly hiddenWorkers = new Set<string>();
   readonly claimCode = "ZQ7K-M2XR-9WPD";
   readonly logs: { script: string; timestamp: number; message?: string; path?: string; visibleFrom?: number }[] = [];
@@ -98,7 +99,10 @@ export class MockCloudflare {
     request.on("end", () => {
       const send = (status: number, value: unknown) => {
         response.writeHead(status, { "Content-Type": "application/json" });
-        response.end(JSON.stringify(value));
+        const text = JSON.stringify(value);
+        if (!this.stalledBodies.some((stalled) => path.includes(stalled))) return void response.end(text);
+        response.write(text.slice(0, 1));
+        setTimeout(() => response.end(text.slice(1)), 30_000);
       };
       const ok = (result: unknown, cursor = "") => send(200, { success: true, errors: [], messages: [], result, ...(cursor ? { result_info: { cursor } } : {}) });
       const missing = () => send(404, { success: false, errors: [{ code: 10007, message: "not found" }], messages: [], result: null });

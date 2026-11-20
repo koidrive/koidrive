@@ -225,7 +225,6 @@ describe("sweep", () => {
     mock.addBucket("user-koidrive-test-7-1", undefined, ["theirs.txt"]);
     mock.namespaces.push({ id: "no-script", class: "AccountDO" }, { id: "null-script", class: "SpaceDO", script: null }, { id: "orphan-account", class: "AccountDO", script: "koidrive-test-8-2" });
     mock.unnamedListings.push({ created_on: new Date().toISOString() });
-    mock.bucketListCursors = ["cursor-a", "cursor-b"];
     const { status, output } = await runTs("sweep");
     expect({ status, warnings: output.includes("::warning::") }).toEqual({ status: 0, warnings: false });
     expect(mock.workers.size).toBe(0);
@@ -304,6 +303,31 @@ describe("sweep", () => {
     expect(output).toContain("::notice::The sweep stopped");
     expect(mock.buckets.size).toBe(0);
     expect(mock.namespaces).toEqual([]);
+  });
+
+  it("fails the bucket list when its cursor repeats, and still sweeps the Workers", async () => {
+    mock.runAttempts.set("7/1", attempt(Date.now() - HOUR, Date.now() + HOUR));
+    mock.addWorker("koidrive-test-7-1");
+    mock.addBucket("koidrive-test-7-1");
+    mock.bucketListCursors = ["cursor-a", "cursor-b"];
+    const { status, output } = await runTs("sweep");
+    expect(status).toBe(1);
+    expect(output).toContain("::error::sweep: listing the R2 buckets: the R2 bucket list repeated the cursor cursor-a");
+    expect(mock.workers.size).toBe(0);
+    expect(mock.buckets.size).toBe(1);
+  });
+
+  it.each([
+    ["the GitHub attempt lookup", "/github/", () => mock.addBucket("koidrive-test-7-1")],
+    ["the Worker lookup of an orphaned namespace", "/workers/workers/", () => mock.hiddenWorkers.add(mock.addWorker("koidrive-test-7-1") && "koidrive-test-7-1")],
+  ])("stops at its budget without an error when %s stalls after its headers", async (_, stalled, leftover) => {
+    mock.runAttempts.set("7/1", attempt(Date.now() - HOUR, Date.now() + HOUR));
+    leftover();
+    mock.stalledBodies.push(stalled);
+    const { status, output } = await runTsWith({ KOIDRIVE_SWEEP_BUDGET_MS: "3000" }, "sweep");
+    expect({ status, errors: output.includes("::error::") }).toEqual({ status: 0, errors: false });
+    expect(output).toContain("::notice::The sweep stopped");
+    expect(mock.deletes()).toEqual([]);
   });
 
   it("leaves alone a bucket the API lists without a creation time", async () => {

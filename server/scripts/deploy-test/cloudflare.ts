@@ -157,7 +157,8 @@ export async function listBuckets(account: Account, prefix: string, deadline?: D
       if (typeof bucket.name === "string" && bucket.name.startsWith(prefix)) buckets.set(bucket.name, { name: bucket.name, creationDate: typeof bucket.creation_date === "string" ? bucket.creation_date : undefined });
     }
     const next = page.result_info?.cursor ?? "";
-    if (!next || seen.has(next) || (page.result?.buckets ?? []).length === 0) return [...buckets.values()];
+    if (!next || (page.result?.buckets ?? []).length === 0) return [...buckets.values()];
+    if (seen.has(next)) throw new ApiError("the R2 bucket list repeated the cursor " + next + ", so it cannot be read in full", 200);
     seen.add(next);
     cursor = next;
   }
@@ -182,7 +183,7 @@ export async function getBucket(account: Account, name: string): Promise<{ creat
 export async function getWorker(account: Account, name: string, deadline?: Deadline): Promise<{ id: string } | undefined> {
   const response = await send(account, "GET", `/accounts/${account.id}/workers/workers/${name}`, { allowMissing: true, deadline });
   if (!response) return undefined;
-  const worker = ((await response.json()) as Envelope<{ id?: string }>).result;
+  const worker = (await json<Envelope<{ id?: string }>>(response, deadline)).result;
   if (!worker?.id) throw new ApiError("GET /accounts/{id}/workers/workers/" + name + " returned no id", 200);
   return { id: worker.id };
 }

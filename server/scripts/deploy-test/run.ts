@@ -579,22 +579,21 @@ async function runAttempt(repository: string, id: string, attempt: string, deadl
   const token = process.env.GH_TOKEN ?? "";
   const remaining = deadline.atMs - Date.now();
   if (remaining <= 0) throw new DeadlineError(deadline.what);
-  let response: Response;
   try {
-    response = await fetch(api + "/repos/" + repository + "/actions/runs/" + id + "/attempts/" + attempt, {
+    const response = await fetch(api + "/repos/" + repository + "/actions/runs/" + id + "/attempts/" + attempt, {
       headers: { Accept: "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28", ...(token ? { Authorization: "Bearer " + token } : {}) },
       signal: AbortSignal.timeout(Math.min(30_000, remaining)),
     });
+    if (response.status === 404) {
+      await response.body?.cancel();
+      return undefined;
+    }
+    if (!response.ok) throw new Error("GitHub returned HTTP " + response.status + " for run " + id + " attempt " + attempt);
+    return (await response.json()) as RunAttempt;
   } catch (error) {
     if (Date.now() >= deadline.atMs) throw new DeadlineError(deadline.what);
     throw error;
   }
-  if (response.status === 404) {
-    await response.body?.cancel();
-    return undefined;
-  }
-  if (!response.ok) throw new Error("GitHub returned HTTP " + response.status + " for run " + id + " attempt " + attempt);
-  return (await response.json()) as RunAttempt;
 }
 
 type Verdict = "sweep" | "running" | { leftAlone: string };
