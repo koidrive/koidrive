@@ -510,11 +510,13 @@ describe("features", () => {
 
   it("reports whether chunk_packs is on as the server reads the list, last entry winning", async () => {
     const outputs = join(work, "github-output");
+    fakePnpm({ install: { createsWorker: false, status: 1 }, deploy: { createsWorker: false, status: 0 } });
     for (const [list, on] of [["chunk_packs", true], ["-chunk_packs,chunk_packs", true], ["chunk_packs,-chunk_packs", false], ["-chunk_packs", false], ["", false]] as const) {
       writeFileSync(outputs, "");
       await runTsWith({ KOIDRIVE_FEATURES: list, GITHUB_OUTPUT: outputs }, "deploy", "HEAD");
       expect([list, readFileSync(outputs, "utf8")]).toEqual([list, `chunk_packs=${on}\n`]);
     }
+    expect(pnpmCalls()).toContain("install --frozen-lockfile");
   });
 
   it("refuses a list that is not feature names before creating anything", async () => {
