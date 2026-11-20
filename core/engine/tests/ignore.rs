@@ -3420,65 +3420,69 @@ fn a_parked_node_the_rules_leave_out_goes_back_to_its_free_place_while_a_merged_
 }
 
 #[test]
-fn a_folder_moving_onto_a_merged_folder_stays_unparked_and_the_folder_moving_onto_it_waits_too() {
-    let mut trees = trees(&[
-        synced("t", dir(ROOT, "a")),
-        synced("B", dir(ROOT, "b")),
-        synced("C", dir(ROOT, "c")),
-        ("m1", Some(dir(ROOT, "A")), None, None),
-        ("c1", Some(file("m1", "c.txt", 1)), None, None),
-    ]);
-    trees.set_rules(&AT_ROOT, Source::Koiignore, rules("*.txt\n"));
-    trees.settle(&Default::default());
-    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
-    let sent = commits
-        .build(&mut trees, &mut ids, NOW, HISTORY, "me", 7)
-        .cloned()
+fn every_folder_of_a_chain_of_moves_onto_a_merged_folder_stays_unparked_and_waits_behind_it() {
+    let chain = [("B", "b"), ("C", "c"), ("D", "d"), ("E", "e"), ("F", "f")];
+    for length in [2, 3, 5] {
+        let mut rows = vec![synced("t", dir(ROOT, "a"))];
+        rows.extend(
+            chain[..length]
+                .iter()
+                .map(|(id, name)| synced(id, dir(ROOT, name))),
+        );
+        rows.push(("m1", Some(dir(ROOT, "A")), None, None));
+        rows.push(("c1", Some(file("m1", "c.txt", 1)), None, None));
+        let mut trees = trees(&rows);
+        trees.set_rules(&AT_ROOT, Source::Koiignore, rules("*.txt\n"));
+        trees.settle(&Default::default());
+        let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+        let sent = commits
+            .build(&mut trees, &mut ids, NOW, HISTORY, "me", 7)
+            .cloned()
+            .unwrap();
+        assert_eq!(sent.ops.len(), 1);
+        let merged = proto::OpResult {
+            code: proto::op_result::Code::MergedInto as i32,
+            node_id: "t".into(),
+            ..Default::default()
+        };
+        let result = proto::CommitResult {
+            seq: 1,
+            results: vec![merged],
+            ..Default::default()
+        };
+        commits.received(result).unwrap();
+        assert!(commits.acknowledge(&mut trees, 1));
+        trees.settle(commits.aliases());
+        trash(&mut trees, "t");
+        trees.remove_local(&NodeId::from("t"));
+        trees.set_synced("t".into(), None);
+        for (i, (id, _)) in chain[..length].iter().enumerate() {
+            let onto = if i == 0 { "A" } else { chain[i - 1].1 };
+            trees.set_remote((*id).into(), remote(dir(ROOT, onto)));
+        }
+        trees.settle(commits.aliases());
+        let residue = effects::MergeResidue::observe(&trees, commits.aliases(), |_, _| {
+            Ok::<_, std::convert::Infallible>(true)
+        })
         .unwrap();
-    assert_eq!(sent.ops.len(), 1);
-    let merged = proto::OpResult {
-        code: proto::op_result::Code::MergedInto as i32,
-        node_id: "t".into(),
-        ..Default::default()
-    };
-    let result = proto::CommitResult {
-        seq: 1,
-        results: vec![merged],
-        ..Default::default()
-    };
-    commits.received(result).unwrap();
-    assert!(commits.acknowledge(&mut trees, 1));
-    trees.settle(commits.aliases());
-    trash(&mut trees, "t");
-    trees.remove_local(&NodeId::from("t"));
-    trees.set_synced("t".into(), None);
-    trees.set_remote("B".into(), remote(dir(ROOT, "A")));
-    trees.set_remote("C".into(), remote(dir(ROOT, "b")));
-    trees.settle(commits.aliases());
-    let residue = effects::MergeResidue::observe(&trees, commits.aliases(), |_, _| {
-        Ok::<_, std::convert::Infallible>(true)
-    })
-    .unwrap();
-    assert!(!commits.settle_merge_residue(&mut trees, &mut ids, NOW, &residue));
-    let planned = (Effects::default())
-        .plan_on_disk(&trees, None, &mut ids, NOW, BatchLimit::ONE, &residue)
-        .to_vec();
-    assert!(planned.is_empty(), "{planned:?}");
-    let stuck = effects::stuck_on_disk(
-        &trees,
-        &Effects::default(),
-        None,
-        &Default::default(),
-        &residue,
-    );
-    assert_eq!(
-        stuck,
-        BTreeMap::from([
-            (NodeId::from("B"), Stuck::Behind("m1".into())),
-            (NodeId::from("C"), Stuck::Behind("m1".into())),
-            (NodeId::from("m1"), Stuck::MergedInto("B".into())),
-        ])
-    );
+        assert!(!commits.settle_merge_residue(&mut trees, &mut ids, NOW, &residue));
+        let planned = (Effects::default())
+            .plan_on_disk(&trees, None, &mut ids, NOW, BatchLimit::ONE, &residue)
+            .to_vec();
+        assert!(planned.is_empty(), "{length}: {planned:?}");
+        let stuck = effects::stuck_on_disk(
+            &trees,
+            &Effects::default(),
+            None,
+            &Default::default(),
+            &residue,
+        );
+        let mut expected: BTreeMap<NodeId, Stuck> = (chain[..length].iter())
+            .map(|(id, _)| (NodeId::from(*id), Stuck::Behind("m1".into())))
+            .collect();
+        expected.insert("m1".into(), Stuck::MergedInto("B".into()));
+        assert_eq!(stuck, expected, "{length}");
+    }
 }
 
 #[test]

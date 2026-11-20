@@ -1158,19 +1158,10 @@ pub fn stuck_on_disk(
             Stuck::MergedInto(holder.unwrap_or(target).clone()),
         )
     }));
-    stuck.extend(planned.iter().filter_map(|id| {
-        let mut at = (*id).clone();
-        for _ in 0..trees.local().len() {
-            let Step::Blocked(Some(holder)) = view.step(&at) else {
-                return None;
-            };
-            if merge_residue.0.contains_key(&holder) {
-                return Some(((*id).clone(), Stuck::Behind(holder)));
-            }
-            at = holder;
-        }
-        None
-    }));
+    stuck.extend(
+        (planned.iter())
+            .filter_map(|id| Some(((*id).clone(), Stuck::Behind(view.behind_merge(id)?)))),
+    );
     let idle = effects.in_flight().is_empty()
         && effects
             .choose(trees, in_flight, BatchLimit::ONE, merge_residue)
@@ -1356,6 +1347,21 @@ impl<'a> View<'a> {
             trees,
             merge_residue: (!merge_residue.0.is_empty()).then_some(merge_residue),
         }
+    }
+
+    fn behind_merge(&self, id: &NodeId) -> Option<NodeId> {
+        let residue = self.merge_residue?;
+        let mut at = id.clone();
+        for _ in 0..self.trees.local().len() {
+            let Step::Blocked(Some(holder)) = self.step(&at) else {
+                return None;
+            };
+            if residue.0.contains_key(&holder) {
+                return Some(holder);
+            }
+            at = holder;
+        }
+        None
     }
 
     fn merge_holds_place(&self, id: &NodeId, shape: &Shape) -> Option<NodeId> {
@@ -1794,9 +1800,8 @@ impl<'a> View<'a> {
                         .is_some_and(|remote| node.shape.same_position(remote))
             })
             && self.stuck(id, trees.local().len()).is_none()
-            && !(trees.remote().live(id)).is_some_and(|remote| {
-                self.goes_home(id, remote) || self.merge_holds_place(id, remote).is_some()
-            })
+            && !(trees.remote().live(id)).is_some_and(|remote| self.goes_home(id, remote))
+            && self.behind_merge(id).is_none()
     }
 
     fn park(&self, id: &NodeId) -> Option<(Effect, Option<Shape>)> {
