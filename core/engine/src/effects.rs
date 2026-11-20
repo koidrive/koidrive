@@ -1693,9 +1693,15 @@ impl<'a> View<'a> {
         if let Some(step) = self.blocked_in(id, &remote.parent) {
             return Some(step);
         }
+        let merged_beside = |other: &NodeId| {
+            remote.kind == Kind::Dir
+                && self
+                    .merge_residue
+                    .is_some_and(|residue| residue.0.contains_key(other))
+        };
         self.trees
             .local_holders(&remote.parent, &remote.name)
-            .find(|other| *other != id)
+            .find(|other| *other != id && !merged_beside(other))
             .map(|holder| Step::Blocked(Some(holder.clone())))
     }
 

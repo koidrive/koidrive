@@ -528,6 +528,212 @@ fn a_live_file_at_the_name_key_keeps_out_what_an_anchored_rule_leaves_out_in_a_r
     assert!((world.space().nodes().iter()).all(|node| !node.name.starts_with("A (conflict from")));
 }
 
+fn merge_folders_beside_a_live_folder_made_again(
+    live: &str,
+    merged: [&str; 2],
+    made: &str,
+) -> (World, [NodeId; 2], NodeId) {
+    let phases = [
+        vec![(0, folder(live))],
+        vec![
+            (0, folder("c.txt")),
+            (0, user(1, 0, 2, "c.txt")),
+            (0, rename(1, 0, merged[0])),
+            (0, folder("b")),
+            (0, user(1, 0, 3, "c.txt")),
+            (0, rename(3, 0, merged[1])),
+        ],
+    ];
+    let mut world = converge_excluding(&[vec!["*.txt"], vec![]], &phases).unwrap();
+    let ids = merged.map(|name| held_at(&world, 0, &[name]).unwrap());
+    let removed = target(&world, 1, &[live]);
+    world
+        .phase(2, &[(1, delete(removed)), (1, folder(made))])
+        .unwrap();
+    let live = NodeId::from(&live_node_at(&world, &[made]).unwrap());
+    (world, ids, live)
+}
+
+fn sends_nothing_more(world: &mut World, phase: usize) {
+    let server = |world: &World| {
+        (world.space().nodes().into_iter())
+            .map(|node| {
+                (
+                    node.node_id,
+                    node.parent_id,
+                    node.name,
+                    node.status,
+                    node.meta_rev,
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    let before = server(world);
+    world
+        .phase(phase, &[(0, SCAN), (0, COMMIT), (0, COMMIT)])
+        .unwrap();
+    assert_eq!(server(world), before);
+}
+
+fn left_out_files(world: &World) -> Vec<Vec<String>> {
+    let disk = &world.devices[0].disk;
+    let mut paths: Vec<Vec<String>> = (disk.entries().iter())
+        .filter(|(_, entry)| entry.name == "c.txt")
+        .map(|(ino, _)| disk.path(*ino).expect("c.txt is not parked"))
+        .collect();
+    paths.sort();
+    paths
+}
+
+fn one_takes_over(world: &mut World, merged: &[NodeId; 2], live: &NodeId, made: &str) -> usize {
+    let problems = world.reported_problems(0);
+    let reported: Vec<usize> = (0..2)
+        .filter(|&i| problems.get(&merged[i]) == Some(&Stuck::MergedInto(live.clone())))
+        .collect();
+    let [loser] = reported[..] else {
+        panic!("{problems:?}");
+    };
+    assert_eq!(problems.len(), 1, "{problems:?}");
+    assert_eq!(held_at(world, 0, &[made]).as_ref(), Some(live));
+    assert_eq!(left_out_files(world).len(), 2);
+    sends_nothing_more(world, 3);
+    1 - loser
+}
+
+#[test]
+fn of_two_merge_folders_of_one_key_the_one_named_like_the_live_folder_made_again_takes_it_over() {
+    for merged in [["\u{c9}", "E\u{301}"], ["E\u{301}", "\u{c9}"]] {
+        let (mut world, ids, live) =
+            merge_folders_beside_a_live_folder_made_again("\u{e9}", merged, "\u{c9}");
+        let winner = one_takes_over(&mut world, &ids, &live, "\u{c9}");
+        assert_eq!(merged[winner], "\u{c9}");
+    }
+}
+
+#[test]
+fn of_two_merge_folders_of_one_key_named_unlike_the_live_folder_made_again_the_lowest_id_takes_it_over()
+ {
+    for merged in [["\u{c9}", "E\u{301}"], ["E\u{301}", "\u{c9}"]] {
+        let (mut world, ids, live) =
+            merge_folders_beside_a_live_folder_made_again("\u{e9}", merged, "\u{e9}");
+        let winner = one_takes_over(&mut world, &ids, &live, "\u{e9}");
+        assert_eq!(ids[winner], ids[0].clone().min(ids[1].clone()));
+        assert_eq!(
+            left_out_files(&world),
+            [[merged[1 - winner], "c.txt"], ["\u{e9}", "c.txt"]]
+        );
+    }
+}
+
+#[test]
+fn a_merge_folder_left_beside_one_that_took_the_live_folder_over_uploads_once_moved_away() {
+    let (mut world, ids, live) =
+        merge_folders_beside_a_live_folder_made_again("\u{e9}", ["\u{c9}", "E\u{301}"], "\u{e9}");
+    let loser = 1 - one_takes_over(&mut world, &ids, &live, "\u{e9}");
+    let name = ["\u{c9}", "E\u{301}"][loser];
+    let moved = target(&world, 0, &[name]);
+    world.phase(4, &[(0, rename(moved, 0, "b"))]).unwrap();
+    assert!(world.reported_problems(0).is_empty());
+    assert_eq!(
+        left_out_files(&world),
+        [["b", "c.txt"], ["\u{e9}", "c.txt"]]
+    );
+    assert!(live_node_at(&world, &["b"]).is_some());
+    no_live_file_named(&world, "c.txt");
+}
+
+#[test]
+fn a_merge_folder_left_beside_one_that_took_the_live_folder_over_goes_once_deleted() {
+    let (mut world, ids, live) =
+        merge_folders_beside_a_live_folder_made_again("\u{e9}", ["\u{c9}", "E\u{301}"], "\u{e9}");
+    let loser = 1 - one_takes_over(&mut world, &ids, &live, "\u{e9}");
+    let name = ["\u{c9}", "E\u{301}"][loser];
+    let removed = target(&world, 0, &[name]);
+    world.phase(4, &[(0, delete(removed))]).unwrap();
+    assert!(world.reported_problems(0).is_empty());
+    assert_eq!(left_out_files(&world), [["\u{e9}", "c.txt"]]);
+    no_live_file_named(&world, "c.txt");
+}
+
+#[test]
+fn a_merge_folder_spelled_like_the_live_folder_made_again_in_another_form_takes_it_over_without_a_rename()
+ {
+    for merged in [["\u{e9}", "E\u{301}"], ["E\u{301}", "\u{e9}"]] {
+        let (mut world, ids, live) =
+            merge_folders_beside_a_live_folder_made_again("\u{c9}", merged, "\u{c9}");
+        let loser = merged.iter().position(|name| *name == "\u{e9}").unwrap();
+        assert_eq!(
+            world.reported_problems(0),
+            [(ids[loser].clone(), Stuck::MergedInto(live.clone()))].into()
+        );
+        assert_eq!(held_at(&world, 0, &["E\u{301}"]), Some(live));
+        assert_eq!(
+            left_out_files(&world),
+            [["E\u{301}", "c.txt"], ["\u{e9}", "c.txt"]]
+        );
+        sends_nothing_more(&mut world, 3);
+    }
+}
+
+#[test]
+#[ignore = "a file that claims the name after a freed merge folder's create is built still gets the folder conflict-renamed, and its excluded child is published (GUN-1431)"]
+fn a_file_made_at_the_name_after_a_freed_merge_folders_create_is_built_leaves_its_left_out_file_unsent()
+ {
+    let mut world = refused_beside_a(None);
+    world.rule(0, &Ruling::Exclude(vec!["/A/c.txt"])).unwrap();
+    world.phase(2, &[]).unwrap();
+    let source = reported_merge(&world);
+    let survivor = target(&world, 1, &["a"]);
+    world.run(3, &[(1, rename(survivor, 0, "b"))]).unwrap();
+    world.run(3, &commit(1)).unwrap();
+    assert!(live_node_at(&world, &["a"]).is_none());
+    world
+        .run(
+            3,
+            &[
+                (0, DELIVER),
+                (0, DELIVER),
+                (0, EFFECT),
+                (0, EFFECT),
+                (0, COMMIT),
+            ],
+        )
+        .unwrap();
+    let flight = world.devices[0]
+        .engine
+        .commits
+        .in_flight()
+        .expect("built the residue create");
+    let ops = &flight.commit.ops;
+    let [op] = ops.as_slice() else {
+        panic!("unexpected ops: {ops:?}");
+    };
+    let Some(koidrive_proto::v1::op::Op::CreateDir(created)) = &op.op else {
+        panic!("{op:?}");
+    };
+    assert_eq!(created.name, "A");
+    assert_ne!(created.node_id, source.to_string());
+    assert!(live_node_at(&world, &["A"]).is_none());
+    world.run(3, &[(1, file("a"))]).unwrap();
+    world.run(3, &commit(1)).unwrap();
+    assert!(live_node_at(&world, &["a"]).is_some());
+    let quiet = world.phase(3, &[(0, COMMIT)]);
+    let nodes = world.space().nodes();
+    let copied = nodes
+        .iter()
+        .find(|node| node.status == NodeStatus::Live as i32 && node.name == "c.txt");
+    let conflict = nodes.iter().find(|node| {
+        node.status == NodeStatus::Live as i32 && node.name.starts_with("A (conflict from")
+    });
+    assert!(
+        copied.is_none(),
+        "excluded copy: {:?}; conflict folder: {:?}; {quiet:?}",
+        copied.map(|n| (&n.name, &n.parent_id)),
+        conflict.map(|n| (&n.name, &n.node_id))
+    );
+    quiet.unwrap();
+}
+
 #[test]
 fn a_kept_folder_takes_over_a_new_live_folder_of_its_name_while_a_merge_folder_beside_it_stays_reported()
  {

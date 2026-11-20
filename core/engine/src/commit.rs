@@ -16,7 +16,7 @@ use crate::effects;
 use crate::first_link::{self, LogRead, Marks, PriorSync};
 use crate::guard::{self, Guard, RemoteRemoval};
 use crate::ids::{IdGen, unix_ms};
-use crate::names::{MAX_NAME_BYTES, conflict_name, name_key, nfc};
+use crate::names::{MAX_NAME_BYTES, conflict_name, name_key, nfc, same_name};
 use crate::question::{
     Answer, ConflictFile, Question, QuestionKind, RecoveryCause, RecoveryGroup, RecoveryTrigger,
     Revisions,
@@ -668,7 +668,7 @@ impl Commits {
         &self.aliases
     }
 
-    /// Settles each folder of `residue` against the live node of the server that holds its name key now (filesystem §5.10). With none, or a folder this device's user moved away, the folder gets a new ID and uploads as a new folder. With a folder this device never synced, while no other folder of this device holds the key, the folder takes its ID. Otherwise, and while its parent is still merged, the folder stays merged.
+    /// Settles each folder of `residue` against the live node of the server that holds its name key now (filesystem §5.10). With none, or a folder this device's user moved away, the folder gets a new ID and uploads as a new folder. With a folder this device never synced, while every other folder of this device at the key is merged too, the merged folder whose name is the live folder's takes its ID, otherwise one whose name differs from it only in Unicode normalization, otherwise any of them, and among equals the one with the lowest ID. Otherwise, and while its parent is still merged, the folder stays merged.
     pub fn settle_merge_residue(
         &mut self,
         trees: &mut Trees,
@@ -693,14 +693,25 @@ impl Commits {
                         Some((_, Kind::File)) => return None,
                         Some((holder, Kind::Dir)) => {
                             let synced = trees.synced().get(holder);
+                            let takes_over = || {
+                                let Some(live) = trees.remote().live(holder) else {
+                                    return false;
+                                };
+                                let at_key: Vec<(&NodeId, &str)> = (trees
+                                    .local_holders(&local.shape.parent, &local.shape.name))
+                                .filter_map(|other| {
+                                    Some((other, trees.local().get(other)?.shape.name.as_str()))
+                                })
+                                .collect();
+                                let pick = (at_key.iter()).min_by_key(|(other, name)| {
+                                    (*name != live.name, !same_name(name, &live.name), *other)
+                                });
+                                pick.is_some_and(|(pick, _)| *pick == id)
+                                    && (at_key.iter())
+                                        .all(|(other, _)| residue.0.contains_key(*other))
+                            };
                             match trees.local().get(holder) {
-                                None if synced.is_none()
-                                    && (trees
-                                        .local_holders(&local.shape.parent, &local.shape.name))
-                                    .all(|other| other == id) =>
-                                {
-                                    Some(holder.clone())
-                                }
+                                None if synced.is_none() && takes_over() => Some(holder.clone()),
                                 Some(node)
                                     if !node.parked
                                         && synced.is_some_and(|synced| {

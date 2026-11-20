@@ -3049,6 +3049,83 @@ fn a_moved_out_copy_trashed_before_its_create_answer_leaves_no_displaced_record(
 }
 
 #[test]
+fn of_three_folders_merged_into_one_live_folder_one_takes_over_the_live_folder_made_again() {
+    let acute = ["\u{c9}", "E\u{301}", "e\u{301}"];
+    let dotted = ["\u{1ec7}", "\u{1eb8}\u{302}", "E\u{323}\u{302}"];
+    for (names, made, winner) in [
+        (acute, "e\u{301}", "m3"),
+        (["AB", "Ab", "aB"], "ab", "m1"),
+        (acute, "\u{e9}", "m3"),
+        (dotted, "\u{1ec6}", "m2"),
+    ] {
+        let mut trees = trees(&[
+            synced("b", dir(ROOT, made)),
+            ("m1", Some(dir(ROOT, names[0])), None, None),
+            ("m2", Some(dir(ROOT, names[1])), None, None),
+            ("m3", Some(dir(ROOT, names[2])), None, None),
+            ("c1", Some(file("m1", "c.txt", 1)), None, None),
+            ("c2", Some(file("m2", "c.txt", 2)), None, None),
+            ("c3", Some(file("m3", "c.txt", 3)), None, None),
+        ]);
+        trees.set_rules(&AT_ROOT, Source::Koiignore, rules("*.txt\n"));
+        trees.settle(&Default::default());
+        let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+        let sent = commits
+            .build(&mut trees, &mut ids, NOW, HISTORY, "me", 7)
+            .cloned()
+            .unwrap();
+        assert_eq!(sent.ops.len(), 3);
+        let merged = proto::OpResult {
+            code: proto::op_result::Code::MergedInto as i32,
+            node_id: "b".into(),
+            ..Default::default()
+        };
+        let result = proto::CommitResult {
+            seq: 1,
+            results: vec![merged; 3],
+            ..Default::default()
+        };
+        commits.received(result).unwrap();
+        assert!(commits.acknowledge(&mut trees, 1));
+        trees.settle(commits.aliases());
+        trash(&mut trees, "b");
+        trees.remove_local(&NodeId::from("b"));
+        trees.set_synced("b".into(), None);
+        trees.set_remote("n".into(), remote(dir(ROOT, made)));
+        let settle = |commits: &mut Commits, trees: &mut Trees, ids: &mut IdGen| {
+            let residue = effects::MergeResidue::observe(trees, commits.aliases(), |_, _| {
+                Ok::<_, std::convert::Infallible>(true)
+            })
+            .unwrap();
+            commits.settle_merge_residue(trees, ids, NOW, &residue)
+        };
+        assert!(settle(&mut commits, &mut trees, &mut ids));
+        let at = |id: &str| {
+            trees
+                .local()
+                .get(&NodeId::from(id))
+                .map(|n| n.shape.name.clone())
+        };
+        let folders = [("m1", names[0]), ("m2", names[1]), ("m3", names[2])];
+        let won = folders.iter().find(|(id, _)| *id == winner).unwrap().1;
+        assert_eq!(at("n").as_deref(), Some(won));
+        for (id, name) in folders.iter().filter(|(id, _)| *id != winner) {
+            assert_eq!(at(id).as_deref(), Some(*name));
+            assert_eq!(
+                commits.aliases().get(&NodeId::from(*id)),
+                Some(&NodeId::from("b"))
+            );
+        }
+        assert!(!settle(&mut commits, &mut trees, &mut ids));
+        assert!(
+            commits
+                .build(&mut trees, &mut ids, NOW, HISTORY, "me", 7)
+                .is_none()
+        );
+    }
+}
+
+#[test]
 fn a_folder_the_server_merges_into_a_live_folder_of_its_name_key_is_taken_over_under_the_live_name()
 {
     let mut trees = trees(&[

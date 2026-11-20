@@ -3665,13 +3665,19 @@ impl World {
                 .into_iter()
                 .filter(|id| !excused.contains(*id) && !delayed.contains_key(*id))
                 .filter(|id| {
+                    let at_name = |shape: Option<&Shape>| {
+                        shape.map(|shape| Shape {
+                            name: nfc(&shape.name),
+                            ..shape.clone()
+                        })
+                    };
                     let shapes = [
                         trees.local().get(id).map(|node| &node.shape),
                         trees.synced().live(id),
                         trees.remote().live(id),
                     ];
                     unsettled.iter().any(|(other, _)| other == *id)
-                        || shapes.iter().any(|shape| shape != &shapes[2])
+                        || (shapes.iter()).any(|shape| at_name(*shape) != at_name(shapes[2]))
                 })
                 .collect();
             let holds_name_of = |holder: &NodeId, id: &NodeId| {
