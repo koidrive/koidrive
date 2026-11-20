@@ -1714,7 +1714,9 @@ impl Trees {
     }
 
     pub(crate) fn resend_folders_of_changes(&mut self) {
-        let lacking = |id: &NodeId| self.r.get(id).is_none() && self.acknowledged(id).is_some();
+        let lacking = |id: &NodeId| {
+            self.r.get(id).is_none() && self.acknowledged(id).is_some() && !self.journal.purged(id)
+        };
         if !self.others.iter().any(lacking) {
             self.yield_resends();
             return;
@@ -1790,6 +1792,18 @@ impl Trees {
         if !self.set_synced_if_valid(id.clone(), Some(shape.clone())) {
             self.wait(id, Some(shape), origin);
         }
+    }
+
+    pub(crate) fn give_way_to_purge(&mut self, id: NodeId, sent: Shape, origin: Origin) {
+        self.unsent_creates.remove(&id);
+        self.journal.superseded_as_purged(&id);
+        self.take_lost_position(id, sent, origin);
+    }
+
+    /// Whether `id` is a folder whose create the server answered `SUPERSEDED` because it purged it
+    /// ([`Journal::purged`]).
+    pub fn purged_folder(&self, id: &NodeId) -> bool {
+        self.journal.purged(id)
     }
 
     pub(crate) fn write_held_beside(&self, id: &NodeId) -> bool {
@@ -7764,6 +7778,13 @@ impl Trees {
                 .cloned(),
             None,
             "an unsent create of a node L does not hold or that R holds"
+        );
+        debug_assert_eq!(
+            (self.unsent_creates.iter())
+                .find(|id| self.journal.purged(id))
+                .cloned(),
+            None,
+            "an unsent create of a folder the server purged"
         );
         debug_assert_eq!(
             (self.lost_shapes.keys())

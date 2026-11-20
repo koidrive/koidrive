@@ -1385,6 +1385,215 @@ fn a_create_into_a_purged_folder_takes_the_place_the_server_reports_and_never_se
     assert_eq!(sent, ["w"]);
 }
 
+struct PurgedFolder {
+    trees: Trees,
+    commits: Commits,
+    ids: IdGen,
+    seq: u64,
+}
+
+impl PurgedFolder {
+    fn new(change: impl FnOnce(&mut Trees)) -> Self {
+        let mut trees = Trees::new(ROOT, &IdGen::new(0));
+        synced(&mut trees, "a", dir(ROOT, "a"), 1);
+        synced(&mut trees, "x", dir("a", "x"), 1);
+        change(&mut trees);
+        trees.remove_remote(&"x".into());
+        let mut commits = Commits::from_state(CommitsState::default()).unwrap();
+        commits.connected(&Welcome {
+            features: vec!["field_intents".into()],
+            ..Default::default()
+        });
+        trees.rules_scanned();
+        let ids = IdGen::new(1);
+        Self {
+            trees,
+            commits,
+            ids,
+            seq: 0,
+        }
+    }
+
+    fn build(&mut self) -> Option<Vec<(String, String)>> {
+        self.trees.settle(self.commits.aliases());
+        let base = Base {
+            seq: self.seq,
+            commit_id: String::new(),
+            committed_at_ms: 1_700,
+        };
+        let commit = (self.commits).build(&mut self.trees, &mut self.ids, 0, "history", "me", base);
+        let ops = commit?.ops.iter().map(|op| match &op.op {
+            Some(op::Op::CreateDir(create)) => (create.node_id.clone(), create.parent_id.clone()),
+            Some(op::Op::CreateFile(create)) => (create.node_id.clone(), create.parent_id.clone()),
+            other => (format!("{other:?}"), String::new()),
+        });
+        Some(ops.collect())
+    }
+
+    fn build_one(&mut self) -> Vec<(String, String)> {
+        loop {
+            let ops = self.build().unwrap();
+            if ops.len() == 1 {
+                return ops;
+            }
+            let refusal = proto::Error {
+                code: proto::error::Code::LimitExceeded as i32,
+                ..Default::default()
+            };
+            self.commits.failed(&mut self.trees, &refusal).unwrap();
+        }
+    }
+
+    fn answer(&mut self, result: proto::OpResult, states: Vec<proto::NodeState>) {
+        self.seq += 1;
+        for state in &states {
+            let (id, node) = RemoteNode::from_state(state).unwrap();
+            self.trees.set_remote_made_here(id, node);
+        }
+        let result = proto::CommitResult {
+            seq: self.seq,
+            ..answered(vec![result], states)
+        };
+        self.commits.received(result).unwrap();
+        assert!(self.commits.acknowledge(&mut self.trees, self.seq));
+    }
+
+    fn run_effects(&mut self) -> Vec<String> {
+        let (mut effects, mut done) = (Effects::default(), Vec::new());
+        for ino in 100.. {
+            self.trees.settle(self.commits.aliases());
+            let in_flight = self.commits.in_flight();
+            let planned = effects.plan(&self.trees, in_flight, &mut self.ids, 0, BatchLimit::ONE);
+            let Some(record) = planned.first().cloned() else {
+                return done;
+            };
+            done.push(format!("{:?}", record.effect));
+            let identity = FileIdentity {
+                ino,
+                birth_ns: Some(0),
+                handle: None,
+            };
+            (effects)
+                .done(
+                    &mut self.trees,
+                    in_flight,
+                    &record.effect_id,
+                    Some(identity),
+                )
+                .unwrap();
+        }
+        done
+    }
+
+    fn parent(&self, id: &str) -> Option<NodeId> {
+        (self.trees.local().get(&id.into())).map(|node| node.shape.parent.clone())
+    }
+
+    fn superseded(&mut self) {
+        assert_eq!(self.build_one(), [("x".to_owned(), "a".to_owned())]);
+        self.answer(outcome(op_result::Code::Superseded), vec![]);
+    }
+
+    fn settles_without_the_folder(&mut self) {
+        self.run_effects();
+        assert_eq!(self.parent("x"), None);
+        assert_eq!(self.build(), None);
+    }
+}
+
+fn applied_at(id: &str, shape: &Shape, trees: &Trees) -> proto::NodeState {
+    let reported = |field| Some(wire(sent(trees, id, field), 1_800));
+    let intents = proto::FieldIntents {
+        place: reported(Field::Place),
+        content: reported(Field::Content),
+        status: reported(Field::Status),
+    };
+    node_state(id, shape, 2, Some(intents))
+}
+
+#[test]
+fn an_empty_renamed_folder_the_server_purged_goes_to_the_local_trash_and_nothing_is_sent_after_the_result()
+ {
+    let mut device = PurgedFolder::new(|trees| {
+        trees.set_local_changed("x".into(), local(dir("a", "y")));
+    });
+    assert_eq!(device.build_one(), [("x".to_owned(), "a".to_owned())]);
+    device.answer(outcome(op_result::Code::Superseded), vec![]);
+    let effects = device.run_effects();
+    assert!(
+        effects.iter().any(|effect| effect.starts_with("RemoveDir")),
+        "{effects:?}"
+    );
+    assert_eq!(device.parent("x"), None);
+    assert_eq!(device.build(), None);
+}
+
+#[test]
+fn a_new_file_in_a_purged_folder_lands_under_the_nearest_live_ancestor() {
+    let mut device = PurgedFolder::new(|trees| {
+        trees.set_local_changed("z".into(), local(file("x", "z", 1)));
+    });
+    device.superseded();
+    assert_eq!(device.build(), Some(vec![("z".to_owned(), "x".to_owned())]));
+    let state = applied_at("z", &file("a", "z", 1), &device.trees);
+    device.answer(outcome(op_result::Code::Applied), vec![state]);
+    device.settles_without_the_folder();
+    assert_eq!(device.parent("z"), Some("a".into()));
+}
+
+#[test]
+fn an_edited_file_in_a_purged_folder_lands_as_a_conflict_copy() {
+    let mut device = PurgedFolder::new(|trees| {
+        synced(trees, "f", file("x", "f", 1), 1);
+        trees.set_local_changed("f".into(), local(file("x", "f", 2)));
+        trees.remove_remote(&"f".into());
+    });
+    device.superseded();
+    assert_eq!(device.build(), Some(vec![("f".to_owned(), "x".to_owned())]));
+    let copy = file("a", "f (conflict)", 2);
+    let state = node_state("c", &copy, 2, None);
+    let result = proto::OpResult {
+        node_id: "c".into(),
+        name: copy.name.clone(),
+        ..outcome(op_result::Code::ConflictCopy)
+    };
+    device.answer(result, vec![state]);
+    device.settles_without_the_folder();
+    assert_eq!(device.parent("f"), None);
+    assert_eq!(device.parent("c"), Some("a".into()));
+}
+
+#[test]
+fn a_carried_file_in_a_purged_folder_that_the_tombstone_lists_does_not_come_back() {
+    let mut device = PurgedFolder::new(|trees| {
+        trees.set_local_changed("g".into(), local(file("x", "g", 1)));
+        for field in Field::ALL {
+            let mut row = trees.journal_row(&"g".into(), field).unwrap().into_owned();
+            row.author = Author::Carried(Some("b".into()));
+            trees.journal_mut().replace(&"g".into(), row);
+        }
+    });
+    device.superseded();
+    assert_eq!(device.build(), Some(vec![("g".to_owned(), "x".to_owned())]));
+    device.answer(outcome(op_result::Code::Superseded), vec![]);
+    device.settles_without_the_folder();
+    assert_eq!(device.parent("g"), None);
+}
+
+#[test]
+fn a_purged_folder_ends_when_r_holds_it_again_or_its_absence_lapses() {
+    let mut device = PurgedFolder::new(|trees| {
+        trees.set_local_changed("z".into(), local(file("x", "z", 1)));
+    });
+    device.superseded();
+    assert!(device.trees.purged_folder(&"x".into()));
+    let mut relisted = device.trees.clone();
+    relisted.set_listed_remote("x".into(), remote(dir("a", "x"), 3));
+    assert!(!relisted.purged_folder(&"x".into()));
+    device.trees.journal_mut().set_clock(30 * DAY_MS);
+    assert!(!device.trees.purged_folder(&"x".into()));
+}
+
 fn backfilled(table: &str, waiting: Option<Waiting>) -> Trees {
     let mut trees = Trees::new(ROOT, &IdGen::new(0));
     trees.set_synced("d".into(), Some(dir(ROOT, "d")));

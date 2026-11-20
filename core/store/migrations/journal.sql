@@ -38,7 +38,8 @@ CREATE TABLE intent_history (
 
 CREATE TABLE journal_absent (
     node_id TEXT PRIMARY KEY NOT NULL,
-    since_ms INTEGER NOT NULL
+    since_ms INTEGER NOT NULL,
+    purged INTEGER NOT NULL
 ) STRICT, WITHOUT ROWID;
 
 CREATE TABLE journal_state (
