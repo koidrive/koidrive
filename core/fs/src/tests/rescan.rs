@@ -1337,3 +1337,44 @@ fn a_waiting_file_restored_by_an_inconclusive_confirmation_keeps_waiting() {
         "{released:?}"
     );
 }
+
+#[cfg(target_os = "macos")]
+#[test]
+fn a_file_still_moving_out_of_a_renamed_folder_keeps_its_identity_when_a_sibling_is_renamed_to_its_carried_path()
+ {
+    for sibling in ["file", "folder"] {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        for folder in ["a", "c"] {
+            fs::create_dir(root.join(folder)).unwrap();
+        }
+        fs::write(root.join("a/x"), "x").unwrap();
+        match sibling {
+            "file" => fs::write(root.join("a/y"), "y").unwrap(),
+            _ => {
+                fs::create_dir(root.join("a/y")).unwrap();
+                fs::write(root.join("a/y/inner"), "inner").unwrap();
+            }
+        }
+        let mut snapshot = Snapshot::scan(root).unwrap();
+        fs::rename(root.join("a"), root.join("b")).unwrap();
+        fs::rename(root.join("b/x"), root.join("c/x")).unwrap();
+        fs::rename(root.join("b/y"), root.join("b/x")).unwrap();
+        let mut again = Some(());
+        let scopes = [PathBuf::from("a"), PathBuf::from("b")];
+        let rescan = snapshot
+            .rescan_with(root, scopes, None, &mut |cut| {
+                if matches!(cut, Cut::Located(at) if at == Path::new("c/x"))
+                    && again.take().is_some()
+                {
+                    fs::rename(root.join("c/x"), root.join("c/w")).unwrap();
+                }
+            })
+            .unwrap();
+        let changes = settle_and_compare(&mut snapshot, root, rescan);
+        assert!(
+            (changes.iter()).all(|change| matches!(change, Change::Renamed { .. })),
+            "{sibling}: {changes:?}"
+        );
+    }
+}

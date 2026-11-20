@@ -2373,6 +2373,7 @@ impl Snapshot {
         let mut unplaced = BTreeSet::new();
         let mut still_hidden = BTreeSet::new();
         let mut holding = BTreeMap::new();
+        let mut put_back_moves = BTreeSet::new();
         for path in doubtful {
             let Some(gone) = path.ancestors().find(|above| removed.contains(*above)) else {
                 continue;
@@ -2387,10 +2388,28 @@ impl Snapshot {
                 .cloned()
                 .collect();
             let proven = hidden.contains(&path);
+            let carrier = (moves.iter())
+                .filter(|(from, _)| gone.starts_with(from) && *from != gone)
+                .max_by_key(|(from, _)| from.components().count());
+            let onto: Vec<(&Path, &Path)> = (moves.iter())
+                .filter(|(_, to)| to.starts_with(&place))
+                .copied()
+                .collect();
+            let put_back: Option<Vec<(PathBuf, &Path, &Path)>> = (onto.iter())
+                .map(|&(from, to)| {
+                    let (folder, now) = carrier?;
+                    let back = now.join(from.strip_prefix(folder).ok()?);
+                    (back.parent() == place.parent() && !scan.new.contains_key(&back))
+                        .then_some((back, from, to))
+                })
+                .collect();
+            let renamed_onto = |inside: &Path| onto.iter().any(|(_, to)| inside.starts_with(to));
             if (proven && !moving.contains(&path) && !occupant.is_empty())
-                || moves.iter().any(|(_, to)| to.starts_with(&place))
-                || (occupant.iter())
-                    .any(|inside| !inside.ancestors().any(|above| created.contains(above)))
+                || (!onto.is_empty() && put_back.is_none())
+                || (occupant.iter()).any(|inside| {
+                    !inside.ancestors().any(|above| created.contains(above))
+                        && !(put_back.is_some() && renamed_onto(inside))
+                })
             {
                 continue;
             }
@@ -2417,14 +2436,34 @@ impl Snapshot {
             if kept.is_empty() {
                 continue;
             }
+            let mut places = vec![place.clone()];
+            for (back, from, to) in put_back.into_iter().flatten() {
+                let moved: Vec<(PathBuf, Entry)> = (scan.new.range(to.to_path_buf()..))
+                    .take_while(|(inside, _)| inside.starts_with(to))
+                    .map(|(inside, entry)| {
+                        let below = inside
+                            .strip_prefix(to)
+                            .expect("taken below the renamed path");
+                        let at = if below.as_os_str().is_empty() {
+                            back.clone()
+                        } else {
+                            back.join(below)
+                        };
+                        (at, *entry)
+                    })
+                    .collect();
+                scan.new.extend(moved);
+                put_back_moves.insert((from.to_path_buf(), to.to_path_buf()));
+                places.push(back);
+            }
             for inside in occupant {
                 scan.new.remove(&inside);
             }
             scan.new.extend(kept);
             holding.insert(gone.to_path_buf(), place.clone());
             match proven {
-                true => still_hidden.insert(place),
-                false => unplaced.insert(place),
+                true => still_hidden.extend(places),
+                false => unplaced.extend(places),
             };
         }
         for (gone, place) in &holding {
@@ -2444,6 +2483,9 @@ impl Snapshot {
             }
             Change::Created { path, .. } => {
                 !(holding.values()).any(|place| path.starts_with(place))
+            }
+            Change::Renamed { from, to, .. } => {
+                !put_back_moves.contains(&(from.clone(), to.clone()))
             }
             _ => true,
         });
