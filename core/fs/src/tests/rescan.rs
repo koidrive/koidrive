@@ -1341,7 +1341,8 @@ fn a_waiting_file_restored_by_an_inconclusive_confirmation_keeps_waiting() {
 #[cfg(target_os = "macos")]
 struct Published {
     nodes: BTreeMap<PathBuf, (u128, PathBuf)>,
-    problems: Vec<String>,
+    broken: Vec<String>,
+    lost: Vec<PathBuf>,
 }
 
 #[cfg(target_os = "macos")]
@@ -1359,7 +1360,7 @@ impl Published {
             .collect();
         for (from, _) in &sources {
             if !self.nodes.contains_key(*from) {
-                self.problems.push(format!("{from:?} was never published"));
+                self.broken.push(format!("{from:?} was never published"));
             }
         }
         for (path, node) in std::mem::take(&mut self.nodes) {
@@ -1372,10 +1373,7 @@ impl Published {
                     let at = to.join(path.strip_prefix(from).unwrap());
                     self.nodes.insert(at, node);
                 }
-                Some((_, None)) if disk.contains(&node.0) => {
-                    self.problems
-                        .push(format!("{:?} removed while on disk", node.1));
-                }
+                Some((_, None)) if disk.contains(&node.0) => self.lost.push(node.1),
                 Some(_) => {}
             }
         }
@@ -1387,7 +1385,7 @@ impl Published {
                 }
                 Change::Modified { path } => match self.nodes.get_mut(path) {
                     Some(node) => node.0 = snapshot.entries[path].id.ino,
-                    None => self.problems.push(format!("{path:?} modified unpublished")),
+                    None => self.broken.push(format!("{path:?} modified unpublished")),
                 },
                 _ => {}
             }
@@ -1414,9 +1412,9 @@ fn run_ops(root: &Path, ops: &[&str]) {
 fn a_consumer_replaying_the_changes_loses_history_only_where_main_does_when_a_moving_file_is_held()
 {
     let file_sibling = ["mv a b", "mv b/x c/x", "mv b/y b/x"];
-    let cases: [(&str, &[&str], &str); 20] = [
-        ("a/x a/y", &file_sibling, ""),
-        ("a/x a/y/ a/y/inner", &file_sibling, ""),
+    let cases: [(&str, &[&str], &[&str]); 20] = [
+        ("a/x a/y", &file_sibling, &[]),
+        ("a/x a/y/ a/y/inner", &file_sibling, &[]),
         (
             "a/x a/y/ a/y/inner",
             &[
@@ -1425,88 +1423,92 @@ fn a_consumer_replaying_the_changes_loses_history_only_where_main_does_when_a_mo
                 "mv b/y b/x",
                 "mv b/x/inner b/x/other",
             ],
-            "",
+            &[],
         ),
         (
             "a/x a/y/ a/y/inner",
             &["mv a b", "mv b/x c/x", "mv b/y b/x", "write b/x/new"],
-            "",
+            &[],
         ),
         (
             "a/x a/y/ a/y/inner",
             &["mv a b", "mv b/x c/x", "mv b/y b/x", "rm b/x/inner"],
-            "",
+            &[],
         ),
         (
             "a/x a/y/ a/y/inner",
             &["mv a b", "mv b/x c/x", "mv b/y b/x", "mv b/x/inner b/inner"],
-            "",
+            &[],
         ),
         (
             "a/x a/y/ a/z",
             &["mv a b", "mv b/x c/x", "mv b/y b/x", "mv b/z b/x/z"],
-            "",
+            &[],
         ),
         (
             "a/x a/y a/v",
             &["mv a b", "mv b/x c/x", "mv b/y b/x", "mv b/v b/y"],
-            "",
+            &[],
         ),
         (
             "a/x a/y",
             &["mv a b", "mv b/x c/x", "mv b/y b/x", "write b/x"],
-            "",
+            &[],
         ),
-        ("a/x", &["mv a b", "mv b/x c/x", "write b/x"], "a/x c/w"),
-        ("a/x", &["mv a b", "mv b/x c/x"], ""),
+        (
+            "a/x",
+            &["mv a b", "mv b/x c/x", "write b/x"],
+            &["a/x", "c/w"],
+        ),
+        ("a/x", &["mv a b", "mv b/x c/x"], &[]),
         (
             "a/x a/s/ a/s/y",
             &["mv a b", "mv b/x c/x", "mv b/s/y b/x"],
-            "a/x c/w",
+            &["a/x", "c/w"],
         ),
         (
             "a/x a/s/ a/s/y a/s/k",
             &["mv a b", "mv b/s b/t", "mv b/x c/x", "mv b/t/y b/x"],
-            "a/x c/w",
+            &["a/x", "c/w"],
         ),
         (
             "a/x a/s/ a/s/y",
             &["mv a b", "mv b/x c/x", "mv b/s/y b/x", "rm b/s"],
-            "a/x c/w",
+            &["a/x", "c/w"],
         ),
         (
             "a/x a/y",
             &["mv a b", "mv b/x c/x", "mv b/y b/x", "write b/y"],
-            "a/x c/w",
+            &["a/x", "c/w"],
         ),
         (
             "a/x a/y d/ d/y",
             &["mv a b", "mv b/x c/x", "mv d/y b/x"],
-            "a/x c/w",
+            &["a/x", "c/w"],
         ),
         (
             "a/x a/y",
             &["mv a b", "mv b/x c/x", "mv b/y b/x", "|", "write b/y"],
-            "a/y",
+            &["b/x"],
         ),
         (
             "a/x a/y",
             &["mv a b", "mv b/x c/x", "mv b/y b/x", "|", "write b/x"],
-            "",
+            &[],
         ),
         (
             "a/x a/y",
             &["mv a b", "mv b/x c/x", "mv b/y b/x", "|", "rm c/w"],
-            "",
+            &[],
         ),
         (
             "a/x a/y",
             &["mv a b", "mv b/x c/x", "mv b/y b/x", "|", "mv c/w b/y"],
-            "",
+            &[],
         ),
     ];
     let mut failures = Vec::new();
-    for (tree, ops, allowed) in cases {
+    for (tree, ops, may_lose) in cases {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         for path in tree.split(' ').chain(["c/"]) {
@@ -1523,7 +1525,8 @@ fn a_consumer_replaying_the_changes_loses_history_only_where_main_does_when_a_mo
             nodes: (snapshot.entries.iter())
                 .map(|(path, entry)| (path.clone(), (entry.id.ino, path.clone())))
                 .collect(),
-            problems: Vec::new(),
+            broken: Vec::new(),
+            lost: Vec::new(),
         };
         let born: BTreeMap<u128, PathBuf> = published.nodes.values().cloned().collect();
         let (before, during) =
@@ -1541,23 +1544,34 @@ fn a_consumer_replaying_the_changes_loses_history_only_where_main_does_when_a_mo
                 }
             })
             .unwrap();
+        assert!(
+            again.is_none(),
+            "{tree} {ops:?}: the scan never located c/x"
+        );
+        published.apply(&rescan.changes, &snapshot, root);
         for _ in 0..6 {
-            published.apply(&rescan.changes, &snapshot, root);
             if rescan.unsettled.is_empty() {
                 break;
             }
             rescan = snapshot.rescan(root, rescan.unsettled).unwrap();
+            published.apply(&rescan.changes, &snapshot, root);
         }
+        assert_eq!(rescan.unsettled, Vec::<PathBuf>::new(), "{tree} {ops:?}");
         let whole = snapshot.rescan(root, [PathBuf::new()]).unwrap();
         published.apply(&whole.changes, &snapshot, root);
         let fresh = Snapshot::scan(root).unwrap();
         for (path, entry) in &fresh.entries {
-            match (published.nodes.get(path), born.get(&entry.id.ino)) {
-                (None, _) => published.problems.push(format!("{path:?} unpublished")),
-                (Some((_, history)), Some(file)) if history != file => published
-                    .problems
-                    .push(format!("{path:?} holds {file:?} under {history:?}")),
-                _ => {}
+            match published.nodes.get(path) {
+                None => published.broken.push(format!("{path:?} unpublished")),
+                Some((ino, _)) if *ino != entry.id.ino => published
+                    .broken
+                    .push(format!("{path:?} holds another file")),
+                Some((_, history))
+                    if born.get(&entry.id.ino).is_some_and(|file| file != history) =>
+                {
+                    published.lost.push(path.clone())
+                }
+                Some(_) => {}
             }
         }
         for path in published
@@ -1566,15 +1580,21 @@ fn a_consumer_replaying_the_changes_loses_history_only_where_main_does_when_a_mo
             .filter(|path| !fresh.entries.contains_key(*path))
         {
             published
-                .problems
+                .broken
                 .push(format!("{path:?} published but gone"));
         }
-        let problems = published.problems;
-        let expected = |problem: &String| {
-            (allowed.split(' ')).any(|token| !token.is_empty() && problem.contains(token))
-        };
-        if !problems.iter().all(expected) {
-            failures.push(format!("{tree} {ops:?}: {problems:?}"));
+        let unexpected: Vec<&PathBuf> = (published.lost.iter())
+            .filter(|path| {
+                !may_lose
+                    .iter()
+                    .any(|lost| path.as_path() == Path::new(lost))
+            })
+            .collect();
+        if !published.broken.is_empty() || !unexpected.is_empty() {
+            failures.push(format!(
+                "{tree} {ops:?}: {:?} lost {unexpected:?}",
+                published.broken
+            ));
         }
     }
     assert!(failures.is_empty(), "{failures:#?}");
