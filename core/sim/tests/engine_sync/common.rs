@@ -581,6 +581,7 @@ struct Device {
     relocated: BTreeMap<NodeId, Relocation>,
     ignored: IgnoredDisk,
     off_disk: BTreeSet<NodeId>,
+    moved_into_ignored: BTreeSet<NodeId>,
 }
 
 type DiskPath = (NodeId, Vec<String>);
@@ -613,6 +614,7 @@ impl Device {
             relocated: BTreeMap::new(),
             ignored: IgnoredDisk::new(),
             off_disk: BTreeSet::new(),
+            moved_into_ignored: BTreeSet::new(),
         }
     }
 
@@ -724,6 +726,7 @@ impl Device {
         };
         self.acted.insert(id.clone());
         self.off_disk.remove(&id);
+        self.moved_into_ignored.remove(&id);
         self.trees.set_local_changed(id.clone(), node);
         let mut above = left;
         while let Some(folder) = above.filter(|folder| {
@@ -732,6 +735,7 @@ impl Device {
         }) {
             above = (self.trees.local().get(&folder)).map(|node| node.shape.parent.clone());
             self.off_disk.remove(&folder);
+            self.moved_into_ignored.remove(&folder);
             self.removed_from
                 .insert(folder.clone(), above.clone().expect("lost folder in L"));
             self.kept_back.remove(&folder);
@@ -1047,6 +1051,7 @@ impl Device {
             })
             .collect();
         self.off_disk.extend(moved.keys().cloned());
+        self.moved_into_ignored.insert(id.clone());
         for (id, below) in moved {
             let node = local.get(&id).expect("moved node");
             self.ignored.insert(
@@ -2355,12 +2360,12 @@ fn run_ignoring_answering_after(
                 .filter(|(id, _)| !asked_again.contains(id))
                 .collect();
             let (unseen, seen): (Vec<_>, Vec<_>) =
-                (shown.iter()).partition(|(id, _)| device.off_disk.contains(*id));
+                (shown.iter()).partition(|(id, _)| device.moved_into_ignored.contains(*id));
             let unseen = written(unseen.iter().map(|(_, shape)| shape.content), 1);
             let contents = written(seen.iter().map(|(_, shape)| shape.content), 1);
             local_writes.retain(|write| !contents.contains(write) || unseen.contains(write));
             for id in shown.keys() {
-                if !device.off_disk.contains(id) {
+                if !device.moved_into_ignored.contains(id) {
                     device.touched.remove(id);
                     device.acted.remove(id);
                 }
