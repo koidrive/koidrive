@@ -619,6 +619,7 @@ fn every_record_an_earlier_release_queued_arrives_once_through_a_failed_send_and
             !old_queue.exists(),
             "the earlier release's queue is still there"
         );
+        assert!(!unsent(), "the store's queue still holds events");
         let requests = requests.try_iter().collect::<Vec<_>>();
         for (_, body) in &requests {
             let text = body.to_string().to_lowercase();
