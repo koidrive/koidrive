@@ -17,9 +17,16 @@ import time
 
 
 WORKERS = {
-    "koidrive-net": ("core/net/scripts/integration-test.sh", "server"),
-    "koidrive-driver": ("core/driver/scripts/integration-test.sh", "sync"),
+    "koidrive-net": ("core/net/scripts/integration-test.sh", "server", None),
+    "koidrive-driver": ("core/driver/scripts/integration-test.sh", "sync", "KOIDRIVE_DRIVER_TEST"),
 }
+
+RECORDER = (
+    "import json, os, sys\n"
+    "with open(os.environ['STRESS_TEST_CAPTURE'], 'a') as capture:\n"
+    "    capture.write(json.dumps(dict(executable=sys.argv[1], directory=os.getcwd(),\n"
+    "                                  environment=dict(os.environ))) + '\\n')\n"
+)
 
 
 @dataclass
@@ -39,8 +46,6 @@ def parse_args(argv=None):
     parser = argparse.ArgumentParser(description="Repeat prebuilt Cargo tests or isolated Worker launchers on one host.")
     parser.add_argument("--root", type=Path, default=Path.cwd())
     parser.add_argument("--out", type=Path, required=True)
-    parser.add_argument("--executables", type=Path, required=True,
-                        help="JSON messages of the cargo test --no-run build whose test executables each repetition runs")
     parser.add_argument("--mode", choices=("cargo", "worker"), default="cargo")
     parser.add_argument("--crate", required=True)
     parser.add_argument("--test", default="")
@@ -66,30 +71,50 @@ def parse_args(argv=None):
     if args.mode == "worker":
         if args.crate not in WORKERS:
             parser.error("worker mode supports koidrive-net and koidrive-driver")
-        target = WORKERS[args.crate][1]
+        _, default, variable = WORKERS[args.crate]
+        target = (variable and os.environ.get(variable)) or default
         if args.test and args.test != target:
             parser.error(f"{args.crate} worker launcher runs --test {target}")
         args.test = target
     args.root = args.root.resolve()
     args.out = args.out.resolve()
-    args.executables = args.executables.resolve()
     return args
 
 
-def test_executables(path):
-    executables = []
-    for line in path.read_text().splitlines():
-        try:
-            message = json.loads(line)
-        except ValueError:
-            continue
-        if (isinstance(message, dict) and message.get("reason") == "compiler-artifact"
-                and message.get("executable") and message.get("profile", {}).get("test")):
-            executables.append([message["executable"], str(Path(message["manifest_path"]).parent)])
-    if not executables:
-        raise RuntimeError(f"{path} names no test executable; build the tests with cargo test --no-run "
-                           "--message-format=json-render-diagnostics first")
-    return executables
+def cargo_configs(root):
+    home = Path(os.environ.get("CARGO_HOME", Path.home() / ".cargo"))
+    for directory in (root, *root.parents, home):
+        for name in ((".cargo/config.toml", ".cargo/config") if directory != home else ("config.toml", "config")):
+            if (directory / name).is_file():
+                yield directory / name
+
+
+def capture_tests(args, environment):
+    host = re.search(r"^host: (\S+)$", subprocess.check_output(["rustc", "-vV"], text=True), re.M)[1]
+    runner = "CARGO_TARGET_" + re.sub(r"[^A-Za-z0-9]", "_", host).upper() + "_RUNNER"
+    configured = [str(path) for path in cargo_configs(args.root) if re.search(r"\brunner\s*=", path.read_text())]
+    if runner in environment or configured:
+        raise RuntimeError(f"a Cargo target runner is configured ({runner} or {', '.join(configured)}); "
+                           "run the repetitions serially with Cargo instead")
+    recorder = args.out / "record-test"
+    recorder.write_text("#!" + sys.executable + "\n" + RECORDER)
+    recorder.chmod(0o755)
+    capture = args.out / "capture.jsonl"
+    capture.unlink(missing_ok=True)
+    command = ["cargo", "test", "--locked", "-p", args.crate, *(["--features", args.features] if args.features else []),
+               *(["--test", args.test] if args.test else ["--tests"])]
+    with (args.out / "logs/capture.log").open("w") as log:
+        code = subprocess.call(command, cwd=args.root, stdout=log, stderr=subprocess.STDOUT,
+                               env={**environment, runner: str(recorder), "STRESS_TEST_CAPTURE": str(capture)})
+    records = [json.loads(line) for line in capture.read_text().splitlines()] if capture.exists() else []
+    if code or not records:
+        raise RuntimeError(f"{shlex.join(command)} exited {code} and ran {len(records)} test executables; "
+                           f"see {args.out / 'logs/capture.log'}")
+    return [dict(name=re.sub(r"-[0-9a-f]{16}$", "", Path(record["executable"]).name),
+                 executable=record["executable"], directory=record["directory"],
+                 environment={name: value for name, value in record["environment"].items()
+                              if environment.get(name) != value and name not in (runner, "STRESS_TEST_CAPTURE")})
+            for record in records]
 
 
 def test_arguments(args):
@@ -99,7 +124,7 @@ def test_arguments(args):
     return arguments
 
 
-def worker_sandbox(root, destination, crate, executables):
+def worker_sandbox(root, destination, crate, tests):
     launcher = Path(WORKERS[crate][0])
     shutil.copytree(root / "server", destination / "server",
                     ignore=shutil.ignore_patterns("node_modules", ".wrangler", ".git"), symlinks=True)
@@ -127,15 +152,22 @@ def worker_sandbox(root, destination, crate, executables):
     binary.parent.mkdir()
     binary.write_text(
         "#!" + sys.executable + "\n"
-        "import subprocess, sys\n"
+        "import os, subprocess, sys\n"
         "args = sys.argv[1:]\n"
         "if args[:1] != ['test']:\n"
         "    sys.exit('The stress sandbox runs only the prebuilt tests, not cargo ' + ' '.join(args))\n"
-        "tail = args[args.index('--') + 1:] if '--' in args else []\n"
+        "split = args.index('--') if '--' in args else len(args)\n"
+        "head, tail = args[:split], args[split + 1:]\n"
+        "wanted = head[head.index('--test') + 1] if '--test' in head else None\n"
+        f"tests = [test for test in {tests!r} if wanted in (None, test['name'])]\n"
+        "if not tests:\n"
+        "    sys.exit(f'The stress sandbox has no prebuilt test target {wanted}')\n"
         "code = 0\n"
-        f"for executable, directory in {executables!r}:\n"
-        "    print('     Running ' + executable, flush=True)\n"
-        "    code = code or subprocess.call([executable, *tail], cwd=directory)\n"
+        "for test in tests:\n"
+        "    print('     Running ' + test['executable'], flush=True)\n"
+        "    status = subprocess.call([test['executable'], *tail], cwd=test['directory'],\n"
+        "                             env={**os.environ, **test['environment']})\n"
+        "    code = code or status\n"
         "sys.exit(code)\n"
     )
     binary.chmod(0o755)
@@ -208,17 +240,20 @@ def save_regressions(root, out):
 
 
 def start_next(run):
-    command, directory, header = run.pending.pop(0)
+    command, directory, header, environment = run.pending.pop(0)
     if header:
         run.log.write(header)
         run.log.flush()
-    run.process = subprocess.Popen(command, cwd=directory, env=run.environment,
+    run.process = subprocess.Popen(command, cwd=directory, env={**run.environment, **environment},
                                    stdout=run.log, stderr=subprocess.STDOUT, start_new_session=True)
 
 
 def run_tests(args):
     (args.out / "logs").mkdir(parents=True, exist_ok=True)
-    executables = test_executables(args.executables)
+    environment = dict(os.environ)
+    for variable in ("PROPTEST_CASES", "KOIDRIVE_BATTERY_CASES"):
+        environment.pop(variable, None)
+    tests = capture_tests(args, environment)
     active = []
     results = []
     next_run = 1
@@ -234,13 +269,13 @@ def run_tests(args):
                 if args.cases:
                     environment["KOIDRIVE_BATTERY_CASES"] = args.cases
                 try:
-                    pending = [([executable, *test_arguments(args)], directory, f"     Running {executable}\n")
-                               for executable, directory in executables]
+                    pending = [([test["executable"], *test_arguments(args)], test["directory"],
+                                f"     Running {test['executable']}\n", test["environment"]) for test in tests]
                     if args.mode == "worker":
-                        command = worker_sandbox(args.root, Path(sandbox.name), args.crate, executables)
+                        command = worker_sandbox(args.root, Path(sandbox.name), args.crate, tests)
                         if args.filter:
                             command += [args.filter]
-                        pending = [(command, args.root, "")]
+                        pending = [(command, args.root, "", {})]
                         environment["PATH"] = str(Path(sandbox.name) / "bin") + os.pathsep + environment["PATH"]
                         environment.pop("KOIDRIVE_TEST_PORT", None)
                         environment["WRANGLER_SEND_METRICS"] = "false"
@@ -299,17 +334,15 @@ def main(argv=None):
         rows.append("| " + " | ".join(str(record[key]) for key in
                     ("run", "seed", "result", "exit_code", "passed", "failed", "ignored", "seconds")) + " |")
     green = sum(record["result"] == "pass" for record in records)
-    build = ["cargo", "test", "--locked", "--no-run", "-p", args.crate, *(["--features", args.features] if args.features else []),
-             *(["--test", args.test] if args.test else []), "--message-format=json-render-diagnostics"]
     repro = [sys.executable, ".heavy-harness/scripts/stress-test-servers.py", "--root", ".", "--out", "heavy-repro",
-             "--executables", "heavy-build.json", "--mode", args.mode, "--crate", args.crate, "--test", args.test, "--filter", args.filter,
+             "--mode", args.mode, "--crate", args.crate, "--test", args.test, "--filter", args.filter,
              "--features", args.features, "--cases", args.cases, "--ignored", args.ignored,
              "--repeat", str(args.repeat), "--parallel", str(args.parallel), "--seed", str(args.seed)]
     rows += ["", f"**{green} of {args.repeat} runs passed.**", "",
-             "Cargo tests and web assets are built before repetitions. Each repetition runs the built test executables from their package directories without Cargo, so doc-tests don't run. Worker runs use the target commit's launcher, copied web assets, and a fresh server copy with isolated Wrangler builds and local state.",
+             "Cargo tests and web assets are built before repetitions. Cargo runs the built test executables once through a recording runner, and each repetition then runs them with the directory and environment Cargo gave them, so doc-tests don't run. Worker runs use the target commit's launcher, copied web assets, and a fresh server copy with isolated Wrangler builds and local state.",
              "Parallel runs share the target checkout. Saved regressions are collected after all runs and can affect other repetitions. Replay saved cases before relying on a seed alone.",
              "", "Keep the dispatch commit in .heavy-harness and check out the target commit at the repository root, then run:",
-             "", "```sh", shlex.join(build) + " > heavy-build.json", shlex.join(repro), "```", ""]
+             "", "```sh", shlex.join(repro), "```", ""]
     summary = "\n".join(rows)
     (args.out / "summary.md").write_text(summary)
     (args.out / "results.json").write_text(json.dumps(records, indent=2) + "\n")

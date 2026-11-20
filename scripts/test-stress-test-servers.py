@@ -32,25 +32,34 @@ class StressTests(unittest.TestCase):
         self.bin = self.root / "bin"
         self.bin.mkdir()
         self.executable(self.bin / "cargo", r'''
-import os, sys
+import os, subprocess, sys
 from pathlib import Path
-(Path(os.environ['PROBES']) / 'cargo.called').write_text(' '.join(sys.argv[1:]))
-sys.exit(99)
+probes = Path(os.environ['PROBES'])
+if 'STRESS_TEST_CAPTURE' not in os.environ:
+    (probes / 'cargo.called').write_text(' '.join(sys.argv[1:]))
+    sys.exit(99)
+(probes / 'cargo.capture').write_text(' '.join(sys.argv[1:]))
+runner = os.environ['CARGO_TARGET_AARCH64_APPLE_DARWIN_RUNNER']
+package = os.environ['FAKE_PACKAGE']
+for test in filter(None, os.environ['FAKE_TESTS'].split(os.pathsep)):
+    subprocess.check_call([runner, test], cwd=package,
+                          env=dict(os.environ, CARGO_MANIFEST_DIR=package, CONFIG_ENV='from-config'))
 ''')
+        self.executable(self.bin / "rustc", "print('rustc 1.99.0\\nhost: aarch64-apple-darwin')\n")
         self.package = self.root / "crate"
         self.package.mkdir()
-        self.tests = [self.root / "target/debug/deps/probe-1", self.root / "target/debug/deps/probe-2"]
-        for test in self.tests:
-            self.executable(test, r'''
+        self.probe = r'''
 import json, os, sys, time
 from pathlib import Path
 probe = Path(os.environ['PROBES'])
 seed = os.environ['PROPTEST_RNG_SEED']
-second = sys.argv[0].endswith('-2')
+second = Path(sys.argv[0]).name.startswith('second-')
 record = dict(pid=os.getpid(), args=sys.argv[1:], cwd=os.getcwd(),
               seed=seed, ordinary=os.environ.get('PROPTEST_CASES'),
               cases=os.environ.get('KOIDRIVE_BATTERY_CASES'),
-              server=os.environ.get('KOIDRIVE_TEST_SERVER'))
+              server=os.environ.get('KOIDRIVE_TEST_SERVER'),
+              manifest=os.environ.get('CARGO_MANIFEST_DIR'), config=os.environ.get('CONFIG_ENV'),
+              capture=os.environ.get('STRESS_TEST_CAPTURE'))
 (probe / (seed + ('-2' if second else '') + '.start')).write_text(json.dumps(record))
 deadline = time.monotonic() + 5
 while len(list(probe.glob('*.start'))) < int(os.environ.get('BARRIER', '1')):
@@ -71,20 +80,17 @@ elif mode == 'startup':
 else:
     print('test probe ... ok')
     print('test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out')
-''')
-        self.build(self.tests[:1])
+'''
         self.environment = dict(os.environ, PATH=str(self.bin) + os.pathsep + os.environ["PATH"],
-                                PROBES=str(self.probes), PROPTEST_CASES="999", KOIDRIVE_BATTERY_CASES="888")
+                                PROBES=str(self.probes), PROPTEST_CASES="999", KOIDRIVE_BATTERY_CASES="888",
+                                FAKE_PACKAGE=str(self.package))
+        self.build("server")
 
-    def build(self, tests):
-        messages = ["   Compiling probe v0.1.0",
-                    json.dumps(dict(reason="compiler-artifact", executable=None, profile=dict(test=False),
-                                    manifest_path=str(self.root / "dependency/Cargo.toml")))]
+    def build(self, *names):
+        tests = [self.root / f"target/debug/deps/{name}-{index:016x}" for index, name in enumerate(names)]
         for test in tests:
-            messages.append(json.dumps(dict(reason="compiler-artifact", executable=str(test), profile=dict(test=True),
-                                            manifest_path=str(self.package / "Cargo.toml"))))
-        messages.append(json.dumps(dict(reason="build-finished", success=True)))
-        (self.root / "build.json").write_text("\n".join(messages) + "\n")
+            self.executable(test, self.probe)
+        self.environment["FAKE_TESTS"] = os.pathsep.join(map(str, tests))
 
     def executable(self, path, code):
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -93,7 +99,6 @@ else:
 
     def args(self, *extra):
         return stress.parse_args(["--root", str(self.root), "--out", str(self.root / "out"),
-                                  "--executables", str(self.root / "build.json"),
                                   "--crate", "koidrive-net", "--seed", "17", *extra])
 
     def run_tests(self, args, **environment):
@@ -175,10 +180,12 @@ while True:
             self.assertEqual(probe["cases"], "0")
             self.assertEqual(probe["args"], ["two words", "--include-ignored"])
             self.assertEqual(probe["cwd"], str(self.package))
+            self.assertEqual((probe["manifest"], probe["config"], probe["capture"]), (str(self.package), "from-config", None))
+        self.assertEqual((self.probes / "cargo.capture").read_text(), "test --locked -p koidrive-net --features serde --test send")
         self.assertFalse((self.probes / "cargo.called").exists())
 
     def test_each_repetition_runs_every_built_test_executable_in_turn(self):
-        self.build(self.tests)
+        self.build("server", "second")
         for mode, expected, code in (("pass", "pass", 0), ("fail", "fail", 101)):
             with self.subTest(mode=mode):
                 for path in self.probes.iterdir():
@@ -191,9 +198,17 @@ while True:
                 self.assertFalse((self.probes / "cargo.called").exists())
 
     def test_a_build_without_test_executables_is_refused(self):
-        (self.root / "build.json").write_text(json.dumps(dict(reason="build-finished", success=True)) + "\n")
-        with self.assertRaisesRegex(RuntimeError, "names no test executable"):
+        self.build()
+        with self.assertRaisesRegex(RuntimeError, "ran 0 test executables"):
             self.run_tests(self.args())
+        self.assertEqual((self.probes / "cargo.capture").read_text(), "test --locked -p koidrive-net --tests")
+
+    def test_a_configured_target_runner_is_refused(self):
+        (self.root / ".cargo").mkdir()
+        (self.root / ".cargo/config.toml").write_text("[target.aarch64-apple-darwin]\nrunner = 'qemu'\n")
+        with self.assertRaisesRegex(RuntimeError, "target runner is configured"):
+            self.run_tests(self.args())
+        self.assertFalse((self.probes / "cargo.capture").exists())
 
     def test_optional_budget_is_unset_and_zero_tests_and_startup_fail_closed(self):
         for mode, expected, code in (("pass", "pass", 0), ("zero", "error", 0),
@@ -218,6 +233,7 @@ while True:
                 for path in self.probes.iterdir():
                     path.unlink()
                 self.worker_fixture(crate)
+                self.build(stress.WORKERS[crate][1])
                 args = self.args("--mode", "worker", "--crate", crate, "--repeat", "3", "--parallel", "3",
                                  "--features", "serde", "--filter", "selected test")
                 records = self.run_tests(args, BARRIER="3", KOIDRIVE_TEST_PORT="1234")
@@ -234,7 +250,33 @@ while True:
                     probe = json.loads(path.read_text())
                     self.assertEqual(probe["cwd"], str(self.package))
                     self.assertEqual(probe["args"], ["--ignored", "selected test"])
+                    self.assertEqual((probe["manifest"], probe["config"]), (str(self.package), "from-config"))
                 self.assertFalse((self.probes / "cargo.called").exists())
+
+    def test_worker_repetitions_run_the_target_the_launcher_asks_for(self):
+        self.worker_fixture("koidrive-driver")
+        self.build("first_sync_bench")
+        with patch.dict(os.environ, KOIDRIVE_DRIVER_TEST="first_sync_bench"):
+            args = self.args("--mode", "worker", "--crate", "koidrive-driver")
+        self.assertEqual(args.test, "first_sync_bench")
+        record = self.run_tests(args, KOIDRIVE_DRIVER_TEST="first_sync_bench")[0]
+        self.assertEqual(record["result"], "pass")
+        self.assertIn("--test first_sync_bench", (self.probes / "cargo.capture").read_text())
+        for path in self.probes.iterdir():
+            path.unlink()
+        self.build("sync")
+        record = self.run_tests(self.args("--mode", "worker", "--crate", "koidrive-driver"),
+                                KOIDRIVE_DRIVER_TEST="first_sync_bench")[0]
+        self.assertEqual(record["result"], "error")
+        self.assertFalse(list(self.probes.glob("*.start")))
+        self.assertIn("no prebuilt test target first_sync_bench", (self.root / "out/logs/run-1.log").read_text())
+
+    def test_worker_repetitions_run_every_executable_after_a_failure(self):
+        self.worker_fixture()
+        self.build("server", "server")
+        record = self.run_tests(self.args("--mode", "worker"), PROBE_MODE="fail", BARRIER="1")[0]
+        self.assertEqual((record["result"], record["exit_code"]), ("fail", 101))
+        self.assertEqual((record["test_binaries"], record["finished_binaries"]), (2, 2))
 
     def test_timeout_kills_processes(self):
         record = self.run_tests(self.args("--timeout-seconds", "1"), PROBE_MODE="hang")[0]
@@ -261,7 +303,6 @@ while True:
                 patch.object(stress.subprocess, "check_output", return_value="target-sha\n"), \
                 redirect_stdout(io.StringIO()):
             self.assertEqual(stress.main(["--root", str(self.root), "--out", str(self.root / "out"),
-                                          "--executables", str(self.root / "build.json"),
                                           "--crate", "koidrive-net", "--seed", "17"]), 1)
         self.assertEqual(json.loads((self.root / "out/results.json").read_text())[0]["result"], "error")
         self.assertIn("0 of 1 runs passed", (self.root / "out/summary.md").read_text())
@@ -272,8 +313,6 @@ while True:
         self.assertIn("ref: ${{ needs.plan.outputs.sha }}", workflow)
         self.assertIn("if: env.MODE == 'cargo' && env.PARALLEL == '1'", workflow)
         self.assertIn("${TEST:+--test", workflow)
-        self.assertIn('--message-format=json-render-diagnostics > "$RUNNER_TEMP/heavy-tests-build.json"', workflow)
-        self.assertIn('--executables "$RUNNER_TEMP/heavy-tests-build.json"', workflow)
         ci = (ROOT / ".github/workflows/ci.yml").read_text()
         for line in workflow.splitlines():
             if "uses:" in line:
