@@ -8,7 +8,7 @@ use koidrive_engine::journal::{
     Author, Field, FieldIntent, HistoryEntry, IntentId, NodeIntents, OpsWithoutIntent, Place, Row,
     RowState, Value, Wire, WireBase,
 };
-use koidrive_engine::state::{CommitsState, ContentValue};
+use koidrive_engine::state::{Agreed, CommitsState, ContentValue};
 use koidrive_engine::tree::{
     Content, FileIdentity, Kind, LocalNode, NodeId, RemoteNode, Shape, Tree,
 };
@@ -1442,6 +1442,36 @@ fn a_backfilled_lost_folder_whose_queued_removal_finishes_keeps_no_rows() {
         .map(|(_, row)| row.state)
         .collect();
     assert_eq!(states, [RowState::Sent, RowState::Sent]);
+}
+
+#[test]
+fn a_backfill_keeps_the_trash_group_of_a_trashed_past_position() {
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
+    synced(&mut trees, "f", file(ROOT, "f.txt", 1), 5);
+    let trashed = Agreed {
+        rev: 3,
+        parent: ROOT.into(),
+        name: "f.txt".into(),
+        trash_group: Some("3:0".into()),
+    };
+    let mut state = trees.state();
+    state
+        .past_positions
+        .insert("f".into(), vec![trashed.clone()]);
+    trees.restore(state).unwrap();
+    trees.backfill(None, false, 1_000);
+    let history = |field| -> Vec<IntentId> {
+        (trees.remote_history(&"f".into(), field).iter())
+            .map(|entry| entry.intent)
+            .collect()
+    };
+    assert!(history(Field::Place).contains(&IntentId::legacy_place("f", 3, ROOT, "f.txt")));
+    assert!(
+        history(Field::Status).contains(&IntentId::legacy_trashed("f", "3:0")),
+        "{:?}",
+        history(Field::Status)
+    );
+    assert_eq!(trees.state().past_positions[&"f".into()], [trashed]);
 }
 
 #[test]
