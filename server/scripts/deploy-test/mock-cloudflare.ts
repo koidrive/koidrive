@@ -31,6 +31,7 @@ export class MockCloudflare {
   versionsStatus = 200;
   bucketDeleteFailures = 0;
   workerDeleteKeepsNamespaces = false;
+  failingWorkerCall?: "GET" | "DELETE";
   readonly runAttempts = new Map<string, MockRunAttempt>();
   githubStatus = 200;
   readonly claimCode = "ZQ7K-M2XR-9WPD";
@@ -141,6 +142,9 @@ export class MockCloudflare {
       }
       const api = /^\/client\/v4\/accounts\/[^/]+(\/.*)$/.exec(path)?.[1];
       if (!api) return missing();
+      if (/^\/workers\/(workers|scripts)\/[^/]+$/.test(api) && method === this.failingWorkerCall) {
+        return send(500, { success: false, errors: [{ code: 10013, message: "internal error" }], messages: [], result: null });
+      }
       if ((match = /^\/workers\/workers\/([^/]+)$/.exec(api)) && method === "GET") {
         const worker = this.workers.get(match[1]!);
         return worker ? ok({ id: worker.id, name: match[1], created_on: new Date().toISOString() }) : missing();
@@ -196,7 +200,7 @@ export class MockCloudflare {
       }
       if (api === "/r2/buckets" && method === "GET") {
         const contains = new URL(request.url ?? "/", this.url).searchParams.get("name_contains") ?? "";
-        return ok({ buckets: [...this.buckets].filter(([name]) => name.includes(contains)).map(([name, bucket]) => ({ name, creation_date: bucket.creationDate })) });
+        return ok({ buckets: [...this.buckets].filter(([name]) => name.includes(contains)).map(([name, bucket]) => ({ name, ...(bucket.creationDate ? { creation_date: bucket.creationDate } : {}) })) });
       }
       if ((match = /^\/r2\/buckets\/([^/]+)\/lifecycle$/.exec(api)) && method === "PUT") {
         const bucket = this.buckets.get(match[1]!);

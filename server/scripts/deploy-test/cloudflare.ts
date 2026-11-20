@@ -143,7 +143,7 @@ export async function createBucket(account: Account, name: string): Promise<void
 
 export interface Bucket {
   name: string;
-  creationDate: string;
+  creationDate?: string;
 }
 
 export async function listBuckets(account: Account, prefix: string): Promise<Bucket[]> {
@@ -151,7 +151,7 @@ export async function listBuckets(account: Account, prefix: string): Promise<Buc
   let cursor = "";
   for (;;) {
     const query = new URLSearchParams({ name_contains: prefix, per_page: "1000", ...(cursor ? { cursor } : {}) });
-    const page = await call<{ buckets?: { name: string; creation_date: string }[] }>(account, "GET", `/accounts/${account.id}/r2/buckets?${query}`);
+    const page = await call<{ buckets?: { name: string; creation_date?: string }[] }>(account, "GET", `/accounts/${account.id}/r2/buckets?${query}`);
     for (const bucket of page.result?.buckets ?? []) if (bucket.name.startsWith(prefix)) buckets.push({ name: bucket.name, creationDate: bucket.creation_date });
     cursor = page.result_info?.cursor ?? "";
     if (!cursor || (page.result?.buckets ?? []).length === 0) return buckets;
@@ -258,8 +258,8 @@ export async function deleteNamespace(account: Account, id: string): Promise<boo
   return (await send(account, "DELETE", `/accounts/${account.id}/workers/durable_objects/namespaces/${id}`, { allowMissing: true })) !== undefined;
 }
 
-export async function listWorkers(account: Account): Promise<{ name: string; createdOn: string }[]> {
-  const scripts = await call<{ id: string; created_on: string }[]>(account, "GET", `/accounts/${account.id}/workers/scripts`);
+export async function listWorkers(account: Account): Promise<{ name: string; createdOn?: string }[]> {
+  const scripts = await call<{ id: string; created_on?: string }[]>(account, "GET", `/accounts/${account.id}/workers/scripts`);
   return (scripts.result ?? []).map((script) => ({ name: script.id, createdOn: script.created_on }));
 }
 

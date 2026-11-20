@@ -193,6 +193,15 @@ describe("teardown", () => {
     expect(output).toContain("which outlived the Worker");
   });
 
+  it.each(["GET", "DELETE"] as const)("deletes no Durable Object namespace when the Worker %s fails", async (failing) => {
+    mock.addWorker(NAME, undefined, "this-runs-tag");
+    writeState({ owned: { workerTag: "this-runs-tag" } });
+    mock.failingWorkerCall = failing;
+    expect((await runTs("teardown")).status).toBe(1);
+    expect(mock.deletes().filter((request) => request.includes("/durable_objects/"))).toEqual([]);
+    expect(mock.namespaces).toHaveLength(2);
+  });
+
   it("leaves a Worker and a bucket alone that replaced the ones this run created", async () => {
     mock.addWorker(NAME, "someone-elses-worker");
     mock.addBucket(NAME, "2026-02-02T00:00:00.000Z", ["theirs.txt"]);
@@ -209,7 +218,7 @@ describe("sweep", () => {
 
   it("deletes the Worker and the empty bucket a finished run left, and sets the lifecycle rule on a bucket that still holds objects", async () => {
     mock.runAttempts.set("7/1", attempt(Date.now() - HOUR, Date.now()));
-    mock.runAttempts.set("8/2", attempt(Date.now() - HOUR, Date.now(), ".github/workflows/load-test.yml"));
+    mock.runAttempts.set("8/2", attempt(Date.now() - HOUR, Date.now(), ".github/workflows/load-test.yml@refs/heads/main"));
     mock.addWorker("koidrive-test-7-1");
     mock.addBucket("koidrive-test-7-1");
     const full = mock.addBucket("koidrive-test-8-2", undefined, ["spaces/a/chunks/aa/aa/1"]);
@@ -241,6 +250,15 @@ describe("sweep", () => {
     expect(mock.deletes()).toEqual([]);
     expect(bucket.lifecycle).toBeUndefined();
     expect(mock.workers.has(name)).toBe(true);
+  });
+
+  it("leaves alone a bucket the API lists without a creation time", async () => {
+    mock.runAttempts.set("7/1", attempt(Date.now() - HOUR, Date.now()));
+    const bucket = mock.addBucket("koidrive-test-7-1", "");
+    const { status, output } = await runTs("sweep");
+    expect(status).toBe(0);
+    expect(output).toContain("::warning::The sweep left alone the R2 bucket koidrive-test-7-1, because the API gave no creation time for it");
+    expect(mock.buckets.get("koidrive-test-7-1")).toBe(bucket);
   });
 
   it("leaves alone a Durable Object namespace whose deleted Worker no finished run of a test workflow can claim", async () => {
