@@ -61,7 +61,10 @@ fn a_result_is_acknowledged_only_once_r_holds_its_records() {
         Reconnect::Idle,
         "accepted, nothing to resend"
     );
-    assert!(!commits.abandon(), "an accepted commit is never forgotten");
+    assert!(
+        !commits.abandon(&mut trees),
+        "an accepted commit is never forgotten"
+    );
     assert!(commits.acknowledge(&mut trees, 5));
     assert_eq!(trees.synced().live(&"a".into()), Some(&file(ROOT, "x", 1)));
     assert_eq!((commits.accepted(), commits.in_flight()), (1, None));
@@ -109,7 +112,7 @@ fn a_policy_refusal_keeps_the_commit_and_outlasts_any_welcome() {
             assert_eq!(commits.connected(&welcome), Reconnect::Idle, "{error:?}");
             assert_eq!(commits.halted(), Some(halt), "{error:?}");
         }
-        assert!(!commits.abandon(), "{error:?}");
+        assert!(!commits.abandon(&mut trees), "{error:?}");
         assert_eq!(commits.in_flight().unwrap().commit, sent, "{error:?}");
         assert_eq!(build(&mut commits, &mut trees, &mut ids), None, "{error:?}");
     }
@@ -184,7 +187,7 @@ fn a_policy_halt_lifted_to_resend_sends_the_same_commit_again() {
     commits
         .failed(&mut trees, &refusal(error::Code::Forbidden, 0))
         .unwrap();
-    assert_eq!(commits.lift(Lift::Resend), Ok(()));
+    assert_eq!(commits.lift(&mut trees, Lift::Resend), Ok(()));
     assert_eq!(commits.halted(), None);
     assert_eq!(commits.connected(&welcome(0)), Reconnect::Resend);
     assert_eq!(commits.in_flight().unwrap().commit, sent);
@@ -192,16 +195,26 @@ fn a_policy_halt_lifted_to_resend_sends_the_same_commit_again() {
 
 #[test]
 fn a_policy_halt_lifted_to_replan_plans_the_changes_into_a_new_commit_in_the_same_slot() {
-    let mut trees = trees(&[("a", Some(file(ROOT, "x", 1)), None, None)]);
-    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
-    let refused = build(&mut commits, &mut trees, &mut ids).unwrap();
-    commits
-        .failed(&mut trees, &refusal(error::Code::InvalidArgument, 0))
+    use koidrive_sim::world::device::{Engine, Rules};
+
+    let mut engine = Engine::new(ROOT, HISTORY, 1);
+    engine.trees = trees(&[("a", Some(file(ROOT, "x", 1)), None, None)]);
+    let refused = build(&mut engine.commits, &mut engine.trees, &mut engine.ids).unwrap();
+    engine
+        .commits
+        .failed(&mut engine.trees, &refusal(error::Code::InvalidArgument, 0))
         .unwrap();
-    assert_eq!(commits.lift(Lift::Replan), Ok(()));
-    assert_eq!((commits.halted(), commits.in_flight()), (None, None));
-    assert_eq!(commits.connected(&welcome(0)), Reconnect::Idle);
-    let planned = build(&mut commits, &mut trees, &mut ids).unwrap();
+    assert!(!engine.trees.state().watched_positions.is_empty());
+    let rules = Rules::default();
+    engine = engine.reload(&rules).unwrap();
+    assert_eq!(engine.commits.lift(&mut engine.trees, Lift::Replan), Ok(()));
+    let mut engine = engine.reload(&rules).unwrap();
+    assert_eq!(
+        (engine.commits.halted(), engine.commits.in_flight()),
+        (None, None)
+    );
+    assert_eq!(engine.commits.connected(&welcome(0)), Reconnect::Idle);
+    let planned = build(&mut engine.commits, &mut engine.trees, &mut engine.ids).unwrap();
     assert_ne!(planned.commit_id, refused.commit_id);
     assert_eq!(planned.device_seq, refused.device_seq);
     assert_eq!(ops(&planned), ops(&refused));
@@ -211,14 +224,20 @@ fn a_policy_halt_lifted_to_replan_plans_the_changes_into_a_new_commit_in_the_sam
 fn a_lift_needs_a_policy_halt_and_leaves_one_that_asks_for_confirmation() {
     let mut trees = trees(&[("a", Some(file(ROOT, "x", 1)), None, None)]);
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
-    assert_eq!(commits.lift(Lift::Resend), Err(LiftError::NotHalted));
+    assert_eq!(
+        commits.lift(&mut trees, Lift::Resend),
+        Err(LiftError::NotHalted)
+    );
     let sent = build(&mut commits, &mut trees, &mut ids).unwrap();
     commits
         .failed(&mut trees, &refusal(error::Code::ConfirmationRequired, 0))
         .unwrap();
     let halt = commits.halted();
     for lift in [Lift::Resend, Lift::Replan] {
-        assert_eq!(commits.lift(lift), Err(LiftError::NeedsConfirmation));
+        assert_eq!(
+            commits.lift(&mut trees, lift),
+            Err(LiftError::NeedsConfirmation)
+        );
         assert_eq!(commits.halted(), halt);
         assert_eq!(commits.in_flight().unwrap().commit, sent);
     }
@@ -229,7 +248,10 @@ fn a_lift_needs_a_policy_halt_and_leaves_one_that_asks_for_confirmation() {
     let mut commits = Commits::default();
     commits.connected(&read_only);
     assert_eq!(commits.halted(), Some(Halt::ReadOnly));
-    assert_eq!(commits.lift(Lift::Replan), Err(LiftError::NotHalted));
+    assert_eq!(
+        commits.lift(&mut trees, Lift::Replan),
+        Err(LiftError::NotHalted)
+    );
     assert_eq!(commits.halted(), Some(Halt::ReadOnly));
 }
 
@@ -523,7 +545,7 @@ fn a_file_left_out_of_a_commit_holds_back_no_other_change() {
         ops(&commit),
         [update("a", 2), update("b", 2), update("c", 2)]
     );
-    assert!(commits.leave_out(&"b".into()));
+    assert!(commits.leave_out(&mut trees, &"b".into()));
     assert_eq!(commits.in_flight(), None);
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
     assert_eq!(ops(&commit), [update("a", 2), update("c", 2)]);
@@ -532,7 +554,10 @@ fn a_file_left_out_of_a_commit_holds_back_no_other_change() {
         &mut trees,
         vec![outcome(op_result::Code::Applied); 2],
     );
-    assert!(!commits.leave_out(&"a".into()), "no commit in flight");
+    assert!(
+        !commits.leave_out(&mut trees, &"a".into()),
+        "no commit in flight"
+    );
     assert_eq!(commits.problems().iter().collect::<Vec<_>>(), ["b"]);
     assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
     assert!(commits.clear_problem(&"b".into()));
@@ -1136,11 +1161,13 @@ fn a_recovery_keeps_the_policy_halt_it_interrupted() {
         ..welcome(0)
     };
     assert_eq!(commits.connected(&rewound), Reconnect::Recovery);
+    assert!(!trees.state().watched_positions.is_empty());
     let (log, marks) = (LogRead::default(), Marks::new());
     commits.recover(&mut trees, 0, false, &cause, &log, &marks, &mut ids, NOW);
+    assert!(trees.state().watched_positions.is_empty());
     assert_eq!(commits.halted(), halt);
     assert_eq!(
-        commits.lift(Lift::Resend),
+        commits.lift(&mut trees, Lift::Resend),
         Err(LiftError::NeedsConfirmation)
     );
     assert_eq!(build(&mut commits, &mut trees, &mut ids), None);

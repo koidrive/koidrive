@@ -16,6 +16,7 @@ include!("tests/sign_out.rs");
 include!("tests/sign_out_cleanup.rs");
 
 use crate::failures::{self, Failure};
+use koidrive_store::EngineState;
 use std::sync::atomic::AtomicUsize;
 use std::time::{Duration, Instant};
 

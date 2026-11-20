@@ -147,7 +147,7 @@ fn a_refused_commit_lifted_to_resend_goes_out_unchanged() {
     assert!(problem.contains("koi folder retry"), "{problem}");
     drop(a);
 
-    lift_halt(&site.db, Lift::Resend).unwrap();
+    lift_halt(&site.db, &site.link.space_id, Lift::Resend).unwrap();
     let mut a = restarted(&site, &mut remote);
     assert_eq!(a.sent[0].commit_id, refused.commit_id);
     assert_eq!(remote.names(), ["notes.txt"]);
@@ -160,7 +160,15 @@ fn a_refused_commit_lifted_to_resend_goes_out_unchanged() {
 fn a_refused_commit_lifted_to_replan_goes_out_as_a_new_commit_in_its_slot() {
     let mut remote = Remote::new();
     let (site, refused, _) = refused_first_commit(&mut remote, Code::InvalidArgument);
-    lift_halt(&site.db, Lift::Replan).unwrap();
+    let watched = || {
+        Store::open_existing(&site.db)
+            .unwrap()
+            .read::<_, koidrive_store::Error>(|tx| Ok(tx.engine_state()?.trees.watched_positions))
+            .unwrap()
+    };
+    assert!(!watched().is_empty());
+    lift_halt(&site.db, &site.link.space_id, Lift::Replan).unwrap();
+    assert!(watched().is_empty());
     let mut a = restarted(&site, &mut remote);
     assert!(!a.sent.is_empty());
     assert!(
@@ -181,7 +189,7 @@ fn a_commit_that_waits_for_the_owners_confirmation_is_not_lifted() {
     assert!(halt.to_string().contains("owner must confirm"), "{halt}");
     assert_eq!(halt.remedy(), crate::status::Remedy::Owner);
     for lift in [Lift::Resend, Lift::Replan] {
-        let lifted = lift_halt(&site.db, lift);
+        let lifted = lift_halt(&site.db, &site.link.space_id, lift);
         assert!(
             matches!(lifted, Err(DriverError::NeedsConfirmation)),
             "{lifted:?}"

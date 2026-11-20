@@ -787,8 +787,8 @@ impl Device {
                 return false;
             }
             match local.get(current) {
-                Some(node) => current = &node.shape.parent,
-                None => return true,
+                Some(node) if !node.parked => current = &node.shape.parent,
+                _ => return true,
             }
         }
         false

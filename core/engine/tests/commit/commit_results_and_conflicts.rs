@@ -227,7 +227,7 @@ fn a_new_folder_takes_the_name_of_a_left_out_file_placed_by_a_merged_folder() {
     trees.set_local("c".into(), local(file("a", "f", 2), 3));
     trees.settle(commits.aliases());
     build(&mut commits, &mut trees, &mut ids).unwrap();
-    assert!(commits.leave_out(&"c".into()));
+    assert!(commits.leave_out(&mut trees, &"c".into()));
     trees.set_local("n".into(), local(dir("b", "f"), 4));
     trees.settle(commits.aliases());
     let created = build(&mut commits, &mut trees, &mut ids).unwrap();
@@ -978,4 +978,3 @@ fn a_folder_moved_into_the_folder_merged_into_it_is_moved_back_when_a_removal_by
     );
     assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
 }
-

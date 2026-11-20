@@ -3008,3 +3008,270 @@ fn a_purged_folder_kept_for_an_excluded_file_sends_nothing_after_rename_or_resta
         );
     }
 }
+
+fn unanswered_create_in_a_folder_the_server_renamed() -> (Trees, Commits) {
+    let mut trees = trees(&[
+        synced("a", dir(ROOT, "a")),
+        synced("p", dir(ROOT, "p")),
+        ("f", Some(file("a", "f", 1)), None, None),
+    ]);
+    trees.set_rules(&AT_ROOT, Source::Koiignore, rules("/blocked/\n"));
+    trees.settle(&Default::default());
+    let mut commits = Commits::default();
+    let sent = commits
+        .build(&mut trees, &mut IdGen::new(1), NOW, HISTORY, "me", 7)
+        .unwrap();
+    assert!(
+        matches!(&sent.ops[..], [proto::Op { op: Some(op::Op::CreateFile(create)), .. }]
+        if create.node_id == "f" && create.parent_id == "a")
+    );
+    trees.set_remote(
+        "a".into(),
+        RemoteNode {
+            meta_rev: 8,
+            meta_edit_rev: 8,
+            ..remote(dir(ROOT, "blocked"))
+        },
+    );
+    trees.settle(&Default::default());
+    (trees, commits)
+}
+
+#[test]
+fn deleting_a_sent_create_before_its_answer_is_observed_after_a_remote_folder_rename() {
+    let (mut trees, mut commits) = unanswered_create_in_a_folder_the_server_renamed();
+    let f = NodeId::from("f");
+    assert!(commits.in_flight().unwrap().result.is_none());
+    assert!(trees.remote().get(&f).is_none() && trees.synced().get(&f).is_none());
+    trees.remove_local(&f);
+    let unobserved = trees.unobserved(&f);
+    trees.set_remote_made_here(
+        f,
+        RemoteNode {
+            content_rev: 9,
+            meta_rev: 9,
+            edit_rev: 9,
+            meta_edit_rev: 9,
+            ..remote(file("a", "f", 1))
+        },
+    );
+    commits
+        .received(proto::CommitResult {
+            seq: 9,
+            results: vec![proto::OpResult {
+                code: proto::op_result::Code::Applied as i32,
+                ..Default::default()
+            }],
+            ..Default::default()
+        })
+        .unwrap();
+    assert!(commits.acknowledge(&mut trees, 9));
+    assert_eq!(ops(&mut trees), []);
+    trees.set_rules(&AT_ROOT, Source::Koiignore, None);
+    assert_eq!(ops(&mut trees), [delete("f")], "unobserved: {unobserved}");
+    assert!(!unobserved);
+}
+
+#[test]
+fn abandoning_a_sent_create_lets_its_new_server_path_exclude_it() {
+    use koidrive_engine::commit::Failure;
+    use proto::error::Code;
+
+    for with_error in [false, true] {
+        let (mut trees, mut commits) = unanswered_create_in_a_folder_the_server_renamed();
+        let f = NodeId::from("f");
+        let error = |code: Code| proto::Error {
+            code: code as i32,
+            ..Default::default()
+        };
+        assert_eq!(
+            commits.failed(&mut trees, &error(Code::RetryLater)),
+            Ok(Failure::Resend)
+        );
+        assert!(!trees.excluded(&f));
+        if with_error {
+            assert_eq!(
+                commits.failed(&mut trees, &error(Code::HeadMoved)),
+                Ok(Failure::Abandoned)
+            );
+        } else {
+            assert!(commits.abandon(&mut trees));
+        }
+        trees.settle(commits.aliases());
+        assert!(trees.excluded(&f) && trees.unobserved(&f));
+        assert_eq!(ops(&mut trees), []);
+    }
+}
+
+#[test]
+fn a_refused_create_reconciles_the_existing_id_without_uploading_into_the_blocked_folder() {
+    let id = NodeId::from("f");
+    for exists in [false, true] {
+        let (mut trees, mut commits) = unanswered_create_in_a_folder_the_server_renamed();
+        if exists {
+            let mut existing = remote(file("p", "f", 2));
+            existing.meta_rev = 8;
+            existing.content_rev = 8;
+            trees.set_remote(id.clone(), existing);
+            commits
+                .received(proto::CommitResult {
+                    seq: 9,
+                    results: vec![proto::OpResult {
+                        code: proto::op_result::Code::Rejected as i32,
+                        reject_reason: "ID_EXISTS".into(),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                })
+                .unwrap();
+            assert!(!commits.acknowledge(&mut trees, 8));
+            assert!(commits.acknowledge(&mut trees, 9));
+        } else {
+            assert!(commits.abandon(&mut trees));
+        }
+        trees.settle(commits.aliases());
+        assert!(trees.synced().get(&id).is_none());
+        assert!(commits.problems().is_empty());
+        assert!(trees.ignores(&["blocked", "f"], Kind::File));
+        assert_eq!(trees.excluded(&id), !exists);
+        assert!(
+            commits
+                .build(&mut trees, &mut IdGen::new(2), NOW, HISTORY, "me", 9)
+                .is_none()
+        );
+        let (owner, _) = trees
+            .local()
+            .iter()
+            .find(|(_, node)| node.shape.content == Some(content(1)))
+            .unwrap();
+        assert_eq!(owner == &id, !exists);
+        assert_eq!(
+            trees.remote().live(&id),
+            exists.then(|| file("p", "f", 2)).as_ref()
+        );
+    }
+}
+
+#[test]
+fn removal_does_not_keep_a_trashed_folder_as_if_its_r_held_child_were_new() {
+    let mut trees = trees(&[
+        (
+            "a",
+            Some(dir(ROOT, "a")),
+            Some(dir(ROOT, "a")),
+            Some(dir(ROOT, "blocked")),
+        ),
+        synced("p", dir(ROOT, "p")),
+        ("f", Some(file("a", "f", 1)), None, None),
+    ]);
+    trees.set_rules(&AT_ROOT, Source::Koiignore, rules("/blocked/\n"));
+    trash(&mut trees, "a");
+    trees.settle(&Default::default());
+    let (mut effects, mut ids) = (Effects::default(), IdGen::new(2));
+    let [removal] = effects.plan(&trees, None, &mut ids, NOW, BatchLimit::ONE) else {
+        panic!("the fresh child lets its parent be kept");
+    };
+    assert_eq!(removal.node, "a");
+    assert!(matches!(removal.effect, Effect::RemoveDir { .. }));
+    let effect = removal.effect_id.clone();
+    let held = [("f", Some(Kind::File))];
+    assert!(effects.keeps(&trees, None, &Default::default(), &effect, &held));
+
+    trees.set_remote("f".into(), remote(file("p", "f", 2)));
+    trees.settle(&Default::default());
+    assert!(!effects.keeps(&trees, None, &Default::default(), &effect, &held));
+    let mut planned = Effects::default();
+    assert!(
+        planned
+            .plan(&trees, None, &mut ids, NOW, BatchLimit::ONE)
+            .iter()
+            .all(|record| record.node != "a")
+    );
+}
+
+#[test]
+fn a_parked_r_held_child_keeps_its_new_folder_off_the_new_server_path_rule() {
+    for held in [None, Some(false), Some(true)] {
+        let mut trees = trees(&[
+            (
+                "a",
+                Some(dir(ROOT, "a")),
+                Some(dir(ROOT, "a")),
+                Some(dir(ROOT, "blocked")),
+            ),
+            synced("p", dir(ROOT, "p")),
+            ("f", Some(dir("a", "f")), None, None),
+        ]);
+        let parked = LocalNode {
+            parked: true,
+            ..local(file("f", "b", 1), 7)
+        };
+        trees.set_local("b".into(), parked);
+        if let Some(trashed) = held {
+            trees.set_remote(
+                "b".into(),
+                RemoteNode {
+                    trashed,
+                    ..remote(file("p", "b", 2))
+                },
+            );
+        }
+        trees.set_rules(&AT_ROOT, Source::Koiignore, rules("/blocked/\n"));
+        trees.settle(&Default::default());
+        assert!(trees.synced().get(&"b".into()).is_none());
+        assert_eq!(trees.excluded(&"f".into()), held.is_none(), "{held:?}");
+    }
+}
+
+#[test]
+fn a_new_folder_whose_synced_child_is_parked_is_not_held_back_by_its_server_path() {
+    let mut trees = trees(&[
+        (
+            "a",
+            Some(dir(ROOT, "a")),
+            Some(dir(ROOT, "a")),
+            Some(dir(ROOT, "c.txt")),
+        ),
+        ("f", Some(dir("a", "f")), None, None),
+        ("b", None, Some(file("a", "b", 1)), Some(file("a", "b", 1))),
+    ]);
+    let parked = LocalNode {
+        parked: true,
+        ..local(file("f", "b", 1), 7)
+    };
+    trees.set_local("b".into(), parked);
+    trees.set_rules(&AT_ROOT, Source::Koiignore, rules("*.txt\n"));
+    assert!(!trees.excluded(&"f".into()));
+    let made = op::Op::CreateDir(proto::CreateDir {
+        node_id: "f".into(),
+        parent_id: "a".into(),
+        name: "f".into(),
+        pending_for: String::new(),
+    });
+    assert_eq!(ops(&mut trees), [made]);
+}
+
+#[test]
+fn a_new_file_in_a_reverted_folder_the_server_keeps_at_an_excluded_path_is_left_out() {
+    for synced_at in ["blocked", "a"] {
+        let mut trees = trees(&[
+            (
+                "a",
+                Some(dir(ROOT, "c")),
+                Some(dir(ROOT, synced_at)),
+                Some(dir(ROOT, "blocked")),
+            ),
+            ("f", Some(file("a", "f", 1)), None, None),
+        ]);
+        trees.revert("a".into());
+        trees.set_rules(&AT_ROOT, Source::Koiignore, rules("/blocked/\n"));
+        trees.settle(&Default::default());
+        assert!(trees.excluded(&"f".into()), "{synced_at}");
+        assert_eq!(ops(&mut trees), [], "{synced_at}");
+        assert_eq!(nodes(&effects(&mut trees)), ["a"], "{synced_at}");
+        let a = &trees.local().get(&"a".into()).unwrap().shape;
+        assert_eq!(a, &dir(ROOT, "blocked"), "{synced_at}");
+        assert!(trees.excluded(&"f".into()), "{synced_at}");
+        assert_eq!(ops(&mut trees), [], "{synced_at}");
+    }
+}

@@ -559,7 +559,7 @@ impl Driver {
         let fixed = match fix {
             Some(Fix::Lift(lift)) => (self.inner.paths.store(&space_id))
                 .map_err(DriverError::from)
-                .and_then(|path| lift_halt(&path, lift))
+                .and_then(|path| lift_halt(&path, &space_id, lift))
                 .map(|()| None),
             Some(Fix::Relink) => (self.inner.paths.store(&space_id))
                 .map_err(DriverError::from)

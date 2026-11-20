@@ -1,0 +1,10 @@
+208
+# The commit test checks that a refused create can reload immediately after Replan, before planning
+# can clear stale state. The folder test checks the database before restart, where load-time cleanup
+# would mask the same bug. The existing move and recovery tests now check which transitions release
+# a position watch and which keep it. None of those tests previously checked the watch lifetime.
+# The ID_EXISTS regression checks preservation of both values without uploading into the excluded
+# path. The parked-child and removal tests distinguish R-only occupancy from a fresh child, and
+# the evidence matrix makes each source independently testable. Existing tests don't separate them.
+# The reverted-folder test covers a new entry under a folder whose move the server refused, which
+# no other test reaches: every existing prospective-path test moves or renames the folder on the server.

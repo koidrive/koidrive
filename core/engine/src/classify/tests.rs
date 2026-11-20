@@ -79,6 +79,24 @@ fn ancestry_file(value: u8) -> Shape {
     }
 }
 
+#[test]
+fn each_kind_of_evidence_keeps_an_id_off_the_new_server_path_rule() {
+    let id = NodeId::from("f");
+    let fresh = Trees::new("root");
+    assert!(fresh.wholly_new_to_server(&id));
+    for source in ["R", "S", "waiting", "watch"] {
+        let mut trees = fresh.clone();
+        match source {
+            "R" => trees.set_remote(id.clone(), remote(ancestry_file(1))),
+            "S" => trees.set_synced(id.clone(), Some(ancestry_file(1))),
+            "waiting" => trees.wait(id.clone(), None, Origin::Commit(1)),
+            "watch" => trees.watch_positions([id.clone()]),
+            _ => unreachable!(),
+        }
+        assert!(!trees.wholly_new_to_server(&id), "{source}");
+    }
+}
+
 fn ancestry_remote(value: u8, version: &str, bases: &[&str]) -> RemoteNode {
     RemoteNode {
         version_id: version.into(),

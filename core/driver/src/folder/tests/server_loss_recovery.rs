@@ -583,7 +583,7 @@ fn a_restore_after_the_server_lost_a_delete_under_a_policy_halt_is_kept() {
     halted.run(&mut restored);
     assert!(halted.sent.is_empty());
     drop(halted);
-    lift_halt(&site.db, Lift::Replan).unwrap();
+    lift_halt(&site.db, &site.link.space_id, Lift::Replan).unwrap();
     let mut a = restarted(&site, &mut restored);
     a.settle();
     a.run(&mut restored);
@@ -693,7 +693,7 @@ fn an_edit_the_server_lost_under_a_policy_halt_is_not_sent_again_over_a_later_ed
     assert!(halted.sent.is_empty());
     assert_eq!(site.stored().commits.halted(), halt);
     drop(halted);
-    lift_halt(&site.db, Lift::Replan).unwrap();
+    lift_halt(&site.db, &site.link.space_id, Lift::Replan).unwrap();
     let mut a = restarted(&site, &mut restored);
     a.settle();
     a.run(&mut restored);
@@ -745,7 +745,7 @@ fn an_edit_the_server_lost_under_a_policy_halt_is_kept_when_the_server_passed_th
     halted.run(&mut restored);
     assert!(halted.sent.is_empty());
     drop(halted);
-    lift_halt(&site.db, Lift::Replan).unwrap();
+    lift_halt(&site.db, &site.link.space_id, Lift::Replan).unwrap();
     let mut a = restarted(&site, &mut restored);
     a.settle();
     a.run(&mut restored);
@@ -799,7 +799,7 @@ fn renames_after_a_server_loss_was_handled_under_a_policy_halt_are_kept() {
         b.scan_until(|b| !b.work.is_empty());
         b.run(&mut restored);
     }
-    lift_halt(&site.db, Lift::Replan).unwrap();
+    lift_halt(&site.db, &site.link.space_id, Lift::Replan).unwrap();
     let mut a = restarted(&site, &mut restored);
     a.settle();
     a.run(&mut restored);

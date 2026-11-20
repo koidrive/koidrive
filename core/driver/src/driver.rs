@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use koidrive_engine::commit::{Commits, Lift, LiftError};
+use koidrive_engine::commit::{Lift, LiftError};
 use koidrive_engine::guard::Window;
 use koidrive_engine::ignore::LocalRules;
 use koidrive_engine::tree::Kind;
@@ -21,7 +21,7 @@ use koidrive_ignore::LocalRulesError;
 use koidrive_net::{ApiError, Auth, ROTATION_PERIOD, ServerError, UploadGate};
 use koidrive_proto::v1::{ClaimRequest, DeviceCredentials, PairCompleteRequest, SpaceInfo};
 use koidrive_state_file::{Flock, Published};
-use koidrive_store::{AskedRestore, EngineState, GivenAnswer, Link, Store, StoredQuestion};
+use koidrive_store::{AskedRestore, GivenAnswer, Link, Store, StoredQuestion};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Notify, watch};
 

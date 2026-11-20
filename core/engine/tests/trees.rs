@@ -1467,3 +1467,23 @@ fn a_path_that_awaits_a_scan_holds_what_r_places_there_later_and_nothing_else() 
     assert!(trees.held(&NodeId::from("logs")) && trees.held(&NodeId::from("new")));
     assert!(!trees.held(&NodeId::from("notes")));
 }
+
+#[test]
+fn excluding_a_node_l_holds_below_itself_ends() {
+    let (done, finished) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut trees = Trees::new(ROOT);
+        trees.set_rules(
+            &[] as &[&str],
+            Source::Koiignore,
+            Some(RuleFile::parse(b"x\n")),
+        );
+        trees.set_remote("n1".into(), remote(dir(ROOT, "x")));
+        trees.set_local("n1".into(), local(dir("n1", "X"), 1));
+        trees.remove_local(&"n1".into());
+        done.send(()).unwrap();
+    });
+    finished
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("removing the node from L ends");
+}

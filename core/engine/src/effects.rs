@@ -772,8 +772,8 @@ impl Effects {
     /// flight does not create, and whose create the server did not merge into a folder of `merged`, and this device
     /// syncs no entry of `held`,
     /// the names and kinds of what the folder holds beside the files it takes along: the rules in force exclude each
-    /// file or folder, or L holds it as a node this device leaves out, such as a kept entry, and an entry of no kind,
-    /// such as a symlink, is never synced. [`Effects::kept`] then keeps it.
+    /// file or folder, or L holds it as a node this device leaves out, such as a kept entry or an entry excluded only by
+    /// its path on the server, and an entry of no kind, such as a symlink, is never synced. [`Effects::kept`] then keeps it.
     pub fn keeps(
         &self,
         trees: &Trees,
@@ -797,7 +797,7 @@ impl Effects {
                 entry.push(name);
                 kind.is_none_or(|kind| trees.ignores(&entry, kind))
                     || (trees.local_holders(&record.node, name))
-                        .any(|id| trees.under_kept_entry(id))
+                        .any(|id| trees.under_kept_entry(id) || trees.left_out_on_the_server(id))
             })
     }
 
@@ -1382,7 +1382,10 @@ impl<'a> View<'a> {
         let owed = (self.trees.local().get(id).zip(self.trees.synced().live(id)))
             .is_some_and(|(local, synced)| local.shape.same_position(synced))
             && trashed(id);
-        if self.trees.under_kept_entry(id) || self.trees.recorded_local(id) {
+        if self.trees.under_kept_entry(id)
+            || self.trees.recorded_local(id)
+            || self.trees.left_out_on_the_server(id)
+        {
             return true;
         }
         trashed(folder)

@@ -2571,7 +2571,7 @@ impl World {
                             });
                             if error.code == error::Code::MissingChunks as i32 && gone {
                                 note(&mut self.seen, "commit abandoned, its bytes are gone");
-                                device.engine.commits.abandon();
+                                device.engine.commits.abandon(&mut device.engine.trees);
                                 device.engine.scan(&device.disk);
                             } else {
                                 note(&mut self.seen, "commit refused, sent again");
@@ -2657,9 +2657,7 @@ impl World {
                     .collect();
                 commits.build(trees, ids, NOW as u64, &history, device_id, cursor.clone());
                 let ops = commits.in_flight().map(|flight| &flight.commit.ops);
-                if let Some(placed) =
-                    (ops.into_iter().flatten()).find_map(|op| excluded_op(trees, op))
-                {
+                for placed in ops.map_or_else(Vec::new, |ops| excluded_op(trees, ops)) {
                     let why = format!(
                         "a commit of device {d} places {placed}, which the rules of device {d} leave out"
                     );
