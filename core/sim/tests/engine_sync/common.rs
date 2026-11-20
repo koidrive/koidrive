@@ -602,29 +602,13 @@ struct Relocation {
 }
 
 impl Device {
-    fn on_server(&self) -> impl Iterator<Item = (&NodeId, &NodeId)> {
-        (self.trees.remote().iter())
-            .filter(|(_, remote)| !remote.trashed)
-            .map(|(id, remote)| (id, &remote.shape.parent))
-    }
-
     fn note_taken_along<'a>(&mut self, folders: impl IntoIterator<Item = &'a NodeId>) {
-        let on_server: BTreeMap<NodeId, NodeId> = (self.on_server())
-            .map(|(id, parent)| (id.clone(), parent.clone()))
+        let on_server: BTreeMap<NodeId, NodeId> = (self.trees.remote().iter())
+            .filter(|(_, remote)| !remote.trashed)
+            .map(|(id, remote)| (id.clone(), remote.shape.parent.clone()))
             .collect();
         for folder in folders {
             (self.on_server_when_taken_along).insert(folder.clone(), on_server.clone());
-        }
-    }
-
-    fn note_arrivals(&mut self) {
-        let on_server: Vec<(NodeId, NodeId)> = (self.on_server())
-            .map(|(id, parent)| (id.clone(), parent.clone()))
-            .collect();
-        for baseline in self.on_server_when_taken_along.values_mut() {
-            for (id, parent) in &on_server {
-                baseline.entry(id.clone()).or_insert_with(|| parent.clone());
-            }
         }
     }
 
@@ -2254,7 +2238,6 @@ fn run_ignoring_answering_after(
         prop_assert!(steps <= STEPS, "no convergence within {} steps", STEPS);
         device.trees.settle(commits.aliases());
         prop_assert_eq!(device.trees.check(), Ok(()));
-        device.note_arrivals();
         device.follow_rekeys();
         note_agreements(&device, &mut sent_since, &mut agreed, &mut from_server);
         if (due || steps % 2 == 0)
