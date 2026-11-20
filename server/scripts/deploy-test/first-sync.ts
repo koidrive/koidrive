@@ -206,6 +206,35 @@ function folderStatus(on: Profile): (Status & { spaceId: string; running: boolea
   }
 }
 
+const FOOTPRINT_SOURCE = String.raw`#include <libproc.h>
+#include <stdio.h>
+#include <stdlib.h>
+
+int main(int argc, char **argv) {
+  struct rusage_info_v4 info;
+  if (argc != 2 || proc_pid_rusage(atoi(argv[1]), RUSAGE_INFO_V4, (rusage_info_t *)&info) != 0) return 1;
+  printf("%llu %llu\n", info.ri_phys_footprint, info.ri_lifetime_max_phys_footprint);
+  return 0;
+}
+`;
+
+function footprintTool(): string {
+  const tool = work("tools", "phys-footprint");
+  if (existsSync(tool)) return tool;
+  mkdirSync(work("tools"), { recursive: true });
+  execFileSync("cc", ["-O2", "-x", "c", "-", "-o", tool], { input: FOOTPRINT_SOURCE, stdio: ["pipe", "inherit", "inherit"] });
+  return tool;
+}
+
+function footprint(tool: string, pid: number): { bytes: number; peakBytes: number } | null {
+  try {
+    const [bytes, peakBytes] = execFileSync(tool, [String(pid)], { encoding: "utf8" }).trim().split(" ").map(Number);
+    return Number.isFinite(bytes) && Number.isFinite(peakBytes) ? { bytes: bytes!, peakBytes: peakBytes! } : null;
+  } catch {
+    return null;
+  }
+}
+
 function usage(pid: number): { cpuSeconds: number; rssBytes: number } | null {
   try {
     const [time = "", rss = ""] = execFileSync("ps", ["-o", "cputime=,rss=", "-p", String(pid)], { encoding: "utf8" }).trim().split(/\s+/);
@@ -260,6 +289,8 @@ function failedRun(run: Run, build: BuiltKoi, shape: Shape, capMs: number, failu
     timeouts: { didNotMove: 0, noCompleteAnswer: 0, keptFailing: 0 },
     cpuSeconds: null,
     peakRssBytes: null,
+    peakFootprintBytes: null,
+    footprintBytesPerEntry: null,
     storeBytes: 0,
     storeBytesPerEntry: null,
     samples: 0,
@@ -268,6 +299,7 @@ function failedRun(run: Run, build: BuiltKoi, shape: Shape, capMs: number, failu
 
 async function measureRun(run: Run, build: BuiltKoi, shape: Shape, capMs: number, label: string): Promise<RunResult> {
   const on = profile(run.ref, build.koi);
+  const tool = footprintTool();
   const tree = work("tree");
   const resetAt = Date.now();
   resetTree(tree);
@@ -285,7 +317,8 @@ async function measureRun(run: Run, build: BuiltKoi, shape: Shape, capMs: number
   daemon.unref();
   const started = Date.now();
   const pid = daemon.pid ?? fail("the daemon of " + on.name + " did not start");
-  const samples: Sample[] = [{ seconds: 0, status: before, cpuSeconds: null, rssBytes: null }];
+  const samples: Sample[] = [{ seconds: 0, status: before, cpuSeconds: null, rssBytes: null, footprintBytes: null }];
+  let peakFootprintBytes: number | null = null;
   let ended: RunResult["ended"] = "capped";
   let failure: string | null = null;
   let store = 0;
@@ -298,8 +331,9 @@ async function measureRun(run: Run, build: BuiltKoi, shape: Shape, capMs: number
     for (let tick = 1; ; tick++) {
       const status = folderStatus(on);
       const used = usage(pid);
+      const physical = footprint(tool, pid);
       const seconds = (Date.now() - started) / 1000;
-      samples.push({ seconds, status, cpuSeconds: used?.cpuSeconds ?? null, rssBytes: used?.rssBytes ?? null });
+      samples.push({ seconds, status, cpuSeconds: used?.cpuSeconds ?? null, rssBytes: used?.rssBytes ?? null, footprintBytes: physical?.bytes ?? null });
       if (synced(status, shape.entries)) {
         ended = "synced";
         break;
@@ -315,6 +349,9 @@ async function measureRun(run: Run, build: BuiltKoi, shape: Shape, capMs: number
     }
   } finally {
     store = storeBytes(on, before.spaceId);
+    const last = alive(pid) ? footprint(tool, pid) : null;
+    peakFootprintBytes = last?.peakBytes ?? null;
+    if (!last && ended !== "failed") console.log("::warning::" + on.name + "'s peak physical footprint could not be read at the end of the run, so the run reports none");
     if (alive(pid)) {
       process.kill(pid, "SIGTERM");
       const deadline = Date.now() + DAEMON_STOP_MS;
@@ -348,6 +385,8 @@ async function measureRun(run: Run, build: BuiltKoi, shape: Shape, capMs: number
     timeouts: countTimeouts(readFileSync(log, "utf8")),
     cpuSeconds: measured.at(-1)?.cpuSeconds ?? null,
     peakRssBytes: measured.length ? Math.max(...measured.map((sample) => sample.rssBytes!)) : null,
+    peakFootprintBytes,
+    footprintBytesPerEntry: peakFootprintBytes === null ? null : peakFootprintBytes / shape.entries,
     storeBytes: store,
     storeBytesPerEntry: syncedEntries ? store / syncedEntries : null,
     samples: samples.length,
