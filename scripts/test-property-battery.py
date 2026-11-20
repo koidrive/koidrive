@@ -670,6 +670,8 @@ cases = ["{1:064}"]
         d67bb = "67bbb9cfd49eeba66ea83618bbd588e0dcc37bd78a0acf6b5c249eb05e11bd3e"
         d1f04 = "1f04d494189c5d7d60cf2a415e091dfa6f219d41865ccbe15fa953fa9980776c"
         tb5bf = "b5bf582a739d8550f5b2ca632da13e912e07e6844bd1640ffd05e801fc57ec25"
+        reverted_parent = ("planned creates or moves wait on a parent that neither the server holds, nor the plan places, nor a pending change brings: "
+                           "[(\"01a1c2c0-39a0-7baf-b5ba-4eb728dd632c\", \"01a1c2c0-39a0-7d85-a9c3-a27688795369\")].")
         takes_along = "a_first_link_discard_takes_along_only_the_server_entries_the_user_leaves_alone"
         w78f3 = "78f33ddc3d91d9ca24ee8db9ad24f0ca0437d7aef0592e880d853f42fbc7443a"
         l14fe = "14fe391f4d7b8011cbf4479f6c7a329d79742ba2970f9a9dba0de41bb92f4f40"
@@ -785,10 +787,10 @@ cases = ["{1:064}"]
             (lose_coarse, example(d1f04) + "\n" + undone, d1f04, []),
             (lose_coarse, head_only_undone(lose_coarse, d1f04), d1f04, []),
             (lose_coarse, taken, d1f04, [("D", "GUN-984", None)]),
-            (takes_along, example(tb5bf), tb5bf, [("Z", "GUN-1386", ["b5bf582a739d", "56f9d5884fef"])]),
-            (takes_along, example(tb5bf), other, []),
-            (rewinds_and_rollbacks, example(tb5bf), tb5bf, []),
-            (takes_along, example(tb5bf) + "\n" + undone, tb5bf, []),
+            (takes_along, reverted_parent, tb5bf, []),
+            (takes_along, reverted_parent, other, []),
+            (rewinds_and_rollbacks, reverted_parent, tb5bf, []),
+            (takes_along, reverted_parent + "\n" + undone, tb5bf, []),
             (lose_coarse, replayed(w78f3), w78f3, [("W", "GUN-1200", ["74e37aa2bf80", "78f33ddc3d91", "570e17d678be", "17e659c037e5"])]),
             (lose_coarse, replayed(w78f3), other, [("A", "GUN-1004", None)]),
             (lose_coarse, replayed(w78f3) + "\n" + undone, w78f3, []),

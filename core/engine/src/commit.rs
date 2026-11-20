@@ -1600,7 +1600,14 @@ impl Commits {
             .chain(&asked)
             .cloned()
             .collect();
-        let (needed, agreed) = rebase(trees, ids, now_ms, |id| skip_ordinary(&skip, id), &asked);
+        let (needed, agreed) = rebase(
+            trees,
+            ids,
+            now_ms,
+            |id| skip_ordinary(&skip, id),
+            &asked,
+            &self.aliases,
+        );
         skip.extend(parked_until_moved(trees).cloned());
         let excluded: Vec<NodeId> = (trees.dirty_others().iter())
             .filter(|id| (trees.excluded(id) && !owed.contains(*id)) || trees.held(id))
@@ -3742,20 +3749,21 @@ fn rekey_copy(trees: &mut Trees, from: &NodeId, to: &NodeId) {
     }
 }
 
-/// The rebase of section 2.4, before ops are planned. A reverted file that R no longer has but that
+/// The rebase of section 2.4, before ops are planned. A reverted node that R no longer has but that
 /// holds an edit not uploaded yet becomes a new node, so the edit is uploaded as a create instead
-/// of being removed with the node. Nodes in `skip` are not rebased otherwise, though what they changed
-/// remotely still keeps their ancestors. A node an open question holds (`asked`) is not kept by its
-/// own change, so S keeps it until the person answers. An excluded node is not rebased and keeps
-/// nothing; S still takes what both sides agree on for it. Returns the nodes the keep rule could
-/// not clear from S yet, and the S updates both sides agree on, which are made together with the
-/// waiting ones.
+/// of being removed with the node. A folder holds one as section 2.6 says. Nodes in `skip` are not
+/// rebased otherwise, though what they changed remotely still keeps their ancestors. A node an open
+/// question holds (`asked`) is not kept by its own change, so S keeps it until the person answers.
+/// An excluded node is not rebased and keeps nothing; S still takes what both sides agree on for
+/// it. Returns the nodes the keep rule could not clear from S yet, and the S updates both sides
+/// agree on, which are made together with the waiting ones.
 fn rebase(
     trees: &mut Trees,
     ids: &mut IdGen,
     now_ms: u64,
     skip: impl Fn(&NodeId) -> bool,
     asked: &BTreeSet<NodeId>,
+    aliases: &TrackedMap<NodeId, NodeId>,
 ) -> (BTreeSet<NodeId>, Vec<(NodeId, Option<Shape>)>) {
     settle_kept_folders(trees, ids, now_ms);
     let dirty: Vec<NodeId> = trees.dirty_others().iter().cloned().collect();
@@ -3766,7 +3774,11 @@ fn rebase(
                 && (trees.remote().get(id).is_some() || trees.synced().get(id).is_some());
         if held
             && trees.remote().live(id).is_none()
-            && trees.edited(id)
+            && (trees.edited(id)
+                || (trees.acknowledged(id).is_none()
+                    && trees.synced().get(id).is_none()
+                    && !aliases.contains_key(id)
+                    && trees.local_children_placed_or_parked(id).next().is_some()))
             && !trees.excluded(id)
             && !trees.held(id)
         {
