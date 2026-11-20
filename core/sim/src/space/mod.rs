@@ -121,6 +121,7 @@ pub(crate) struct State {
     chunks: BTreeMap<Vec<u8>, ChunkRow>,
     rows: u64,
     ids: IdGen,
+    place_ids: IdGen,
 }
 
 impl State {
@@ -472,6 +473,7 @@ impl SpaceDo {
                 chunks: BTreeMap::new(),
                 rows: 1,
                 ids,
+                place_ids: IdGen::new(seed ^ (1 << 63)),
             },
             space_id,
             log: Vec::new(),
@@ -626,12 +628,14 @@ impl SpaceDo {
     /// minted again, and the chunk objects stay in the bucket.
     pub fn restore(&mut self, backup: &SpaceDo) {
         let ids = self.state.ids.clone();
+        let place_ids = self.state.place_ids.clone();
         let objects = std::mem::take(&mut self.objects);
         let account_history = std::mem::take(&mut self.account_history);
         let copies_created_files = self.copies_created_files;
         *self = backup.clone();
         self.copies_created_files = copies_created_files;
         self.state.ids = ids;
+        self.state.place_ids = place_ids;
         self.objects = objects;
         self.account_history = account_history;
     }

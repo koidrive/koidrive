@@ -285,7 +285,7 @@ impl<'a> Applier<'a> {
         if node.parent_id.as_deref() != Some(parent_id) || node.name != name {
             node.place_id = Some(
                 self.restore_place_id
-                    .unwrap_or_else(|| self.st.ids.uuid_v7_bytes(self.ctx.now_ms as u64)),
+                    .unwrap_or_else(|| self.st.place_ids.uuid_v7_bytes(self.ctx.now_ms as u64)),
             );
         }
         node.status = NodeStatus::Live;
@@ -372,7 +372,7 @@ impl<'a> Applier<'a> {
         let row = self.st.next_row();
         let node = Node {
             node_id: node_id.into(),
-            place_id: Some(self.st.ids.uuid_v7_bytes(self.ctx.now_ms as u64)),
+            place_id: Some(self.st.place_ids.uuid_v7_bytes(self.ctx.now_ms as u64)),
             parent_id: Some(parent_id.into()),
             name: name.into(),
             name_key: name_key(name),
@@ -774,7 +774,7 @@ impl<'a> Applier<'a> {
     fn move_place_id(&mut self, intent: Option<&Intent>) -> [u8; 16] {
         intent
             .and_then(|intent| intent.id.as_slice().try_into().ok())
-            .unwrap_or_else(|| self.st.ids.uuid_v7_bytes(self.ctx.now_ms as u64))
+            .unwrap_or_else(|| self.st.place_ids.uuid_v7_bytes(self.ctx.now_ms as u64))
     }
 
     fn is_at(&self, node: &Node, from: &Place, target: &Node) -> bool {
