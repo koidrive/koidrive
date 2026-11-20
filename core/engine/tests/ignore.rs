@@ -3276,8 +3276,7 @@ fn a_new_file_in_a_reverted_folder_the_server_keeps_at_an_excluded_path_is_left_
     }
 }
 
-#[test]
-fn a_new_folder_left_out_on_the_server_once_its_last_synced_entry_moves_out_is_unobserved() {
+fn a_new_folder_around_a_synced_file_under_a_folder_the_server_renamed() -> Trees {
     let mut trees = trees(&[
         synced("p", dir(ROOT, "p")),
         ("new", Some(dir("p", "new")), None, None),
@@ -3300,8 +3299,34 @@ fn a_new_folder_left_out_on_the_server_once_its_last_synced_entry_moves_out_is_u
     trees.settle(&Default::default());
     let new = NodeId::from("new");
     assert!(!trees.excluded(&new) && !trees.unobserved(&new));
-    trees.set_local("f".into(), local(file(ROOT, "f", 1), 3));
+    trees
+}
+
+#[test]
+fn a_new_folder_left_out_on_the_server_once_its_last_synced_entry_leaves_it_is_unobserved() {
+    for removed in [false, true] {
+        let mut trees = a_new_folder_around_a_synced_file_under_a_folder_the_server_renamed();
+        let f = NodeId::from("f");
+        if removed {
+            trees.remove_local(&f);
+        } else {
+            trees.set_local(f, local(file(ROOT, "f", 1), 3));
+        }
+        trees.settle(&Default::default());
+        let new = NodeId::from("new");
+        assert!(trees.excluded(&new), "{removed}");
+        assert!(trees.unobserved(&new), "{removed}");
+    }
+}
+
+#[test]
+fn a_new_folder_left_out_on_the_server_once_the_server_forgets_its_last_entry_is_unobserved() {
+    let mut trees = a_new_folder_around_a_synced_file_under_a_folder_the_server_renamed();
+    let f = NodeId::from("f");
+    trees.remove_remote(&f);
+    trees.set_synced(f, None);
     trees.settle(&Default::default());
+    let new = NodeId::from("new");
     assert!(trees.excluded(&new));
     assert!(trees.unobserved(&new));
 }
