@@ -98,6 +98,7 @@ interface DeleteView {
 interface StoredRows {
   node: SqlRow;
   intents: SqlRow[];
+  held: string[];
 }
 
 interface LostContent {
@@ -432,33 +433,37 @@ export class CommitApplier {
     }
     for (const node of chain.reverse()) {
       const ancestor = !this.targets.has(node.node_id);
-      if (ancestor && !this.revivedAncestors.has(node.node_id)) this.revivedAncestors.set(node.node_id, this.storedRows(node.node_id));
+      if (ancestor) this.revivedAncestors.set(node.node_id, this.storedRows(node));
       this.reviveOne(node, node.parent_id!, node.name, "", ancestor);
     }
   }
 
-  private storedRows(nodeId: string): StoredRows {
+  private storedRows(node: NodeRow): StoredRows {
     return {
-      node: this.sql.exec("SELECT * FROM nodes WHERE node_id = ?", nodeId).one(),
-      intents: this.sql.exec("SELECT * FROM field_intents WHERE node_id = ?", nodeId).toArray(),
+      node: this.sql.exec("SELECT * FROM nodes WHERE node_id = ?", node.node_id).one(),
+      intents: this.sql.exec("SELECT * FROM field_intents WHERE node_id = ?", node.node_id).toArray(),
+      held: trashHeld(this.sql, node.trash_group),
     };
   }
 
   private retrashUnneededAncestors(): void {
     const needed = new Set<string>();
-    for (const nodeId of this.targets) {
+    for (const nodeId of [...this.targets, ...this.named]) {
       for (let cur = getNode(this.sql, nodeId); cur?.status === NodeStatusValue.LIVE && !needed.has(cur.node_id); cur = getNode(this.sql, cur.parent_id ?? "")) {
         needed.add(cur.node_id);
       }
     }
-    for (const [nodeId, { node, intents }] of this.revivedAncestors) {
-      if (this.named.has(nodeId) || needed.has(nodeId) || getNode(this.sql, nodeId)?.status !== NodeStatusValue.LIVE) continue;
+    for (const [nodeId, { node, intents, held }] of this.revivedAncestors) {
+      if (needed.has(nodeId) || getNode(this.sql, nodeId)?.status !== NodeStatusValue.LIVE) continue;
       const columns = Object.keys(node).filter((column) => column !== "node_id");
       this.sql.exec(`UPDATE nodes SET ${columns.map((column) => `${column} = ?`).join(", ")} WHERE node_id = ?`, ...columns.map((column) => node[column]!), nodeId);
       this.sql.exec("DELETE FROM field_intents WHERE node_id = ?", nodeId);
       for (const row of intents) {
         const fields = Object.keys(row);
         this.sql.exec(`INSERT INTO field_intents (${fields.join(", ")}) VALUES (${fields.map(() => "?").join(", ")})`, ...fields.map((field) => row[field]!));
+      }
+      if (trashHeld(this.sql, String(node.trash_group)).some((intentId) => !held.includes(intentId))) {
+        this.sql.exec("UPDATE nodes SET meta_rev = ?, meta_dev = ? WHERE node_id = ?", this.ctx.seq, this.dev, nodeId);
       }
     }
   }

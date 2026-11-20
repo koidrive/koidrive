@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use koidrive_engine::names::{conflict_name, is_reserved_at_root, name_key, normalize_name};
 use koidrive_proto::v1::{
@@ -59,7 +59,7 @@ pub(super) struct Applier<'a> {
     touched_set: BTreeSet<String>,
     targets: BTreeSet<String>,
     named: BTreeSet<String>,
-    revived_ancestors: Vec<Node>,
+    revived_ancestors: BTreeMap<String, Node>,
     restore_place_id: Option<[u8; 16]>,
 }
 
@@ -73,7 +73,7 @@ impl<'a> Applier<'a> {
             touched_set: BTreeSet::new(),
             targets: BTreeSet::new(),
             named: BTreeSet::new(),
-            revived_ancestors: Vec::new(),
+            revived_ancestors: BTreeMap::new(),
             restore_place_id: None,
         }
     }
@@ -335,13 +335,8 @@ impl<'a> Applier<'a> {
         }
         for n in chain.into_iter().rev() {
             let ancestor = !self.targets.contains(&n.node_id);
-            if ancestor
-                && !self
-                    .revived_ancestors
-                    .iter()
-                    .any(|kept| kept.node_id == n.node_id)
-            {
-                self.revived_ancestors.push(n.clone());
+            if ancestor {
+                self.revived_ancestors.insert(n.node_id.clone(), n.clone());
             }
             self.revive_one(
                 &n.node_id,
@@ -357,7 +352,7 @@ impl<'a> Applier<'a> {
 
     fn retrash_unneeded_ancestors(&mut self) {
         let mut needed = BTreeSet::new();
-        for target in &self.targets {
+        for target in self.targets.iter().chain(&self.named) {
             let mut cur = self.st.nodes.get(target);
             while let Some(node) = cur.filter(|n| n.status == NodeStatus::Live) {
                 if !needed.insert(node.node_id.clone()) {
@@ -366,10 +361,9 @@ impl<'a> Applier<'a> {
                 cur = node.parent_id.as_ref().and_then(|id| self.st.nodes.get(id));
             }
         }
-        for before in std::mem::take(&mut self.revived_ancestors) {
-            let live = self.st.nodes[&before.node_id].status == NodeStatus::Live;
-            if live && !self.named.contains(&before.node_id) && !needed.contains(&before.node_id) {
-                self.st.nodes.insert(before.node_id.clone(), before);
+        for (node_id, before) in std::mem::take(&mut self.revived_ancestors) {
+            if self.st.nodes[&node_id].status == NodeStatus::Live && !needed.contains(&node_id) {
+                self.st.nodes.insert(node_id, before);
             }
         }
     }
