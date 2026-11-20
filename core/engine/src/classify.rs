@@ -6569,7 +6569,6 @@ impl Trees {
         true
     }
 
-    /// True when S stays a valid tree with `next` as the node's shape.
     fn place_lost_deletes(
         &mut self,
         deletes: &mut Vec<(NodeId, Shape, Option<NodeId>)>,
@@ -6587,6 +6586,7 @@ impl Trees {
         }
     }
 
+    /// True when S stays a valid tree with `next` as the node's shape.
     pub(crate) fn fits_synced(&self, id: &NodeId, next: Option<&Shape>) -> bool {
         let has_children = self.s_names.children(id).next().is_some();
         let Some(shape) = next else {

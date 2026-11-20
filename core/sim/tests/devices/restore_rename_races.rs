@@ -135,6 +135,38 @@ fn a_lost_delete_wins_when_its_device_made_a_new_file_at_the_name() {
 }
 
 #[test]
+fn a_lost_delete_spares_a_fresh_rename_at_a_reused_revision_where_a_lost_create_held_the_name() {
+    let mut world = converge(3, &[vec![(0, file("a"))]]).unwrap();
+    let original_id = (world.space().nodes().into_iter())
+        .find(|n| n.name == "a")
+        .unwrap()
+        .node_id;
+    let mut steps = vec![(0, BACKUP), (0, rename(0, 0, "b"))];
+    steps.extend(commit(0));
+    steps.extend(take(1));
+    world.run(1, &steps).unwrap();
+    let lost_rev = meta_rev_of(&world, "b");
+    let mut steps = vec![(1, delete(0))];
+    steps.extend(commit(1));
+    steps.push((1, act(1, 0, 0, "b", 3)));
+    steps.extend(commit(1));
+    world.run(2, &steps).unwrap();
+    let mut steps = vec![(0, RESTORE)];
+    reconnect(&mut steps, 2, false);
+    steps.push((2, rename(0, 0, "b")));
+    steps.extend(commit(2));
+    world.run(3, &steps).unwrap();
+    assert_eq!(meta_rev_of(&world, "b"), lost_rev);
+    let mut steps = Vec::new();
+    reconnect(&mut steps, 1, true);
+    world.run(4, &steps).unwrap();
+    let original = (world.space().nodes().into_iter())
+        .find(|n| n.node_id == original_id)
+        .unwrap();
+    assert_eq!(original.status, koidrive_proto::v1::NodeStatus::Live as i32);
+}
+
+#[test]
 fn a_rename_applied_after_a_concurrent_rename_survives_a_restore_to_between_them() {
     let mut world = converge(2, &[vec![(0, file("a"))]]).unwrap();
     let mut steps = vec![(0, rename(0, 0, "c.txt")), (0, SCAN), (0, COMMIT)];
