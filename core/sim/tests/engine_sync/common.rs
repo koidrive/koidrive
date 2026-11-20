@@ -1423,19 +1423,30 @@ fn fail_on_ignored_name(
     true
 }
 
-fn excused_target<'a>(
+fn still_planned_target<'a>(
     device: &Device,
     effects: &Effects,
     failed_on_ignored: &'a BTreeMap<NodeId, (Effect, Shape)>,
+    in_flight: Option<&koidrive_engine::commit::InFlight>,
     id: &NodeId,
 ) -> Option<&'a Shape> {
-    (effects.blocked().get(id))
-        .zip(failed_on_ignored.get(id))
-        .filter(|(effect, (failed, at))| {
-            failed == *effect
-                && (device.trees.remote().live(id)).is_some_and(|remote| remote.same_position(at))
-        })
-        .map(|(_, (_, at))| at)
+    let (failed, at) = failed_on_ignored.get(id)?;
+    if effects.blocked().get(id) != Some(failed) {
+        return None;
+    }
+    let mut trees = device.trees.clone();
+    let mut ids = device.ids.clone();
+    let mut fresh = Effects::default();
+    for _ in 0..=trees.local().len() + trees.remote().len() {
+        let record = (fresh.plan(&trees, in_flight, &mut ids, NOW as u64, BatchLimit::ONE))
+            .first()?
+            .clone();
+        if record.node == *id {
+            return (record.effect == *failed).then_some(at);
+        }
+        fresh.failed(&mut trees, &record.effect_id).ok()?;
+    }
+    None
 }
 
 /// Whether S cannot take `id` at its R position because the S entry of a node that waits still
@@ -2636,7 +2647,15 @@ fn run_ignoring_answering_after(
             .then(|| id.clone())
         })
         .collect();
-    let failed_here = |id: &NodeId| excused_target(&device, &effects, &failed_on_ignored, id);
+    let failed_here = |id: &NodeId| {
+        still_planned_target(
+            &device,
+            &effects,
+            &failed_on_ignored,
+            commits.in_flight(),
+            id,
+        )
+    };
     for id in effects.blocked().keys() {
         prop_assert!(
             failed_here(id).is_none_or(|at| device.disk_name_taken(&at.parent, &[], &at.name)),

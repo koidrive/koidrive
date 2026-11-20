@@ -1524,7 +1524,7 @@ fn a_blocked_placement_is_excused_only_while_its_node_still_belongs_at_the_held_
         assert!(name != "ss" || !effects.blocked().is_empty());
         assert!(
             (effects.blocked().keys())
-                .all(|id| excused_target(&device, &effects, &failed, id).is_some()),
+                .all(|id| still_planned_target(&device, &effects, &failed, None, id).is_some()),
             "{name}: {:?}",
             effects.blocked()
         );

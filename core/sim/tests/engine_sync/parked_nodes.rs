@@ -384,3 +384,62 @@ fn a_parked_file_forked_from_a_node_the_server_deleted_is_created_after_its_comm
     )
     .unwrap();
 }
+
+#[test]
+fn a_blocked_unpark_home_onto_a_name_an_ignored_entry_holds_is_excused() {
+    let mut device = Device::new(Trees::new("root"));
+    device.rule(&Ruling::File(vec!["ss/"]));
+    let id = NodeId::from("e");
+    let (content, chunks) = split(Some(content(1, 1)));
+    let identity = device.identity();
+    device.trees.set_local_changed(
+        id.clone(),
+        LocalNode {
+            shape: Shape {
+                parent: "root".into(),
+                name: "ss".into(),
+                kind: Kind::File,
+                content,
+            },
+            identity,
+            parked: true,
+            left_out_when_placed: false,
+            content_from_server: false,
+            chunks,
+        },
+    );
+    device.ignored.insert(
+        ("root".into(), vec!["ß".into()]),
+        DiskEntry {
+            kind: Kind::Dir,
+            content: None,
+            chunks: Box::default(),
+            original: None,
+        },
+    );
+    device.trees.settle(&Default::default());
+    let (mut effects, mut failed) = (Effects::default(), BTreeMap::new());
+    let record = effects.plan(
+        &device.trees,
+        None,
+        &mut device.ids,
+        NOW as u64,
+        BatchLimit::ONE,
+    )[0]
+    .clone();
+    assert!(matches!(
+        &record.effect,
+        Effect::Move {
+            from: Location::Parked(_),
+            ..
+        }
+    ));
+    assert!(fail_on_ignored_name(
+        &mut device,
+        &mut effects,
+        &record,
+        &mut failed
+    ));
+    let at = still_planned_target(&device, &effects, &failed, None, &id).unwrap();
+    assert!(device.disk_name_taken(&at.parent, &[], &at.name));
+}
