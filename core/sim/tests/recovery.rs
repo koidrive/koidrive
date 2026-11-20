@@ -4640,6 +4640,48 @@ fn a_file_deleted_with_its_folder_across_a_rewind_stays_deleted_when_another_dev
     assert_eq!(live(&world), ["ss"]);
 }
 
+#[test]
+fn a_folder_deleted_across_a_rewind_to_before_a_file_moved_into_it_stays_deleted_when_another_device_keeps_it()
+ {
+    for keep in [false, true] {
+        let mut world = synced(
+            2,
+            &[
+                vec![(0, file("c.txt"))],
+                vec![(0, Step::Backup), (0, user(0, 0, 0, "b"))],
+                vec![(0, user(3, 0, 1, "c.txt"))],
+            ],
+        );
+        let (folder_id, file_id) = (node_named(&world, "b"), node_named(&world, "c.txt"));
+        let folder = index_of(&world, 0, "b").1;
+        let rewind = [
+            (0, Step::Rewind),
+            (0, delete(folder)),
+            (0, Step::Connect),
+            (0, DELIVER),
+        ];
+        world.run(3, &rewind).unwrap();
+        if keep {
+            let keep = [
+                (1, Step::Connect),
+                (1, DELIVER),
+                (1, Step::Answer(0)),
+                (1, COMMIT),
+                (1, COMMIT),
+                (1, DELIVER),
+                (0, DELIVER),
+            ];
+            world.run(3, &keep).unwrap();
+        }
+        world.phase(4, &[]).unwrap();
+        let status = |id: &str| world.space().node(id).map(|node| node.status);
+        assert_eq!(status(&file_id), Some(NodeStatus::Trashed as i32));
+        let folder = keep.then_some(NodeStatus::Trashed as i32);
+        assert_eq!(status(&folder_id), folder);
+        assert!(live(&world).is_empty());
+    }
+}
+
 fn open_recovery(world: &World, d: usize) -> usize {
     (world.devices[d].engine.commits.questions().iter())
         .filter(|question| question.answer.is_none())

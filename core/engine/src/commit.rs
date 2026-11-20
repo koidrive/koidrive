@@ -933,15 +933,21 @@ impl Commits {
             .collect();
         for (id, shape) in &agreed {
             trees.sent_edit(id, shape.as_ref().and_then(|shape| shape.content.as_ref()));
-            if shape.is_none() {
-                trees.record_unsent_delete(id);
-            }
         }
-        let agreed = (agreed.into_iter()).filter(|(id, shape)| {
-            !same(trees.synced().live(id), shape.as_ref()) && trees.waiting().get(id).is_none()
-        });
-        for (id, shape) in update_synced(trees, agreed.collect()) {
+        let agreed: Vec<(NodeId, Option<Shape>)> = (agreed.into_iter())
+            .filter(|(id, shape)| {
+                !same(trees.synced().live(id), shape.as_ref()) && trees.waiting().get(id).is_none()
+            })
+            .collect();
+        let unsent: Vec<(NodeId, Shape)> = (agreed.iter())
+            .filter(|(_, shape)| shape.is_none())
+            .filter_map(|(id, _)| trees.unsent_delete(id).map(|seen| (id.clone(), seen)))
+            .collect();
+        for (id, shape) in update_synced(trees, agreed) {
             trees.wait(id, shape, Origin::Other);
+        }
+        for (id, seen) in unsent {
+            trees.record_unsent_delete(id, seen);
         }
         let mut groups = recovery::classify(trees, &held, cause);
         if let Some(restored) = groups.get_mut(&RecoveryGroup::CreatedAfterRestorePoint) {
@@ -3190,6 +3196,10 @@ impl Commits {
             .chain(needed.iter().map(|id| (id.clone(), None)))
             .chain(agreed.iter().cloned())
             .collect();
+        let unsent: Vec<(NodeId, Shape)> = (waited.iter())
+            .filter(|(_, waiting)| waiting.shape.is_none())
+            .filter_map(|(id, _)| trees.unsent_delete(id).map(|seen| (id.clone(), seen)))
+            .collect();
         let mut still = BTreeSet::new();
         for (id, shape) in update_synced(trees, updates) {
             if needed.contains(&id) {
@@ -3202,6 +3212,9 @@ impl Commits {
             } else if !agreed.iter().any(|(other, _)| *other == id) {
                 trees.wait(id, shape, Origin::Other);
             }
+        }
+        for (id, seen) in unsent {
+            trees.record_unsent_delete(id, seen);
         }
         still
     }
