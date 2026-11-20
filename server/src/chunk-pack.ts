@@ -13,6 +13,7 @@ export const SUFFIX_ENTRIES = 32;
 export const SUFFIX_BYTES = FOOTER_BYTES + SUFFIX_ENTRIES * ENTRY_BYTES;
 export const MAX_PACKED_CHUNK_BYTES = 1 << 20;
 export const MAX_PACK_BODY_BYTES = 4 << 20;
+export const MAX_PACK_MEMBERS = 4096;
 
 export interface PackedChunk {
   hash: Uint8Array;
@@ -27,6 +28,7 @@ export interface PackEntry {
 
 function checkMembers(members: readonly { hash: Uint8Array; size: number }[]): number {
   if (members.length === 0) throw new Error("a pack holds at least one chunk");
+  if (members.length > MAX_PACK_MEMBERS) throw new Error(`a pack holds at most ${MAX_PACK_MEMBERS} chunks`);
   const hashes = new Set<string>();
   let bodyBytes = 0;
   for (const { hash, size } of members) {

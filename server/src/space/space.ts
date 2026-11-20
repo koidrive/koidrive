@@ -57,7 +57,7 @@ import {
 import type { SessionCheck } from "../account/account";
 import type { AccountDO } from "../account-do";
 import { verifyAccessToken } from "../auth";
-import { encodePack, MAX_PACK_BODY_BYTES } from "../chunk-pack";
+import { encodePack, MAX_PACK_BODY_BYTES, MAX_PACK_MEMBERS } from "../chunk-pack";
 import { type ChunkObject, type PackLocation, type PackedRead, sha256, signChunkGrant, signPackedGet, verifyChunkGrant, verifyPackedReceipt } from "../crypto";
 import { errorText } from "../errors";
 import type { Database, ObjectState, ObjectStore, Socket, Sql, SqlRow } from "../host";
@@ -1650,16 +1650,19 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
         }));
       const outputs: (typeof selected)[] = [];
       let bodyBytes = MAX_PACK_BODY_BYTES;
+      let members = 0;
       let planned = 0;
       for (const source of selected) {
         const liveBytes = source.rows.reduce((sum, row) => sum + row.size, 0);
-        if (bodyBytes + liveBytes > MAX_PACK_BODY_BYTES) {
+        if (bodyBytes + liveBytes > MAX_PACK_BODY_BYTES || members + source.rows.length > MAX_PACK_MEMBERS) {
           if (outputs.length === COMPACTION_OUTPUTS) break;
           outputs.push([]);
           bodyBytes = 0;
+          members = 0;
         }
         outputs.at(-1)!.push(source);
         bodyBytes += liveBytes;
+        members += source.rows.length;
         planned++;
       }
 

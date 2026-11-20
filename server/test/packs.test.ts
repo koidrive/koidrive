@@ -670,6 +670,38 @@ describe("chunk packs: compaction (RFC 0032 section 7)", () => {
     expect(packs.filter((pack) => sourceIds.includes(String(pack.pack_id))).every((pack) => pack.state === PackState.DRAINED)).toBe(true);
     expect(packs.filter((pack) => !sourceIds.includes(String(pack.pack_id))).map((pack) => `${pack.state}:${pack.live_count}`).sort()).toEqual([`${PackState.LIVE}:2`, ...Array(8).fill(`${PackState.LIVE}:4`)]);
   }, 120_000);
+
+  it("puts at most 4,096 chunks in one output", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const space = await packedSpace();
+    const sourceIds: string[] = [];
+    for (let source = 0; source < 2; source++) {
+      const live = await Promise.all(
+        Array.from({ length: 2049 }, async (_, i) => {
+          const data = Uint8Array.of(source, i >> 8, i & 255);
+          return { hash: await sha256(data), data };
+        }),
+      );
+      const unused = new Uint8Array(1 << 18).fill(source + 1);
+      const bytes = encodePack([...live, { hash: await sha256(unused), data: unused }]);
+      const packId = uuidv7(Date.now() - 8 * DAY + source);
+      await env.BUCKET.put(packKey(space.spaceId, packId), bytes);
+      await runInDurableObject(space.stub, (_instance, state) => {
+        state.storage.sql.exec("INSERT INTO packs (pack_id, size, state, live_count, live_bytes, hold_until_ms) VALUES (?, ?, ?, ?, ?, 0)", packId, bytes.length, PackState.LIVE, live.length, live.length * 3);
+        for (const [i, { hash }] of live.entries()) {
+          state.storage.sql.exec("INSERT INTO chunks (hash, size, state, refcount, hold_until_ms, incarnation, pack_id, pack_offset) VALUES (?, 3, ?, 1, 0, '1.1', ?, ?)", hash, ChunkState.LIVE, packId, i * 3);
+        }
+      });
+      sourceIds.push(packId);
+    }
+    const { more } = await gc(space, Date.now());
+    const packs = await packsOf(space);
+    expect({
+      more,
+      sources: packs.filter((pack) => sourceIds.includes(String(pack.pack_id))).map((pack) => pack.state),
+      outputs: packs.filter((pack) => !sourceIds.includes(String(pack.pack_id))).map((pack) => `${pack.state}:${pack.live_count}`),
+    }).toEqual({ more: false, sources: [PackState.DRAINED, PackState.DRAINED], outputs: [`${PackState.LIVE}:2049`, `${PackState.LIVE}:2049`] });
+  }, 120_000);
 });
 
 describe("chunk packs: rewind completion (RFC 0032 section 6 rule 5)", () => {
