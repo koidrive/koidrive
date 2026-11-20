@@ -1,4 +1,5 @@
-187
+213
 # The cases need separate paths to the same result: recovery Discard of a never-sent folder, including one with its own rules and a create in flight; a purged folder after a rename or restart; and a merged create on a disk that holds one spelling versus a disk that holds two. Existing remote-delete tests start with a server trash node and cannot distinguish these paths.
 # The driver owns the scan after Discard and the actual move into local trash. The engine-only tests cannot verify that a never-sent folder and its rules file reach trash together after the last excluded entry is removed.
 # The observer-wait test exercises a successful physical removal before L sees it, which the engine_sync model settles in one step. The restart-state test covers a server delete before a create answer; neither the live nor the never-held displacement test covers that ordering.
+# The simulator must recognize a blocked merge only when a recorded alias still holds excluded entries on the modeled disk. The two saved cases cover disk-only entries absent from L.
