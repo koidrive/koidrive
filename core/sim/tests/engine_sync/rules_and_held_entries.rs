@@ -633,8 +633,11 @@ fn a_server_file_deleted_with_a_deep_chain_of_new_folders_is_acted_below_the_fol
     ));
 }
 
-#[test]
-fn a_server_file_deleted_from_a_taken_along_folder_is_judged_by_where_it_was_at_the_discard() {
+fn a_file_in_a_taken_along_server_folder() -> (
+    Device,
+    BTreeMap<NodeId, koidrive_engine::tree::Shape>,
+    BTreeMap<NodeId, koidrive_engine::tree::Shape>,
+) {
     let mut device = Device::new(Trees::new("root"));
     let shape = |parent: &str, name: &str, kind: Kind, content| koidrive_engine::tree::Shape {
         parent: parent.into(),
@@ -699,9 +702,112 @@ fn a_server_file_deleted_from_a_taken_along_folder_is_judged_by_where_it_was_at_
         ("s".into(), local[1].1.clone()),
         ("f".into(), local[2].1.clone()),
     ]);
+    (device, kept_with, discarded)
+}
+
+#[test]
+fn a_server_file_deleted_from_a_taken_along_folder_is_judged_by_where_it_was_at_the_discard() {
+    let (mut device, kept_with, discarded) = a_file_in_a_taken_along_server_folder();
     device.act(&act(4, 0, 0, 0, 0));
     assert!(device.trees.local().get(&"f".into()).is_none());
     assert!(acted_below(&device, &"s".into(), &kept_with, &discarded));
+}
+
+#[test]
+fn renaming_away_from_a_conflict_name_the_device_applied_is_acted_below_the_folder() {
+    let (mut device, mut kept_with, discarded) = a_file_in_a_taken_along_server_folder();
+    let f: NodeId = "f".into();
+    let mut remote = device.trees.remote().get(&f).unwrap().clone();
+    remote.shape.parent = "s".into();
+    remote.shape.name = conflict_name("a", "me", NOW, 1);
+    let mut local_file = device.trees.local().get(&f).unwrap().clone();
+    local_file.shape = remote.shape.clone();
+    device.trees.set_local(f.clone(), local_file);
+    device
+        .trees
+        .set_synced(f.clone(), Some(remote.shape.clone()));
+    kept_with.insert(f.clone(), remote.shape.clone());
+    device.trees.set_remote(f.clone(), remote);
+    device.act(&act(3, 0, 2, 0, 0));
+    assert_eq!(device.trees.local().get(&f).unwrap().shape.name, "a");
+    assert!(acted_below(&device, &"s".into(), &kept_with, &discarded));
+}
+
+fn place_dir(
+    device: &mut Device,
+    id: &str,
+    local: Option<(&str, &str)>,
+    server: Option<(&str, &str)>,
+) {
+    let shape = |(parent, name): (&str, &str)| koidrive_engine::tree::Shape {
+        parent: parent.into(),
+        name: name.into(),
+        kind: Kind::Dir,
+        content: None,
+    };
+    if let Some(at) = local {
+        let identity = device.identity();
+        device.trees.set_local(
+            id.into(),
+            LocalNode {
+                left_out_when_placed: false,
+                content_from_server: false,
+                shape: shape(at),
+                identity,
+                parked: false,
+                chunks: Box::default(),
+            },
+        );
+    }
+    if let Some(at) = server {
+        device.trees.set_remote(
+            id.into(),
+            RemoteNode {
+                made_over: Vec::new(),
+                shape: shape(at),
+                trashed: false,
+                content_rev: 1,
+                meta_rev: 1,
+                meta_edit_rev: 1,
+                trash_group: String::new(),
+                version_id: String::new(),
+                edit_rev: 1,
+                pending_for: None,
+                pending_by: None,
+                chunks: Box::default(),
+            },
+        );
+    }
+}
+
+#[test]
+fn a_removal_is_judged_through_a_server_chain_longer_than_the_local_tree() {
+    let mut device = Device::new(Trees::new("root"));
+    place_dir(&mut device, "k", Some(("root", "k")), Some(("root", "k")));
+    place_dir(&mut device, "e", None, Some(("root", "e")));
+    device.removed_from.insert("e".into(), "k".into());
+    let mut below = "e".to_string();
+    for depth in (1..=8).rev() {
+        let folder = format!("s{depth}");
+        device
+            .on_server_since_discard
+            .insert(below.into(), (&folder).into());
+        below = folder;
+    }
+    device
+        .on_server_since_discard
+        .insert(below.into(), "k".into());
+    device.acted.insert("e".into());
+    let kept_with = BTreeMap::from([(
+        "k".into(),
+        device.trees.local().get(&"k".into()).unwrap().shape.clone(),
+    )]);
+    assert!(acted_below(
+        &device,
+        &"k".into(),
+        &kept_with,
+        &BTreeMap::new()
+    ));
 }
 
 #[test]

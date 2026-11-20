@@ -1901,14 +1901,16 @@ fn acted_below(
     let trees = &device.trees;
     let held = |at: &NodeId| discarded.contains_key(at) && trees.remote().get(at).is_none();
     let reaches = |entry: &NodeId, parent: &dyn Fn(&NodeId) -> Option<NodeId>| {
+        let mut seen = BTreeSet::new();
         let mut current = Some(entry.to_owned());
-        for _ in 0..=trees.local().len() + device.removed_from.len() {
-            match current {
-                Some(at) if at == *id => return true,
-                Some(at) if at != *entry && held(&at) => return false,
-                Some(at) => current = parent(&at),
-                None => return false,
+        while let Some(at) = current {
+            if at == *id {
+                return true;
             }
+            if at != *entry && held(&at) || !seen.insert(at.clone()) {
+                return false;
+            }
+            current = parent(&at);
         }
         false
     };
@@ -1925,13 +1927,6 @@ fn acted_below(
             return trees.remote().live(entry).is_none();
         };
         let holds = |shape: &Shape| {
-            let unrenamed = (1..=3)
-                .any(|attempt| shape.name == conflict_name(&local.shape.name, "me", NOW, attempt))
-                .then(|| Shape {
-                    name: local.shape.name.clone(),
-                    ..shape.clone()
-                });
-            let shape = unrenamed.as_ref().unwrap_or(shape);
             let taken_along = kept_with.get(entry).map(|kept| Shape {
                 parent: kept.parent.clone(),
                 name: kept.name.clone(),
@@ -1939,11 +1934,18 @@ fn acted_below(
             });
             local.shape.same(shape) || taken_along.is_some_and(|kept| local.shape.same(&kept))
         };
-        trees
-            .remote()
-            .get(entry)
-            .is_some_and(|remote| holds(&remote.shape))
-            || acknowledged_shape(trees, entry).is_some_and(holds)
+        let unapplied = |remote: &Shape| {
+            let renamed = (1..=3)
+                .any(|attempt| remote.name == conflict_name(&local.shape.name, "me", NOW, attempt));
+            (renamed && trees.reverted().contains(entry)).then(|| Shape {
+                name: local.shape.name.clone(),
+                ..remote.clone()
+            })
+        };
+        let held_by_r = trees.remote().get(entry).is_some_and(|remote| {
+            holds(unapplied(&remote.shape).as_ref().unwrap_or(&remote.shape))
+        });
+        held_by_r || acknowledged_shape(trees, entry).is_some_and(holds)
     };
     let kept_back = |entry: &NodeId| {
         device.kept_back.contains(entry)
