@@ -32,24 +32,34 @@ class StressTests(unittest.TestCase):
         self.bin = self.root / "bin"
         self.bin.mkdir()
         self.executable(self.bin / "cargo", r'''
+import os, sys
+from pathlib import Path
+(Path(os.environ['PROBES']) / 'cargo.called').write_text(' '.join(sys.argv[1:]))
+sys.exit(99)
+''')
+        self.package = self.root / "crate"
+        self.package.mkdir()
+        self.tests = [self.root / "target/debug/deps/probe-1", self.root / "target/debug/deps/probe-2"]
+        for test in self.tests:
+            self.executable(test, r'''
 import json, os, sys, time
 from pathlib import Path
 probe = Path(os.environ['PROBES'])
 seed = os.environ['PROPTEST_RNG_SEED']
+second = sys.argv[0].endswith('-2')
 record = dict(pid=os.getpid(), args=sys.argv[1:], cwd=os.getcwd(),
               seed=seed, ordinary=os.environ.get('PROPTEST_CASES'),
               cases=os.environ.get('KOIDRIVE_BATTERY_CASES'),
               server=os.environ.get('KOIDRIVE_TEST_SERVER'))
-(probe / (seed + '.start')).write_text(json.dumps(record))
+(probe / (seed + ('-2' if second else '') + '.start')).write_text(json.dumps(record))
 deadline = time.monotonic() + 5
 while len(list(probe.glob('*.start'))) < int(os.environ.get('BARRIER', '1')):
     if time.monotonic() > deadline:
         sys.exit(24)
     time.sleep(0.01)
-mode = os.environ.get('PROBE_MODE', 'pass')
+mode = os.environ.get('PROBE_MODE_2' if second else 'PROBE_MODE', 'pass')
 if mode == 'hang':
     time.sleep(60)
-print('     Running tests/probe.rs (target/debug/deps/probe)')
 if mode == 'zero':
     print('test result: ok. 0 passed; 0 failed; 3 ignored; 0 measured; 0 filtered out')
 elif mode == 'fail':
@@ -62,8 +72,19 @@ else:
     print('test probe ... ok')
     print('test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out')
 ''')
+        self.build(self.tests[:1])
         self.environment = dict(os.environ, PATH=str(self.bin) + os.pathsep + os.environ["PATH"],
                                 PROBES=str(self.probes), PROPTEST_CASES="999", KOIDRIVE_BATTERY_CASES="888")
+
+    def build(self, tests):
+        messages = ["   Compiling probe v0.1.0",
+                    json.dumps(dict(reason="compiler-artifact", executable=None, profile=dict(test=False),
+                                    manifest_path=str(self.root / "dependency/Cargo.toml")))]
+        for test in tests:
+            messages.append(json.dumps(dict(reason="compiler-artifact", executable=str(test), profile=dict(test=True),
+                                            manifest_path=str(self.package / "Cargo.toml"))))
+        messages.append(json.dumps(dict(reason="build-finished", success=True)))
+        (self.root / "build.json").write_text("\n".join(messages) + "\n")
 
     def executable(self, path, code):
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -72,6 +93,7 @@ else:
 
     def args(self, *extra):
         return stress.parse_args(["--root", str(self.root), "--out", str(self.root / "out"),
+                                  "--executables", str(self.root / "build.json"),
                                   "--crate", "koidrive-net", "--seed", "17", *extra])
 
     def run_tests(self, args, **environment):
@@ -151,9 +173,27 @@ while True:
         for probe in probes:
             self.assertIsNone(probe["ordinary"])
             self.assertEqual(probe["cases"], "0")
-            self.assertEqual(probe["args"], stress.cargo_command(args)[1:])
-            self.assertIn("two words", probe["args"])
-            self.assertNotIn("--no-run", probe["args"])
+            self.assertEqual(probe["args"], ["two words", "--include-ignored"])
+            self.assertEqual(probe["cwd"], str(self.package))
+        self.assertFalse((self.probes / "cargo.called").exists())
+
+    def test_each_repetition_runs_every_built_test_executable_in_turn(self):
+        self.build(self.tests)
+        for mode, expected, code in (("pass", "pass", 0), ("fail", "fail", 101)):
+            with self.subTest(mode=mode):
+                for path in self.probes.iterdir():
+                    path.unlink()
+                record = self.run_tests(self.args(), PROBE_MODE=mode)[0]
+                self.assertEqual((record["result"], record["exit_code"]), (expected, code))
+                self.assertEqual((record["test_binaries"], record["finished_binaries"]), (2, 2))
+                first, second = (json.loads((self.probes / name).read_text()) for name in ("17.start", "17-2.start"))
+                self.assertNotEqual(first["pid"], second["pid"])
+                self.assertFalse((self.probes / "cargo.called").exists())
+
+    def test_a_build_without_test_executables_is_refused(self):
+        (self.root / "build.json").write_text(json.dumps(dict(reason="build-finished", success=True)) + "\n")
+        with self.assertRaisesRegex(RuntimeError, "names no test executable"):
+            self.run_tests(self.args())
 
     def test_optional_budget_is_unset_and_zero_tests_and_startup_fail_closed(self):
         for mode, expected, code in (("pass", "pass", 0), ("zero", "error", 0),
@@ -192,13 +232,9 @@ while True:
                     self.assertFalse(Path(worker["state"]).exists())
                 for path in self.probes.glob("*.start"):
                     probe = json.loads(path.read_text())
-                    self.assertEqual(probe["cwd"], str(self.root))
-                    self.assertIn("--ignored", probe["args"])
-                    self.assertEqual(probe["args"][-2:], ["--ignored", "selected test"])
-                    self.assertEqual(probe["args"][probe["args"].index("--features") + 1], "serde")
-                    self.assertEqual(probe["args"][probe["args"].index("--test") + 1], stress.WORKERS[crate][1])
-                    self.assertIn("selected test", probe["args"])
-                    self.assertIn("--test", probe["args"])
+                    self.assertEqual(probe["cwd"], str(self.package))
+                    self.assertEqual(probe["args"], ["--ignored", "selected test"])
+                self.assertFalse((self.probes / "cargo.called").exists())
 
     def test_timeout_kills_processes(self):
         record = self.run_tests(self.args("--timeout-seconds", "1"), PROBE_MODE="hang")[0]
@@ -225,6 +261,7 @@ while True:
                 patch.object(stress.subprocess, "check_output", return_value="target-sha\n"), \
                 redirect_stdout(io.StringIO()):
             self.assertEqual(stress.main(["--root", str(self.root), "--out", str(self.root / "out"),
+                                          "--executables", str(self.root / "build.json"),
                                           "--crate", "koidrive-net", "--seed", "17"]), 1)
         self.assertEqual(json.loads((self.root / "out/results.json").read_text())[0]["result"], "error")
         self.assertIn("0 of 1 runs passed", (self.root / "out/summary.md").read_text())
@@ -235,6 +272,8 @@ while True:
         self.assertIn("ref: ${{ needs.plan.outputs.sha }}", workflow)
         self.assertIn("if: env.MODE == 'cargo' && env.PARALLEL == '1'", workflow)
         self.assertIn("${TEST:+--test", workflow)
+        self.assertIn('--message-format=json-render-diagnostics > "$RUNNER_TEMP/heavy-tests-build.json"', workflow)
+        self.assertIn('--executables "$RUNNER_TEMP/heavy-tests-build.json"', workflow)
         ci = (ROOT / ".github/workflows/ci.yml").read_text()
         for line in workflow.splitlines():
             if "uses:" in line:

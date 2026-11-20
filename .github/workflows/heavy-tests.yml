@@ -229,14 +229,20 @@ jobs:
           fi
           profile=()
           [ "$RELEASE" != "true" ] || profile=(--release)
-          cargo test --locked --no-run ${profile[@]+"${profile[@]}"} -p "$CRATE" ${FEATURES:+--features "$FEATURES"} ${TEST:+--test "$TEST"}
+          cargo test --locked --no-run ${profile[@]+"${profile[@]}"} -p "$CRATE" ${FEATURES:+--features "$FEATURES"} ${TEST:+--test "$TEST"} \
+            --message-format=json-render-diagnostics > "$RUNNER_TEMP/heavy-tests-build.json"
       - name: Run parallel or Worker repetitions
         if: env.MODE == 'worker' || env.PARALLEL != '1'
         run: |
+          read -ra pairs <<< "$EXTRA_ENV"
+          for pair in ${pairs[@]+"${pairs[@]}"}; do
+            export "${pair?}"
+          done
           python3 .heavy-harness/scripts/stress-test-servers.py \
             --root "$GITHUB_WORKSPACE" --out "$RUNNER_TEMP/heavy-tests" \
+            --executables "$RUNNER_TEMP/heavy-tests-build.json" \
             --mode "$MODE" --crate "$CRATE" --test "$TEST" --filter "$FILTER" \
-            --features "$FEATURES" --cases "$CASES" --ignored "$IGNORED" \
+            --features "$FEATURES" --cases "$CASES" --ignored "$IGNORED" --release "$RELEASE" \
             --repeat "$REPEAT" --parallel "$PARALLEL" --seed "$SEED_BASE"
       - name: Run the tests
         if: env.MODE == 'cargo' && env.PARALLEL == '1'
