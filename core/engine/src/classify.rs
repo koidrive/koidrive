@@ -5150,9 +5150,11 @@ impl Trees {
     /// `trashed` lists what deletes of this device had trashed before the bootstrap
     /// ([`Trees::trashed_here`]), and `held_through` the seq of the newest commit of this device the
     /// server still counts ([`Commits::held_through`]), at or below which every seq is from before
-    /// the loss. A node of `trashed` that R now holds live as it was deleted, with no revision
-    /// above `held_through` or at a position this device saw with the revisions and version the
-    /// delete trashed, lost its delete: nothing changed it after the loss, since a server never
+    /// the loss. A node of `trashed` that R now holds live as it was deleted, wherever R holds it,
+    /// with no revision above `held_through` or at a position this device saw with the revisions
+    /// and version the delete trashed, lost its delete. R holding it at another position means the
+    /// loss also took a move made before the delete, since a server applies a delete over any
+    /// earlier move: nothing changed it after the loss, since a server never
     /// gives a version ID twice (RFC 0016).
     /// S takes R's shape for it, parents first, so the delete is sent again. Any other node of it is
     /// downloaded again, since a restore or another change after the loss can take a seq the lost
@@ -5353,7 +5355,14 @@ impl Trees {
             })
             .filter_map(|deleted| {
                 let remote = (self.r.get(&deleted.id))
-                    .filter(|remote| !remote.trashed && remote.shape.same(&deleted.shape))
+                    .filter(|remote| {
+                        let at_remote = Shape {
+                            parent: remote.shape.parent.clone(),
+                            name: remote.shape.name.clone(),
+                            ..deleted.shape.clone()
+                        };
+                        !remote.trashed && at_remote.same(&remote.shape)
+                    })
                     .filter(|remote| {
                         remote.content_rev.max(remote.meta_rev) <= held_through
                             || (seen(&deleted.id, remote)

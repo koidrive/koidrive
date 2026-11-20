@@ -31,6 +31,33 @@ fn a_delete_the_server_lost_is_sent_again() {
     assert_eq!(ops(&commit), [delete("d")]);
 }
 
+/// This device deleted f at seq 5 after another device renamed it from a to b. The server lost the
+/// rename and the delete, and a bootstrap lists f at a, as it was before the rename, at seq 1. The
+/// delete is sent again, so the rename that the other device may send again does not bring f back.
+#[test]
+fn a_delete_the_server_lost_is_sent_again_where_a_lost_rename_left_the_node() {
+    let rows = [synced("f", file(ROOT, "b", 1))];
+    let (mut commits, mut trees, mut ids, sent) = deleted_at_5_then_lost(&rows);
+    assert_eq!(sent, [delete("f")]);
+    let trashed = trees.trashed_here();
+    trees.set_remote("f".into(), remote(file(ROOT, "a", 1)));
+    trees.forget_lost(
+        trashed,
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Default::default(),
+        &Default::default(),
+        commits.held_through(),
+        commits.accepted(),
+    );
+    trees.settle(commits.aliases());
+    assert_eq!(trees.class(&"f".into()), Class::Local);
+    let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
+    assert_eq!(ops(&commit), [delete("f")]);
+}
+
 /// Of three files this device deleted at seq 5, a bootstrap from a server restored from seq 2 lists
 /// `same` as it was deleted, `edited` with other content, and `restored` as it was deleted but
 /// restored after the loss at seq 3, a seq below the lost delete's that the lost commits had. Only

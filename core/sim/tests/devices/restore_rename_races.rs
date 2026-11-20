@@ -36,6 +36,40 @@ fn restore_and_reconnect(world: &mut World, phase: usize, order: &[usize]) {
     world.phase(phase, &steps).unwrap();
 }
 
+fn rename_then_delete_before_restore() -> World {
+    let mut world = converge(2, &[vec![(0, file("a"))]]).unwrap();
+    let mut steps = vec![(0, BACKUP), (0, rename(0, 0, "b"))];
+    steps.extend(commit(0));
+    steps.extend(take(1));
+    world.run(1, &steps).unwrap();
+    assert_eq!(live_names(&world), ["b"]);
+    every_disk_shows(&world, &[0, 1], "b");
+
+    let mut steps = vec![(1, delete(0))];
+    steps.extend(commit(1));
+    steps.extend([(0, DELIVER); 4]);
+    world.run(2, &steps).unwrap();
+    assert!(live_names(&world).is_empty());
+    every_disk_shows(&world, &[0], "b");
+    world
+}
+
+#[test]
+fn a_lost_delete_of_a_renamed_file_wins_when_the_renamer_reconnects_first() {
+    let mut world = rename_then_delete_before_restore();
+    restore_and_reconnect(&mut world, 3, &[0, 1]);
+    assert!(live_names(&world).is_empty());
+    assert!(no_device_holds_a_file(&world));
+}
+
+#[test]
+fn a_lost_delete_of_a_renamed_file_wins_when_the_deleter_reconnects_first() {
+    let mut world = rename_then_delete_before_restore();
+    restore_and_reconnect(&mut world, 3, &[1, 0]);
+    assert!(live_names(&world).is_empty());
+    assert!(no_device_holds_a_file(&world));
+}
+
 #[test]
 fn a_rename_applied_after_a_concurrent_rename_survives_a_restore_to_between_them() {
     let mut world = converge(2, &[vec![(0, file("a"))]]).unwrap();
