@@ -36,6 +36,11 @@ const SEQUENCES: &str = concat!(
 type Outcome = Result<(), String>;
 
 fn main() {
+    if std::env::args().any(|arg| arg == "zz_cr_") {
+        zz_cr_4641230701_the_conformance_checker_rejects_short_intent_ids();
+        println!("test zz_cr_4641230701_the_conformance_checker_rejects_short_intent_ids ... ok");
+        return;
+    }
     let doc = load(FILE);
     let generated = sequences(&doc).unwrap_or_else(|e| {
         println!("generating {SEQUENCES} ... FAILED: {e}");
@@ -2615,4 +2620,16 @@ impl Run {
             ))
         }
     }
+}
+
+// zz_cr 4641230701
+fn zz_cr_4641230701_the_conformance_checker_rejects_short_intent_ids() {
+    let mut run = Run::new(
+        &json!({"now_ms": 1700000000000_i64, "mtime_ns": "0"}),
+        &json!({"name": "probe", "devices": {}}),
+    ).unwrap();
+    let short = Intent { id: vec![1], ..Default::default() };
+    let full = Intent { id: vec![2; 16], ..Default::default() };
+    assert!(run.check_intent("main", &json!({"id":"full"}), Some(&full)).is_ok());
+    assert!(run.check_intent("main", &json!({"id":"short"}), Some(&short)).is_err());
 }

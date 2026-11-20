@@ -334,3 +334,17 @@ fn a_commit_resent_after_a_restart_uploads_again_only_once_its_receipts_no_longe
         assert_eq!(a.state(), FolderState::UpToDate, "{case}");
     }
 }
+
+// zz_cr 4619856233
+#[test]
+fn zz_cr_4619856233_the_first_intent_welcome_on_reconnect_relists_the_same_task() {
+    let mut remote = Remote::new();
+    let (_, mut a) = linked(&mut remote, "a");
+    a.event(Event::Disconnected {
+        reason: koidrive_net::DisconnectReason::Timeout,
+        retry_in: Duration::from_secs(1),
+    }).unwrap();
+    remote.space.announce_field_intents(true);
+    a.connect(&remote);
+    assert!(a.work.iter().any(|work| matches!(work, Work::List)));
+}

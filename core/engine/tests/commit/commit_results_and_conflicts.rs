@@ -1099,3 +1099,48 @@ fn a_create_superseded_on_a_purged_node_gives_way_to_the_purge_and_is_not_create
         assert_eq!(again.as_ref().map(ops), None, "{sent:?}");
     }
 }
+
+// zz_cr 4648001170
+#[test]
+fn zz_cr_4648001170_keeping_the_copy_does_not_send_the_originals_previous_content_intent() {
+    use koidrive_engine::journal::{Author, Field, IntentId, Row, RowState, Value, WireBase};
+    use koidrive_engine::state::ContentValue;
+
+    let (mut c, mut t, mut ids, _) = answered_conflict(Answer::KeepCopy);
+    let n = NodeId::from("f");
+    let r = t.remote().get(&n).unwrap();
+    let held_as = (r.intents.as_ref()).and_then(|i| i.content.as_ref()).map_or(IntentId::from_bytes(&[18; 16]).unwrap(), |i| i.id);
+    let previous = IntentId::from_bytes(&[17; 16]).unwrap();
+    let version_id = Some(r.version_id.clone());
+    let row = Row {
+        intent: previous, author: Author::Own, base: None,
+        value: Value::Content {
+            version_id: version_id.clone(),
+            value: ContentValue::from(r.shape.content.as_ref().unwrap()),
+        },
+        wire_base: WireBase::None, state: RowState::Held { held_as, version_id },
+        time_ms: 1_000, replay: false,
+    };
+    t.journal_mut().replace(&n, row);
+    c.connected(&Welcome { features: vec!["field_intents".into()], ..Default::default() });
+    let commit = build(&mut c, &mut t, &mut ids).unwrap();
+    let op = commit.ops.iter().find(|op|
+        matches!(&op.op, Some(op::Op::UpdateContent(u)) if u.node_id == "f")).unwrap();
+    assert_ne!(op.intent.as_ref().unwrap().id.as_slice(), previous.as_bytes());
+}
+
+// zz_cr 4648001175
+#[test]
+fn zz_cr_4648001175_keeping_the_original_sees_the_intents_on_the_validated_copy() {
+    use koidrive_engine::journal::Field;
+
+    let (mut c, mut t, mut ids, _) = answered_conflict(Answer::KeepOriginal);
+    let copy = NodeId::from("y");
+    t.journal_mut().end(&copy, Field::Content);
+    c.connected(&Welcome { features: vec!["field_intents".into()], ..Default::default() });
+    let commit = build(&mut c, &mut t, &mut ids).unwrap();
+    let ds = ops(&commit);
+    let [op::Op::Delete(d)] = ds.as_slice() else { panic!("{ds:?}") };
+    assert_eq!(d.node_id, "y");
+    assert!(d.unseen.is_empty(), "{:?}", d.unseen);
+}

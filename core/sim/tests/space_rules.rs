@@ -2182,3 +2182,58 @@ fn a_delete_fault_copies_the_version_the_delete_trashed() {
         );
     }
 }
+// zz_cr 4619856313
+#[test]
+fn zz_cr_4619856313_a_gc_sweep_fits_each_pushed_changes_frame() {
+    use koidrive_proto::v1::{Changes, ServerMessage, server_message};
+    use koidrive_sim::space::MAX_SERVER_MESSAGE_BYTES;
+    use prost::Message;
+
+    let mut s = Space::new();
+    let mut a = s.client("A");
+    let root = s.root();
+    for batch in 0..3u8 {
+        let dir = s.id();
+        let mut ops = vec![mkdir(&dir, &root, &format!("batch-{batch}"))];
+        for child in 0..49 {
+            ops.push(mkdir(&s.id(), &dir, &format!("child-{child}")));
+        }
+        s.commit(&mut a, ops, vec![]);
+        let held = (0..512u128)
+            .map(|i| (u128::from(batch) * 512 + i).to_be_bytes().to_vec())
+            .collect();
+        let op = wrap(op::Op::Delete(Delete { node_id: dir, held, ..Default::default() }));
+        assert_eq!(codes(&s.commit(&mut a, vec![with_intent(op, intent(7 + batch, "dev-A"))], vec![])),
+                   [op_result::Code::Applied]);
+    }
+    let head = s.space.head_seq();
+    assert_eq!(s.space.collect_garbage(NOW + 31 * DAY_MS), 150);
+    let records = s.space.resume(&Resume {
+        since_seq: head, history_id: s.space.history_id().into(), ..Default::default()
+    }).unwrap();
+    for record in records {
+        let msg = ServerMessage {
+            msg: Some(server_message::Msg::Changes(Changes { commits: vec![record] })),
+        };
+        assert!(msg.encoded_len() <= MAX_SERVER_MESSAGE_BYTES);
+    }
+}
+
+// zz_cr 4624485755
+#[test]
+fn zz_cr_4624485755_growing_a_trash_group_republishes_its_old_members() {
+    let mut s = Space::new();
+    let mut a = s.client("A");
+    let (root, first, second) = (s.root(), s.id(), s.id());
+    s.commit(&mut a, vec![mkdir(&first, &root, "first"), mkdir(&second, &root, "second")], vec![]);
+    s.commit(&mut a, vec![with_intent(delete_holding(&first, &[7]), intent(1, "dev-A"))], vec![]);
+    let group = s.get(&first).trash_group;
+    let op = wrap(op::Op::Delete(Delete {
+        node_id: second, trash_group: group, held: vec![vec![8; 16]], ..Default::default()
+    }));
+    let result = s.commit(&mut a, vec![with_intent(op, intent(2, "dev-A"))], vec![]);
+    let held = vec![vec![7; 16], vec![8; 16]];
+    assert_eq!(s.get(&first).trash_held, held);
+    assert!(node_states(&result.changes)
+        .any(|node| node.node_id == first && node.trash_held == held && node.meta_rev == result.seq));
+}

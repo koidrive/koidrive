@@ -13704,3 +13704,20 @@ fn a_server_copy_of_a_download_whose_bytes_a_restart_found_on_disk_is_caught() {
     let expected = "write 1 is in 3 live nodes on the server";
     assert!(failure.contains(expected), "{failure}");
 }
+
+// zz_cr 4624312539
+#[test]
+fn zz_cr_4624312539_the_first_create_uses_the_configured_intents_mode() {
+    let before = FIELD_INTENTS.get();
+    for enabled in [false, true] {
+        FIELD_INTENTS.set(enabled);
+        let mut sim = world(1);
+        sim.run(0, &[(0, Step::Connect), (0, file("a")), (0, SCAN), (0, COMMIT)])
+            .unwrap();
+        let commit = &sim.devices[0].engine.commits.in_flight().unwrap().commit;
+        let [create] = commit.ops.as_slice() else { panic!("{:?}", commit.ops) };
+        assert!(matches!(create.op, Some(koidrive_proto::v1::op::Op::CreateFile(_))));
+        assert_eq!(create.intent.is_some(), enabled);
+    }
+    FIELD_INTENTS.set(before);
+}

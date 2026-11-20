@@ -631,3 +631,31 @@ fn an_absent_node_lapses_at_its_deadline_and_not_before() {
     restored.set_clock(ABSENT_FOR_MS as u64);
     assert!(restored.state(whole).absent.is_empty());
 }
+
+// zz_cr 4621161967
+#[test]
+fn zz_cr_4621161967_replacing_history_ids_keeps_the_observation_and_time() {
+    let mut journal = Journal::new(&IdGen::new(0));
+    let f = NodeId::from("f");
+    journal.remote_holds(&f, Field::Content, &held(1, 0), false);
+    journal.remote_holds(&f, Field::Content, &held(2, 10), true);
+    journal.replace_ids(&BTreeMap::from([(id(1), id(2))]));
+    assert_eq!(journal.history(&f, Field::Content), &[HistoryEntry {
+        intent: id(2), applied_at_ms: 10, in_local: true,
+    }]);
+}
+
+// zz_cr 4646821374
+#[test]
+fn zz_cr_4646821374_adding_a_held_alias_keeps_the_seen_list_bounded() {
+    let mut journal = Journal::new(&IdGen::new(0));
+    let sent = deleted_after_a_send(&mut journal);
+    let d = NodeId::from("d");
+    let mut entries: Vec<_> = (10..73).map(|n| seen("n", Field::Content, n, None)).collect();
+    entries.extend_from_slice(journal.seen(&d));
+    journal.set_seen(&d, entries);
+    journal.applied(&NodeId::from("n"), Field::Content, sent, &held(2, 2), None, true);
+    let ids = seen_ids(&journal);
+    assert_eq!(ids.len(), 64);
+    assert!(ids.windows(2).any(|pair| pair == [sent, id(2)]));
+}

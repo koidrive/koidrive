@@ -2544,3 +2544,330 @@ fn a_superseded_replay_held_on_another_node_keeps_that_nodes_edit() {
     let row = trees.journal_row(&"copy".into(), Field::Content).unwrap();
     assert_eq!(row.intent, edit);
 }
+
+// zz_cr 4619856240
+#[test]
+fn zz_cr_4619856240_a_version_restore_of_a_settled_file_names_its_content_intent() {
+    use koidrive_engine::{ids::uuid_v7, restore::RestoreIntent};
+
+    let n = uuid_v7(1, 1);
+    let mut t = Trees::new(ROOT, &IdGen::new(0));
+    synced(&mut t, &n, file(ROOT, "a", 2), 2);
+    let mut c = Commits::default();
+    c.connected(&Welcome { features: vec!["field_intents".into()], ..Default::default() });
+    let restore = RestoreIntent::version(n.as_str().into(), uuid_v7(1, 2)).unwrap();
+    assert!(c.restore(uuid_v7(2, 1), restore));
+    t.rules_scanned();
+    t.settle(c.aliases());
+    let commit = c.build(&mut t, &mut IdGen::new(1), 3, "history", "me", 2).unwrap();
+    let restore = commit.ops.iter()
+        .find(|op| matches!(&op.op, Some(op::Op::Restore(r)) if !r.version_id.is_empty()))
+        .unwrap();
+    assert!(restore.intent.is_some());
+}
+
+// zz_cr 4624045763
+#[test]
+fn zz_cr_4624045763_backfilled_delete_names_the_acknowledged_content_version_in_held() {
+    let mut t = Trees::new(ROOT, &IdGen::new(0));
+    let a = file(ROOT, "a", 1);
+    t.set_remote("f".into(), remote(a.clone(), 1));
+    t.set_synced("f".into(), Some(a));
+    t.set_remote("f".into(), remote(file(ROOT, "a", 2), 2));
+    t.backfill(None, false, 1_000);
+    let mut ops = [proto::Op {
+        op: Some(op::Op::Delete(proto::Delete { node_id: "f".into(), ..Default::default() })),
+        ..Default::default()
+    }];
+    t.stamp_intents(&mut ops, "me", 1_000, Wire::WithIntents);
+    let Some(op::Op::Delete(d)) = &ops[0].op else { unreachable!() };
+    assert!(d.held.contains(&IntentId::legacy_content("f", "v1").as_bytes().to_vec()));
+}
+
+// zz_cr 4624045767
+#[test]
+fn zz_cr_4624045767_a_folder_delete_includes_a_purged_download_seen_by_its_own_delete() {
+    let mut t = Trees::new(ROOT, &IdGen::new(0));
+    synced(&mut t, "d", dir(ROOT, "d"), 1);
+    synced(&mut t, "f", file("d", "a", 1), 2);
+    let f = NodeId::from("f");
+    let d = NodeId::from("d");
+    let content = held(&t, "f", Field::Content);
+    t.remove_remote(&f);
+    t.remove_local_by_user(&f);
+    assert!(t.journal().seen(&f).iter().any(|e| e.intent == content));
+    t.remove_local_by_user(&d);
+    assert!(t.journal().seen(&d).iter().any(|e| e.node == f && e.intent == content));
+}
+
+// zz_cr 4641230633
+#[test]
+fn zz_cr_4641230633_relist_does_not_relabel_the_base_of_an_equal_byte_different_version() {
+    let mut t = Trees::new(ROOT, &IdGen::new(0));
+    let old = file(ROOT, "a", 1);
+    synced(&mut t, "f", old.clone(), 1);
+    let base = held(&t, "f", Field::Content);
+    t.set_local_changed("f".into(), local(file(ROOT, "a", 2)));
+    let mut listed = Tree::new(ROOT);
+    listed.insert("f".into(), RemoteNode {
+        intents: Some(NodeIntents {
+            content: Some(FieldIntent::legacy(id(7))),
+            ..Default::default()
+        }),
+        ..remote(old, 2)
+    });
+    t.take_listed_intents(&listed);
+    assert_eq!(t.journal_row(&"f".into(), Field::Content).unwrap().base, Some(base));
+}
+
+// zz_cr 4646821320
+#[test]
+fn zz_cr_4646821320_a_late_node_less_result_does_not_add_a_newer_remote_edit_to_a_delete() {
+    let mut t = Trees::new(ROOT, &IdGen::new(0));
+    synced(&mut t, "f", file(ROOT, "a", 1), 1);
+    t.set_local_changed("f".into(), local(file(ROOT, "a", 2)));
+    let commit = build(&mut t, &[], 1_700);
+    t.set_remote("f".into(), remote(file(ROOT, "a", 2), 2));
+    t.remove_local_by_user(&"f".into());
+    t.set_remote("f".into(), remote(file(ROOT, "a", 3), 4));
+    let newer = held(&t, "f", Field::Content);
+    let mut result = answered(vec![outcome(op_result::Code::Applied)], Vec::new());
+    result.seq = 3;
+    t.record_results(&commit, &result);
+    let mut ops = [proto::Op {
+        op: Some(op::Op::Delete(proto::Delete { node_id: "f".into(), ..Default::default() })),
+        ..Default::default()
+    }];
+    t.stamp_intents(&mut ops, "me", 3_000, Wire::WithIntents);
+    let Some(op::Op::Delete(d)) = &ops[0].op else { unreachable!() };
+    assert!(d.unseen.contains(&newer.as_bytes().to_vec()));
+}
+
+// zz_cr 4646821331
+#[test]
+fn zz_cr_4646821331_an_applied_result_keeps_an_explicit_zero_time() {
+    let mut t = Trees::new(ROOT, &IdGen::new(0));
+    synced(&mut t, "f", file(ROOT, "a", 1), 1);
+    let changed = file(ROOT, "a", 2);
+    t.set_local_changed("f".into(), local(changed.clone()));
+    let n = NodeId::from("f");
+    let mut row = t.journal_row(&n, Field::Content).unwrap().into_owned();
+    row.replay = true;
+    t.journal_mut().replace(&n, row);
+    let commit = build(&mut t, &["field_intents"], 0);
+    let edit = sent(&t, "f", Field::Content);
+    let field = proto::Intent { replay: true, ..wire(edit, 0) };
+    let state = node_state("f", &changed, 2, Some(proto::FieldIntents {
+        content: Some(field), ..Default::default()
+    }));
+    t.record_results(&commit, &answered(vec![outcome(op_result::Code::Applied)], vec![state]));
+    assert_eq!(held_as(&t, "f", Field::Content), Some((edit, 0)));
+}
+
+// zz_cr 4646821344
+#[test]
+fn zz_cr_4646821344_a_conflict_copy_keeps_its_reported_content_applied_time() {
+    let mut t = Trees::new(ROOT, &IdGen::new(0));
+    synced(&mut t, "f", file(ROOT, "a", 1), 1);
+    t.set_local_changed("f".into(), local(file(ROOT, "a", 2)));
+    let n = NodeId::from("f");
+    let mut row = t.journal_row(&n, Field::Content).unwrap().into_owned();
+    row.replay = true;
+    t.journal_mut().replace(&n, row);
+    let commit = build(&mut t, &["field_intents"], 900);
+    let edit = sent(&t, "f", Field::Content);
+    let copy = node_state("copy", &file(ROOT, "a (copy)", 2), 4, Some(proto::FieldIntents {
+        content: Some(proto::Intent { replay: true, ..wire(edit, 900) }),
+        ..Default::default()
+    }));
+    t.record_results(&commit, &answered(
+        vec![proto::OpResult { node_id: "copy".into(), ..outcome(op_result::Code::ConflictCopy) }],
+        vec![copy],
+    ));
+    assert_eq!(held_as(&t, "copy", Field::Content), Some((edit, 900)));
+    assert!(t.remote_history(&"copy".into(), Field::Content).iter()
+        .any(|e| e.intent == edit && e.applied_at_ms == 900));
+}
+
+// zz_cr 4646821352
+#[test]
+fn zz_cr_4646821352_a_fresh_superseded_move_ends_even_when_r_holds_an_older_place() {
+    let mut t = Trees::new(ROOT, &IdGen::new(0));
+    synced(&mut t, "f", file(ROOT, "a", 1), 1);
+    t.set_local_changed("f".into(), local(file(ROOT, "b", 1)));
+    let commit = build(&mut t, &["field_intents"], 1_700);
+    assert!(!commit.ops[0].intent.as_ref().unwrap().replay);
+    let state = node_state("f", &file(ROOT, "c", 1), 2, Some(proto::FieldIntents {
+        place: Some(wire(id(5), 1_000)), ..Default::default()
+    }));
+    let (again, _) = t.record_results(&commit, &answered(
+        vec![outcome(op_result::Code::Superseded)], vec![state],
+    ));
+    assert!(!again.contains(&"f".into()));
+    assert!(t.journal_row(&"f".into(), Field::Place).is_none());
+}
+
+// zz_cr 4619856293
+#[test]
+fn zz_cr_4619856293_a_planned_delete_fits_even_with_retained_history() {
+    use koidrive_engine::journal::Seen;
+    use prost::Message;
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
+    synced(&mut trees, "d", dir(ROOT, "d"), 1);
+    let mut history = Vec::new();
+    for i in 0u32..40 {
+        let n = format!("f{i}");
+        synced(&mut trees, &n, file("d", &n, 1), 1);
+        for j in 0u32..60 {
+            let mut bytes = [0x55; 16];
+            bytes[..4].copy_from_slice(&(60 * i + j).to_be_bytes());
+            history.push(Seen {
+                node: NodeId::from(n.as_str()), field: Field::Content,
+                intent: IntentId::from_bytes(&bytes).unwrap(), value: None,
+            });
+        }
+        trees.remove_local_by_user(&NodeId::from(n.as_str()));
+    }
+    let d = NodeId::from("d");
+    trees.remove_local_by_user(&d);
+    history.extend_from_slice(trees.journal().seen(&d));
+    trees.journal_mut().set_seen(&d, history);
+    let mut commits = Commits::from_state(CommitsState::default()).unwrap();
+    commits.connected(&Welcome { features: vec!["field_intents".into()], ..Default::default() });
+    trees.rules_scanned();
+    trees.settle(&Default::default());
+    let base = Base { seq: 1, commit_id: String::new(), committed_at_ms: 1_700 };
+    assert!(commits.build(&mut trees, &mut IdGen::new(1), 0, "history", "me", base.clone()).is_none());
+    let guard = (commits.questions().iter())
+        .find(|q| matches!(q.kind, koidrive_engine::question::QuestionKind::MassDelete { .. }))
+        .unwrap().id.clone();
+    assert!(commits.decide(&mut trees, &guard, koidrive_engine::question::Answer::Delete));
+    let commit = commits.build(&mut trees, &mut IdGen::new(1), 0, "history", "me", base).unwrap();
+    let ops: Vec<_> = commit.ops.iter().filter_map(|op| op.op.clone()).collect();
+    let [op::Op::Delete(delete)] = ops.as_slice() else { panic!("{ops:?}") };
+    assert_eq!(delete.node_id, "d");
+    let member = proto::NodeState { trash_held: delete.held.clone(), ..Default::default() };
+    assert!(41 * member.encoded_len() <= 1 << 20, "{} bytes per member", member.encoded_len());
+}
+
+// zz_cr 4644929393
+#[test]
+fn zz_cr_4644929393_a_place_retry_does_not_mask_a_terminal_content_result() {
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
+    let f = NodeId::from("f");
+    synced(&mut trees, "f", file(ROOT, "a", 1), 1);
+    let b = file(ROOT, "b", 2);
+    trees.set_local_changed(f.clone(), local(b.clone()));
+    let (mut commits, _) = sent_with_intents(&mut trees);
+    let current = file(ROOT, "c", 3);
+    trees.set_remote(f.clone(), remote(current.clone(), 2));
+    let proof = node_state("f", &current, 2, Some(proto::FieldIntents {
+        place: Some(wire(id(1), 1_000)),
+        content: Some(wire(id(2), 1_900)), ..Default::default()
+    }));
+    let result = outcome(op_result::Code::Superseded);
+    commits.received(proto::CommitResult {
+        seq: 2, ..answered(vec![result.clone(), result], vec![proof])
+    }).unwrap();
+    assert!(commits.acknowledge(&mut trees, 2));
+    assert_eq!(trees.synced().get(&f).unwrap().content, b.content);
+}
+
+// zz_cr 4619856262
+#[test]
+fn zz_cr_4619856262_a_superseded_move_whose_live_node_holds_an_earlier_place_does_not_end() {
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
+    synced(&mut trees, "f", file(ROOT, "a", 1), 1);
+    trees.set_local_changed("f".into(), local(file(ROOT, "b", 1)));
+    let (mut commits, ops) = sent_with_intents(&mut trees);
+    assert!(matches!(&ops[..], [op::Op::Move(_)]), "{ops:?}");
+    let results = vec![outcome(op_result::Code::Superseded)];
+    acknowledge_superseded_move(&mut trees, &mut commits, results, file(ROOT, "c", 1), 1_000);
+    let row = trees.journal_row(&"f".into(), Field::Place).unwrap();
+    assert!(matches!(row.state, RowState::Local { .. }), "{row:?}");
+    assert_eq!(trees.synced().get(&"f".into()), Some(&file(ROOT, "a", 1)));
+    assert!(!commits.problems().contains(&NodeId::from("f")));
+}
+
+// zz_cr 4641230675
+#[test]
+fn zz_cr_4641230675_a_delete_of_a_folder_whose_create_is_in_flight_sees_the_create() {
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
+    trees.set_local_changed("d".into(), local(dir(ROOT, "d")));
+    build(&mut trees, &["field_intents"], 1_700);
+    let reported = proto::FieldIntents {
+        place: Some(wire(sent(&trees, "d", Field::Place), 1_700)),
+        content: None,
+        status: Some(wire(sent(&trees, "d", Field::Status), 1_700)),
+    };
+    trees.remove_local_by_user(&"d".into());
+    let state = node_state("d", &dir(ROOT, "d"), 1, Some(reported));
+    trees.set_remote("d".into(), RemoteNode::from_state(&state).unwrap().1);
+    let mut ops = vec![proto::Op {
+        op: Some(op::Op::Delete(proto::Delete {
+            node_id: "d".into(),
+            ..Default::default()
+        })),
+        ..Default::default()
+    }];
+    let wanted = trees.journal_row(&"d".into(), Field::Status).unwrap().intent;
+    let accepts = |op: &proto::Op| {
+        matches!(&op.op, Some(op::Op::Delete(delete)) if delete.unseen.is_empty())
+    };
+    assert!(!accepts(&ops[0]), "the assertion accepts an untouched Delete");
+    trees.stamp_intents(&mut ops, "me", 0, Wire::WithIntents);
+    assert!(accepts(&ops[0]));
+    assert_eq!(ops[0].intent.as_ref().unwrap().id, wanted.as_bytes().to_vec());
+}
+
+// zz_cr 4641230689
+#[test]
+fn zz_cr_4641230689_a_finish_names_the_marks_intent_and_leaves_a_later_rename_to_send() {
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
+    let mark = FieldIntent {
+        id: id(5),
+        author: "me".into(),
+        replay: false,
+        applied_at_ms: 0,
+    };
+    let marked = RemoteNode {
+        pending_for: Some("d".into()),
+        intents: Some(NodeIntents {
+            place: Some(mark),
+            content: None,
+            status: Some(FieldIntent::legacy(id(6))),
+            ..Default::default()
+        }),
+        ..remote(dir(ROOT, "d (pending)"), 1)
+    };
+    trees.set_remote("d".into(), marked);
+    trees.set_synced("d".into(), Some(dir(ROOT, "d (pending)")));
+    trees.set_local("d".into(), local(dir(ROOT, "d (pending)")));
+    trees.set_local_changed("d".into(), local(dir(ROOT, "x")));
+    let mut ops = vec![proto::Op {
+        op: Some(op::Op::Move(proto::Move {
+            node_id: "d".into(),
+            new_parent_id: ROOT.into(),
+            new_name: "d".into(),
+            from: Some(proto::Place {
+                parent_id: ROOT.into(),
+                name: "d (pending)".into(),
+            }),
+            ..Default::default()
+        })),
+        ..Default::default()
+    }];
+    assert_eq!(
+        trees.stamp_intents(&mut ops, "me", 0, Wire::WithIntents),
+        OpsWithoutIntent(0)
+    );
+    assert_eq!(
+        ops[0].intent.as_ref().unwrap().id,
+        id(5).as_bytes().to_vec()
+    );
+    let finish = ops[0].intent.as_ref().unwrap();
+    assert!(!finish.replay);
+    assert_eq!(finish.over, id(5).as_bytes().to_vec());
+    let row = trees.journal_row(&"d".into(), Field::Place).unwrap();
+    assert!(matches!(row.state, RowState::Local { .. }));
+}
