@@ -1577,6 +1577,7 @@ fn a_move_recorded_by_the_store_upgrade_is_not_sent_over_a_move_made_after_its_c
     state.moved_here = BTreeMap::from([("n".into(), upgraded)]);
     state.past_positions.clear();
     trees.restore(state).unwrap();
+    trees.rules_scanned();
     let n = remote_at(file(ROOT, "z", 1), 10);
     let sent = lose_with_n_at(n, 0, &mut trees, &mut commits, &mut ids);
     assert!(sent.is_empty());
