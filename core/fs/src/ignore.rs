@@ -315,38 +315,31 @@ impl Walk {
         &mut self,
         root: BorrowedFd<'_>,
         dir: PathBuf,
-        above: &mut Option<(PathBuf, OwnedFd, Vec<FileId>)>,
+        above: &mut Ancestors,
         cut: &mut dyn FnMut(Cut<'_>),
     ) -> usize {
-        let (Some(parent), Some(name)) = (dir.parent(), dir.file_name()) else {
+        let (Some(seen), Some(parent), Some(name)) =
+            (self.passed.get_mut(&dir), dir.parent(), dir.file_name())
+        else {
             return 1;
         };
-        let mut cost = 1;
-        if above.as_ref().is_some_and(|(at, _, _)| at != parent) {
-            cost += self.confirm_parent(root, above);
-        }
-        let Some(seen) = self.passed.get_mut(&dir) else {
-            return cost;
-        };
         cut(Cut::Confirming(&dir));
-        if above.is_none() {
-            cost += parent.components().count();
-            *above = match open_attached(root, parent, &mut |_| {}) {
-                Ok(Some((fd, chain))) => Some((parent.to_path_buf(), fd, chain)),
-                Ok(None) => {
-                    self.changed |= !std::mem::replace(&mut seen.needs_walk, true);
-                    return cost;
-                }
-                Err(_) => {
-                    self.unopened.insert(dir);
-                    return cost;
-                }
-            };
+        let mut cost = 1;
+        let mut stale = false;
+        let attached = above.open(root, parent, &mut cost, &mut stale);
+        self.changed |= stale;
+        match attached {
+            Ok(true) => {}
+            Ok(false) => {
+                self.changed |= !std::mem::replace(&mut seen.needs_walk, true);
+                return cost;
+            }
+            Err(_) => {
+                self.unopened.insert(dir);
+                return cost;
+            }
         }
-        let Some((_, above, chain)) = above.as_ref() else {
-            return cost;
-        };
-        let stat = match stat_at(above.as_fd(), name) {
+        let stat = match stat_at(above.top(root), name) {
             Ok(stat) => stat,
             Err(err) if is_gone(&err) => {
                 self.changed |= !std::mem::replace(&mut seen.needs_walk, true);
@@ -363,7 +356,7 @@ impl Walk {
             }
             cut(Cut::OpeningDir(&dir));
             cost += 1;
-            match open_dir_at(above.as_fd(), name) {
+            match open_dir_at(above.top(root), name) {
                 Ok(fd) => {
                     let Some((now, _)) = Seen::of(fd.as_fd(), &dir, &mut self.unopened) else {
                         return cost;
@@ -388,28 +381,127 @@ impl Walk {
         self.listings.push(Listing {
             dir: parent.to_path_buf(),
             names: vec![name.to_os_string()],
-            chain: Some(chain.clone()),
+            chain: Some(above.chain()),
         });
         cost
     }
+}
 
-    fn confirm_parent(
+struct Ancestor {
+    name: OsString,
+    id: FileId,
+    fd: Option<OwnedFd>,
+}
+
+#[derive(Default)]
+struct Ancestors(Vec<Ancestor>);
+
+impl Ancestors {
+    fn top<'a>(&'a self, root: BorrowedFd<'a>) -> BorrowedFd<'a> {
+        (self.0.last())
+            .and_then(|ancestor| ancestor.fd.as_ref())
+            .map_or(root, |fd| fd.as_fd())
+    }
+
+    fn chain(&self) -> Vec<FileId> {
+        self.0.iter().map(|ancestor| ancestor.id).collect()
+    }
+
+    fn open(
         &mut self,
         root: BorrowedFd<'_>,
-        above: &mut Option<(PathBuf, OwnedFd, Vec<FileId>)>,
-    ) -> usize {
-        let Some((at, _, chain)) = above.take() else {
-            return 0;
-        };
-        let cost = at.components().count();
-        match open_attached(root, &at, &mut |_| {}) {
-            Ok(Some((_, now))) if same_chain(&chain, &now) => {}
-            Err(_) => {
-                self.unopened.insert(at);
+        dir: &Path,
+        opens: &mut usize,
+        stale: &mut bool,
+    ) -> io::Result<bool> {
+        let names: Vec<&OsStr> = dir.components().map(|name| name.as_os_str()).collect();
+        let keep = (self.0.iter().zip(&names))
+            .take_while(|(ancestor, name)| ancestor.name == **name)
+            .count();
+        *stale |= self.pop_to(root, keep, opens);
+        for name in names.into_iter().skip(self.0.len()) {
+            *opens += 1;
+            let fd = match open_dir_at(self.top(root), name) {
+                Ok(fd) => fd,
+                Err(err) if is_gone(&err) => return Ok(false),
+                Err(err) => return Err(err),
+            };
+            let id = stat_fd(fd.as_fd())?.id;
+            if self.0.len() >= OPEN_FOLDERS
+                && let Some(last) = self.0.last_mut()
+            {
+                last.fd = None;
             }
-            _ => self.changed = true,
+            self.0.push(Ancestor {
+                name: name.to_os_string(),
+                id,
+                fd: Some(fd),
+            });
         }
-        cost
+        Ok(true)
+    }
+
+    fn pop_to(&mut self, root: BorrowedFd<'_>, keep: usize, opens: &mut usize) -> bool {
+        if keep >= self.0.len() {
+            return false;
+        }
+        let Some(top) = self.reach(root, keep, opens) else {
+            return true;
+        };
+        let mut stale = false;
+        let mut above = top.try_clone();
+        for ancestor in &self.0[keep..] {
+            let Ok(fd) = above else {
+                stale = true;
+                break;
+            };
+            if !stat_at(fd.as_fd(), &ancestor.name).is_ok_and(|stat| stat.id.same(&ancestor.id)) {
+                stale = true;
+                break;
+            }
+            above = match &ancestor.fd {
+                Some(held) => held.try_clone(),
+                None => {
+                    *opens += 1;
+                    open_dir_at(fd.as_fd(), &ancestor.name)
+                }
+            };
+        }
+        self.0.truncate(keep);
+        if let Some(last) = self.0.last_mut() {
+            last.fd.get_or_insert(top);
+        }
+        stale
+    }
+
+    fn reach(&mut self, root: BorrowedFd<'_>, len: usize, opens: &mut usize) -> Option<OwnedFd> {
+        let held = self.0[..len]
+            .iter()
+            .rposition(|ancestor| ancestor.fd.is_some());
+        let fd = match held {
+            Some(at) => self.0[at].fd.as_ref().map(|fd| fd.try_clone()),
+            None => Some(root.try_clone_to_owned()),
+        };
+        let Some(Ok(mut fd)) = fd else {
+            self.0.clear();
+            return None;
+        };
+        for at in held.map_or(0, |at| at + 1)..len {
+            *opens += 1;
+            let ancestor = &self.0[at];
+            let next = open_dir_at(fd.as_fd(), &ancestor.name)
+                .ok()
+                .filter(|next| stat_fd(next.as_fd()).is_ok_and(|stat| stat.id.same(&ancestor.id)));
+            let Some(next) = next else {
+                self.0.truncate(at);
+                if let Some(last) = self.0.last_mut() {
+                    last.fd.get_or_insert(fd);
+                }
+                return None;
+            };
+            fd = next;
+        }
+        Some(fd)
     }
 }
 
@@ -858,7 +950,7 @@ impl<'r> Pending<'r> {
         let mut left = if bounded { *budget } else { usize::MAX };
         let mut looked = false;
         let mut checked = false;
-        let mut parent = None;
+        let mut ancestors = Ancestors::default();
         'walk: while (left > 0 || !looked) && !pending.is_empty() {
             let walk = walking.get_or_insert_with(|| {
                 *walks += 1;
@@ -945,12 +1037,14 @@ impl<'r> Pending<'r> {
                                     left = left.saturating_sub(walk.recheck(
                                         root,
                                         dir,
-                                        &mut parent,
+                                        &mut ancestors,
                                         cut,
                                     ));
                                     continue 'walk;
                                 }
-                                left = left.saturating_sub(walk.confirm_parent(root, &mut parent));
+                                let mut opens = 0;
+                                walk.changed |= ancestors.pop_to(root, 0, &mut opens);
+                                left = left.saturating_sub(opens);
                                 if walk.rounds == 0 || (walk.changed && walk.rounds < CHECKS) {
                                     walk.rounds += 1;
                                     walk.changed = false;
@@ -1107,7 +1201,7 @@ impl<'r> Pending<'r> {
                 let restarts = walk.restarts + 1;
                 *walks += 1;
                 *walking = Some(Walk::new(ignored, restarts));
-                parent = None;
+                ancestors = Ancestors::default();
                 for needs in pending.values_mut() {
                     *needs = *walks;
                 }
@@ -1116,7 +1210,7 @@ impl<'r> Pending<'r> {
             walk.leave(replaced);
         }
         if let Some(walk) = walking.as_mut() {
-            walk.confirm_parent(root, &mut parent);
+            walk.changed |= ancestors.pop_to(root, 0, &mut 0);
         }
         if pending.is_empty() {
             *walking = None;
