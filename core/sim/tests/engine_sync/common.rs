@@ -6,7 +6,7 @@ use koidrive_engine::classify::{Pending, Trees};
 
 use koidrive_engine::commit::{Commits, Failure, Halt, MAX_OPS, Reconnect};
 
-use koidrive_engine::effects::{Base, BatchLimit, Effect, Effects, Location};
+use koidrive_engine::effects::{Base, BatchLimit, Effect, EffectRecord, Effects, Location};
 
 use koidrive_engine::first_link::PriorSync;
 
@@ -1392,6 +1392,52 @@ fn waits_on_excluded(trees: &Trees, id: &NodeId, waiting: &BTreeSet<NodeId>) -> 
     false
 }
 
+fn fail_on_ignored_name(
+    device: &mut Device,
+    effects: &mut Effects,
+    record: &EffectRecord,
+    failed_on_ignored: &mut BTreeMap<NodeId, (Effect, Shape)>,
+) -> bool {
+    let placed_at = match &record.effect {
+        Effect::CreateDir {
+            at: Location::At { .. },
+        }
+        | Effect::WriteFile {
+            at: Location::At { .. },
+            ..
+        }
+        | Effect::Move {
+            to: Location::At { .. },
+            ..
+        } => record.after.as_ref(),
+        _ => None,
+    };
+    let Some(at) = placed_at.filter(|at| device.disk_name_taken(&at.parent, &[], &at.name)) else {
+        return false;
+    };
+    let target = (record.effect.clone(), at.clone());
+    effects
+        .failed(&mut device.trees, &record.effect_id)
+        .unwrap();
+    failed_on_ignored.insert(record.node.clone(), target);
+    true
+}
+
+fn excused_target<'a>(
+    device: &Device,
+    effects: &Effects,
+    failed_on_ignored: &'a BTreeMap<NodeId, (Effect, Shape)>,
+    id: &NodeId,
+) -> Option<&'a Shape> {
+    (effects.blocked().get(id))
+        .zip(failed_on_ignored.get(id))
+        .filter(|(effect, (failed, at))| {
+            failed == *effect
+                && (device.trees.remote().live(id)).is_some_and(|remote| remote.same_position(at))
+        })
+        .map(|(_, (_, at))| at)
+}
+
 /// Whether S cannot take `id` at its R position because the S entry of a node that waits still
 /// holds that name. The entry moves only once its node is placed, which the excluded node keeps
 /// from happening.
@@ -2257,28 +2303,7 @@ fn run_ignoring_answering_after(
                     continue;
                 }
             }
-            let placed_at = match &record.effect {
-                Effect::CreateDir {
-                    at: Location::At { .. },
-                }
-                | Effect::WriteFile {
-                    at: Location::At { .. },
-                    ..
-                }
-                | Effect::Move {
-                    to: Location::At { .. },
-                    ..
-                } => record.after.as_ref(),
-                _ => None,
-            };
-            if let Some(at) =
-                placed_at.filter(|at| device.disk_name_taken(&at.parent, &[], &at.name))
-            {
-                let target = (record.effect.clone(), at.clone());
-                effects
-                    .failed(&mut device.trees, &record.effect_id)
-                    .unwrap();
-                failed_on_ignored.insert(record.node.clone(), target);
+            if fail_on_ignored_name(&mut device, &mut effects, &record, &mut failed_on_ignored) {
                 continue;
             }
             let identity = device.identity();
@@ -2611,12 +2636,7 @@ fn run_ignoring_answering_after(
             .then(|| id.clone())
         })
         .collect();
-    let failed_here = |id: &NodeId| {
-        (effects.blocked().get(id))
-            .zip(failed_on_ignored.get(id))
-            .filter(|(effect, (failed, _))| failed == *effect)
-            .map(|(_, (_, at))| at)
-    };
+    let failed_here = |id: &NodeId| excused_target(&device, &effects, &failed_on_ignored, id);
     for id in effects.blocked().keys() {
         prop_assert!(
             failed_here(id).is_none_or(|at| device.disk_name_taken(&at.parent, &[], &at.name)),
