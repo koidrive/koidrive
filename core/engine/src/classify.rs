@@ -6350,10 +6350,9 @@ impl Trees {
     }
 
     fn trashed_where_l_holds(&self, id: &NodeId) -> Option<&Shape> {
-        let remote = self
-            .r
-            .get(id)
-            .filter(|node| node.trashed && !self.asked.contains(id))?;
+        let remote = self.r.get(id).filter(|node| {
+            node.trashed && !self.asked.contains(id) && !self.kept_folders.contains(id)
+        })?;
         (self.l.get(id))
             .is_some_and(|local| local.shape.same_position(&remote.shape) && !self.revives(id))
             .then_some(&remote.shape)
