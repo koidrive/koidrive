@@ -5,10 +5,10 @@ use std::collections::{BTreeMap, HashMap};
 use koidrive_engine::ids::IdGen;
 use koidrive_engine::names::conflict_name;
 use koidrive_proto::v1::{
-    ChunkRef, Commit, CommitResult, Content, CreateDir, CreateFile, Delete, Error, ListTrash,
-    ListTree, ListVersions, Move, NodeState, NodeStatus, Op, PrepareUpload, Restore, Resume,
-    RpcRequest, UpdateContent, UploadReceipt, chunk_plan, error, op, op_result, resync_required,
-    rpc_request, rpc_response,
+    ChunkRef, Commit, CommitResult, Content, CreateDir, CreateFile, Delete, Error, Intent,
+    ListTrash, ListTree, ListVersions, Move, NodeState, NodeStatus, Op, PrepareUpload, Restore,
+    Resume, RpcRequest, UpdateContent, UploadReceipt, chunk_plan, error, op, op_result,
+    resync_required, rpc_request, rpc_response,
 };
 use koidrive_sim::space::{Role, Session, SpaceDo, node_states};
 use sha2::{Digest, Sha256};
@@ -1159,6 +1159,34 @@ fn restore_to(id: &str, parent: &str, name: &str) -> Op {
         name: name.into(),
         ..Default::default()
     }))
+}
+
+#[test]
+fn a_restore_uses_a_supplied_place_id_only_when_the_place_changes() {
+    let mut s = Space::new();
+    let root = s.root();
+    let mut a = s.client("A");
+    let (file, _) = s.create_file(&mut a, &root, "file.txt", "restore");
+    let original = s.get(&file).intents.unwrap().place.unwrap().id;
+    let supplied = s.ids.uuid_v7_bytes(NOW as u64);
+    for (name, expected) in [
+        ("file.txt", original.as_slice()),
+        ("renamed.txt", supplied.as_slice()),
+    ] {
+        s.commit(&mut a, vec![delete(&file)], vec![]);
+        let mut op = restore_to(&file, &root, name);
+        op.intent = Some(Intent {
+            id: supplied.to_vec(),
+            author_device_id: a.session.device_id.clone(),
+            ..Default::default()
+        });
+        let restored = s.commit(&mut a, vec![op], vec![]);
+        assert_eq!(codes(&restored), [op_result::Code::Applied]);
+        let placed = s.get(&file);
+        assert_eq!(placed.name, name);
+        assert_eq!(placed.status, NodeStatus::Live as i32);
+        assert_eq!(placed.intents.unwrap().place.unwrap().id, expected);
+    }
 }
 
 fn reject_reasons(result: &CommitResult) -> Vec<&str> {

@@ -57,6 +57,7 @@ pub(super) struct Applier<'a> {
     remap: HashMap<String, String>,
     touched: Vec<String>,
     touched_set: BTreeSet<String>,
+    restore_place_id: Option<[u8; 16]>,
 }
 
 impl<'a> Applier<'a> {
@@ -67,6 +68,7 @@ impl<'a> Applier<'a> {
             remap: HashMap::new(),
             touched: Vec::new(),
             touched_set: BTreeSet::new(),
+            restore_place_id: None,
         }
     }
 
@@ -104,7 +106,20 @@ impl<'a> Applier<'a> {
             }
             Some(op::Op::Move(moved)) => self.move_node(moved, op.intent.as_ref()),
             Some(op::Op::Delete(op)) => Ok(self.delete(op, index)),
-            Some(op::Op::Restore(op)) => self.restore(op),
+            Some(op::Op::Restore(restore)) => {
+                self.restore_place_id = op
+                    .intent
+                    .as_ref()
+                    .filter(|intent| {
+                        restore.version_id.is_empty()
+                            && !intent.replay
+                            && intent.author_device_id == self.dev()
+                    })
+                    .and_then(|intent| intent.id.as_slice().try_into().ok());
+                let result = self.restore(restore);
+                self.restore_place_id = None;
+                result
+            }
             Some(op::Op::MarkGitTracked(_)) | None => Err(fail(
                 error::Code::InvalidArgument,
                 format!("op {index} is empty"),
@@ -268,7 +283,10 @@ impl<'a> Applier<'a> {
         let (seq, dev) = (self.ctx.seq, self.dev().to_string());
         let node = self.st.nodes.get_mut(node_id).expect("revived node exists");
         if node.parent_id.as_deref() != Some(parent_id) || node.name != name {
-            node.place_id = Some(self.st.ids.uuid_v7_bytes(self.ctx.now_ms as u64));
+            node.place_id = Some(
+                self.restore_place_id
+                    .unwrap_or_else(|| self.st.ids.uuid_v7_bytes(self.ctx.now_ms as u64)),
+            );
         }
         node.status = NodeStatus::Live;
         node.parent_id = Some(parent_id.to_string());
