@@ -1311,3 +1311,61 @@ fn an_owed_delete_under_a_folder_a_scan_missed_waits_until_the_folder_is_found_o
     }
     assert!(wrong.is_empty(), "{wrong:#?}");
 }
+
+#[test]
+fn a_save_that_renames_the_file_away_and_writes_it_again_keeps_its_node() {
+    type Save = fn(&Path, &mut dyn FnMut(&str));
+    let shapes: [(&str, &str, Save); 2] = [
+        ("vim", "report.txt", |docs, scan| {
+            fs::rename(docs.join("report.txt"), docs.join("report.txt~")).unwrap();
+            scan("report.txt~");
+            fs::write(docs.join("report.txt"), b"version two").unwrap();
+            scan("report.txt");
+            fs::remove_file(docs.join("report.txt~")).unwrap();
+        }),
+        ("word", "report.docx", |docs, scan| {
+            fs::write(docs.join("~WRD0000.tmp"), b"version two").unwrap();
+            scan("~WRD0000.tmp");
+            fs::rename(docs.join("report.docx"), docs.join("~WRL0001.tmp")).unwrap();
+            fs::rename(docs.join("~WRD0000.tmp"), docs.join("report.docx")).unwrap();
+            scan("~WRL0001.tmp");
+            fs::remove_file(docs.join("~WRL0001.tmp")).unwrap();
+        }),
+    ];
+    for (shape, name, save) in shapes {
+        for sending in [false, true] {
+            clock::freeze();
+            let mut remote = Remote::new();
+            let (site, mut a) = linked(&mut remote, "a");
+            let docs = site.root.join("docs");
+            fs::create_dir_all(&docs).unwrap();
+            a.create(&mut remote, &docs.join(name), b"version one");
+            a.rest(&mut remote);
+            let before = live_id(&server_nodes(&remote), name);
+            save(&docs, &mut |seen| {
+                a.scan_until(|a| {
+                    (a.folder.engine.trees.local().iter()).any(|(_, node)| node.shape.name == seen)
+                });
+                if sending {
+                    a.rest(&mut remote);
+                }
+            });
+            a.rest(&mut remote);
+            let live: Vec<String> = (server_nodes(&remote).into_iter())
+                .filter(|node| node.2)
+                .map(|node| node.0)
+                .collect();
+            assert_eq!(live, ["docs", name], "{shape}, sending {sending}");
+            assert_eq!(
+                live_id(&server_nodes(&remote), name),
+                before,
+                "{shape}, sending {sending}"
+            );
+            assert_eq!(
+                server_bytes(&remote, &before),
+                b"version two",
+                "{shape}, sending {sending}"
+            );
+        }
+    }
+}
