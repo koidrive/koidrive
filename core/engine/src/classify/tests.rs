@@ -933,9 +933,9 @@ mod holders_against_a_rebuild {
     }
 
     fn check_index(index: &ByName, expected: &[(NodeId, &LocalNode)]) {
-        let mut keys: BTreeMap<(NodeId, String), Vec<NodeId>> = BTreeMap::new();
+        let mut keys: BTreeMap<(NodeId, u32), Vec<NodeId>> = BTreeMap::new();
         for (id, n) in expected {
-            keys.entry((n.shape.parent.clone(), name_key(&n.shape.name)))
+            keys.entry(ByName::key(&n.shape))
                 .or_default()
                 .push(id.clone());
         }
@@ -960,12 +960,23 @@ mod holders_against_a_rebuild {
             want.reverse();
             assert_eq!(back, want);
         }
+        let names: BTreeMap<&NodeId, &str> = (expected.iter())
+            .map(|(id, n)| (id, n.shape.name.as_str()))
+            .collect();
         for name in NAMES {
-            let got: Vec<NodeId> = index.holders(&"root".into(), name).cloned().collect();
-            let want = keys
-                .get(&("root".to_owned().into(), name_key(name)))
-                .cloned()
-                .unwrap_or_default();
+            let got: Vec<NodeId> = (index
+                .holders(&"root".into(), name, |id| names.get(id).copied()))
+            .cloned()
+            .collect();
+            let want: Vec<NodeId> = (names.iter())
+                .filter(|(id, held)| {
+                    expected
+                        .iter()
+                        .any(|(e, n)| e == **id && n.shape.parent == "root")
+                        && name_key(held) == name_key(name)
+                })
+                .map(|(id, _)| (*id).clone())
+                .collect();
             assert_eq!(got, want);
         }
         let children: Vec<NodeId> = index.children(&"root".into()).cloned().collect();
@@ -1438,4 +1449,127 @@ fn a_restored_node_moved_out_of_an_ignored_folder_is_not_excluded_while_its_remo
     trees.set_local("n".into(), kept_local(&"root".into(), "x", Kind::File, 2));
     trees.wait("n".into(), None, Origin::Other);
     assert!(!trees.excluded(&"n".into()));
+}
+
+#[test]
+fn names_whose_keys_share_a_hash_stay_apart() {
+    let mut seen = std::collections::HashMap::new();
+    let (a, b) = (0u32..)
+        .map(|i| format!("c{i}"))
+        .find_map(|name| {
+            seen.insert(key_hash(&name), name.clone())
+                .map(|other| (other, name))
+        })
+        .unwrap();
+    let root = NodeId::from("root");
+    let shape = |name: &str| Shape {
+        parent: root.clone(),
+        name: name.into(),
+        kind: Kind::File,
+        content: None,
+    };
+    let names = BTreeMap::from([
+        (NodeId::from("a"), a.as_str()),
+        (NodeId::from("b"), b.as_str()),
+    ]);
+    let mut index = ByName::default();
+    for (id, name) in &names {
+        index.insert(id, &shape(name));
+    }
+    for (id, name) in &names {
+        let held: Vec<&NodeId> = index
+            .holders(&root, name, |id| names.get(id).copied())
+            .collect();
+        assert_eq!(held, [id], "{name}");
+    }
+    index.remove(&NodeId::from("a"), &shape(&a));
+    assert_eq!(
+        index
+            .holders(&root, &a, |id| names.get(id).copied())
+            .count(),
+        0
+    );
+    assert_eq!(
+        index.children(&root).collect::<Vec<_>>(),
+        [&NodeId::from("b")]
+    );
+}
+
+#[test]
+fn a_synced_rename_between_names_whose_keys_share_a_hash_keeps_the_node_held() {
+    let mut seen = std::collections::HashMap::new();
+    let (a, b) = (0u32..)
+        .map(|i| format!("c{i}"))
+        .find_map(|name| {
+            seen.insert(key_hash(&name), name.clone())
+                .map(|other| (other, name))
+        })
+        .unwrap();
+    let file = |name: &str| Shape {
+        parent: "root".into(),
+        name: name.into(),
+        kind: Kind::File,
+        content: None,
+    };
+    let mut trees = Trees::new("root");
+    trees.set_synced("n".into(), Some(file(&a)));
+    trees.set_synced("n".into(), Some(file(&b)));
+    assert_eq!(
+        trees.synced_holders(&"root".into(), &b).collect::<Vec<_>>(),
+        [&NodeId::from("n")]
+    );
+    assert!(!trees.set_synced_if_valid("m".into(), Some(file(&b))));
+}
+
+#[test]
+fn names_built_to_share_an_fnv_hash_are_synced_in_linear_reads() {
+    use crate::tree::{ENTRIES_BUDGET, ENTRIES_READ};
+    let fnv = |hash: u32, block: &[u8]| {
+        (block.iter()).fold(hash, |hash, byte| {
+            (hash ^ u32::from(*byte)).wrapping_mul(0x0100_0193)
+        })
+    };
+    let colliding = |stages: usize| {
+        let alphabet = b"abcdefghijklmnopqrstuvwxyz0123456789";
+        let mut state = 0x811c_9dc5;
+        let mut pairs = Vec::new();
+        for _ in 0..stages {
+            let mut seen = HashMap::new();
+            let (a, b, next) = (0..alphabet.len().pow(4))
+                .find_map(|i| {
+                    let block: Vec<u8> = (0..4u32)
+                        .map(|j| alphabet[i / alphabet.len().pow(j) % alphabet.len()])
+                        .collect();
+                    let hash = fnv(state, &block);
+                    (seen.insert(hash, block.clone())).map(|other| (other, block, hash))
+                })
+                .unwrap();
+            pairs.push((a, b));
+            state = next;
+        }
+        (0..1usize << stages).map(move |bits| {
+            let pick = |(j, (a, b)): (usize, &(Vec<u8>, Vec<u8>))| {
+                String::from_utf8(if bits >> j & 1 == 0 { a } else { b }.clone()).unwrap()
+            };
+            pairs.iter().enumerate().map(pick).collect::<String>()
+        })
+    };
+    let reads = |stages, budget: u64| {
+        let mut trees = Trees::new("root");
+        let before = ENTRIES_READ.with(Cell::get);
+        ENTRIES_BUDGET.with(|limit| limit.set(before.saturating_add(budget)));
+        for (i, name) in colliding(stages).enumerate() {
+            let shape = Shape {
+                parent: "root".into(),
+                name,
+                kind: Kind::File,
+                content: None,
+            };
+            assert!(trees.set_synced_if_valid(format!("n{i}").into(), Some(shape)));
+        }
+        ENTRIES_BUDGET.with(|limit| limit.set(u64::MAX));
+        ENTRIES_READ.with(Cell::get) - before
+    };
+    let two_hundred_fifty_six = reads(8, u64::MAX);
+    reads(11, two_hundred_fifty_six * 11);
 }

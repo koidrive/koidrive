@@ -1441,6 +1441,7 @@ dependencies = [
  "prost",
  "serde",
  "sha2",
+ "siphasher",
  "unicode-normalization",
 ]
 
