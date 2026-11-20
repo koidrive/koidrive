@@ -134,11 +134,21 @@ while True:
 
     def test_parallel_bounds_and_worker_selection(self):
         for extra in (("--parallel", "0"), ("--parallel", "9"), ("--repeat", "101"),
-                      ("--mode", "worker", "--test", "wrong"), ("--filter=-option",)):
+                      ("--mode", "worker", "--test", "wrong"), ("--filter=-option",),
+                      ("--mode", "worker", "--test", "first_sync_bench"), ("--mode", "worker", "--release", "true"),
+                      ("--crate", "koidrive-driver", "--release", "true")):
             with self.subTest(extra=extra), redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
                 self.args(*extra)
         self.assertEqual(self.args("--mode", "worker").test, "server")
         self.assertEqual(self.args("--mode", "worker", "--crate", "koidrive-driver").test, "sync")
+
+    def test_driver_worker_runs_the_selected_target_in_the_selected_profile(self):
+        self.worker_fixture("koidrive-driver")
+        args = self.args("--mode", "worker", "--crate", "koidrive-driver", "--test", "first_sync_bench", "--release", "true")
+        self.assertEqual([row["result"] for row in self.run_tests(args)], ["pass"])
+        probe = json.loads((self.probes / "17.start").read_text())
+        self.assertEqual(probe["args"][probe["args"].index("--test") + 1], "first_sync_bench")
+        self.assertIn("--release", probe["args"])
 
     def test_real_processes_overlap_and_forward_selection_and_budgets(self):
         args = self.args("--repeat", "3", "--parallel", "3", "--test", "send",
@@ -196,7 +206,7 @@ while True:
                     self.assertIn("--ignored", probe["args"])
                     self.assertEqual(probe["args"][-2:], ["--ignored", "selected test"])
                     self.assertEqual(probe["args"][probe["args"].index("--features") + 1], "serde")
-                    self.assertEqual(probe["args"][probe["args"].index("--test") + 1], stress.WORKERS[crate][1])
+                    self.assertEqual(probe["args"][probe["args"].index("--test") + 1], stress.WORKERS[crate][1][0])
                     self.assertIn("selected test", probe["args"])
                     self.assertIn("--test", probe["args"])
 
