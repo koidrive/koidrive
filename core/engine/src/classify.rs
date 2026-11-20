@@ -4143,8 +4143,17 @@ impl Trees {
 
     fn unedited_kept_rules_file(&self, id: &NodeId) -> bool {
         self.kept_rules_file(id)
-            && self.r.get(id).is_some()
-            && (!self.unsent_edits.contains(id) || self.holds_remote_content(id))
+            && (if self.r.get(id).is_some() {
+                !self.unsent_edits.contains(id) || self.holds_remote_content(id)
+            } else {
+                !self.unsent_edits.contains(id)
+                    && self.l.get(id).is_some_and(|local| {
+                        let folder = &local.shape.parent;
+                        self.r.get(folder).is_none()
+                            && self.discarded.contains_key(folder)
+                            && self.kept_as_discarded_in(id, folder)
+                    })
+            })
     }
 
     fn holds_remote_content(&self, id: &NodeId) -> bool {
