@@ -756,14 +756,15 @@ impl<'r> Pending<'r> {
                 }
                 left = left.saturating_sub(1);
                 cut(Cut::OpeningDir(&path));
-                let sub = match open_dir_at(above, &name) {
-                    Ok(sub) => sub,
-                    Err(err) => {
-                        if !is_gone(&err) {
-                            walk.unopened.insert(path);
-                        }
+                let opened =
+                    open_dir_at(above, &name).and_then(|sub| Ok((stat_fd(sub.as_fd())?.id, sub)));
+                let sub = match opened {
+                    Ok((id, sub)) if id.same(&entry.id) => sub,
+                    Err(err) if !is_gone(&err) => {
+                        walk.unopened.insert(path);
                         continue 'walk;
                     }
+                    _ => break 'step Replaced::Path(path),
                 };
                 let Some(names) = listed(sub.as_fd(), &path, &mut walk.unopened) else {
                     continue 'walk;
