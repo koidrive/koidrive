@@ -1074,42 +1074,66 @@ fn a_delete_waiting_at_a_restart_is_sent_whenever_a_rule_leaves_its_file_out() {
     }
 }
 
+fn report_removed_while_sending(remote: &mut Remote, dir: &str) -> (Site, Device, String) {
+    clock::freeze();
+    let (site, mut a) = linked(remote, "a");
+    fs::create_dir_all(site.root.join("docs")).unwrap();
+    fs::create_dir_all(site.root.join("box")).unwrap();
+    let report = site.root.join(dir).join("report.txt");
+    a.create(remote, &report, b"version one");
+    a.rest(remote);
+    let before = live_id(&server_nodes(remote), "report.txt");
+    fs::write(site.root.join("other.txt"), b"other").unwrap();
+    a.scan_until(|a| a.folder.engine.commits.in_flight().is_some());
+    fs::remove_file(&report).unwrap();
+    let id = NodeId::from(&before);
+    a.scan_until(|a| a.folder.engine.trees.local().get(&id).is_none());
+    (site, a, before)
+}
+
+fn report_folder_after(site: &Site, place: &str) -> std::path::PathBuf {
+    match place {
+        "root" => site.root.clone(),
+        "papers" | "box/docs" => {
+            fs::rename(site.root.join("docs"), site.root.join(place)).unwrap();
+            site.root.join(place)
+        }
+        "deleted" => {
+            fs::remove_dir(site.root.join("docs")).unwrap();
+            site.root.join("docs")
+        }
+        _ => site.root.join("docs"),
+    }
+}
+
+fn report_rule(place: &str) -> &'static [u8] {
+    if place == "rule docs/" {
+        b"docs/\n"
+    } else {
+        b"report.txt\n"
+    }
+}
+
 #[test]
-fn a_file_put_back_at_the_path_a_rule_leaves_out_keeps_its_node_on_the_server() {
+fn a_file_put_back_where_a_rule_leaves_it_out_keeps_its_node_wherever_its_folder_went() {
     let orders = [
         "both while stopped",
         "rule before the stop",
         "both while running",
     ];
-    for (order, folder) in orders
+    let places = ["root", "docs", "papers", "box/docs", "rule docs/"];
+    let mut wrong = Vec::new();
+    for (order, place) in orders
         .into_iter()
-        .flat_map(|order| [(order, "docs"), (order, "papers")])
+        .flat_map(|order| places.map(|place| (order, place)))
     {
-        clock::freeze();
         let mut remote = Remote::new();
-        let (site, mut a) = linked(&mut remote, "a");
-        fs::create_dir_all(site.root.join("docs")).unwrap();
-        let report = site.root.join("docs/report.txt");
-        a.create(&mut remote, &report, b"version one");
-        a.rest(&mut remote);
-        let before = live_id(&server_nodes(&remote), "report.txt");
-        fs::write(site.root.join("other.txt"), b"other").unwrap();
-        a.scan_until(|a| a.folder.engine.commits.in_flight().is_some());
-        fs::remove_file(&report).unwrap();
-        a.scan_until(|a| {
-            a.folder
-                .engine
-                .trees
-                .local()
-                .get(&NodeId::from(&before))
-                .is_none()
-        });
-        let ignore = || fs::write(site.root.join(".koiignore"), b"report.txt\n").unwrap();
+        let dir = if place == "root" { "" } else { "docs" };
+        let (site, mut a, before) = report_removed_while_sending(&mut remote, dir);
+        let ignore = || fs::write(site.root.join(".koiignore"), report_rule(place)).unwrap();
         let put_back = || {
-            if folder != "docs" {
-                fs::rename(site.root.join("docs"), site.root.join(folder)).unwrap();
-            }
-            fs::write(site.root.join(folder).join("report.txt"), b"version one").unwrap();
+            let folder = report_folder_after(&site, place);
+            fs::write(folder.join("report.txt"), b"version one").unwrap();
         };
         if order != "both while stopped" {
             ignore();
@@ -1128,11 +1152,11 @@ fn a_file_put_back_at_the_path_a_rule_leaves_out_keeps_its_node_on_the_server() 
         }
         a.rest(&mut remote);
         let nodes = server_nodes(&remote);
-        assert!(
-            nodes.contains(&("report.txt".to_owned(), before, true)),
-            "{order} under {folder}: {nodes:?}"
-        );
+        if !nodes.contains(&("report.txt".to_owned(), before, true)) {
+            wrong.push(format!("{order} at {place}: {nodes:?}"));
+        }
     }
+    assert!(wrong.is_empty(), "{wrong:#?}");
 }
 
 #[test]
@@ -1194,19 +1218,28 @@ fn a_delete_the_server_refused_after_a_rule_left_its_file_out_is_sent_again_afte
 }
 
 #[test]
-fn an_owed_delete_leaves_the_server_when_its_folder_is_deleted() {
-    let mut remote = Remote::new();
-    let (site, mut a, before) = report_removed(&mut remote);
-    fs::write(site.root.join("other.txt"), b"other").unwrap();
-    a.scan_until(|a| a.folder.engine.commits.in_flight().is_some());
-    fs::write(site.root.join(".koiignore"), b"report.txt\n").unwrap();
-    a.scan_until(|_| local_holds(&site, ".koiignore"));
-    fs::remove_dir(site.root.join("docs")).unwrap();
-    a.rescan();
-    a.rest(&mut remote);
-    let nodes = server_nodes(&remote);
-    assert!(
-        nodes.contains(&("report.txt".to_owned(), before, false)),
-        "{nodes:?}"
-    );
+fn an_owed_delete_leaves_the_server_wherever_its_folder_went() {
+    let mut wrong = Vec::new();
+    for place in [
+        "root",
+        "docs",
+        "papers",
+        "box/docs",
+        "rule docs/",
+        "deleted",
+    ] {
+        let mut remote = Remote::new();
+        let dir = if place == "root" { "" } else { "docs" };
+        let (site, mut a, before) = report_removed_while_sending(&mut remote, dir);
+        fs::write(site.root.join(".koiignore"), report_rule(place)).unwrap();
+        a.scan_until(|_| local_holds(&site, ".koiignore"));
+        report_folder_after(&site, place);
+        a.rescan();
+        a.rest(&mut remote);
+        let nodes = server_nodes(&remote);
+        if !nodes.contains(&("report.txt".to_owned(), before, false)) {
+            wrong.push(format!("{place}: {nodes:?}"));
+        }
+    }
+    assert!(wrong.is_empty(), "{wrong:#?}");
 }

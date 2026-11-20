@@ -1002,7 +1002,10 @@ impl Disk {
     }
 
     pub(super) fn owed_name_absent(&self, trees: &Trees, synced: &Shape) -> Option<bool> {
-        if trees.local().get(&synced.parent).is_none() && !trees.missing().contains(&synced.parent)
+        let parent = &synced.parent;
+        if *parent != trees.local().root
+            && trees.local().get(parent).is_none()
+            && !trees.excluded(parent)
         {
             return Some(true);
         }
