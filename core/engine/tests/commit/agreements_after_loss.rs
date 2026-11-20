@@ -1667,7 +1667,7 @@ fn a_copy_of_a_resend_beside_another_devices_later_edit_is_no_change_of_this_dev
 }
 
 #[test]
-fn a_node_sent_again_after_a_loss_to_a_place_its_rules_exclude_on_the_server_is_created_where_l_holds_it() {
+fn a_resend_to_a_place_its_rules_exclude_on_the_server_is_created_where_l_holds_it() {
     for renamed in [false, true] {
         let folder = if renamed { "p" } else { "blocked" };
         let mut trees = trees(&[
@@ -1687,9 +1687,22 @@ fn a_node_sent_again_after_a_loss_to_a_place_its_rules_exclude_on_the_server_is_
         assert!(trees.excluded(&"f".into()), "{renamed}");
         let synced = trees.taken_from_others(|_| false);
         trees.remove_remote(&"f".into());
-        trees.forget_lost(Vec::new(), Vec::new(), synced, Vec::new(), Vec::new(), Default::default(), &Default::default(), 0, 0);
+        trees.forget_lost(
+            Vec::new(),
+            Vec::new(),
+            synced,
+            Vec::new(),
+            Vec::new(),
+            Default::default(),
+            &Default::default(),
+            0,
+            0,
+        );
         trees.settle(&Default::default());
-        assert!(trees.state().lost_positions.contains_key(&"f".into()), "{renamed}");
+        assert!(
+            trees.state().lost_positions.contains_key(&"f".into()),
+            "{renamed}"
+        );
         assert!(!trees.excluded(&"f".into()), "{renamed}");
         let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
         let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
@@ -1699,7 +1712,10 @@ fn a_node_sent_again_after_a_loss_to_a_place_its_rules_exclude_on_the_server_is_
                 _ => None,
             })
             .collect();
-        assert_eq!(created, [("f".into(), ROOT.into(), "f".into())], "{renamed}");
+        assert_eq!(
+            created,
+            [("f".into(), ROOT.into(), "f".into())],
+            "{renamed}"
+        );
     }
 }
-
