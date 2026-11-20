@@ -956,8 +956,8 @@ impl Device {
                             if !folders.insert(folder.clone()) {
                                 break;
                             }
-                            above = (self.trees.local().get(&folder))
-                                .map(|n| n.shape.parent.clone());
+                            above =
+                                (self.trees.local().get(&folder)).map(|n| n.shape.parent.clone());
                         }
                     }
                     folders
@@ -2683,9 +2683,7 @@ fn local_writes_check(
     local_writes: &BTreeSet<Vec<u8>>,
 ) -> Result<(), TestCaseError> {
     let unsent = (device.trees.local().iter())
-        .filter(|(id, _)| {
-            (device.trees.ignored(id) || waiting.contains(*id)) && device.on_disk(id)
-        })
+        .filter(|(id, _)| (device.trees.ignored(id) || waiting.contains(*id)) && device.on_disk(id))
         .map(|(_, node)| node.shape.content.clone());
     let in_ignored_folders = (device.ignored.iter())
         .filter(|((holder, below), entry)| {
