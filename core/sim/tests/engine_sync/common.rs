@@ -2354,9 +2354,11 @@ fn run_ignoring_answering_after(
                 .into_iter()
                 .filter(|(id, _)| !asked_again.contains(id))
                 .collect();
-            let seen = (shown.iter()).filter(|(id, _)| !device.off_disk.contains(*id));
-            let contents = written(seen.map(|(_, shape)| shape.content), 1);
-            local_writes.retain(|write| !contents.contains(write));
+            let (unseen, seen): (Vec<_>, Vec<_>) =
+                (shown.iter()).partition(|(id, _)| device.off_disk.contains(*id));
+            let unseen = written(unseen.iter().map(|(_, shape)| shape.content), 1);
+            let contents = written(seen.iter().map(|(_, shape)| shape.content), 1);
+            local_writes.retain(|write| !contents.contains(write) || unseen.contains(write));
             for id in shown.keys() {
                 if !device.off_disk.contains(id) {
                     device.touched.remove(id);
