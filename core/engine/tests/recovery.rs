@@ -10,7 +10,7 @@ use koidrive_engine::effects::{BatchLimit, Effect, EffectRecord, Effects};
 use koidrive_engine::first_link::{History, Log, LogRead, Marks, PriorSync};
 use koidrive_engine::ids::IdGen;
 use koidrive_engine::ignore::{RuleFile, Source};
-use koidrive_engine::journal::{FieldIntent, IntentId, NodeIntents};
+use koidrive_engine::journal::{Author, Field, FieldIntent, IntentId, NodeIntents, Value};
 use koidrive_engine::names::{nfc, same_name};
 use koidrive_engine::question::{
     Answer, Question, QuestionKind, RecoveryCause, RecoveryGroup, RecoveryTrigger,
@@ -1091,6 +1091,76 @@ fn a_folder_deleted_on_this_device_stays_held_while_a_file_in_it_lost_its_rename
         [("delete", "d".to_owned())]
     );
     assert_eq!(effects(&mut trees, &mut ids), []);
+}
+
+fn deleted_while_the_store_was_behind(names: &[&str]) -> (Trees, Commits, IdGen, Question) {
+    let files: Vec<(&str, Shape)> = (names.iter()).map(|id| (*id, file(ROOT, id, 1))).collect();
+    let remote: Vec<Remote> = (files.iter())
+        .map(|(id, shape)| live(id, shape.clone()))
+        .collect();
+    let mut trees = trees(&files, &files, &remote);
+    for id in names {
+        trees.remove_local(&(*id).into());
+    }
+    let behind = RecoveryCause::of(RecoveryTrigger::StoreOlderThanDisk);
+    let (commits, ids) = recovered_after(&mut trees, 0, behind);
+    assert!(commits.halted().is_none());
+    let question = asked(&commits, RecoveryGroup::DeletedOnThisDevice, names);
+    (trees, commits, ids, question)
+}
+
+#[test]
+fn a_journal_backfill_records_no_delete_of_a_file_a_store_rollback_question_holds() {
+    let (mut trees, mut commits, mut ids, question) = deleted_while_the_store_was_behind(&["c"]);
+    trees.backfill(None, false, NOW);
+    assert!(trees.journal_row(&"c".into(), Field::Status).is_none());
+    assert!(commits.decide(&mut trees, &question.id, Answer::Restore));
+    assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
+    assert!(trees.journal_row(&"c".into(), Field::Status).is_none());
+}
+
+#[test]
+fn a_delete_answered_after_a_store_rollback_is_recorded_before_the_guard_lets_it_out() {
+    let names: Vec<String> = (0..20).map(|i| format!("f{i:02}")).collect();
+    let names: Vec<&str> = names.iter().map(String::as_str).collect();
+    let (mut trees, mut commits, mut ids, question) = deleted_while_the_store_was_behind(&names);
+    trees.backfill(None, false, NOW);
+    assert!(commits.decide(&mut trees, &question.id, Answer::Delete));
+    assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
+    let recorded: BTreeMap<String, IntentId> = (names.iter())
+        .map(|id| {
+            let row = trees
+                .journal_row(&(*id).into(), Field::Status)
+                .expect(id)
+                .into_owned();
+            assert_eq!(
+                (row.author, row.value),
+                (Author::Own, Value::Status { live: false })
+            );
+            ((*id).to_owned(), row.intent)
+        })
+        .collect();
+    let guard = (commits.questions().iter())
+        .find(|q| matches!(q.kind, QuestionKind::MassDelete { .. }))
+        .expect("the guard holds the deletions")
+        .id
+        .clone();
+    assert!(commits.decide(&mut trees, &guard, Answer::Delete));
+    commits.connected(&Welcome {
+        features: vec!["field_intents".into()],
+        ..Default::default()
+    });
+    let commit = (commits.build(&mut trees, &mut ids, NOW, NEW, "me", 1)).unwrap();
+    let sent: BTreeMap<String, IntentId> = (commit.ops.iter())
+        .map(|op| match &op.op {
+            Some(op::Op::Delete(delete)) => (
+                delete.node_id.clone(),
+                IntentId::from_bytes(&op.intent.as_ref().unwrap().id).unwrap(),
+            ),
+            other => panic!("{other:?}"),
+        })
+        .collect();
+    assert_eq!(sent, recorded);
 }
 
 fn deleted_after_a_rewind_to_an_older_version() -> (Trees, Commits, IdGen) {
