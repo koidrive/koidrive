@@ -1167,7 +1167,7 @@ impl Folder {
     fn drive(&mut self, work: &mut Vec<Work>) -> Result<(), Stop> {
         self.publish_remote()?;
         let staging = !self.engine.effects.in_flight().is_empty();
-        let held = !self.scanned || staging || self.disk.awaits_scan();
+        let held = !self.scanned || staging;
         if held || !matches!(self.stream, Stream::Following { .. }) {
             return Ok(());
         }
@@ -1179,7 +1179,6 @@ impl Folder {
             return Ok(());
         }
         let may_build = matches!(self.flight, Flight::Idle)
-            && !self.disk.awaits_rescan()
             && self.engine.commits.in_flight().is_none()
             && self.caught_up()
             && self.disconnected.is_none()

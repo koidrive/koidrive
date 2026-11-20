@@ -157,6 +157,26 @@ fn excluded(matcher: &Matcher, path: &[&str], kinds: &[Kind]) -> bool {
     })
 }
 
+fn placed_names<'a, N: Node>(tree: &'a Tree<N>, id: &NodeId) -> Option<Vec<&'a str>> {
+    let held = |id: &NodeId| {
+        (tree.get(id))
+            .filter(|node| node.is_live() && node.is_placed())
+            .map(|node| node.shape())
+    };
+    let mut names = Vec::new();
+    let mut current = id;
+    for _ in 0..=tree.len() {
+        if *current == tree.root {
+            names.reverse();
+            return Some(names);
+        }
+        let shape = held(current)?;
+        names.push(shape.name.as_str());
+        current = &shape.parent;
+    }
+    None
+}
+
 pub(crate) fn path<'a, N: Node>(tree: &'a Tree<N>, id: &NodeId) -> Option<(Vec<&'a str>, Kind)> {
     let held = |id: &NodeId| tree.get(id).filter(|node| node.is_live());
     let shape = held(id)?.shape();
@@ -692,6 +712,7 @@ pub struct Trees {
     release_due: bool,
     pending: Unsettled,
     held_for_scan: BTreeSet<NodeId>,
+    awaiting_scan: BTreeSet<Vec<String>>,
 }
 
 /// Equal when R, L, S and the state the store keeps are equal. What the trees track only until the
@@ -799,6 +820,7 @@ impl Trees {
             release_due: true,
             pending: Unsettled::default(),
             held_for_scan: BTreeSet::new(),
+            awaiting_scan: BTreeSet::new(),
         }
     }
 
@@ -2458,11 +2480,49 @@ impl Trees {
         self.asked = asked;
     }
 
-    /// Whether an open question holds the node's local entry ([`Trees::set_asked`]), or L, S or R
-    /// places it below a folder whose rules are unknown ([`Trees::set_rules_unknown`]). Neither an effect nor a
-    /// commit is planned for it, and no effect parks it to make room for another node.
+    /// Whether the node is set aside ([`Trees::set_aside`]), or L, S or R places it at or below a node that awaits a
+    /// scan ([`Trees::await_scan`]). Neither an effect nor a commit is planned for it, and no effect parks it to make
+    /// room for another node.
     pub fn held(&self, id: &NodeId) -> bool {
+        self.set_aside(id) || self.awaits_scan(id)
+    }
+
+    /// Whether an open question holds the node's local entry ([`Trees::set_asked`]), or L, S or R places it below a
+    /// folder whose rules are unknown ([`Trees::set_rules_unknown`]).
+    pub fn set_aside(&self, id: &NodeId) -> bool {
         self.asked.contains(id) || self.vanished(id) || self.below_unknown_rules(id)
+    }
+
+    /// Sets the paths, each a list of names below the root, that a scan must report before anything L, S or R places
+    /// at or below them is planned, as after an effect that changed which rules apply there or an upload that found
+    /// the disk changed. Names compare by `name_key`. Replaces the paths an earlier call set.
+    pub fn await_scan(&mut self, paths: impl IntoIterator<Item = Vec<String>>) {
+        let paths: BTreeSet<Vec<String>> = (paths.into_iter())
+            .map(|names| names.iter().map(|name| name_key(name)).collect())
+            .collect();
+        if paths == self.awaiting_scan {
+            return;
+        }
+        self.forget_reclaims();
+        self.relink |= !self.awaiting_scan.is_subset(&paths);
+        self.awaiting_scan = paths;
+    }
+
+    fn awaits_scan(&self, id: &NodeId) -> bool {
+        !self.awaiting_scan.is_empty()
+            && [
+                placed_names(&self.l, id),
+                placed_names(&self.s, id),
+                placed_names(&self.r, id),
+            ]
+            .into_iter()
+            .flatten()
+            .any(|names| {
+                (self.awaiting_scan.iter()).any(|held| {
+                    held.len() <= names.len()
+                        && (held.iter().zip(&names)).all(|(key, name)| *key == name_key(name))
+                })
+            })
     }
 
     fn below_unknown_rules(&self, id: &NodeId) -> bool {
@@ -7054,6 +7114,7 @@ impl Trees {
             release_due: _,
             pending: _,
             held_for_scan: _,
+            awaiting_scan: _,
             r_names: _,
             r_trashed: _,
             creates: _,

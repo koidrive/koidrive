@@ -856,6 +856,19 @@ impl Engine {
         folders.iter().filter_map(|id| self.path_of(id)).collect()
     }
 
+    /// Holds what L, S or R places at or below each of `paths` until the next call ([`Trees::await_scan`]). A
+    /// path holds from its first component that is not a UTF-8 name.
+    pub fn await_scan<'a>(&mut self, paths: impl IntoIterator<Item = &'a PathBuf>) {
+        self.trees.await_scan(paths.into_iter().map(|path| {
+            (path.components())
+                .map_while(|component| match component {
+                    Component::Normal(name) => name.to_str().map(str::to_owned),
+                    _ => None,
+                })
+                .collect()
+        }));
+    }
+
     pub fn sees_unobserved(&self, listed: &[PathBuf], pending: &Pending) -> bool {
         (self.trees).sees_unobserved(
             listed.iter().filter_map(|dir| local_at(&self.trees, dir)),

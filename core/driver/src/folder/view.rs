@@ -359,7 +359,7 @@ impl Folder {
         let mut other_changes = 0;
         let mut waiting = BTreeSet::new();
         for id in (trees.dirty().iter()).filter(|id| !stays_out(id)) {
-            if trees.held(id) {
+            if trees.set_aside(id) {
                 if asked.contains(id) {
                     waiting.insert(id);
                 }
