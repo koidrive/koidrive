@@ -993,11 +993,11 @@ fn a_file_edited_after_a_crash_between_placing_and_trashing_is_an_edit_of_its_no
             .map(|c| c.size)
     };
     assert_eq!(
-        live(running.engine.trees.synced().live(NODE)),
+        live(running.engine.trees.synced().live(&NodeId::from(NODE))),
         Some(REMOTE.len() as u64)
     );
     assert_eq!(
-        live(running.engine.trees.local().live(NODE)),
+        live(running.engine.trees.local().live(&NodeId::from(NODE))),
         Some(edited.len() as u64)
     );
     assert_eq!(running.step(&server), None);
@@ -1033,11 +1033,23 @@ fn a_name_the_user_takes_before_a_crash_leaves_the_node_to_r_and_keeps_their_fil
         );
         assert_eq!(names(&folder, STAGING_DIR).len(), 1, "{cut:?}");
         let running = folder.start(no_hook()).unwrap();
-        assert_eq!(running.engine.trees.synced().get(NODE), None, "{cut:?}");
+        assert_eq!(
+            running.engine.trees.synced().get(&NodeId::from(NODE)),
+            None,
+            "{cut:?}"
+        );
         assert!(running.local(NODE).is_none(), "{cut:?}");
         assert!(names(&folder, STAGING_DIR).is_empty(), "{cut:?}");
         assert!(trashed(&folder, SYNCED), "{cut:?}");
-        assert!(running.engine.trees.remote().get(NODE).is_some(), "{cut:?}");
+        assert!(
+            running
+                .engine
+                .trees
+                .remote()
+                .get(&NodeId::from(NODE))
+                .is_some(),
+            "{cut:?}"
+        );
         let user = BTreeMap::from([(PathBuf::from("report.txt"), Some(saved.to_vec()))]);
         assert_eq!(visible(&folder), user, "{cut:?}");
     }
@@ -3540,7 +3552,8 @@ fn a_store_restored_from_before_a_write_that_failed_does_not_take_its_download_a
             .observed(seen, &mut running.engine, &mut running.store)
             .unwrap();
         let content = |shape: Option<&Shape>| shape.and_then(|shape| shape.content.clone());
-        let synced = content(running.engine.trees.synced().live(NODE)).map(|c| c.size);
+        let synced =
+            content(running.engine.trees.synced().live(&NodeId::from(NODE))).map(|c| c.size);
         let expected = scenario.displaces.map(|bytes| bytes.len() as u64);
         assert_eq!(synced, expected, "{}", scenario.name);
         let user = BTreeMap::from([(PathBuf::from("report.txt"), Some(saved.to_vec()))]);
