@@ -4,6 +4,7 @@ use koidrive_engine::classify::{Origin, Trees, Waiting};
 use koidrive_engine::commit::{Base, Commits, InFlight};
 use koidrive_engine::effects::{BatchLimit, Effects};
 use koidrive_engine::ids::IdGen;
+use koidrive_engine::ignore::{RuleFile, Source};
 use koidrive_engine::journal::{
     Author, Field, FieldIntent, HistoryEntry, IntentId, NodeIntents, OpsWithoutIntent, Place, Row,
     RowState, Value, Wire, WireBase,
@@ -283,6 +284,24 @@ fn a_create_writes_a_row_for_each_of_its_fields_and_a_delete_before_any_send_end
     trees.remove_local_by_user(&"f".into());
     assert_eq!(trees.journal_rows().count(), 0);
     assert!(trees.local().get(&"f".into()).is_none());
+}
+
+#[test]
+fn a_child_the_rules_leave_out_gets_no_status_row_when_its_folder_is_deleted() {
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
+    synced(&mut trees, "d", dir(ROOT, "d"), 1);
+    synced(&mut trees, "f", file("d", "c.txt", 1), 1);
+    let rules = RuleFile::parse(b"*.txt\n");
+    trees.set_rules(&[] as &[&str; 0], Source::Koiignore, Some(rules));
+    trees.settle(&Default::default());
+    assert!(trees.unobserved(&"f".into()));
+    trees.remove_local_by_user(&"f".into());
+    trees.remove_local_by_user(&"d".into());
+    assert!(trees.journal_row(&"f".into(), Field::Status).is_none());
+    let deleted = trees
+        .journal_row(&"d".into(), Field::Status)
+        .map(|row| row.value.clone());
+    assert_eq!(deleted, Some(Value::Status { live: false }));
 }
 
 #[test]
