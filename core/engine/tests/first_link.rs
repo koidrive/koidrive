@@ -5275,6 +5275,138 @@ fn publishing_sends_a_server_file_the_user_moved_in_while_the_rules_left_it_out_
     assert!(sent.contains(&("move", "x".to_owned())), "{sent:?}");
 }
 
+#[derive(Clone, Copy, Debug)]
+enum BeforeTheRulesLetItIn {
+    AnotherDeviceTrashesIt,
+    AnotherDeviceTrashesItBeforeTheAnswer,
+    ThePersonDiscardsTheFolderAgain,
+}
+
+fn rules_let_in_a_server_folder_a_discard_took_along(
+    form: BeforeTheRulesLetItIn,
+    restart: bool,
+) -> Trees {
+    use BeforeTheRulesLetItIn::*;
+    let mut trees = trees(
+        &[
+            ("n", dir(ROOT, "new")),
+            ("s", dir(ROOT, "b")),
+            ("sx", file("s", "y", 4)),
+            ("hc", dir("n", "C.TXT")),
+        ],
+        &[
+            ("s", dir(ROOT, "b")),
+            ("sx", file("s", "y", 4)),
+            ("sa", dir("s", "ignored")),
+        ],
+    );
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(7));
+    commits.first_link(&mut trees, &mut ids, NOW, PriorSync::Shown);
+    let root: [&str; 0] = [];
+    let mut held = trees.local().get(&"hc".into()).unwrap().clone();
+    held.shape = dir("s", "C.TXT");
+    trees.set_local_changed("hc".into(), held);
+    trees.set_rules(
+        &root,
+        Source::Koiignore,
+        Some(RuleFile::parse(b"ignored/\n")),
+    );
+    let mut moved = trees.local().get(&"s".into()).unwrap().clone();
+    moved.shape = dir("n", "ignored");
+    trees.set_local_changed("s".into(), moved);
+    trees.set_local_changed("hx".into(), local_node(file("hc", "x", 3), 98));
+    trees.settle(commits.aliases());
+    let trash = |trees: &mut Trees, commits: &Commits| {
+        for id in ["s", "sx", "sa"] {
+            let mut trashed = trees.remote().get(&id.into()).unwrap().clone();
+            (trashed.trashed, trashed.meta_rev) = (true, trashed.meta_rev + 1);
+            trees.set_remote(id.into(), trashed);
+        }
+        trees.settle(commits.aliases());
+    };
+    if let AnotherDeviceTrashesItBeforeTheAnswer = form {
+        trash(&mut trees, &commits);
+    }
+    let discard = |trees: &mut Trees, commits: &mut Commits, ids: &mut IdGen| {
+        while let Some(open) = (commits.questions().iter()).find(|asked| asked.answer.is_none()) {
+            let id = open.id.clone();
+            assert!(commits.decide(trees, &id, Answer::Discard));
+            assert_eq!(ops(commits, trees, ids), []);
+        }
+    };
+    discard(&mut trees, &mut commits, &mut ids);
+    let mut effects = Effects::default();
+    run_effects(&mut effects, &mut commits, &mut trees, &mut ids, 100);
+    match form {
+        AnotherDeviceTrashesIt => trash(&mut trees, &commits),
+        ThePersonDiscardsTheFolderAgain => {
+            trees.set_local("nn".into(), local_node(dir("n", "C.TXT"), 99));
+            trees.settle(commits.aliases());
+            assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
+            discard(&mut trees, &mut commits, &mut ids);
+            run_effects(&mut effects, &mut commits, &mut trees, &mut ids, 150);
+        }
+        AnotherDeviceTrashesItBeforeTheAnswer => {}
+    }
+    trees.set_rules(&root, Source::Koiignore, None);
+    trees.settle(commits.aliases());
+    if restart {
+        trees = restarted(&trees);
+        commits = Commits::from_state(commits.state()).unwrap();
+        effects = Effects::default();
+    }
+    let mut done = run_effects(&mut effects, &mut commits, &mut trees, &mut ids, 200);
+    discard(&mut trees, &mut commits, &mut ids);
+    done.extend(run_effects(
+        &mut effects,
+        &mut commits,
+        &mut trees,
+        &mut ids,
+        250,
+    ));
+    assert_eq!(
+        ops(&mut commits, &mut trees, &mut ids),
+        [],
+        "{form:?} {restart}"
+    );
+    assert!(
+        trees.local().get(&"n".into()).is_none(),
+        "{form:?} {restart}: {done:?}"
+    );
+    trees
+}
+
+#[test]
+fn a_server_folder_another_device_trashes_goes_to_the_local_trash_with_its_discarded_folder_once_the_rules_let_it_in()
+ {
+    for form in [
+        BeforeTheRulesLetItIn::AnotherDeviceTrashesIt,
+        BeforeTheRulesLetItIn::AnotherDeviceTrashesItBeforeTheAnswer,
+    ] {
+        for restart in [false, true] {
+            let trees = rules_let_in_a_server_folder_a_discard_took_along(form, restart);
+            assert!(
+                trees.local().get(&"s".into()).is_none(),
+                "{form:?} {restart}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_server_folder_goes_back_from_a_folder_discarded_twice_once_the_rules_let_it_in() {
+    for restart in [false, true] {
+        let form = BeforeTheRulesLetItIn::ThePersonDiscardsTheFolderAgain;
+        let trees = rules_let_in_a_server_folder_a_discard_took_along(form, restart);
+        assert_eq!(
+            trees.local().get(&"s".into()).unwrap().shape,
+            dir(ROOT, "b"),
+            "{restart}"
+        );
+        assert!(trees.local().get(&"nn".into()).is_none(), "{restart}");
+    }
+}
+
 #[test]
 fn a_discard_sends_a_folder_with_a_server_file_moved_in_while_the_rules_let_it_in_and_left_out_later()
  {

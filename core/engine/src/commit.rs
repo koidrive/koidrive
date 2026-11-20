@@ -4639,7 +4639,8 @@ fn plan(
             continue;
         }
         let class = trees.acknowledged_class(id);
-        if !matches!(class, Class::Local | Class::Concurrent) {
+        let trashed = (trees.remote().get(id)).is_some_and(|node| node.trashed);
+        if !matches!(class, Class::Local | Class::Concurrent) || trashed && trees.is_discarded(id) {
             continue;
         }
         let Some((local, local_chunks)) = trees

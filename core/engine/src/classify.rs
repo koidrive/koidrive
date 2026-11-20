@@ -1482,9 +1482,18 @@ impl Trees {
         self.content_provenance
             .remote_changing(&id, &self.r, Some(&node));
         let moved = (self.r.live(&id)).is_some_and(|old| old.parent != node.shape.parent);
-        let into_taken_along = node.is_live()
-            && self.discarded.contains_key(&node.shape.parent)
-            && self.r.get(&node.shape.parent).is_some();
+        let mut into_taken_along = false;
+        let mut at = node.is_live().then_some(&node.shape.parent);
+        for _ in 0..=self.r.len() {
+            let Some(parent) = at.filter(|parent| self.r.get(parent).is_some()) else {
+                break;
+            };
+            if self.discarded.contains_key(parent) {
+                into_taken_along = true;
+                break;
+            }
+            at = self.r.live(parent).map(|shape| &shape.parent);
+        }
         if moved && into_taken_along {
             self.moved_in_after_discard.insert(id.clone());
         } else if moved || !node.is_live() {
@@ -2786,6 +2795,7 @@ impl Trees {
             && (self.local_children_placed_or_parked(id)).all(|child| {
                 self.kept_as_discarded_in(child, id)
                     || self.held_folder_discarded_in(child, id)
+                    || self.held(child)
                     || self.as_the_server_holds(child, &mut seen)
             })
             && self.keeps_the_synced_children(id, &BTreeSet::new(), &mut seen)
@@ -3265,6 +3275,7 @@ impl Trees {
                     && children.into_iter().all(|child| {
                         shown.contains_key(child)
                             || self.kept_as_discarded_in(child, id)
+                            || self.held_folder_discarded_in(child, id)
                             || self.server_copy(child, shown, landing, kept)
                     })
             }
