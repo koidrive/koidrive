@@ -34,6 +34,8 @@ pub const MAX_CHUNKS_PER_CALL: usize = 1000;
 /// How many chunks a [`Transfer`] uploads at once unless it is given another [`UploadGate`].
 pub const DEFAULT_UPLOAD_CONCURRENCY: usize = 4;
 pub const DEFAULT_DOWNLOAD_CONCURRENCY: NonZeroUsize = NonZeroUsize::new(8).unwrap();
+const BUNDLES_IN_FLIGHT: usize = 8;
+static BUNDLE_SLOTS: Semaphore = Semaphore::const_new(BUNDLES_IN_FLIGHT);
 const TARGET_MARGIN: Duration = Duration::from_secs(60);
 const MAX_PREALLOCATION: usize = 4 << 20;
 const SMALL_ANSWER: usize = 64 << 10;
@@ -295,15 +297,22 @@ impl Transfer {
                                         }
                                         loaded.push(Member { index, chunk, target, bytes, tries: 0 });
                                     }
+                                    let queued = std::time::Instant::now();
+                                    let bundle = url.is_some();
+                                    let _slot = match bundle {
+                                        true => Some(BUNDLE_SLOTS.acquire().await.expect("the semaphore is never closed")),
+                                        false => None,
+                                    };
+                                    let waited_ms = queued.elapsed().as_millis() as u64;
+                                    let in_flight = BUNDLES_IN_FLIGHT - BUNDLE_SLOTS.available_permits();
                                     let began = std::time::Instant::now();
                                     let members = loaded.len();
                                     let bytes: usize = loaded.iter().map(|member| member.bytes.len()).sum();
-                                    let bundle = url.is_some();
                                     let result = match url {
                                         Some(url) => self.send_bundle(session, url, loaded, out).await,
                                         None => self.put_each(loaded, out).await,
                                     };
-                                    tracing::info!(bundle, members, bytes, ms = began.elapsed().as_millis() as u64, ok = result.is_ok(), "measure unit");
+                                    tracing::info!(bundle, members, bytes, in_flight, waited_ms, ms = began.elapsed().as_millis() as u64, ok = result.is_ok(), "measure unit");
                                     result
                                 }
                                 .await;
