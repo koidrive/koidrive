@@ -3330,3 +3330,40 @@ fn a_new_folder_left_out_on_the_server_once_the_server_forgets_its_last_entry_is
     assert!(trees.excluded(&new));
     assert!(trees.unobserved(&new));
 }
+
+#[test]
+fn a_parked_child_does_not_mark_its_displaced_parent_unobserved() {
+    let mut trees = trees(&[
+        synced("q", dir(ROOT, "q")),
+        ("d", Some(dir("q", "d")), None, None),
+        (
+            "f",
+            None,
+            Some(file(ROOT, "f", 1)),
+            Some(file(ROOT, "f", 1)),
+        ),
+    ]);
+    let d = NodeId::from("d");
+    let parked = LocalNode {
+        parked: true,
+        ..local(file("d", "f", 1), 3)
+    };
+    trees.set_local("f".into(), parked);
+    trees.settle(&Default::default());
+    let mut commits = Commits::default();
+    commits
+        .build(&mut trees, &mut IdGen::new(1), NOW, HISTORY, "me", 7)
+        .unwrap();
+    assert!(commits.in_flight().unwrap().creates(&d));
+    trees.ignore_local(&d);
+    trees.displace_local(&d, commits.in_flight().unwrap().creates(&d));
+    trees.settle(&Default::default());
+    assert!(commits.abandon(&mut trees));
+    assert!(trees.displaced_local().contains_key(&d));
+    assert!(!trees.unobserved(&d));
+    assert_eq!(trees.check(), Ok(()));
+    set_content(&mut trees, "f", 2);
+    trees.settle(&Default::default());
+    assert!(!trees.unobserved(&d));
+    assert_eq!(trees.check(), Ok(()));
+}
