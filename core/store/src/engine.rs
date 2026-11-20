@@ -328,12 +328,17 @@ impl Tx<'_> {
         }
         let mut stmt = self
             .0
-            .prepare_cached("SELECT node_id, seq, upgraded FROM moved_here")?;
+            .prepare_cached("SELECT node_id, seq, upgraded, move_history FROM moved_here")?;
         let mut rows = stmt.query([])?;
         while let Some(row) = next_row!(rows, abandoned) {
             let moved = MovedHere {
                 seq: row.get(1)?,
                 upgraded: row.get(2)?,
+                history: row
+                    .get::<_, Option<Vec<u8>>>(3)?
+                    .map(|bytes| serde_json::from_slice(&bytes))
+                    .transpose()
+                    .map_err(|error| invalid(format!("move history: {error}")))?,
             };
             state
                 .trees
@@ -1040,8 +1045,15 @@ impl Tx<'_> {
         self.write_node_map(
             moved_here,
             "DELETE FROM moved_here WHERE node_id = ?1",
-            "INSERT OR REPLACE INTO moved_here (node_id, seq, upgraded) VALUES (?1, ?2, ?3)",
-            |put, node, moved| put.execute(params![node, moved.seq, moved.upgraded]),
+            "INSERT OR REPLACE INTO moved_here
+             (node_id, seq, upgraded, move_history) VALUES (?1, ?2, ?3, ?4)",
+            |put, node, moved| {
+                let history = moved
+                    .history
+                    .as_ref()
+                    .map(|history| serde_json::to_vec(history).expect("move history encodes"));
+                put.execute(params![node, moved.seq, moved.upgraded, history,])
+            },
         )?;
         let mut remove = self
             .0
@@ -1217,10 +1229,11 @@ impl Tx<'_> {
             }
             if let Some(flight) = in_flight {
                 self.0.execute(
-                    "INSERT INTO commit_in_flight (id, commit_message, result) VALUES (1, ?1, ?2)",
+                    "INSERT INTO commit_in_flight (id, commit_message, result, move_bases) VALUES (1, ?1, ?2, ?3)",
                     params![
                         flight.commit.encode_to_vec(),
                         flight.result.as_ref().map(CommitResult::encode_to_vec),
+                        (!flight.move_bases.is_empty()).then(|| serde_json::to_vec(&flight.move_bases).expect("move bases encode")),
                     ],
                 )?;
                 let mut targets = self
@@ -1469,12 +1482,18 @@ impl Tx<'_> {
         into: &mut Option<InFlight>,
         abandoned: &mut dyn FnMut() -> bool,
     ) -> Result<bool> {
-        let Some((commit, result)) = self
+        let Some((commit, result, move_bases)) = self
             .0
             .query_row(
-                "SELECT commit_message, result FROM commit_in_flight WHERE id = 1",
+                "SELECT commit_message, result, move_bases FROM commit_in_flight WHERE id = 1",
                 [],
-                |row| Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, Option<Vec<u8>>>(1)?)),
+                |row| {
+                    Ok((
+                        row.get::<_, Vec<u8>>(0)?,
+                        row.get::<_, Option<Vec<u8>>>(1)?,
+                        row.get::<_, Option<Vec<u8>>>(2)?,
+                    ))
+                },
             )
             .optional()?
         else {
@@ -1522,6 +1541,11 @@ impl Tx<'_> {
         }
         *into = Some(InFlight {
             commit: Commit::decode(commit.as_slice())?,
+            move_bases: move_bases
+                .map(|bytes| serde_json::from_slice(&bytes))
+                .transpose()
+                .map_err(|error| invalid(format!("move bases: {error}")))?
+                .unwrap_or_default(),
             deletes,
             restores,
             owners,

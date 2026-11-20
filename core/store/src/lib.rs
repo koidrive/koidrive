@@ -39,7 +39,7 @@ pub use engine::{EngineChanges, EngineState};
 use koidrive_engine::commit::Base;
 use koidrive_engine::tree::NodeId;
 use koidrive_fs::{FileId, Minted, Mount, RootAt, RootTokens, VolumeId};
-use koidrive_proto::v1::{Content, NodeState, VersionInfo};
+use koidrive_proto::v1::{Content, FieldIntents, Intent, NodeState, VersionInfo};
 use migrations::{LEGACY_STEPS, MIGRATIONS, NAMED};
 use prost::Message;
 pub use restore::AskedRestore;
@@ -532,7 +532,7 @@ impl Tx<'_> {
     ) -> Result<Option<B>> {
         let mut stmt = self.0.prepare_cached(
             "SELECT node_id, parent_id, name, kind, status, content_rev, meta_rev, trash_group, current,
-                    edit_rev, meta_edit_rev, pending_for, pending_by
+                    edit_rev, meta_edit_rev, pending_for, pending_by, place_intent
              FROM remote_nodes ORDER BY node_id",
         )?;
         let rows = stmt.query_map([], |row| {
@@ -554,11 +554,16 @@ impl Tx<'_> {
                     ..Default::default()
                 },
                 row.get::<_, Option<Vec<u8>>>(8)?,
+                row.get::<_, Option<Vec<u8>>>(13)?,
             ))
         })?;
         for row in rows {
-            let (mut node, current) = row?;
+            let (mut node, current, place_intent) = row?;
             node.current = decode(current)?;
+            node.intents = decode::<Intent>(place_intent)?.map(|place| FieldIntents {
+                place: Some(place),
+                ..Default::default()
+            });
             if let ControlFlow::Break(stopped) = each(node) {
                 return Ok(Some(stopped));
             }
@@ -572,14 +577,15 @@ impl Tx<'_> {
             .prepare_cached(
                 "INSERT INTO remote_nodes
                  (node_id, parent_id, name, kind, status, content_rev, meta_rev, trash_group, current,
-                  edit_rev, meta_edit_rev, pending_for, pending_by)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+                  edit_rev, meta_edit_rev, pending_for, pending_by, place_intent)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
                  ON CONFLICT (node_id) DO UPDATE SET parent_id = excluded.parent_id,
                   name = excluded.name, kind = excluded.kind, status = excluded.status,
                   content_rev = excluded.content_rev, meta_rev = excluded.meta_rev,
                   trash_group = excluded.trash_group, current = excluded.current,
                   edit_rev = excluded.edit_rev, meta_edit_rev = excluded.meta_edit_rev,
-                  pending_for = excluded.pending_for, pending_by = excluded.pending_by",
+                  pending_for = excluded.pending_for, pending_by = excluded.pending_by,
+                  place_intent = excluded.place_intent",
             )?
             .execute(params![
                 node.node_id,
@@ -595,6 +601,7 @@ impl Tx<'_> {
                 node.meta_edit_rev,
                 non_empty(&node.pending_for),
                 non_empty(&node.pending_by),
+                node.intents.as_ref().and_then(|intents| intents.place.as_ref()).map(Intent::encode_to_vec),
             ])?;
         Ok(())
     }

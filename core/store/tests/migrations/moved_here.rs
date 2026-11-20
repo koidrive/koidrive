@@ -58,6 +58,7 @@ fn a_store_from_before_moves_were_recorded_records_the_positions_its_commits_set
     let mut store = Store::open(&path).unwrap();
     let after = before.clone();
     let upgraded = |seq| MovedHere {
+        history: None,
         seq,
         upgraded: true,
     };

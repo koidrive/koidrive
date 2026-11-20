@@ -1,0 +1,8 @@
+230
+# Device regressions check that a reused revision with a different place ID, a replay at a different name, and a delete that keeps the place ID do not let a lost rename override newer server state.
+# Consecutive renames and a process restart after a listing check that verified move history lets the user's original rename reach the server again.
+# The engine tests isolate the record fields and cover the move out of the trash; the pinned-release upgrade case covers both old rows with no proof and durable move history with more than one base.
+# GUN-1381 has three reconnect schedules, each with the same exact PlaceKept check on main. They are acceptance cases for the intent journal.
+# The simulator's Restore regression checks the supplied place ID against the Worker's unchanged-place and changed-place cases.
+# The simulator compares version IDs with and without placement changes and checks that restoring storage does not reuse a discarded place ID.
+# The extra line initializes move_bases in the InFlight test literal added by #823.

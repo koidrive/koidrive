@@ -5,10 +5,10 @@ use std::collections::{BTreeMap, HashMap};
 use koidrive_engine::ids::IdGen;
 use koidrive_engine::names::conflict_name;
 use koidrive_proto::v1::{
-    ChunkRef, Commit, CommitResult, Content, CreateDir, CreateFile, Delete, Error, ListTrash,
-    ListTree, ListVersions, Move, NodeState, NodeStatus, Op, PrepareUpload, Restore, Resume,
-    RpcRequest, UpdateContent, UploadReceipt, chunk_plan, error, op, op_result, resync_required,
-    rpc_request, rpc_response,
+    ChunkRef, Commit, CommitResult, Content, CreateDir, CreateFile, Delete, Error, Intent,
+    ListTrash, ListTree, ListVersions, Move, NodeState, NodeStatus, Op, PrepareUpload, Restore,
+    Resume, RpcRequest, UpdateContent, UploadReceipt, chunk_plan, error, op, op_result,
+    resync_required, rpc_request, rpc_response,
 };
 use koidrive_sim::space::{Role, Session, SpaceDo, node_states};
 use sha2::{Digest, Sha256};
@@ -1159,6 +1159,84 @@ fn restore_to(id: &str, parent: &str, name: &str) -> Op {
         name: name.into(),
         ..Default::default()
     }))
+}
+
+#[test]
+fn minting_place_ids_does_not_change_version_ids() {
+    let version_after = |change_dir: bool| {
+        let mut s = Space::new();
+        let root = s.root();
+        let mut a = s.client("A");
+        let (dir, file) = (s.id(), s.id());
+        let content = Space::content("first");
+        let receipts = s.upload(&a, &content);
+        let mut ops = Vec::new();
+        if change_dir {
+            ops.extend([
+                mkdir(&dir, &root, "dir"),
+                mv(&dir, &root, "moved"),
+                delete(&dir),
+                restore_to(&dir, &root, "restored"),
+            ]);
+        }
+        ops.push(create_file(&file, &root, "file.txt", content));
+        let count = ops.len();
+        let result = s.commit(&mut a, ops, receipts);
+        assert_eq!(codes(&result), vec![op_result::Code::Applied; count]);
+        if change_dir {
+            let placed = s.get(&dir);
+            assert_eq!(placed.name, "restored");
+            assert!(!placed.intents.unwrap().place.unwrap().id.is_empty());
+        }
+        s.get(&file).current.unwrap().version_id
+    };
+    assert_eq!(version_after(false), version_after(true));
+}
+
+#[test]
+fn a_storage_restore_does_not_reuse_a_lost_place_id() {
+    let mut s = Space::new();
+    let backup = s.space.clone();
+    let root = s.root();
+    let dir = s.id();
+    let mut a = s.client("A");
+    let mut place = |s: &mut Space| {
+        a.base_seq = 0;
+        let created = s.commit(&mut a, vec![mkdir(&dir, &root, "dir")], vec![]);
+        assert_eq!(codes(&created), [op_result::Code::Applied]);
+        s.get(&dir).intents.unwrap().place.unwrap().id
+    };
+    let lost = place(&mut s);
+    s.space.restore(&backup);
+    assert_ne!(place(&mut s), lost);
+}
+
+#[test]
+fn a_restore_uses_a_supplied_place_id_only_when_the_place_changes() {
+    let mut s = Space::new();
+    let root = s.root();
+    let mut a = s.client("A");
+    let (file, _) = s.create_file(&mut a, &root, "file.txt", "restore");
+    let original = s.get(&file).intents.unwrap().place.unwrap().id;
+    let supplied = s.ids.uuid_v7_bytes(NOW as u64);
+    for (name, expected) in [
+        ("file.txt", original.as_slice()),
+        ("renamed.txt", supplied.as_slice()),
+    ] {
+        s.commit(&mut a, vec![delete(&file)], vec![]);
+        let mut op = restore_to(&file, &root, name);
+        op.intent = Some(Intent {
+            id: supplied.to_vec(),
+            author_device_id: a.session.device_id.clone(),
+            ..Default::default()
+        });
+        let restored = s.commit(&mut a, vec![op], vec![]);
+        assert_eq!(codes(&restored), [op_result::Code::Applied]);
+        let placed = s.get(&file);
+        assert_eq!(placed.name, name);
+        assert_eq!(placed.status, NodeStatus::Live as i32);
+        assert_eq!(placed.intents.unwrap().place.unwrap().id, expected);
+    }
 }
 
 fn reject_reasons(result: &CommitResult) -> Vec<&str> {

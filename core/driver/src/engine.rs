@@ -551,14 +551,16 @@ impl Engine {
                     if state.node_id != self.trees.remote().root {
                         let (id, node) = remote_node(state)?;
                         if made_here && self.commits.answers_in_flight(&at.commit_id, &id) {
-                            self.trees.set_remote_answered_here(id, node);
+                            self.trees.set_remote_answered_here(id.clone(), node);
                         } else if made_here && self.commits.edits_in_flight(&at.commit_id, &id) {
-                            self.trees.set_remote_edited_here(id, node);
+                            self.trees.set_remote_edited_here(id.clone(), node);
                         } else if made_here {
-                            self.trees.set_remote_made_here(id, node);
+                            self.trees.set_remote_made_here(id.clone(), node);
                         } else {
-                            self.trees.set_remote(id, node);
+                            self.trees.set_remote(id.clone(), node);
                         }
+                        self.trees
+                            .set_remote_place_id(&id, RemoteNode::place_id(state));
                     }
                 }
                 Some(change_record::Change::Purged(purged)) => {
@@ -650,6 +652,10 @@ impl Engine {
             if self.trees.remote().get(id) != Some(node) {
                 self.trees.set_listed_remote(id.clone(), node.clone());
             }
+        }
+        for state in staging.nodes.values().filter(|state| state.node_id != root) {
+            self.trees
+                .set_remote_place_id(&NodeId::from(&state.node_id), RemoteNode::place_id(state));
         }
         let recovering = matches!(self.commits.halted(), Some(Halt::Recovery { .. }));
         if !recovering {
@@ -1747,7 +1753,10 @@ impl Stored {
                 return ControlFlow::Continue(());
             }
             match RemoteNode::from_state(&state) {
-                Ok((id, node)) => trees.set_remote(id, node),
+                Ok((id, node)) => {
+                    trees.set_remote(id.clone(), node);
+                    trees.set_remote_place_id(&id, RemoteNode::place_id(&state));
+                }
                 Err(error) => {
                     let error = invalid(format!("remote node {}: {error:?}", state.node_id));
                     return ControlFlow::Break(Err(error));
@@ -2781,6 +2790,7 @@ mod tests {
             ..Default::default()
         };
         let in_flight = Some(InFlight {
+            move_bases: Default::default(),
             commit,
             deletes: BTreeMap::new(),
             restores: BTreeMap::new(),

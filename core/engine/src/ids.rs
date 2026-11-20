@@ -3,11 +3,18 @@
 /// `xxxxxxxx-xxxx-7xxx-yxxx-xxxxxxxxxxxx` with the Unix time in milliseconds in the first 48 bits and
 /// `random` filling the remaining 74 bits.
 pub fn uuid_v7(unix_ms: u64, random: u128) -> String {
-    let value = (u128::from(unix_ms & 0xffff_ffff_ffff) << 80)
+    format_uuid(uuid_v7_value(unix_ms, random))
+}
+
+fn uuid_v7_value(unix_ms: u64, random: u128) -> u128 {
+    (u128::from(unix_ms & 0xffff_ffff_ffff) << 80)
         | (0x7 << 76)
         | ((random >> 62 & 0xfff) << 64)
         | (0b10 << 62)
-        | (random & 0x3fff_ffff_ffff_ffff);
+        | (random & 0x3fff_ffff_ffff_ffff)
+}
+
+fn format_uuid(value: u128) -> String {
     let hex = format!("{value:032x}");
     format!(
         "{}-{}-{}-{}-{}",
@@ -55,8 +62,13 @@ impl IdGen {
     }
 
     pub fn uuid_v7(&mut self, unix_ms: u64) -> String {
+        format_uuid(u128::from_be_bytes(self.uuid_v7_bytes(unix_ms)))
+    }
+
+    /// Mints the same UUID as `uuid_v7`, in the wire format for intent IDs.
+    pub fn uuid_v7_bytes(&mut self, unix_ms: u64) -> [u8; 16] {
         let random = (u128::from(self.next_u64()) << 64) | u128::from(self.next_u64());
-        uuid_v7(unix_ms, random)
+        uuid_v7_value(unix_ms, random).to_be_bytes()
     }
 }
 

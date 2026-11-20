@@ -13,12 +13,12 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use koidrive_engine::ids::{IdGen, is_uuid_v7};
 use koidrive_proto::v1::{
     ChangeRecord, Changes, ChunkPlan, ChunkRef, ChunkTarget, Commit, CommitRecord, CommitResult,
-    Content, DownloadTargets, Error, GetDownloadTargets, GetVersionChunks, ListTrash, ListTree,
-    ListVersions, NodeKind, NodePurged, NodeState, NodeStatus, Op, PrepareUpload,
-    PrepareUploadResult, Resume, ResyncRequired, RpcRequest, RpcResponse, ServerMessage, Target,
-    TrashPage, TreePage, UploadReceipt, VersionChunks, VersionInfo, VersionList, Welcome,
-    change_record, chunk_plan, error, op, resync_required, rpc_request, rpc_response,
-    server_message,
+    Content, DownloadTargets, Error, FieldIntents, GetDownloadTargets, GetVersionChunks, Intent,
+    ListTrash, ListTree, ListVersions, NodeKind, NodePurged, NodeState, NodeStatus, Op,
+    PrepareUpload, PrepareUploadResult, Resume, ResyncRequired, RpcRequest, RpcResponse,
+    ServerMessage, Target, TrashPage, TreePage, UploadReceipt, VersionChunks, VersionInfo,
+    VersionList, Welcome, change_record, chunk_plan, error, op, resync_required, rpc_request,
+    rpc_response, server_message,
 };
 use prost::Message;
 use sha2::{Digest, Sha256};
@@ -73,6 +73,7 @@ pub(crate) struct ChunkRow {
 #[derive(Clone, Debug)]
 pub(crate) struct Node {
     node_id: String,
+    place_id: Option<[u8; 16]>,
     parent_id: Option<String>,
     name: String,
     name_key: String,
@@ -120,6 +121,7 @@ pub(crate) struct State {
     chunks: BTreeMap<Vec<u8>, ChunkRow>,
     rows: u64,
     ids: IdGen,
+    place_ids: IdGen,
 }
 
 impl State {
@@ -166,6 +168,13 @@ impl State {
             trash_group: node.trash_group.clone().unwrap_or_default(),
             pending_for: node.pending_for.clone().unwrap_or_default(),
             pending_by: node.pending_by.clone().unwrap_or_default(),
+            intents: node.place_id.map(|id| FieldIntents {
+                place: Some(Intent {
+                    id: id.to_vec(),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
             current: node
                 .cur_version_id
                 .as_ref()
@@ -432,6 +441,7 @@ impl SpaceDo {
         let history_id = ids.uuid_v7(now_ms as u64);
         let root = Node {
             node_id: space_id.clone(),
+            place_id: None,
             parent_id: None,
             name: String::new(),
             name_key: String::new(),
@@ -463,6 +473,7 @@ impl SpaceDo {
                 chunks: BTreeMap::new(),
                 rows: 1,
                 ids,
+                place_ids: IdGen::new(seed ^ (1 << 63)),
             },
             space_id,
             log: Vec::new(),
@@ -617,12 +628,14 @@ impl SpaceDo {
     /// minted again, and the chunk objects stay in the bucket.
     pub fn restore(&mut self, backup: &SpaceDo) {
         let ids = self.state.ids.clone();
+        let place_ids = self.state.place_ids.clone();
         let objects = std::mem::take(&mut self.objects);
         let account_history = std::mem::take(&mut self.account_history);
         let copies_created_files = self.copies_created_files;
         *self = backup.clone();
         self.copies_created_files = copies_created_files;
         self.state.ids = ids;
+        self.state.place_ids = place_ids;
         self.objects = objects;
         self.account_history = account_history;
     }

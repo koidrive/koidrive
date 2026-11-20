@@ -1041,3 +1041,65 @@ fn an_upgraded_store_sends_a_rename_back_over_a_fresh_trash_at_the_reused_seq() 
     assert_eq!(effects, []);
     assert_eq!(commit, Some(vec![mv("f", "p", "a")]));
 }
+
+#[test]
+fn a_rename_out_of_the_trash_the_server_renamed_and_lost_is_sent_again() {
+    let mut place_ids = IdGen::new(2);
+    let trashed_id = place_ids.uuid_v7_bytes(1);
+    let conflict = "b (conflict from Mini 2026-11-14)";
+    let mut trees = trees(&[
+        (
+            "p",
+            Some(dir(ROOT, "p")),
+            Some(dir(ROOT, "p")),
+            Some(remote(dir(ROOT, "p"))),
+        ),
+        ("t", None, None, Some(trashed(dir(ROOT, "t")))),
+        (
+            "f",
+            Some(file("p", "a", 1)),
+            Some(file("p", "a", 1)),
+            Some(trashed(file("t", "c", 1))),
+        ),
+    ]);
+    trees.set_remote_place_id(&"f".into(), Some(trashed_id));
+    trees.set_local_changed("f".into(), local(file("p", "b", 1), 2));
+    trees.settle(&Default::default());
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
+    assert_eq!(ops(&commit), [mv("f", "p", "b")]);
+    trees.set_remote_made_here("f".into(), remote_at(file("p", conflict, 1), 5));
+    trees.set_remote_place_id(&"f".into(), Some(place_ids.uuid_v7_bytes(5)));
+    let renamed = OpResult {
+        name: conflict.into(),
+        ..outcome(op_result::Code::AppliedRenamed)
+    };
+    commits.received(result(5, vec![renamed])).unwrap();
+    assert!(commits.acknowledge(&mut trees, 5));
+    trees.settle(commits.aliases());
+    assert_eq!(commits.connected(&welcome(0)), Reconnect::AheadOfServer);
+    let (deleted, edited, moved) = (
+        trees.trashed_here(),
+        trees.edited_here(),
+        trees.moved_here(),
+    );
+    let synced = trees.taken_from_others(|seq| commits.lost_here(seq));
+    let records = trees.remote_records(|seq| commits.lost_here(seq));
+    trees.set_listed_remote("f".into(), trashed(file("t", "c", 1)));
+    trees.set_remote_place_id(&"f".into(), Some(trashed_id));
+    trees.forget_lost(
+        deleted,
+        edited,
+        synced,
+        moved,
+        Vec::new(),
+        records,
+        &Default::default(),
+        commits.held_through(),
+        commits.accepted(),
+    );
+    trees.settle(commits.aliases());
+    assert_eq!(effects_for(&mut trees, &mut ids, "f"), []);
+    let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
+    assert_eq!(ops(&commit), [mv("f", "p", "b")]);
+}

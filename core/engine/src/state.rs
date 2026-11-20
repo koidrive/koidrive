@@ -24,12 +24,27 @@ use crate::tree::{FileIdentity, NodeId, Shape, TreeError};
 
 /// A position L and R agreed on, with the revision of R's record that held it.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Agreed {
     pub rev: u64,
     pub parent: NodeId,
     pub name: String,
     /// The trash group of R's record, when that record was trashed.
     pub trash_group: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct MovePosition {
+    pub place_id: [u8; 16],
+    pub record: Agreed,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct MoveHistory {
+    pub result: MovePosition,
+    pub bases: Vec<MovePosition>,
 }
 
 /// A position S held of a node.
@@ -39,12 +54,12 @@ pub struct SyncedPosition {
     pub name: String,
 }
 
-/// A position a create or a move of this device set: the seq of its commit, and whether the store
-/// upgrade recorded it, without the positions R held before it.
+/// A position a create or a move of this device set, with any verified move history.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MovedHere {
     pub seq: u64,
     pub upgraded: bool,
+    pub history: Option<Box<MoveHistory>>,
 }
 
 /// The position R held a node at before a server loss, where a resend of the node creates it.
