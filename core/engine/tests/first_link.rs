@@ -5521,7 +5521,8 @@ mod a_server_file_moved_into_an_asked_folder {
     }
 
     fn downloaded(t: &mut Trees, shape: Shape) {
-        on_the_server(t, "sn", |node| node.shape = shape);
+        let server = shape.clone();
+        on_the_server(t, "sn", |node| node.shape = server);
         let mut effects = Effects::default();
         let record = (effects.plan(t, None, &mut IdGen::new(9), NOW, BatchLimit::ONE))
             .first()
@@ -5535,6 +5536,7 @@ mod a_server_file_moved_into_an_asked_folder {
         effects
             .done(t, None, &record.effect_id, Some(identity))
             .unwrap();
+        assert_eq!(t.local().get(&"sn".into()).unwrap().shape, shape);
     }
 
     fn by_the_user(t: &mut Trees, id: &str, change: impl FnOnce(&mut Shape)) {
@@ -5588,33 +5590,46 @@ mod a_server_file_moved_into_an_asked_folder {
     #[test]
     fn a_discard_asks_again_when_the_user_changes_a_server_folder_it_takes_along_after_the_answer()
     {
-        let changes: [fn(&mut Trees); 7] = [
-            |t| by_the_user(t, "sc", |shape| shape.content = Some(content(5))),
-            |t| by_the_user(t, "n", |_| {}),
-            |t| by_the_user(t, "sc", |shape| shape.name = "renamed".into()),
-            |t| by_the_user(t, "sm", |shape| shape.parent = "f".into()),
-            |t| {
+        type Change = fn(&mut Trees);
+        let changes: [(&str, Change); 7] = [
+            ("sc", |t| {
+                by_the_user(t, "sc", |shape| shape.content = Some(content(5)))
+            }),
+            ("n", |t| by_the_user(t, "n", |_| {})),
+            ("sc", |t| {
+                by_the_user(t, "sc", |shape| shape.name = "renamed".into())
+            }),
+            ("sm", |t| {
+                by_the_user(t, "sm", |shape| shape.parent = "f".into())
+            }),
+            ("sc", |t| {
                 downloaded(t, dir("sf", "new"));
                 by_the_user(t, "sc", |shape| shape.parent = "sn".into());
-            },
-            |t| {
+            }),
+            ("sn", |t| {
                 downloaded(t, file("sf", "new", 5));
                 by_the_user(t, "sn", |shape| shape.content = Some(content(8)));
-            },
-            |t| {
+            }),
+            ("sn", |t| {
                 downloaded(t, file("sf", "new", 5));
                 by_the_user(t, "sn", |shape| shape.name = "renamed".into());
-            },
+            }),
         ];
-        for (index, change) in changes.into_iter().enumerate() {
+        for (index, (changed, change)) in changes.into_iter().enumerate() {
             let (mut c, mut t, mut i, asked) = answered();
             change(&mut t);
+            let shape = t.local().get(&changed.into()).unwrap().shape.clone();
             nothing_of_f(&settle(&mut c, &mut t, &mut i));
             let [again] = c.questions() else {
                 panic!("{index}: {:?}", local(&t));
             };
             assert!(again.id != asked && again.answer.is_none(), "{index}");
             assert!(t.local().get(&"f".into()).is_some(), "{index}");
+            assert_eq!(
+                t.local().get(&changed.into()).unwrap().shape,
+                shape,
+                "{index}"
+            );
         }
     }
 
