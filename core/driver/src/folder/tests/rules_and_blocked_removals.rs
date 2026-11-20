@@ -3089,6 +3089,10 @@ fn a_delete_after_another_device_renames_a_folder_back_out_of_a_path_the_rules_e
     let (site_a, mut a) = linked(&mut remote, "a");
     fs::create_dir(site_a.root.join("d")).unwrap();
     a.create(&mut remote, &site_a.root.join("d/g.txt"), b"synced");
+    fs::create_dir(site_a.root.join("d/sub")).unwrap();
+    a.create(&mut remote, &site_a.root.join("d/sub/i.txt"), b"below");
+    fs::create_dir(site_a.root.join("other")).unwrap();
+    a.create(&mut remote, &site_a.root.join("other/h.txt"), b"other");
     let folder = NodeId::from(live_id(&server_nodes(&remote), "d"));
     let (site, b) = linked(&mut remote, "b");
     drop(b);
@@ -3112,9 +3116,18 @@ fn a_delete_after_another_device_renames_a_folder_back_out_of_a_path_the_rules_e
         assert!(b.folder.engine.trees.unobserved(&folder), "{to}");
         assert!(b.folder.engine.trees.take_relist().is_empty(), "{to}");
     }
+    let sections = b.folder.disk.sections();
+    let (requests, _) = sections.take_resets();
+    let resets: Vec<_> = requests
+        .into_iter()
+        .flat_map(|(_, resets)| resets)
+        .collect();
+    let scopes: Vec<_> = resets.iter().map(|reset| reset.scope.clone()).collect();
+    assert_eq!(scopes, [PathBuf::from("d")]);
+    sections.request(resets);
     b.scan_until(|b| !b.folder.engine.trees.unobserved(&folder));
     fs::remove_dir_all(site.root.join("d")).unwrap();
     b.scan_until(|b| !b.work.is_empty());
     b.run(&mut remote);
-    assert!(remote.names().is_empty(), "{:?}", remote.names());
+    assert_eq!(remote.names(), ["h.txt", "other"]);
 }

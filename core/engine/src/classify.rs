@@ -3919,7 +3919,7 @@ impl Trees {
             self.release_due = true;
         }
         self.relist_asked.retain(|id| {
-            !(self.l.get(id)).is_some_and(|node| folders.contains(&node.shape.parent))
+            !(self.l.get(id)).is_some_and(|node| folders.contains(&Self::listed_at(id, node)))
         });
         if self.unobserved.is_empty() {
             return;
@@ -4251,15 +4251,29 @@ impl Trees {
             if !self.copy_watched(id, &mut scopes) {
                 unwatched.push(id.clone());
             } else if !self.relist_asked.contains(id) && self.listing_observes(id, &mut scopes) {
-                let_in.push((id.clone(), node.shape.parent.clone()));
+                let_in.push((
+                    id.clone(),
+                    Self::listed_at(id, node),
+                    node.shape.parent.clone(),
+                ));
             }
         }
         for id in unwatched {
             self.left_out_by_server.remove(&id);
         }
-        for (id, parent) in let_in {
-            self.relist.insert(parent);
+        let asked: BTreeSet<NodeId> = let_in.iter().map(|(id, _, _)| id.clone()).collect();
+        for (id, folder, parent) in let_in {
+            if !self.local_chain(&parent).any(|above| asked.contains(above)) {
+                self.relist.insert(folder);
+            }
             self.relist_asked.insert(id);
+        }
+    }
+
+    fn listed_at(id: &NodeId, node: &LocalNode) -> NodeId {
+        match node.shape.kind {
+            Kind::Dir => id.clone(),
+            _ => node.shape.parent.clone(),
         }
     }
 
@@ -4276,7 +4290,9 @@ impl Trees {
         id: &NodeId,
         scopes: &mut HashMap<NodeId, Option<Scope<'m, Key>>>,
     ) -> bool {
-        !self.pending.holds(path(&self.l, id)) && !self.left_out(id, &self.ignore, scopes)
+        !self.below_unknown_rules(id)
+            && !self.pending.holds(path(&self.l, id))
+            && !self.left_out(id, &self.ignore, scopes)
     }
 
     fn below_rules(&self, dir: &[String]) -> BTreeSet<NodeId> {

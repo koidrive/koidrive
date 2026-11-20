@@ -4737,6 +4737,23 @@ fn a_node_the_server_lets_back_in_below_a_pending_path_is_relisted_once_the_path
 }
 
 #[test]
+fn a_node_the_server_lets_back_in_is_listed_only_once_the_rules_above_it_are_known() {
+    let mut trees = a_folder_the_server_renamed_into_an_excluded_path();
+    let d = NodeId::from("d");
+    let root = NodeId::from(ROOT);
+    trees.set_rules_unknown(&root);
+    trees.set_remote(d.clone(), renamed(9, "d"));
+    trees.settle(&Default::default());
+    assert!(trees.take_relist().is_empty());
+    trees.set_rules_known(&root);
+    trees.settle(&Default::default());
+    let relist = trees.take_relist();
+    assert_eq!(relist, std::slice::from_ref(&d));
+    trees.listed(&relist, Pending::default());
+    assert!(!trees.unobserved(&d));
+}
+
+#[test]
 fn an_ignore_event_ends_what_a_server_rename_left_out_of_the_scans_view() {
     let mut trees = a_folder_the_server_renamed_into_an_excluded_path();
     trees.ignore_local(&"d".into());
