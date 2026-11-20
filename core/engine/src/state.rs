@@ -240,6 +240,9 @@ pub struct TreesState {
     /// The nodes the rules excluded, or placed below an excluded folder, since an event or a scan last reported their
     /// local copy at an included position. Losing the local copy of such a node is not a deletion (section 5.10).
     pub unobserved: BTreeSet<NodeId>,
+    /// The entries a server update moved into a folder a Discard takes along from another parent. Deleting one is a
+    /// change to that entry alone, not to the folder.
+    pub moved_in_after_discard: BTreeSet<NodeId>,
     /// For a parked node re-keyed while parked, the name of its entry in the parked directory.
     /// Each key is a node L holds as parked.
     pub parked_as: BTreeMap<NodeId, NodeId>,
@@ -512,6 +515,7 @@ pub struct TreesChanges {
     pub reverted: SetChanges<NodeId>,
     pub cycle_reverted: SetChanges<NodeId>,
     pub unobserved: SetChanges<NodeId>,
+    pub moved_in_after_discard: SetChanges<NodeId>,
     pub parked_as: MapChanges<NodeId, NodeId>,
     pub waiting: MapChanges<NodeId, Waiting>,
     pub watched: MapChanges<NodeId, bool>,
@@ -560,6 +564,7 @@ impl TreesChanges {
             reverted,
             cycle_reverted,
             unobserved,
+            moved_in_after_discard,
             parked_as,
             waiting,
             watched,
@@ -604,6 +609,10 @@ impl TreesChanges {
             reverted: set_changes(&before.reverted, reverted),
             cycle_reverted: set_changes(&before.cycle_reverted, cycle_reverted),
             unobserved: set_changes(&before.unobserved, unobserved),
+            moved_in_after_discard: set_changes(
+                &before.moved_in_after_discard,
+                moved_in_after_discard,
+            ),
             parked_as: map_changes(&before.parked_as, parked_as),
             waiting: map_changes(&before.waiting, waiting),
             watched: map_changes(&before.watched, watched),

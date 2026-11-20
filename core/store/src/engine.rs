@@ -407,6 +407,16 @@ impl Tx<'_> {
                 .cycle_reverted
                 .insert(NodeId::from(row.get::<_, String>(0)?));
         }
+        let mut stmt = self
+            .0
+            .prepare_cached("SELECT node_id FROM moved_in_after_discard")?;
+        let mut rows = stmt.query([])?;
+        while let Some(row) = next_row!(rows, abandoned) {
+            state
+                .trees
+                .moved_in_after_discard
+                .insert(NodeId::from(row.get::<_, String>(0)?));
+        }
         let mut stmt = self.0.prepare_cached("SELECT node_id FROM unobserved")?;
         let mut rows = stmt.query([])?;
         while let Some(row) = next_row!(rows, abandoned) {
@@ -754,6 +764,7 @@ impl Tx<'_> {
             unsearched,
             reverted,
             unobserved,
+            moved_in_after_discard,
             parked_as,
             waiting,
             watched,
@@ -1000,6 +1011,11 @@ impl Tx<'_> {
             unobserved,
             "DELETE FROM unobserved WHERE node_id = ?1",
             "INSERT OR IGNORE INTO unobserved (node_id) VALUES (?1)",
+        )?;
+        self.write_set(
+            moved_in_after_discard,
+            "DELETE FROM moved_in_after_discard WHERE node_id = ?1",
+            "INSERT OR IGNORE INTO moved_in_after_discard (node_id) VALUES (?1)",
         )?;
         self.write_set(
             unsent_moves,

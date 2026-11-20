@@ -626,6 +626,7 @@ pub struct Trees {
     reverted: TrackedSet<NodeId>,
     cycle_reverted: TrackedSet<NodeId>,
     unobserved: TrackedSet<NodeId>,
+    moved_in_after_discard: TrackedSet<NodeId>,
     rules_changed: BTreeSet<Vec<String>>,
     relist: BTreeSet<NodeId>,
     released: Vec<NodeId>,
@@ -764,6 +765,7 @@ impl Trees {
             reverted: TrackedSet::default(),
             cycle_reverted: TrackedSet::default(),
             unobserved: TrackedSet::default(),
+            moved_in_after_discard: TrackedSet::default(),
             rules_changed: BTreeSet::new(),
             relist: BTreeSet::new(),
             released: Vec::new(),
@@ -1479,6 +1481,15 @@ impl Trees {
         });
         self.content_provenance
             .remote_changing(&id, &self.r, Some(&node));
+        let moved = (self.r.live(&id)).is_some_and(|old| old.parent != node.shape.parent);
+        let into_taken_along = node.is_live()
+            && self.discarded.contains_key(&node.shape.parent)
+            && self.r.get(&node.shape.parent).is_some();
+        if moved && into_taken_along {
+            self.moved_in_after_discard.insert(id.clone());
+        } else if moved || !node.is_live() {
+            self.moved_in_after_discard.remove(&id);
+        }
         let old = self.r.insert(id.clone(), node);
         self.index_remote(&id, old.as_ref());
         self.count_held_trash(&id, true);
@@ -1811,6 +1822,7 @@ impl Trees {
         self.past_positions.remove(id);
         self.synced_positions.remove(id);
         self.content_provenance.remote_changing(id, &self.r, None);
+        self.moved_in_after_discard.remove(id);
         if let Some(old) = self.r.remove(id) {
             self.index_remote(id, Some(&old));
             self.mark(id);
@@ -2940,6 +2952,9 @@ impl Trees {
             self.l.get(child).is_some()
                 || deleting.contains(child)
                 || self.unobserved.contains(child)
+                || self.moved_in_after_discard.contains(child)
+                || (self.acknowledged(child)).is_some_and(|synced| synced.parent != *id)
+                    && (self.r.live(child)).is_some_and(|remote| remote.parent != *id)
                 || self
                     .removed_from
                     .get(child)
@@ -7449,6 +7464,7 @@ impl Trees {
             reverted: self.reverted.to_set(),
             cycle_reverted: self.cycle_reverted.to_set(),
             unobserved: self.unobserved.to_set(),
+            moved_in_after_discard: self.moved_in_after_discard.to_set(),
             parked_as: self.parked_as.to_map(),
             waiting: self.waiting.to_map(),
             watched: self.watched.to_map(),
@@ -7504,6 +7520,7 @@ impl Trees {
             reverted,
             cycle_reverted,
             unobserved,
+            moved_in_after_discard,
             rules_changed: _,
             relist: _,
             released: _,
@@ -7587,6 +7604,7 @@ impl Trees {
             reverted: reverted.take_changes(),
             cycle_reverted: cycle_reverted.take_changes(),
             unobserved: unobserved.take_changes(),
+            moved_in_after_discard: moved_in_after_discard.take_changes(),
             parked_as: parked_as.take_changes(),
             waiting: waiting.take_changes(),
             watched: watched.take_changes(),
@@ -7830,6 +7848,7 @@ impl Trees {
             reverted,
             cycle_reverted,
             unobserved,
+            moved_in_after_discard,
             parked_as,
             waiting,
             watched,
@@ -7879,6 +7898,7 @@ impl Trees {
         self.reverted = reverted.into();
         self.cycle_reverted = cycle_reverted.into();
         self.unobserved = unobserved.into();
+        self.moved_in_after_discard = moved_in_after_discard.into();
         self.copies_gone = (self.unobserved.iter())
             .filter(|id| self.l.get(id).is_none())
             .cloned()
