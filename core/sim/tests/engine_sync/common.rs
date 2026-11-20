@@ -2354,7 +2354,8 @@ fn run_ignoring_answering_after(
                 .into_iter()
                 .filter(|(id, _)| !asked_again.contains(id))
                 .collect();
-            let contents = written(shown.values().map(|shape| shape.content), 1);
+            let seen = (shown.iter()).filter(|(id, _)| !device.off_disk.contains(*id));
+            let contents = written(seen.map(|(_, shape)| shape.content), 1);
             local_writes.retain(|write| !contents.contains(write));
             for id in shown.keys() {
                 if !device.off_disk.contains(id) {
