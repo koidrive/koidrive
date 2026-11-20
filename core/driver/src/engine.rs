@@ -1364,15 +1364,7 @@ impl Engine {
         );
         let mut saves: Vec<Save> = (self.renamed_away.iter())
             .filter_map(|(id, (parent, name, renamed))| {
-                let excluded = (self.path_of(id)).is_some_and(|path| {
-                    path.extension()
-                        .is_some_and(|extension| extension.eq_ignore_ascii_case("tmp"))
-                        && names(&path).is_some_and(|names| self.trees.ignores(&names, Kind::File))
-                });
-                let removed = match excluded {
-                    true => *renamed,
-                    false => *self.removed_at.get(id)?,
-                };
+                let removed = *self.removed_at.get(id)?;
                 let (taker, took, staged) = self.took_slot.get(&(parent.clone(), name.clone()))?;
                 let saved = self.trees.local().get(taker)?;
                 let continues = self.trees.local_child(parent, name) == Some(taker)
@@ -1382,7 +1374,7 @@ impl Engine {
                     && *staged
                     && taker != id
                     && saved.shape.kind == Kind::File
-                    && (excluded || self.trees.local().get(id).is_none())
+                    && self.trees.local().get(id).is_none()
                     && self.trees.synced().live(id).is_some()
                     && !sent(id)
                     && !self.trees.ignored_local().contains(taker)

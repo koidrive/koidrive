@@ -1164,46 +1164,6 @@ fn a_held_file_is_listed_where_the_server_holds_it_after_a_move() {
 }
 
 #[test]
-fn a_word_save_through_excluded_temp_files_keeps_one_document() {
-    for rescan in [false, true] {
-        clock::freeze();
-        let mut remote = Remote::new();
-        let (site, mut a) = linked(&mut remote, "a");
-        a.create(&mut remote, &site.root.join(".koiignore"), b"*.tmp\n");
-        a.create(&mut remote, &site.root.join("report.docx"), b"version one");
-        a.rest(&mut remote);
-        let before = live_id(&server_nodes(&remote), "report.docx");
-        fs::write(site.root.join("~WRD0000.tmp"), b"version two").unwrap();
-        a.scan(Duration::from_millis(100));
-        fs::rename(
-            site.root.join("report.docx"),
-            site.root.join("~WRL0001.tmp"),
-        )
-        .unwrap();
-        fs::rename(
-            site.root.join("~WRD0000.tmp"),
-            site.root.join("report.docx"),
-        )
-        .unwrap();
-        if rescan {
-            a.rescan();
-        }
-        a.scan(Duration::from_millis(100));
-        fs::remove_file(site.root.join("~WRL0001.tmp")).unwrap();
-        a.rest(&mut remote);
-        let report = live_id(&server_nodes(&remote), "report.docx");
-        assert_eq!(
-            remote.names(),
-            [".koiignore", "report.docx"],
-            "rescan {rescan}"
-        );
-        assert_eq!(server_bytes(&remote, &report), b"version two");
-        assert_eq!(names(&site.root), [".koiignore", "report.docx"]);
-        assert_eq!(report, before, "rescan {rescan}");
-    }
-}
-
-#[test]
 fn a_file_moved_to_an_excluded_name_keeps_its_node_when_a_new_file_takes_its_old_name() {
     clock::freeze();
     let mut remote = Remote::new();
