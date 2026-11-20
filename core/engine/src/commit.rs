@@ -2744,7 +2744,7 @@ impl Commits {
                     let current = trees.synced().live(id).and_then(|s| s.content);
                     let downloaded =
                         code == Code::ConflictCopy && trees.local().get(&outcome_id).is_some();
-                    if applied && trees.took_content(id) {
+                    if (applied || superseded) && trees.took_content(id) {
                         let kept = synced.get(trees, id).map(|shape| Shape {
                             content: current,
                             ..shape
