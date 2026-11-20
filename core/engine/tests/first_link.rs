@@ -5668,15 +5668,34 @@ mod a_server_file_moved_into_an_asked_folder {
     }
 
     #[test]
-    fn a_discard_records_only_when_the_rules_below_its_folders_are_known() {
-        for (unknown, recorded) in [("root", false), ("f", false), ("sf", false), ("sm", true)] {
+    fn a_discard_answered_while_the_rules_below_its_folders_are_unread_keeps_its_folder_off_the_server()
+     {
+        for (unknown, change) in [("f", 0), ("sf", 1), ("f", 2), ("f", 3)] {
             let (mut c, mut t, mut i) = server_folder_moved_in_while_left_out();
-            on_the_server(&mut t, "sm", |node| node.shape = dir(ROOT, "unrelated"));
-            assert_eq!(settle(&mut c, &mut t, &mut i), []);
             t.set_rules_unknown(&unknown.into());
-            assert!(t.rules_known());
             assert!(c.decide(&mut t, &question(&c).id, Answer::Discard));
-            assert_eq!(question(&c).frozen.is_some(), recorded, "{unknown}");
+            match change {
+                0 => by_the_user(&mut t, "sc", |shape| shape.content = Some(content(5))),
+                1 => {
+                    by_the_user(&mut t, "sc", |shape| shape.parent = ROOT.into());
+                    t.remove_local(&"sc".into());
+                }
+                rules => {
+                    let left_out = if rules == 2 { &b"e\n"[..] } else { b"*\n" };
+                    let rules = Some(RuleFile::parse(left_out));
+                    t.set_rules(&["new"], Source::Koiignore, rules);
+                }
+            }
+            t.settle(&Default::default());
+            let mut sent = settle(&mut c, &mut t, &mut i);
+            t.set_rules_known(&unknown.into());
+            t.settle(&Default::default());
+            sent.extend(settle(&mut c, &mut t, &mut i));
+            nothing_of_f(&sent);
+            if change > 1 {
+                assert!(t.local().get(&"e".into()).is_some());
+                assert_eq!(question(&c).answer, None);
+            }
         }
     }
 

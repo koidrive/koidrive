@@ -2962,9 +2962,6 @@ impl Trees {
             if !seen.insert(id) {
                 continue;
             }
-            if self.unknown_rules.contains(id) || self.below_unknown_rules(id) {
-                return false;
-            }
             let applies = !self.ignored(id);
             let pending = applies
                 && (self.r.live(id)).is_some_and(|remote| {

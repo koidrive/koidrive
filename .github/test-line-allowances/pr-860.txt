@@ -1,4 +1,4 @@
-355
+374
 # About 140 lines are existing tests that pass the trees to Commits::decide and set Question::frozen to None, because a Discard now records what was below its folders when the person answers. They protect what they did before.
 # Engine: a Discard answered before the user empties a server folder in the discarded folder keeps the folder off the server (the original report), with a commit that does not reach the folder in flight. No existing test changes the folder between the answer and the build.
 # Engine: a Discard answered after another device edits or adds inside a server folder the rules leave out, followed by the original report's change, keeps the folder off the server. No existing test changes the server below an excluded folder before the answer.
@@ -6,6 +6,6 @@
 # Engine: server changes between the answer and the build (rename, move, a new entry, an entry moved in, an edit, a purge, a trash) send nothing of the discarded folder, and user changes after the answer (an edit, a new entry, a rename, a server entry moved in, a recorded file moved into a folder the server added after the answer, a file renamed before the answer and edited after it) ask again. No existing test changes anything between the answer and the build.
 # Engine: a Discard answered while an edit, a file or folder create or a delete below a server folder is in flight, followed by the original report's change, keeps the folder off the server. The existing in-flight tests only answer while the folder is already a server copy.
 # Engine: a Discard answered while the rules leave out a new server entry in its server folder still records what it takes along. No existing test answers with a server entry that is never fetched below the folder.
-# Engine: a Discard answered while the rules of a shown folder, a folder above it or a folder below it are still unread records nothing, and one answered while only an unrelated folder's rules are unread records. No existing test answers with unread rules.
+# Engine: a Discard answered while the rules of its folder or a folder below it are still unread keeps its folder off the server when the user edits or moves out an entry before the build, and asks again when the rules read later leave out entries it shows. No existing test answers with unread rules.
 # Store: the record a Discard keeps survives a restart, a store from before it opens with none, and a question asked again leaves no rows. These cover a new migration.
 # Sim: the oracle decides what a Discard takes along at the answer, as the engine does, and checks on its own that no discarded folder is created on the server unless the user changed something in it after the Discard. The old oracle decided at the build and accepted the original report.
