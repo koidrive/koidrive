@@ -4742,6 +4742,15 @@ fn plan(
                 _ => None,
             })
             .collect();
+        let places: BTreeMap<&NodeId, (&NodeId, &str)> = (wants.iter())
+            .filter_map(|want| match want {
+                Want::Create { id, shape, .. } => Some((id, (&shape.parent, shape.name.as_str()))),
+                Want::Move {
+                    id, parent, name, ..
+                } => Some((id, (parent, name.as_str()))),
+                _ => None,
+            })
+            .collect();
         let placed = |id: &NodeId| {
             let mut parent = planned.get(id).copied();
             for _ in 0..=planned.len() + creates.len() {
@@ -4777,14 +4786,36 @@ fn plan(
                     return None;
                 };
                 let left_out = || {
-                    let above = match shape.parent == trees.local().root {
-                        true => Some(Vec::new()),
-                        false => path(trees.remote(), &shape.parent).map(|(names, _)| names),
-                    };
-                    above.is_some_and(|mut names| {
-                        names.push(&shape.name);
-                        trees.ignores(&names, shape.kind)
-                    })
+                    let mut names = vec![shape.name.as_str()];
+                    let mut at = &shape.parent;
+                    for _ in 0..=places.len() + trees.local().len() {
+                        let above = (!places.contains_key(at))
+                            .then(|| match *at == trees.local().root {
+                                true => Some(Vec::new()),
+                                false => path(trees.remote(), at).map(|(names, _)| names),
+                            })
+                            .flatten();
+                        if let Some(above) = above {
+                            names.reverse();
+                            return trees.ignores(&[above, names].concat(), shape.kind);
+                        }
+                        let place = places.get(at).copied().or_else(|| {
+                            let local = &trees.local().get(at)?.shape;
+                            Some(
+                                trees
+                                    .lost_position(at)
+                                    .map_or((&local.parent, local.name.as_str()), |lost| {
+                                        (&lost.parent, lost.name.as_str())
+                                    }),
+                            )
+                        });
+                        let Some((parent, name)) = place else {
+                            return true;
+                        };
+                        names.push(name);
+                        at = parent;
+                    }
+                    true
                 };
                 let local = (trees.local().get(id))
                     .filter(|_| trees.lost_position(id).is_some() && (!placed(id) || left_out()))?;
