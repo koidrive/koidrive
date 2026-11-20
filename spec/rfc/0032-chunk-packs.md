@@ -47,7 +47,7 @@ CREATE TABLE IF NOT EXISTS packs (pack_id TEXT PRIMARY KEY, size INTEGER NOT NUL
 CREATE INDEX IF NOT EXISTS packs_sparse ON packs(live_bytes) WHERE state = 2 AND size > (live_bytes + live_count * 36 + 16) * 2;
 ```
 
-The Account DO step (`server/src/account/schema.ts:6`) runs `CREATE TABLE IF NOT EXISTS pack_retirements (space_id TEXT NOT NULL, pack_id TEXT NOT NULL, retired_at_ms INTEGER NOT NULL, PRIMARY KEY (space_id, pack_id))`. Both `storage.space` and `storage.account` rise by one (RFC 0025 §2 rule 1).
+The Account DO step (`server/src/account/schema.ts:6`) runs `CREATE TABLE IF NOT EXISTS pack_retirements (space_id TEXT NOT NULL, pack_id TEXT NOT NULL, retired_at_ms INTEGER NOT NULL, PRIMARY KEY (space_id, pack_id))`. A second Space DO step, appended with pack GC (§11 item 4), runs `CREATE INDEX IF NOT EXISTS packs_empty ON packs(state, hold_until_ms) WHERE live_count = 0` for the freeing step of §6 rule 2. Each step raises `storage.space` or `storage.account` by one (RFC 0025 §2 rule 1). So a Space DO on code without §6 rule 5 refuses a space that pack GC's code has migrated, instead of completing a rewind while ignoring retired packs.
 
 - A row with `pack_id` NULL is a single object under `chunkKey(space, hash, incarnation)`, as today. A chunk's length is its `size` column, and a pack's key and creation time derive from `pack_id`.
 - Pack states are `writing` (1, a compaction output before its swap), `live` (2), `drained` (3, emptied by compaction and kept until `hold_until_ms`) and `deleting` (4).

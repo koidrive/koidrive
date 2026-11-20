@@ -31,6 +31,7 @@ const SPACE_SCHEMA_DIGESTS = [
   "39282002f50e1334fb92e3caf96970bdd08518082994aebf6cca19c86661744e",
   "e02ca2a4d105c62a8677141db1541530f75153517cb6352d0e53f9ed44452f84",
   "4432d4095ccfb57e94b47c74ac3a1b7ddaf42129f05137df821264e6749d4a74",
+  "8d6b6315f8f2ebdc8a072b798ff81e961b7232db883ef7893008e95d07ec8f67",
 ];
 const ACCOUNT_SCHEMA_DIGESTS = [
   "cdd5988fc835119f5b6ad96ebde0be7f38aac621215c10844fdb4fb99f4a7fcf",
@@ -324,4 +325,12 @@ it("plans sparse pack selection using the migrated index", async () => {
       .toArray().map((row) => row.detail).join(" / "),
   );
   expect(details).toContain("USING INDEX packs_sparse");
+});
+
+it("plans freeing empty packs using the migrated index", async () => {
+  const details = await inObject(SPACE.stub("empty-index-review"), (sql) =>
+    sql.exec(`EXPLAIN QUERY PLAN UPDATE packs SET state = 4 WHERE state IN (2, 3) AND live_count = 0 AND hold_until_ms < 0 AND pack_id < ''`)
+      .toArray().map((row) => row.detail).join(" / "),
+  );
+  expect(details).toContain("USING INDEX packs_empty");
 });
