@@ -14,8 +14,8 @@ use koidrive_driver::{Driver, FolderState, FolderStatus, Paths};
 use koidrive_net::Auth;
 use koidrive_proto::v1::CreateSpaceRequest;
 
-const PEAK_HEAP_BYTES_PER_ENTRY_CEILING: u64 = 20_000;
-const SYNCED_HEAP_BYTES_PER_ENTRY_CEILING: u64 = 20_000;
+const PEAK_HEAP_BYTES_PER_ENTRY_CEILING: u64 = 3_218;
+const SYNCED_HEAP_BYTES_PER_ENTRY_CEILING: u64 = 2_392;
 const FOOTPRINT_TARGET: (u64, u64) = (750, 1536 << 20);
 
 static HEAP: AtomicU64 = AtomicU64::new(0);
