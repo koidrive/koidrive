@@ -4282,6 +4282,60 @@ fn a_server_folder_taken_along_by_a_discard_is_the_users_once_the_user_moves_a_s
 }
 
 #[test]
+fn a_server_file_deleted_while_unobserved_in_a_taken_along_folder_leaves_the_folder_taken_along() {
+    for moved_in in [true, false] {
+        let (parent, path) = match moved_in {
+            true => (ROOT, &b"/elsewhere\n"[..]),
+            false => ("x", &b"/server/elsewhere\n"[..]),
+        };
+        let mut trees = trees(
+            &[
+                ("f", dir(ROOT, "new")),
+                ("x", dir(ROOT, "server")),
+                ("e", file(parent, "elsewhere", 5)),
+            ],
+            &[
+                ("x", dir(ROOT, "server")),
+                ("e", file(parent, "elsewhere", 5)),
+            ],
+        );
+        let (mut commits, mut ids) = (Commits::default(), IdGen::new(7));
+        commits.first_link(&mut trees, &mut ids, NOW, PriorSync::Shown);
+        let asked = question(&commits);
+        trees.set_rules(
+            &[] as &[&str],
+            Source::Koiignore,
+            Some(RuleFile::parse(b"ignored\n")),
+        );
+        let mut moved = trees.local().get(&"x".into()).unwrap().clone();
+        moved.shape.parent = "f".into();
+        moved.shape.name = "ignored".into();
+        trees.set_local_changed("x".into(), moved);
+        trees.settle(commits.aliases());
+        assert!(commits.decide(&mut trees, &asked.id, Answer::Discard));
+        assert!(ops(&mut commits, &mut trees, &mut ids).is_empty());
+        let mut into = trees.local().get(&"e".into()).unwrap().clone();
+        into.shape.parent = "x".into();
+        trees.set_local_changed("e".into(), into);
+        trees.settle(commits.aliases());
+        assert!(trees.unobserved(&"e".into()), "{moved_in}");
+        trees.remove_local(&"e".into());
+        trees.set_rules(
+            &[] as &[&str],
+            Source::Koiignore,
+            Some(RuleFile::parse(path)),
+        );
+        let sent = drive_until_quiet(&mut commits, &mut trees, &mut ids);
+        assert!(sent.is_empty(), "{moved_in}: {sent:?}");
+        assert_eq!(
+            trees.local().get(&"x".into()).unwrap().shape,
+            dir(ROOT, "server"),
+            "{moved_in}"
+        );
+    }
+}
+
+#[test]
 fn a_file_the_user_deletes_after_it_arrived_in_a_server_folder_in_a_discarded_folder_makes_the_folder_the_users()
  {
     let (sent, trees) =
