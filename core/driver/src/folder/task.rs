@@ -633,11 +633,19 @@ impl FolderTask {
 
     /// Shows what the folder knows in the status, and marks the status changed when it differs or a question changed.
     fn publish(&self, folder: &mut Folder) {
+        let t = std::time::Instant::now();
         let view = folder.view();
+        let v = t.elapsed().as_millis();
         (self.status).set_pending(folder.engine.trees.dirty().len() as u64);
         folder.record_status(view.state);
+        let r = t.elapsed().as_millis();
         let began_or_ended = folder.show_progress(view.state);
+        let s = t.elapsed().as_millis();
         let activity = folder.activity(view.state);
+        let a = t.elapsed().as_millis();
+        if a >= 300 {
+            eprintln!("PUBLISH view={v} record={} show={} activity={} state={:?}", r - v, s - r, a - s, view.state);
+        }
         let asked = folder.take_questions_changed();
         let mut status = self.status.lock().unwrap();
         let shown = View {

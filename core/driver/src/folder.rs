@@ -502,6 +502,23 @@ impl Folder {
 
     /// One event of the session.
     pub fn event(&mut self, event: Event) -> Result<Vec<Work>, Stop> {
+        let begun = std::time::Instant::now();
+        let kind = match &event {
+            Event::Connected(_) => "connected".to_owned(),
+            Event::Changes(records) => format!("changes {}", records.len()),
+            Event::Committed(_) => "committed".to_owned(),
+            Event::CaughtUp(_) => "caught_up".to_owned(),
+            _ => "other".to_owned(),
+        };
+        let out = self.event_timed(event);
+        let took = begun.elapsed().as_millis();
+        if took >= 300 {
+            eprintln!("EVENT {kind} took={took}");
+        }
+        out
+    }
+
+    fn event_timed(&mut self, event: Event) -> Result<Vec<Work>, Stop> {
         let mut work = Vec::new();
         match event {
             Event::Connected(welcome) => self.connected(&welcome, &mut work)?,
@@ -669,9 +686,11 @@ impl Folder {
         self.local_entries = Some(entries);
         self.unread = batch.unread;
         let detached = batch.observation.detached.clone();
+        let begun = std::time::Instant::now();
         self.forgetting_dropped(|folder| {
             (folder.disk).observed(batch, &mut folder.engine, &mut folder.store)
         })?;
+        let disk = begun.elapsed().as_millis();
         self.detached = detached;
         let allowed: Vec<NodeId> = (self.denied.iter())
             .filter(|(node, denied)| {
@@ -702,8 +721,14 @@ impl Folder {
             })
             .map(|(node, _)| node.clone())
             .collect();
+        let before = begun.elapsed().as_millis();
         self.let_back_in(&changed)?;
+        let back = begun.elapsed().as_millis();
         self.drive(&mut work)?;
+        let all = begun.elapsed().as_millis();
+        if all >= 300 {
+            eprintln!("FOLDER_OBSERVED disk={disk} between={} let_back_in={} drive={}", before - disk, back - before, all - back);
+        }
         Ok(work)
     }
 

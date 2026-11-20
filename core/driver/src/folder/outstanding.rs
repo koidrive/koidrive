@@ -36,6 +36,16 @@ pub(super) struct Outstanding {
 
 impl Outstanding {
     pub fn refresh(&mut self, engine: &Engine) {
+        let begun = std::time::Instant::now();
+        let mut what = String::new();
+        self.refresh_timed(engine, &mut what);
+        let took = begun.elapsed().as_millis();
+        if took >= 200 {
+            eprintln!("REFRESH took={took} {what}");
+        }
+    }
+
+    fn refresh_timed(&mut self, engine: &Engine, what: &mut String) {
         let mut touched = engine.touched.take();
         let rescope = engine.trees.take_rescope();
         if !touched.stepped && rescope == Rescope::default() {
@@ -43,9 +53,11 @@ impl Outstanding {
         }
         touched.rescope.add(rescope);
         if touched.rescope.all {
+            *what = format!("build dirty={}", engine.trees.dirty().len());
             *self = Outstanding::build(engine);
             return;
         }
+        *what = format!("touched={} rescope_nodes={} left={}", touched.nodes.len(), touched.rescope.nodes.len(), touched.rescope.left.len());
         let mut nodes = touched.nodes;
         nodes.extend(touched.rescope.nodes.iter().cloned());
         let held = held(engine);
@@ -65,6 +77,7 @@ impl Outstanding {
         nodes.extend(touched.rescope.left.iter().cloned());
         nodes.extend(ancestors(&engine.trees, &nodes));
         let kept = engine.trees.kept_for_excluded();
+        what.push_str(&format!(" nodes={}", nodes.len()));
         for id in nodes {
             let row = self.row(engine, &kept, &id);
             self.set(id, row);

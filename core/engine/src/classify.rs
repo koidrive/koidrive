@@ -6556,8 +6556,17 @@ impl Trees {
         merged: &TrackedMap<NodeId, NodeId>,
         abandoned: &dyn Fn() -> bool,
     ) -> Option<()> {
+        let mut lap = std::time::Instant::now();
+        let mut laps: Vec<(&str, u128)> = Vec::new();
+        let mut mark = |name: &'static str| {
+            laps.push((name, lap.elapsed().as_millis()));
+            lap = std::time::Instant::now();
+        };
+        let sizes = (self.unsettled.len(), self.unwatched.len(), self.dirty.len(), self.relink);
         self.release_kept_entries_the_person_let_in();
+        mark("release_kept");
         self.note_kept_causes();
+        mark("kept_causes");
         let mut carried = Vec::new();
         for (walked, id) in self.unsettled.iter().enumerate() {
             if walked % CHECK_EVERY == 0 && abandoned() {
@@ -6570,12 +6579,17 @@ impl Trees {
         for id in carried {
             self.keep_rules_file(&id);
         }
+        mark("carried");
         self.release_due |= self.relink || !self.rules_changed.is_empty();
         self.check_finishes();
+        mark("finishes");
         if std::mem::take(&mut self.cycles_may_end) {
             self.release_cycle_reverts(merged);
         }
+        mark("cycles");
         self.see_free_remote();
+        mark("free_remote");
+        let mut changed_len = 0;
         if self.rules_known {
             let unwatched = std::mem::take(&mut self.unwatched);
             let changed = match std::mem::take(&mut self.relink) {
@@ -6591,17 +6605,31 @@ impl Trees {
                     changed
                 }
             };
+            changed_len = changed.len();
+            mark("changed");
             let unfit = first_link::adopt_equal_files(self, &changed);
             self.wait_to_link(unfit);
+            mark("adopt");
         }
         self.settle_marked(abandoned)?;
+        mark("marked1");
         self.end_names_no_longer_left_out();
+        mark("end_names");
         self.note_unobserved(abandoned)?;
+        mark("unobserved");
+        let mut links = 0;
         while self.link_due() {
+            links += 1;
             self.settle_marked(abandoned)?;
         }
+        mark("link_due");
         if std::mem::take(&mut self.release_due) && self.release_vanished() {
             self.settle_marked(abandoned)?;
+        }
+        mark("vanished");
+        let total: u128 = laps.iter().map(|(_, ms)| ms).sum();
+        if total >= 200 {
+            eprintln!("SETTLE total={total} unsettled/unwatched/dirty/relink={sizes:?} changed={changed_len} links={links} {laps:?}");
         }
         Some(())
     }

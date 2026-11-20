@@ -959,7 +959,11 @@ impl Disk {
             || engine.sees_unobserved(&listed, &pending)
         {
             let now_ms = crate::clock::unix_ms();
+            let begun = std::time::Instant::now();
+            let sizes = (changes.len(), read.len(), listed.len(), ctimes.len(), unread.is_some(), mounts.is_some());
+            let mut laps = [0u128; 4];
             store.transaction(|tx| -> Result<(), Stop> {
+                let t = std::time::Instant::now();
                 if let Some(mounts) = mounts {
                     tx.set_volume_mounts(&mounts)?;
                     engine.mounts = mounts;
@@ -969,14 +973,26 @@ impl Disk {
                     engine.unread = Some(unread);
                 }
                 engine.observe(&changes, now_ms);
+                laps[0] = t.elapsed().as_millis();
+                let t = std::time::Instant::now();
                 engine.read(&read, &observation.unreadable);
                 engine.listed(&listed, pending);
                 for folder in emptied(&engine.trees)? {
                     engine.trees.recheck_kept_folder(&folder);
                 }
+                laps[1] = t.elapsed().as_millis();
+                let t = std::time::Instant::now();
                 engine.read_ctimes(ctimes);
-                Ok(engine.checkpoint(tx)?)
+                laps[2] = t.elapsed().as_millis();
+                let t = std::time::Instant::now();
+                let out = engine.checkpoint(tx);
+                laps[3] = t.elapsed().as_millis();
+                Ok(out?)
             })?;
+            let took = begun.elapsed().as_millis();
+            if took >= 200 {
+                eprintln!("OBSERVED took={took} changes/read/listed/ctimes/unread/mounts={sizes:?} observe/read+listed/ctimes/checkpoint={laps:?}");
+            }
         } else {
             engine.read(&read, &observation.unreadable);
         }
