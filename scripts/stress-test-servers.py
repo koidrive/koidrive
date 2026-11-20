@@ -25,14 +25,18 @@ WORKERS = {
 RECORDER = (
     "import json, os, sys\n"
     "allowed = set(json.loads(os.environ['STRESS_TEST_ALLOWED']))\n"
-    "environment = {name: value for name, value in os.environ.items()\n"
-    "               if name in allowed or name.startswith('CARGO_')}\n"
+    "environment = {name: value for name, value in os.environ.items() if name in allowed}\n"
     "with open(os.environ['STRESS_TEST_CAPTURE'], 'a') as capture:\n"
     "    capture.write(json.dumps(dict(executable=sys.argv[1], directory=os.getcwd(),\n"
     "                                  environment=environment)) + '\\n')\n"
 )
 
-RECORDED = ("CARGO", "LD_LIBRARY_PATH", "DYLD_LIBRARY_PATH", "DYLD_FALLBACK_LIBRARY_PATH")
+CARGO_SETS = ("CARGO", "CARGO_MANIFEST_DIR", "CARGO_MANIFEST_PATH", "CARGO_CRATE_NAME", "CARGO_BIN_NAME",
+              "CARGO_PRIMARY_PACKAGE", "CARGO_PKG_NAME", "CARGO_PKG_VERSION", "CARGO_PKG_VERSION_MAJOR",
+              "CARGO_PKG_VERSION_MINOR", "CARGO_PKG_VERSION_PATCH", "CARGO_PKG_VERSION_PRE", "CARGO_PKG_AUTHORS",
+              "CARGO_PKG_DESCRIPTION", "CARGO_PKG_HOMEPAGE", "CARGO_PKG_REPOSITORY", "CARGO_PKG_LICENSE",
+              "CARGO_PKG_LICENSE_FILE", "CARGO_PKG_RUST_VERSION", "CARGO_PKG_README",
+              "LD_LIBRARY_PATH", "DYLD_LIBRARY_PATH", "DYLD_FALLBACK_LIBRARY_PATH")
 
 
 @dataclass
@@ -105,7 +109,11 @@ def capture_tests(args, environment):
                            "run the repetitions serially with Cargo instead")
     command = ["cargo", "test", "--locked", "-p", args.crate, *(["--features", args.features] if args.features else []),
                *(["--test", args.test] if args.test else ["--tests"])]
-    allowed = {*RECORDED, *(name for path in configs for name in tomllib.loads(path.read_text()).get("env", {}))}
+    forced = {}
+    for path in configs:
+        for name, value in tomllib.loads(path.read_text()).get("env", {}).items():
+            forced.setdefault(name, isinstance(value, dict) and value.get("force", False))
+    unset = {name: value for name, value in environment.items() if name not in forced}
     with tempfile.TemporaryDirectory(prefix="heavy-capture-") as scratch:
         recorder = Path(scratch) / "record-test"
         recorder.write_text("#!" + sys.executable + "\n" + RECORDER)
@@ -113,20 +121,20 @@ def capture_tests(args, environment):
         capture = Path(scratch) / "capture.jsonl"
         with (args.out / "logs/capture.log").open("w") as log:
             code = subprocess.call(command, cwd=args.root, stdout=log, stderr=subprocess.STDOUT,
-                                   env={**environment, runner: str(recorder), "STRESS_TEST_CAPTURE": str(capture),
-                                        "STRESS_TEST_ALLOWED": json.dumps(sorted(allowed))})
+                                   env={**unset, runner: str(recorder), "STRESS_TEST_CAPTURE": str(capture),
+                                        "STRESS_TEST_ALLOWED": json.dumps(sorted({*CARGO_SETS, *forced}))})
         records = [json.loads(line) for line in capture.read_text().splitlines()] if capture.exists() else []
     if code or not records:
         raise RuntimeError(f"{shlex.join(command)} exited {code} and ran {len(records)} test executables; "
                            f"see {args.out / 'logs/capture.log'}")
     tests = []
     for record in records:
-        given = {name: value for name, value in record["environment"].items()
-                 if environment.get(name) != value and name not in (runner, "STRESS_TEST_CAPTURE")}
+        given = record["environment"]
         tests.append(dict(name=re.sub(r"-[0-9a-f]{16}$", "", Path(record["executable"]).name),
                           executable=record["executable"], directory=record["directory"],
-                          default={name: value for name, value in given.items() if name not in environment},
-                          override={name: value for name, value in given.items() if name in environment}))
+                          default={name: value for name, value in given.items() if name in forced and not forced[name]},
+                          override={name: value for name, value in given.items()
+                                    if forced.get(name) or (name not in forced and unset.get(name) != value)}))
     return tests
 
 

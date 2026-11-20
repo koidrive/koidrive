@@ -42,18 +42,22 @@ if 'STRESS_TEST_CAPTURE' not in os.environ:
 (probes / 'cargo.capture').write_text(' '.join(sys.argv[1:]))
 runner = os.environ['CARGO_TARGET_AARCH64_APPLE_DARWIN_RUNNER']
 package = os.environ['FAKE_PACKAGE']
-environment = dict(os.environ, CARGO_MANIFEST_DIR=package, CONFIG_ENV='from-config')
-environment.setdefault('PROPTEST_RNG_SEED', '42')
-environment.setdefault('FALLBACK_ENV', 'from-config')
-environment.setdefault('KOIDRIVE_TEST_SERVER', 'from-config')
+environment = dict(os.environ, CARGO_MANIFEST_DIR=package, CONFIG_ENV='from-config',
+                   KOIDRIVE_TEST_SERVER_LOG='from-config')
+for name in ('PROPTEST_RNG_SEED', 'FALLBACK_ENV', 'KOIDRIVE_TEST_SERVER'):
+    environment.setdefault(name, '42' if name == 'PROPTEST_RNG_SEED' else 'from-config')
 for test in filter(None, os.environ['FAKE_TESTS'].split(os.pathsep)):
     subprocess.check_call([runner, test], cwd=package, env=environment)
+    capture = Path(os.environ['STRESS_TEST_CAPTURE'])
+    if capture.exists():
+        (probes / 'capture.jsonl').write_text(capture.read_text())
 ''')
         self.executable(self.bin / "rustc", "print('rustc 1.99.0\\nhost: aarch64-apple-darwin')\n")
         (self.root / ".cargo").mkdir()
         (self.root / ".cargo/config.toml").write_text("[env]\nCONFIG_ENV = { value = 'from-config', force = true }\n"
                                                        "FALLBACK_ENV = 'from-config'\nPROPTEST_RNG_SEED = '42'\n"
-                                                       "KOIDRIVE_TEST_SERVER = 'from-config'\n")
+                                                       "KOIDRIVE_TEST_SERVER = 'from-config'\n"
+                                                       "KOIDRIVE_TEST_SERVER_LOG = { value = 'from-config', force = true }\n")
         self.package = self.root / "crate"
         self.package.mkdir()
         self.probe = r'''
@@ -67,7 +71,7 @@ record = dict(pid=os.getpid(), args=sys.argv[1:], cwd=os.getcwd(),
               cases=os.environ.get('KOIDRIVE_BATTERY_CASES'),
               server=os.environ.get('KOIDRIVE_TEST_SERVER'),
               manifest=os.environ.get('CARGO_MANIFEST_DIR'), config=os.environ.get('CONFIG_ENV'),
-              fallback=os.environ.get('FALLBACK_ENV'),
+              fallback=os.environ.get('FALLBACK_ENV'), server_log=os.environ.get('KOIDRIVE_TEST_SERVER_LOG'),
               capture=os.environ.get('STRESS_TEST_CAPTURE'))
 (probe / (seed + ('-2' if second else '') + '.start')).write_text(json.dumps(record))
 deadline = time.monotonic() + 5
@@ -93,7 +97,7 @@ else:
         self.environment = dict(os.environ, PATH=str(self.bin) + os.pathsep + os.environ["PATH"],
                                 PROBES=str(self.probes), PROPTEST_CASES="999", KOIDRIVE_BATTERY_CASES="888",
                                 FAKE_PACKAGE=str(self.package), CONFIG_ENV="inherited",
-                                REVIEW_CANARY_TOKEN="synthetic")
+                                REVIEW_CANARY_TOKEN="synthetic", CARGO_REGISTRY_TOKEN="synthetic")
         self.build("server")
 
     def build(self, *names):
@@ -194,8 +198,10 @@ while True:
                              (str(self.package), "from-config", "from-config", None))
         self.assertEqual((self.probes / "cargo.capture").read_text(), "test --locked -p koidrive-net --features serde --test send")
         self.assertFalse((self.probes / "cargo.called").exists())
-        for path in (self.root / "out").rglob("*"):
-            self.assertNotIn(b"REVIEW_CANARY_TOKEN", path.read_bytes() if path.is_file() else b"", path)
+        for path in [*(self.root / "out").rglob("*"), self.probes / "capture.jsonl"]:
+            for secret in (b"REVIEW_CANARY_TOKEN", b"CARGO_REGISTRY_TOKEN"):
+                self.assertNotIn(secret, path.read_bytes() if path.is_file() else b"", path)
+        self.assertIn(b"CARGO_MANIFEST_DIR", (self.probes / "capture.jsonl").read_bytes())
 
     def test_each_repetition_runs_every_built_test_executable_in_turn(self):
         self.build("server", "second")
@@ -214,13 +220,15 @@ while True:
         recorder = self.root / "record-test"
         self.executable(recorder, stress.RECORDER)
         capture = self.root / "capture.jsonl"
-        environment = dict(PATH=os.environ["PATH"], REVIEW_CANARY_TOKEN="synthetic", STRESS_TEST_CAPTURE=str(capture),
-                           CARGO_PKG_NAME="probe", STRESS_TEST_ALLOWED=json.dumps(["FALLBACK_ENV"]),
+        environment = dict(PATH=os.environ["PATH"], REVIEW_CANARY_TOKEN="synthetic", CARGO_REGISTRY_TOKEN="synthetic",
+                           STRESS_TEST_CAPTURE=str(capture),
+                           CARGO_PKG_NAME="probe", STRESS_TEST_ALLOWED=json.dumps([*stress.CARGO_SETS, "FALLBACK_ENV"]),
                            FALLBACK_ENV="from-config")
         subprocess.check_call([str(recorder), "/bin/test-executable"], cwd=self.package, env=environment)
         record = json.loads(capture.read_text())
         self.assertEqual(record["environment"], {"CARGO_PKG_NAME": "probe", "FALLBACK_ENV": "from-config"})
         self.assertNotIn("REVIEW_CANARY_TOKEN", capture.read_text())
+        self.assertNotIn("CARGO_REGISTRY_TOKEN", capture.read_text())
 
     def test_a_build_without_test_executables_is_refused(self):
         self.build()
@@ -277,6 +285,7 @@ while True:
                     self.assertEqual(probe["args"], ["--ignored", "selected test"])
                     self.assertEqual((probe["manifest"], probe["config"]), (str(self.package), "from-config"))
                     self.assertTrue(probe["server"].startswith("http://127.0.0.1:"), probe["server"])
+                    self.assertEqual(probe["server_log"], "from-config")
                 self.assertFalse((self.probes / "cargo.called").exists())
 
     def test_worker_repetitions_run_the_target_the_launcher_asks_for(self):
