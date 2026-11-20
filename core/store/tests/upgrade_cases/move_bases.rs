@@ -50,7 +50,7 @@ upgrade_case!(move_bases, |store| {
                 MovedHere {
                     seq: 4,
                     upgraded: false,
-                    history: Some(history.clone()),
+                    history: Some(Box::new(history.clone())),
                 },
             );
             state.commits.in_flight = Some(InFlight {

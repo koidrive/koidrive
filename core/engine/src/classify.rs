@@ -5065,9 +5065,11 @@ impl Trees {
             let history = bases
                 .filter(|bases| !bases.is_empty() && remote.meta_rev == seq)
                 .zip(self.move_position(id, remote))
-                .map(|(bases, result)| MoveHistory {
-                    result,
-                    bases: bases.to_vec(),
+                .map(|(bases, result)| {
+                    Box::new(MoveHistory {
+                        result,
+                        bases: bases.to_vec(),
+                    })
                 });
             let moved = MovedHere {
                 seq,

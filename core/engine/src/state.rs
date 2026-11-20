@@ -59,7 +59,7 @@ pub struct SyncedPosition {
 pub struct MovedHere {
     pub seq: u64,
     pub upgraded: bool,
-    pub history: Option<MoveHistory>,
+    pub history: Option<Box<MoveHistory>>,
 }
 
 /// The position R held a node at before a server loss, where a resend of the node creates it.
