@@ -5150,15 +5150,14 @@ impl Trees {
     /// `trashed` lists what deletes of this device had trashed before the bootstrap
     /// ([`Trees::trashed_here`]), and `held_through` the seq of the newest commit of this device the
     /// server still counts ([`Commits::held_through`]), at or below which every seq is from before
-    /// the loss. A node of `trashed` that R now holds live as it was deleted, wherever R holds it,
-    /// with no revision above `held_through` or at a position this device saw with the revisions
-    /// and version the delete trashed, lost its delete: nothing changed it after the loss, since a
-    /// server never gives a version ID twice (RFC 0016). R holding it at another position with no
-    /// revision above `held_through` means the loss also took a move this device saw before the
-    /// delete, since the server applies a delete only at the revisions R held when it was built.
-    /// S takes R's shape for it, parents first, so the delete is sent again. Any other node of it is
-    /// downloaded again, since a restore or another change after the loss can take a seq the lost
-    /// commits had.
+    /// the loss. A node of `trashed` that R now holds live as it was deleted, with no revision
+    /// above `held_through` or at a position this device saw with the revisions and version the
+    /// delete trashed, lost its delete: nothing changed it after the loss, since a server never
+    /// gives a version ID twice (RFC 0016).
+    /// S takes R's shape for it, parents first, so the delete is sent again. Where S holds a node at
+    /// that shape whose create the server lost too, S takes it once that node is forgotten. Any other
+    /// node of it is downloaded again, since a restore or another change after the loss can take a
+    /// seq the lost commits had.
     ///
     /// `edited` lists the files whose content an edit of this device set before the bootstrap
     /// ([`Trees::edited_here`]), each with the seq of that edit's commit, and the files of
@@ -5355,14 +5354,7 @@ impl Trees {
             })
             .filter_map(|deleted| {
                 let remote = (self.r.get(&deleted.id))
-                    .filter(|remote| {
-                        let at_remote = Shape {
-                            parent: remote.shape.parent.clone(),
-                            name: remote.shape.name.clone(),
-                            ..deleted.shape.clone()
-                        };
-                        !remote.trashed && at_remote.same(&remote.shape)
-                    })
+                    .filter(|remote| !remote.trashed && remote.shape.same(&deleted.shape))
                     .filter(|remote| {
                         remote.content_rev.max(remote.meta_rev) <= held_through
                             || (seen(&deleted.id, remote)
@@ -5376,16 +5368,7 @@ impl Trees {
         for id in lost_here {
             self.record_local_change(id);
         }
-        while let Some(at) = (0..deletes.len()).find(|&at| {
-            let (id, shape, _) = &deletes[at];
-            self.fits_synced(id, Some(shape))
-        }) {
-            let (id, shape, kept) = deletes.swap_remove(at);
-            if let Some(kept) = kept.filter(|kept| !deleted_here.contains(kept)) {
-                self.kept_originals.insert(id.clone(), kept);
-            }
-            self.set_synced(id, Some(shape));
-        }
+        self.place_lost_deletes(&mut deletes, &deleted_here);
         let mut queued = BTreeSet::new();
         for id in &lost_moves {
             let (Some(remote), Some(synced)) = (self.r.get(id), self.s.live(id)) else {
@@ -5697,6 +5680,7 @@ impl Trees {
                 self.set_synced(id, None);
             }
         }
+        self.place_lost_deletes(&mut deletes, &deleted_here);
         let gone: Vec<NodeId> = (self.forgotten_shapes.iter())
             .filter(|(id, forgotten)| {
                 !matches!(
@@ -6586,6 +6570,23 @@ impl Trees {
     }
 
     /// True when S stays a valid tree with `next` as the node's shape.
+    fn place_lost_deletes(
+        &mut self,
+        deletes: &mut Vec<(NodeId, Shape, Option<NodeId>)>,
+        deleted_here: &BTreeSet<NodeId>,
+    ) {
+        while let Some(at) = (0..deletes.len()).find(|&at| {
+            let (id, shape, _) = &deletes[at];
+            self.fits_synced(id, Some(shape))
+        }) {
+            let (id, shape, kept) = deletes.swap_remove(at);
+            if let Some(kept) = kept.filter(|kept| !deleted_here.contains(kept)) {
+                self.kept_originals.insert(id.clone(), kept);
+            }
+            self.set_synced(id, Some(shape));
+        }
+    }
+
     pub(crate) fn fits_synced(&self, id: &NodeId, next: Option<&Shape>) -> bool {
         let has_children = self.s_names.children(id).next().is_some();
         let Some(shape) = next else {

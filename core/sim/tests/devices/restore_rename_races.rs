@@ -62,14 +62,6 @@ fn a_lost_delete_of_a_renamed_file_wins_when_the_renamer_reconnects_first() {
     assert!(no_device_holds_a_file(&world));
 }
 
-#[test]
-fn a_lost_delete_of_a_renamed_file_wins_when_the_deleter_reconnects_first() {
-    let mut world = rename_then_delete_before_restore(vec![(0, file("a"))], &["b"]);
-    restore_and_reconnect(&mut world, 3, &[1, 0]);
-    assert!(live_names(&world).is_empty());
-    assert!(no_device_holds_a_file(&world));
-}
-
 fn folder_with_a_file() -> Vec<(usize, Step)> {
     vec![(0, folder("a")), (0, user(1, 0, 1, "c.txt"))]
 }
@@ -83,11 +75,63 @@ fn a_lost_delete_of_a_renamed_folder_wins_when_the_renamer_reconnects_first() {
 }
 
 #[test]
-fn a_lost_delete_of_a_renamed_folder_wins_when_the_deleter_reconnects_first() {
-    let mut world = rename_then_delete_before_restore(folder_with_a_file(), &["b", "c.txt"]);
-    restore_and_reconnect(&mut world, 3, &[1, 0]);
+fn a_lost_delete_spares_a_fresh_rename_at_a_revision_a_lost_rename_had() {
+    let mut world = converge(3, &[vec![(0, file("a"))]]).unwrap();
+    let mut steps = vec![(0, BACKUP), (0, rename(0, 0, "b"))];
+    steps.extend(commit(0));
+    steps.extend(take(1));
+    world.run(1, &steps).unwrap();
+    every_disk_shows(&world, &[0, 1], &["b"]);
+    every_disk_shows(&world, &[2], &["a"]);
+    let lost_rev = meta_rev_of(&world, "b");
+
+    let mut steps = vec![(0, rename(0, 0, "c.txt"))];
+    steps.extend(commit(0));
+    steps.extend(take(1));
+    world.run(2, &steps).unwrap();
+    every_disk_shows(&world, &[0, 1], &["c.txt"]);
+
+    let mut steps = vec![(1, delete(0))];
+    steps.extend(commit(1));
+    steps.extend([(0, DELIVER); 4]);
+    world.run(3, &steps).unwrap();
     assert!(live_names(&world).is_empty());
-    assert!(no_device_holds_a_file(&world));
+
+    let mut steps = vec![(0, RESTORE)];
+    reconnect(&mut steps, 2, false);
+    steps.push((2, rename(0, 0, "b")));
+    steps.extend(commit(2));
+    world.run(4, &steps).unwrap();
+    assert_eq!(live_names(&world), ["b"]);
+    assert_eq!(meta_rev_of(&world, "b"), lost_rev);
+
+    let mut steps = Vec::new();
+    reconnect(&mut steps, 1, true);
+    world.run(5, &steps).unwrap();
+    assert_eq!(live_names(&world), ["b"]);
+}
+
+fn meta_rev_of(world: &World, name: &str) -> u64 {
+    (world.space().nodes().into_iter())
+        .find(|node| node.name == name)
+        .unwrap()
+        .meta_rev
+}
+
+#[test]
+fn a_lost_delete_wins_when_its_device_made_a_new_file_at_the_name() {
+    let mut world = converge(2, &[vec![(0, file("a"))]]).unwrap();
+    let mut steps = vec![(0, BACKUP), (1, delete(0))];
+    steps.extend(commit(1));
+    steps.extend(take(0));
+    steps.push((1, act(1, 0, 0, "a", 3)));
+    steps.extend(commit(1));
+    steps.extend(take(0));
+    world.run(1, &steps).unwrap();
+    assert_eq!(live_names(&world), ["a"]);
+    restore_and_reconnect(&mut world, 2, &[1, 0]);
+    assert_eq!(live_names(&world), ["a"]);
+    every_disk_shows(&world, &[0, 1], &["a"]);
 }
 
 #[test]
