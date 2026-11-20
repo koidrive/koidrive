@@ -5136,7 +5136,7 @@ fn plan(
                 continue;
             };
             let Some((carried, bundle)) =
-                scratch.compensation(want, answers, trees, &wants, &moving)
+                scratch.compensation(want, answers, trees, &wants, &moving, scratch.stalled)
             else {
                 continue;
             };
@@ -5259,7 +5259,7 @@ fn plan(
                 guarded: *guarded,
             };
             let Some((carried, bundle)) =
-                scratch.compensation(&aside, answers, trees, &wants, &moving)
+                scratch.compensation(&aside, answers, trees, &wants, &moving, true)
             else {
                 break true;
             };
@@ -5356,7 +5356,7 @@ fn plan(
             {
                 return None;
             }
-            let bundle = scratch.compensation(want, answers, trees, &wants, &moving)?;
+            let bundle = scratch.compensation(want, answers, trees, &wants, &moving, true)?;
             Some((at, bundle))
         });
         let Some((at, (carried, bundle))) = forced else {
@@ -6368,6 +6368,7 @@ impl<'a> Scratch<'a> {
         trees: &Trees,
         wants: &[Option<Want>],
         moving: &BTreeSet<NodeId>,
+        stalled: bool,
     ) -> Option<Compensation> {
         let Want::Move {
             id, parent, name, ..
@@ -6569,7 +6570,7 @@ impl<'a> Scratch<'a> {
                     let Some(refused) = refused else {
                         continue;
                     };
-                    if chain.len() == 1 {
+                    if chain.len() == 1 || !stalled {
                         return refused;
                     }
                     lifted.insert(chain[0]);

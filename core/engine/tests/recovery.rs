@@ -6184,3 +6184,54 @@ fn an_answer_commits_when_an_earlier_carried_move_takes_another_moved_node_out_o
     }
     assert!(trees.remote().get(&"c".into()).unwrap().trashed);
 }
+
+#[test]
+fn a_carried_move_waits_for_its_folders_move_into_a_new_folder_or_its_own_child() {
+    let new_folder = [("n", dir(ROOT, "n"), None), ("d", dir("n", "d"), None)];
+    let swap = [
+        ("y", dir(ROOT, "y"), Some(dir("d", "y"))),
+        ("d", dir("y", "d"), None),
+    ];
+    for moved in [new_folder, swap] {
+        let mut local = vec![
+            ("a", dir(ROOT, "new")),
+            ("c", dir("a", "c")),
+            ("b", file("c", "child", 1)),
+            ("x", dir(ROOT, "x")),
+        ];
+        let mut synced = vec![
+            ("a", dir(ROOT, "old")),
+            ("c", dir("a", "c")),
+            ("b", file("c", "child", 1)),
+            ("x", dir(ROOT, "x")),
+            ("d", dir("x", "d")),
+        ];
+        let mut remote = vec![
+            Remote("a", dir(ROOT, "old"), true, 1),
+            Remote("c", dir("a", "c"), true, 1),
+            Remote("b", file("c", "child", 1), true, 1),
+            Remote("x", dir(ROOT, "x"), false, 1),
+            Remote("d", dir("x", "d"), false, 1),
+        ];
+        for (id, here, before) in &moved {
+            local.push((id, here.clone()));
+            if let Some(before) = before {
+                synced.push((id, before.clone()));
+                remote.push(Remote(id, before.clone(), false, 1));
+            }
+        }
+        let mut trees = trees(&local, &synced, &remote);
+        let (mut commits, mut ids) = recovered(&mut trees, 0);
+        for question in commits.questions().to_vec() {
+            assert!(commits.decide(&question.id, Answer::Publish));
+        }
+        let mut moved = trees.local().get(&"b".into()).unwrap().clone();
+        moved.shape = file("d", "child", 1);
+        trees.set_local("b".into(), moved);
+        trees.settle(&Default::default());
+        let sent = ops(&mut commits, &mut trees, &mut ids);
+        let at = |op: (&str, &str)| sent.iter().position(|sent| *sent == (op.0, op.1.into()));
+        assert!(at(("move", "b")).is_some(), "{sent:?}");
+        assert!(at(("move", "d")) < at(("move", "b")), "{sent:?}");
+    }
+}
