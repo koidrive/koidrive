@@ -1,6 +1,38 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #[test]
+fn an_absent_name_in_a_replacement_folder_does_not_prove_absence_in_the_original() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    fs::create_dir(root.join("docs")).unwrap();
+    fs::write(root.join("docs/report.txt"), "kept").unwrap();
+    let space = Space::bind(open_root(root).unwrap(), root).unwrap();
+    let id = Snapshot::scan(root).unwrap().entries[Path::new("docs")].id;
+    let docs = [Dir {
+        name: "docs".into(),
+        id,
+    }];
+    let report = std::ffi::OsStr::new("report.txt");
+    assert!(!space.name_absent(&docs, report).unwrap());
+    fs::rename(root.join("docs"), root.join("papers")).unwrap();
+    assert!(matches!(
+        space.name_absent(&docs, report),
+        Err(Unresolved::Missing(_))
+    ));
+    fs::create_dir(root.join("docs")).unwrap();
+    assert!(matches!(
+        space.name_absent(&docs, report),
+        Err(Unresolved::Replaced { .. })
+    ));
+    fs::remove_file(root.join("papers/report.txt")).unwrap();
+    let papers = [Dir {
+        name: "papers".into(),
+        id,
+    }];
+    assert!(space.name_absent(&papers, report).unwrap());
+}
+
+#[test]
 fn utc_dates_follow_the_calendar() {
     let date = |secs: i64| {
         let time = if secs < 0 {

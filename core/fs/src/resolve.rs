@@ -203,6 +203,24 @@ impl Space {
         }
     }
 
+    /// Checks whether a name is absent under its expected parent. An error means absence was not verified.
+    pub fn name_absent(&self, dirs: &[Dir], name: &OsStr) -> Result<bool, Unresolved> {
+        check_name(name)?;
+        let folder = self.folder(&Base::Root, dirs)?;
+        let absent = match stat_at(folder.fd(), name) {
+            Ok(_) => false,
+            Err(err) if err.kind() == io::ErrorKind::NotFound => true,
+            Err(err) => {
+                return Err(Unresolved::Io {
+                    path: folder.path().join(name),
+                    err,
+                });
+            }
+        };
+        self.recheck(&folder)?;
+        Ok(absent)
+    }
+
     /// Resolves `dirs` from `base`, checking every folder's identity.
     pub fn folder(&self, base: &Base, dirs: &[Dir]) -> Result<Folder, Unresolved> {
         let mut folder = match base {

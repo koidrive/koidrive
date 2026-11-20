@@ -47,12 +47,13 @@ use koidrive_chunk::ChunkerConfig;
 use koidrive_engine::classify::Trees;
 use koidrive_engine::effects::{
     Base as EngineBase, BatchLimit, Dir as EngineDir, Displaced as EngineDisplaced,
-    Effect as EngineEffect, EffectRecord, Effects, Location as EngineLocation, location_of,
+    Effect as EngineEffect, EffectRecord, Effects, Location as EngineLocation, location_in,
+    location_of,
 };
 use koidrive_engine::first_link::{self, Marks};
 use koidrive_engine::ignore::is_rules_file;
 use koidrive_engine::question::{RecoveryCause, RecoveryTrigger};
-use koidrive_engine::tree::{Content, FileIdentity, Kind, LocalNode, NodeId};
+use koidrive_engine::tree::{Content, FileIdentity, Kind, LocalNode, NodeId, Shape};
 use koidrive_fs::{
     Action, Base, BroughtBack, Contents, Ctime, Dir, Displaced, Effect, Entry, EntryKind, FileId,
     Known, Location, Marker, Minted, Outcome, Reason, Reclaimed, Refusal, RootAt, RootProblem,
@@ -1000,8 +1001,20 @@ impl Disk {
         Ok(())
     }
 
-    pub fn root(&self) -> &Path {
-        &self.path
+    pub(super) fn owed_name_absent(&self, trees: &Trees, synced: &Shape) -> Option<bool> {
+        if trees.local().get(&synced.parent).is_none() && !trees.missing().contains(&synced.parent)
+        {
+            return Some(true);
+        }
+        let Location::At {
+            base: Base::Root,
+            dirs,
+            name,
+        } = location(&location_in(trees, &synced.parent, &synced.name)?).ok()?
+        else {
+            return None;
+        };
+        self.space.name_absent(&dirs, &name).ok()
     }
 
     /// True while an effect or a failed upload waits for a scan of its paths. Until then the engine holds what L, S or R

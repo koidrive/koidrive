@@ -122,14 +122,16 @@ impl Engine {
                 self.local_written_since_load = true;
             }
         }
-        let owed = self.owed_deletes(|_| false);
-        for id in owed.difference(&self.stored_owed) {
+        let trees = &self.trees;
+        self.owed
+            .retain(|id| trees.local().get(id).is_none() && trees.synced().live(id).is_some());
+        for id in self.owed.difference(&self.stored_owed) {
             tx.set_owed_delete(id, true)?;
         }
-        for id in self.stored_owed.difference(&owed) {
+        for id in self.stored_owed.difference(&self.owed) {
             tx.set_owed_delete(id, false)?;
         }
-        self.stored_owed = owed;
+        self.stored_owed.clone_from(&self.owed);
         for id in &changed.synced {
             match self.trees.synced().get(id) {
                 Some(shape) => tx.put_synced_node(&SyncedNode {
@@ -1362,14 +1364,28 @@ impl Engine {
             .extend(std::mem::take(&mut self.removed_at).into_keys());
     }
 
-    pub fn owed_deletes(&mut self, on_disk: impl Fn(&Path) -> bool) -> BTreeSet<NodeId> {
+    pub(super) fn owed_deletes(
+        &mut self,
+        name_absent: impl Fn(&Trees, &Shape) -> Option<bool>,
+    ) -> BTreeSet<NodeId> {
         let trees = &self.trees;
+        let mut ready = BTreeSet::new();
         self.owed.retain(|id| {
-            trees.local().get(id).is_none()
-                && trees.synced().live(id).is_some()
-                && !trees.synced().path(id).is_some_and(|path| on_disk(&path))
+            if let Some(synced) = trees.synced().live(id)
+                && trees.local().get(id).is_none()
+                && trees.excluded(id)
+            {
+                match name_absent(trees, synced) {
+                    Some(true) => {
+                        ready.insert(id.clone());
+                    }
+                    Some(false) => return false,
+                    None => {}
+                }
+            }
+            true
         });
-        self.owed.clone()
+        ready
     }
 
     pub fn deletes_due(&self) -> Option<u64> {

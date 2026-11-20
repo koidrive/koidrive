@@ -1069,11 +1069,15 @@ fn a_delete_waiting_at_a_restart_is_sent_whenever_a_rule_leaves_its_file_out() {
 
 #[test]
 fn a_file_put_back_at_the_path_a_rule_leaves_out_keeps_its_node_on_the_server() {
-    for order in [
+    let orders = [
         "both while stopped",
         "rule before the stop",
         "both while running",
-    ] {
+    ];
+    for (order, folder) in orders
+        .into_iter()
+        .flat_map(|order| [(order, "docs"), (order, "papers")])
+    {
         clock::freeze();
         let mut remote = Remote::new();
         let (site, mut a) = linked(&mut remote, "a");
@@ -1087,28 +1091,52 @@ fn a_file_put_back_at_the_path_a_rule_leaves_out_keeps_its_node_on_the_server() 
         fs::remove_file(&report).unwrap();
         a.scan_until(|a| a.folder.engine.trees.local().get(&before).is_none());
         let ignore = || fs::write(site.root.join(".koiignore"), b"report.txt\n").unwrap();
+        let put_back = || {
+            if folder != "docs" {
+                fs::rename(site.root.join("docs"), site.root.join(folder)).unwrap();
+            }
+            fs::write(site.root.join(folder).join("report.txt"), b"version one").unwrap();
+        };
         if order != "both while stopped" {
             ignore();
             a.scan_until(|_| local_holds(&site, ".koiignore"));
         }
         if order == "both while running" {
-            fs::write(&report, b"version one").unwrap();
+            put_back();
             a.rescan();
         } else {
             drop(a);
             if order == "both while stopped" {
                 ignore();
             }
-            fs::write(&report, b"version one").unwrap();
+            put_back();
             a = restarted(&site, &mut remote);
         }
         a.rest(&mut remote);
         let nodes = server_nodes(&remote);
         assert!(
             nodes.contains(&("report.txt".to_owned(), before, true)),
-            "{order}: {nodes:?}"
+            "{order} under {folder}: {nodes:?}"
         );
     }
+}
+
+#[test]
+fn an_owed_delete_waits_for_the_parent_move_but_does_not_block_other_writes() {
+    let mut remote = Remote::new();
+    let (site, mut a, before) = report_removed(&mut remote);
+    fs::write(site.root.join("other.txt"), b"other").unwrap();
+    a.scan_until(|a| a.folder.engine.commits.in_flight().is_some());
+    fs::write(site.root.join(".koiignore"), b"report.txt\n").unwrap();
+    a.scan_until(|_| local_holds(&site, ".koiignore"));
+    fs::rename(site.root.join("docs"), site.root.join("papers")).unwrap();
+
+    a.run(&mut remote);
+    assert!(remote.names().iter().any(|name| name == "other.txt"));
+    assert!(server_nodes(&remote).contains(&("report.txt".to_owned(), before.clone(), true)));
+    a.rescan();
+    a.rest(&mut remote);
+    assert!(server_nodes(&remote).contains(&("report.txt".to_owned(), before, false)));
 }
 
 #[test]
@@ -1143,6 +1171,24 @@ fn a_delete_the_server_refused_after_a_rule_left_its_file_out_is_sent_again_afte
     );
     let step = a.folder.scanned();
     a.take(step).unwrap();
+    a.rest(&mut remote);
+    let nodes = server_nodes(&remote);
+    assert!(
+        nodes.contains(&("report.txt".to_owned(), before, false)),
+        "{nodes:?}"
+    );
+}
+
+#[test]
+fn an_owed_delete_leaves_the_server_when_its_folder_is_deleted() {
+    let mut remote = Remote::new();
+    let (site, mut a, before) = report_removed(&mut remote);
+    fs::write(site.root.join("other.txt"), b"other").unwrap();
+    a.scan_until(|a| a.folder.engine.commits.in_flight().is_some());
+    fs::write(site.root.join(".koiignore"), b"report.txt\n").unwrap();
+    a.scan_until(|_| local_holds(&site, ".koiignore"));
+    fs::remove_dir(site.root.join("docs")).unwrap();
+    a.rescan();
     a.rest(&mut remote);
     let nodes = server_nodes(&remote);
     assert!(
