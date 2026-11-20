@@ -295,7 +295,7 @@ fn a_move_the_server_renamed_is_sent_again_after_each_of_two_restores_loses_the_
     );
 }
 
-fn after_losing_a_server_renamed_move_over_c() -> (World, koidrive_proto::v1::NodeState) {
+fn server_renamed_move_over_c(bystander_leaves: bool) -> (World, koidrive_proto::v1::NodeState) {
     let first = vec![
         (1, folder("a")),
         (1, user(1, 0, 1, "b")),
@@ -313,7 +313,9 @@ fn after_losing_a_server_renamed_move_over_c() -> (World, koidrive_proto::v1::No
         (2, rename(visible(&world, 2, &["a", "b"]), 0, "c.txt")),
     ];
     steps.extend(commit(2));
-    steps.push((2, Step::Leave));
+    if bystander_leaves {
+        steps.push((2, Step::Leave));
+    }
     steps.extend(take(1));
     world.run(1, &steps).unwrap();
     let replaced = world
@@ -325,7 +327,13 @@ fn after_losing_a_server_renamed_move_over_c() -> (World, koidrive_proto::v1::No
     let mut steps = vec![(1, rename(visible(&world, 1, &["c.txt"]), 0, "ss"))];
     steps.extend(commit(1));
     steps.extend([(1, DELIVER); 4]);
-    steps.extend([(0, RESTORE), (0, Step::Connect)]);
+    world.run(1, &steps).unwrap();
+    (world, replaced)
+}
+
+fn after_losing_a_server_renamed_move_over_c() -> (World, koidrive_proto::v1::NodeState) {
+    let (mut world, replaced) = server_renamed_move_over_c(true);
+    let mut steps = vec![(0, RESTORE), (0, Step::Connect)];
     steps.extend(take(0));
     world.run(1, &steps).unwrap();
     (world, replaced)
@@ -488,4 +496,27 @@ fn two_consecutive_server_renamed_moves_are_sent_again_after_a_restore_loses_bot
     );
     assert!(world.devices.iter().all(|device| device.disk.shows(2)));
     assert_eq!(files_on(&world, 0), files_on(&world, 1));
+}
+
+const GUN_1381_PLACE_KEPT: &str = "the move on device 1 that puts node 01a1c2c0-39a0-7504-af4d-4d6a531020af at \"ss\" is not on the server, though its user saw the place the server holds and no rule for lost changes settles it";
+
+#[test]
+fn r5_server_renamed_move_over_a_lost_rename_of_a_device_that_left() {
+    let (mut world, _) = server_renamed_move_over_c(true);
+    let _red = expect_red(Check::PlaceKept, GUN_1381_PLACE_KEPT);
+    restore_and_reconnect(&mut world, 2, &[1, 0]);
+}
+
+#[test]
+fn r5_server_renamed_move_over_a_lost_rename_bystander_first() {
+    let (mut world, _) = server_renamed_move_over_c(false);
+    let _red = expect_red(Check::PlaceKept, GUN_1381_PLACE_KEPT);
+    restore_and_reconnect(&mut world, 2, &[2, 1, 0]);
+}
+
+#[test]
+fn r5_server_renamed_move_over_a_lost_rename_mover_first() {
+    let (mut world, _) = server_renamed_move_over_c(false);
+    let _red = expect_red(Check::PlaceKept, GUN_1381_PLACE_KEPT);
+    restore_and_reconnect(&mut world, 2, &[1, 2, 0]);
 }
