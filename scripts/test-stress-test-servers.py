@@ -170,7 +170,8 @@ while True:
 
     def test_parallel_bounds_and_worker_selection(self):
         for extra in (("--parallel", "0"), ("--parallel", "9"), ("--repeat", "101"),
-                      ("--mode", "worker", "--test", "wrong"), ("--filter=-option",)):
+                      ("--mode", "worker", "--test", "wrong"), ("--filter=-option",),
+                      ("--mode", "worker", "--release", "true"), ("--crate", "koidrive-driver", "--release", "true")):
             with self.subTest(extra=extra), redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
                 self.args(*extra)
         self.assertEqual(self.args("--mode", "worker").test, "server")
@@ -342,6 +343,16 @@ while True:
         self.assertFalse(list(self.probes.glob("*.start")))
         self.assertIn("no prebuilt test target first_sync_bench", (self.root / "out/logs/run-1.log").read_text())
 
+    def test_driver_worker_repetitions_run_the_target_built_in_the_release_profile(self):
+        self.worker_fixture("koidrive-driver")
+        self.build("first_sync_bench")
+        with patch.dict(os.environ, KOIDRIVE_DRIVER_TEST="first_sync_bench"):
+            args = self.args("--mode", "worker", "--crate", "koidrive-driver", "--release", "true")
+        record = self.run_tests(args, KOIDRIVE_DRIVER_TEST="first_sync_bench")[0]
+        self.assertEqual(record["result"], "pass")
+        self.assertEqual((self.probes / "cargo.capture").read_text(),
+                         "test --locked -p koidrive-driver --release --test first_sync_bench")
+
     def test_worker_repetitions_run_every_executable_after_a_failure(self):
         self.worker_fixture()
         self.build("server", "server")
@@ -377,6 +388,20 @@ while True:
                                           "--crate", "koidrive-net", "--seed", "17"]), 1)
         self.assertEqual(json.loads((self.root / "out/results.json").read_text())[0]["result"], "error")
         self.assertIn("0 of 1 runs passed", (self.root / "out/summary.md").read_text())
+
+    def test_a_driver_worker_summary_replays_the_target_it_ran(self):
+        record = stress.result(1, 17, 0, "test result: ok. 1 passed; 0 failed; 0 ignored\n", 0)
+        (self.root / "out").mkdir()
+        with patch.dict(os.environ, KOIDRIVE_DRIVER_TEST="first_sync_bench"), \
+                patch.object(stress, "run_tests", return_value=[record]), \
+                patch.object(stress.subprocess, "check_output", return_value="target-sha\n"), \
+                redirect_stdout(io.StringIO()):
+            stress.main(["--root", str(self.root), "--out", str(self.root / "out"), "--mode", "worker",
+                         "--crate", "koidrive-driver", "--seed", "17"])
+        summary = (self.root / "out/summary.md").read_text().splitlines()
+        replay = next(line for line in summary if "heavy-repro" in line)
+        self.assertTrue(replay.startswith("env KOIDRIVE_DRIVER_TEST=first_sync_bench "), replay)
+        self.assertIn("--test first_sync_bench", replay)
 
     def test_workflow_keeps_serial_contract_and_pins_dispatch_harness(self):
         workflow = (ROOT / ".github/workflows/heavy-tests.yml").read_text()

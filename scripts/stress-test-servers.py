@@ -63,6 +63,7 @@ def parse_args(argv=None):
     parser.add_argument("--features", default="")
     parser.add_argument("--cases", default="")
     parser.add_argument("--ignored", choices=("true", "false", ""), default="false")
+    parser.add_argument("--release", choices=("true", "false", ""), default="false")
     parser.add_argument("--repeat", type=int, default=1)
     parser.add_argument("--parallel", type=int, default=1)
     parser.add_argument("--seed", type=int, required=True)
@@ -86,6 +87,8 @@ def parse_args(argv=None):
         if args.test and args.test != target:
             parser.error(f"{args.crate} worker launcher runs --test {target}")
         args.test = target
+    if args.release == "true" and (args.mode, args.crate) != ("worker", "koidrive-driver"):
+        parser.error("release applies to the koidrive-driver worker launcher only")
     args.root = args.root.resolve()
     args.out = args.out.resolve()
     return args
@@ -131,7 +134,8 @@ def capture_tests(args, environment):
         raise RuntimeError(f"Parallel and Worker repetitions support only a Cargo config at the repository root "
                            f"without [env], include, build.target or a target runner, plus such a config in CARGO_HOME, but {unsupported}; "
                            "run the repetitions serially with Cargo instead")
-    command = ["cargo", "test", "--locked", "-p", args.crate, *(["--features", args.features] if args.features else []),
+    command = ["cargo", "test", "--locked", "-p", args.crate, *(["--release"] if args.release == "true" else []),
+               *(["--features", args.features] if args.features else []),
                *(["--test", args.test] if args.test else ["--tests"])]
     with tempfile.TemporaryDirectory(prefix="heavy-capture-") as scratch:
         recorder = Path(scratch) / "record-test"
@@ -371,9 +375,11 @@ def main(argv=None):
         rows.append("| " + " | ".join(str(record[key]) for key in
                     ("run", "seed", "result", "exit_code", "passed", "failed", "ignored", "seconds")) + " |")
     green = sum(record["result"] == "pass" for record in records)
-    repro = [sys.executable, ".heavy-harness/scripts/stress-test-servers.py", "--root", ".", "--out", "heavy-repro",
+    variable = WORKERS[args.crate][2] if args.mode == "worker" else None
+    repro = [*(["env", f"{variable}={args.test}"] if variable else []),
+             sys.executable, ".heavy-harness/scripts/stress-test-servers.py", "--root", ".", "--out", "heavy-repro",
              "--mode", args.mode, "--crate", args.crate, "--test", args.test, "--filter", args.filter,
-             "--features", args.features, "--cases", args.cases, "--ignored", args.ignored,
+             "--features", args.features, "--cases", args.cases, "--ignored", args.ignored, "--release", args.release,
              "--repeat", str(args.repeat), "--parallel", str(args.parallel), "--seed", str(args.seed)]
     rows += ["", f"**{green} of {args.repeat} runs passed.**", "",
              "Cargo tests and web assets are built before repetitions. Cargo runs the built test executables once through a recording runner, and each repetition then runs them with the directory and environment Cargo gave them, so doc-tests don't run. Worker runs use the target commit's launcher, copied web assets, and a fresh server copy with isolated Wrangler builds and local state.",
