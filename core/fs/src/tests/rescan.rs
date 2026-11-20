@@ -1339,352 +1339,243 @@ fn a_waiting_file_restored_by_an_inconclusive_confirmation_keeps_waiting() {
 }
 
 #[cfg(target_os = "macos")]
+struct Published {
+    nodes: BTreeMap<PathBuf, (u128, PathBuf)>,
+    problems: Vec<String>,
+}
+
+#[cfg(target_os = "macos")]
+impl Published {
+    fn apply(&mut self, changes: &[Change], snapshot: &Snapshot, root: &Path) {
+        let disk: BTreeSet<u128> = (Snapshot::scan(root).unwrap().entries.values())
+            .map(|entry| entry.id.ino)
+            .collect();
+        let sources: Vec<(&PathBuf, Option<&PathBuf>)> = (changes.iter())
+            .filter_map(|change| match change {
+                Change::Removed { path, .. } => Some((path, None)),
+                Change::Renamed { from, to, .. } => Some((from, Some(to))),
+                _ => None,
+            })
+            .collect();
+        for (from, _) in &sources {
+            if !self.nodes.contains_key(*from) {
+                self.problems.push(format!("{from:?} was never published"));
+            }
+        }
+        for (path, node) in std::mem::take(&mut self.nodes) {
+            let deepest = (sources.iter())
+                .filter(|(from, _)| path.starts_with(from))
+                .max_by_key(|(from, _)| from.components().count());
+            match deepest {
+                None => drop(self.nodes.insert(path, node)),
+                Some((from, Some(to))) => {
+                    let at = to.join(path.strip_prefix(from).unwrap());
+                    self.nodes.insert(at, node);
+                }
+                Some((_, None)) if disk.contains(&node.0) => {
+                    self.problems
+                        .push(format!("{:?} removed while on disk", node.1));
+                }
+                Some(_) => {}
+            }
+        }
+        for change in changes {
+            match change {
+                Change::Created { path, .. } => {
+                    let ino = snapshot.entries[path].id.ino;
+                    self.nodes.insert(path.clone(), (ino, path.clone()));
+                }
+                Change::Modified { path } => match self.nodes.get_mut(path) {
+                    Some(node) => node.0 = snapshot.entries[path].id.ino,
+                    None => self.problems.push(format!("{path:?} modified unpublished")),
+                },
+                _ => {}
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn run_ops(root: &Path, ops: &[&str]) {
+    for op in ops {
+        let words: Vec<&str> = op.split(' ').collect();
+        match words[..] {
+            ["mv", from, to] => fs::rename(root.join(from), root.join(to)).unwrap(),
+            ["rm", path] if root.join(path).is_dir() => fs::remove_dir(root.join(path)).unwrap(),
+            ["rm", path] => fs::remove_file(root.join(path)).unwrap(),
+            ["write", path] => fs::write(root.join(path), *op).unwrap(),
+            _ => panic!("{op}"),
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
 #[test]
-fn a_file_still_moving_out_of_a_renamed_folder_keeps_its_identity_when_a_sibling_is_renamed_to_its_carried_path()
- {
-    for sibling in ["file", "folder"] {
+fn a_consumer_replaying_the_changes_loses_history_only_where_main_does_when_a_moving_file_is_held()
+{
+    let file_sibling = ["mv a b", "mv b/x c/x", "mv b/y b/x"];
+    let cases: [(&str, &[&str], &str); 20] = [
+        ("a/x a/y", &file_sibling, ""),
+        ("a/x a/y/ a/y/inner", &file_sibling, ""),
+        (
+            "a/x a/y/ a/y/inner",
+            &[
+                "mv a b",
+                "mv b/x c/x",
+                "mv b/y b/x",
+                "mv b/x/inner b/x/other",
+            ],
+            "",
+        ),
+        (
+            "a/x a/y/ a/y/inner",
+            &["mv a b", "mv b/x c/x", "mv b/y b/x", "write b/x/new"],
+            "",
+        ),
+        (
+            "a/x a/y/ a/y/inner",
+            &["mv a b", "mv b/x c/x", "mv b/y b/x", "rm b/x/inner"],
+            "",
+        ),
+        (
+            "a/x a/y/ a/y/inner",
+            &["mv a b", "mv b/x c/x", "mv b/y b/x", "mv b/x/inner b/inner"],
+            "",
+        ),
+        (
+            "a/x a/y/ a/z",
+            &["mv a b", "mv b/x c/x", "mv b/y b/x", "mv b/z b/x/z"],
+            "",
+        ),
+        (
+            "a/x a/y a/v",
+            &["mv a b", "mv b/x c/x", "mv b/y b/x", "mv b/v b/y"],
+            "",
+        ),
+        (
+            "a/x a/y",
+            &["mv a b", "mv b/x c/x", "mv b/y b/x", "write b/x"],
+            "",
+        ),
+        ("a/x", &["mv a b", "mv b/x c/x", "write b/x"], "a/x c/w"),
+        ("a/x", &["mv a b", "mv b/x c/x"], ""),
+        (
+            "a/x a/s/ a/s/y",
+            &["mv a b", "mv b/x c/x", "mv b/s/y b/x"],
+            "a/x c/w",
+        ),
+        (
+            "a/x a/s/ a/s/y a/s/k",
+            &["mv a b", "mv b/s b/t", "mv b/x c/x", "mv b/t/y b/x"],
+            "a/x c/w",
+        ),
+        (
+            "a/x a/s/ a/s/y",
+            &["mv a b", "mv b/x c/x", "mv b/s/y b/x", "rm b/s"],
+            "a/x c/w",
+        ),
+        (
+            "a/x a/y",
+            &["mv a b", "mv b/x c/x", "mv b/y b/x", "write b/y"],
+            "a/x c/w",
+        ),
+        (
+            "a/x a/y d/ d/y",
+            &["mv a b", "mv b/x c/x", "mv d/y b/x"],
+            "a/x c/w",
+        ),
+        (
+            "a/x a/y",
+            &["mv a b", "mv b/x c/x", "mv b/y b/x", "|", "write b/y"],
+            "a/y",
+        ),
+        (
+            "a/x a/y",
+            &["mv a b", "mv b/x c/x", "mv b/y b/x", "|", "write b/x"],
+            "",
+        ),
+        (
+            "a/x a/y",
+            &["mv a b", "mv b/x c/x", "mv b/y b/x", "|", "rm c/w"],
+            "",
+        ),
+        (
+            "a/x a/y",
+            &["mv a b", "mv b/x c/x", "mv b/y b/x", "|", "mv c/w b/y"],
+            "",
+        ),
+    ];
+    let mut failures = Vec::new();
+    for (tree, ops, allowed) in cases {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
-        for folder in ["a", "c"] {
-            fs::create_dir(root.join(folder)).unwrap();
-        }
-        fs::write(root.join("a/x"), "x").unwrap();
-        match sibling {
-            "file" => fs::write(root.join("a/y"), "y").unwrap(),
-            _ => {
-                fs::create_dir(root.join("a/y")).unwrap();
-                fs::write(root.join("a/y/inner"), "inner").unwrap();
+        for path in tree.split(' ').chain(["c/"]) {
+            match path.strip_suffix('/') {
+                Some(folder) => fs::create_dir_all(root.join(folder)).unwrap(),
+                None => {
+                    fs::create_dir_all(root.join(path).parent().unwrap()).unwrap();
+                    fs::write(root.join(path), path).unwrap();
+                }
             }
         }
         let mut snapshot = Snapshot::scan(root).unwrap();
-        fs::rename(root.join("a"), root.join("b")).unwrap();
-        fs::rename(root.join("b/x"), root.join("c/x")).unwrap();
-        fs::rename(root.join("b/y"), root.join("b/x")).unwrap();
+        let mut published = Published {
+            nodes: (snapshot.entries.iter())
+                .map(|(path, entry)| (path.clone(), (entry.id.ino, path.clone())))
+                .collect(),
+            problems: Vec::new(),
+        };
+        let born: BTreeMap<u128, PathBuf> = published.nodes.values().cloned().collect();
+        let (before, during) =
+            ops.split_at(ops.iter().position(|op| *op == "|").unwrap_or(ops.len()));
+        run_ops(root, before);
         let mut again = Some(());
         let scopes = [PathBuf::from("a"), PathBuf::from("b")];
-        let rescan = snapshot
+        let mut rescan = snapshot
             .rescan_with(root, scopes, None, &mut |cut| {
                 if matches!(cut, Cut::Located(at) if at == Path::new("c/x"))
                     && again.take().is_some()
                 {
                     fs::rename(root.join("c/x"), root.join("c/w")).unwrap();
+                    run_ops(root, during.get(1..).unwrap_or_default());
                 }
             })
             .unwrap();
-        let changes = settle_and_compare(&mut snapshot, root, rescan);
-        assert!(
-            (changes.iter()).all(|change| matches!(change, Change::Renamed { .. })),
-            "{sibling}: {changes:?}"
-        );
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn sibling_fixture(dir: &std::path::Path, folder: bool) -> Snapshot {
-    for name in ["a", "c"] {
-        fs::create_dir(dir.join(name)).unwrap();
-    }
-    fs::write(dir.join("a/x"), "moving file").unwrap();
-    if folder {
-        fs::create_dir(dir.join("a/y")).unwrap();
-        fs::write(dir.join("a/y/inner"), "original child").unwrap();
-    } else {
-        fs::write(dir.join("a/y"), "sibling").unwrap();
-    }
-    Snapshot::scan(dir).unwrap()
-}
-
-#[cfg(target_os = "macos")]
-fn rescan_with_x_moving(snapshot: &mut Snapshot, root: &Path, carrier: &str) -> Rescan {
-    let mut fired = false;
-    let scan = snapshot
-        .rescan_with(
-            root,
-            [PathBuf::from("a"), PathBuf::from(carrier)],
-            None,
-            &mut |cut| {
-                if matches!(cut, Cut::Located(at) if at == Path::new("c/x")) && !fired {
-                    fs::rename(root.join("c/x"), root.join("c/w")).unwrap();
-                    fired = true;
-                }
-            },
-        )
-        .unwrap();
-    assert!(fired);
-    scan
-}
-
-#[cfg(target_os = "macos")]
-fn renamed_change(from: &str, to: &str, kind: EntryKind) -> Change {
-    Change::Renamed {
-        from: from.into(),
-        to: to.into(),
-        kind,
-    }
-}
-
-#[cfg(target_os = "macos")]
-#[test]
-fn a_sibling_renamed_onto_a_carried_path_preserves_identity_in_both_orders_and_on_restart() {
-    for carrier in ["b", "A"] {
-        for before in [false, true] {
-            let tmp = tempfile::tempdir().unwrap();
-            let root = tmp.path();
-            let mut snapshot = sibling_fixture(root, false);
-            let mut old = snapshot.clone();
-            let first_name = if before { "a" } else { carrier };
-            if !before {
-                fs::rename(root.join("a"), root.join(carrier)).unwrap();
+        for _ in 0..6 {
+            published.apply(&rescan.changes, &snapshot, root);
+            if rescan.unsettled.is_empty() {
+                break;
             }
-            fs::rename(root.join(first_name).join("x"), root.join("c/x")).unwrap();
-            fs::rename(
-                root.join(first_name).join("y"),
-                root.join(first_name).join("x"),
-            )
-            .unwrap();
-            if before {
-                fs::rename(root.join("a"), root.join(carrier)).unwrap();
+            rescan = snapshot.rescan(root, rescan.unsettled).unwrap();
+        }
+        let whole = snapshot.rescan(root, [PathBuf::new()]).unwrap();
+        published.apply(&whole.changes, &snapshot, root);
+        let fresh = Snapshot::scan(root).unwrap();
+        for (path, entry) in &fresh.entries {
+            match (published.nodes.get(path), born.get(&entry.id.ino)) {
+                (None, _) => published.problems.push(format!("{path:?} unpublished")),
+                (Some((_, history)), Some(file)) if history != file => published
+                    .problems
+                    .push(format!("{path:?} holds {file:?} under {history:?}")),
+                _ => {}
             }
-            let first = rescan_with_x_moving(&mut snapshot, root, carrier);
-            assert_eq!(
-                first.changes,
-                [renamed_change("a", carrier, EntryKind::Dir)],
-                "{carrier} {before}"
-            );
-            let x = format!("{carrier}/x");
-            let y = format!("{carrier}/y");
-            let expected = [
-                renamed_change(&x, "c/w", EntryKind::File),
-                renamed_change(&y, &x, EntryKind::File),
-            ];
-            for (from, to) in [("a", carrier), ("a/x", &x), ("a/y", &y)] {
-                let mut entry = old.entries.remove(Path::new(from)).unwrap();
-                if let Ctime::Settled { at, .. } = entry.ctime
-                    && entry.kind == EntryKind::File
-                {
-                    entry.ctime = Ctime::NotAfter(at);
-                }
-                old.entries.insert(to.into(), entry);
-            }
-            let mut settled_restart = Snapshot {
-                entries: old.entries,
-                ..Snapshot::default()
-            };
-            let resumed = settled_restart.rescan(root, [PathBuf::new()]).unwrap();
-            assert_eq!(
-                resumed
-                    .changes
-                    .iter()
-                    .filter(|c| !matches!(c, Change::Modified { .. }))
-                    .cloned()
-                    .collect::<Vec<_>>(),
-                expected,
-                "restart {carrier} {before}: {resumed:?}"
-            );
-            let changes = settle_and_compare(&mut snapshot, root, first);
-            assert_eq!(
-                &changes[1..],
-                &expected,
-                "live {carrier} {before}: {changes:?}"
-            );
+        }
+        for path in published
+            .nodes
+            .keys()
+            .filter(|path| !fresh.entries.contains_key(*path))
+        {
+            published
+                .problems
+                .push(format!("{path:?} published but gone"));
+        }
+        let problems = published.problems;
+        let expected = |problem: &String| {
+            (allowed.split(' ')).any(|token| !token.is_empty() && problem.contains(token))
+        };
+        if !problems.iter().all(expected) {
+            failures.push(format!("{tree} {ops:?}: {problems:?}"));
         }
     }
-}
-
-#[cfg(target_os = "macos")]
-#[test]
-fn a_sibling_renamed_onto_a_carried_path_new_child_of_deferred_sibling_is_reported() {
-    let tmp = tempfile::tempdir().unwrap();
-    let root = tmp.path();
-    let mut snapshot = sibling_fixture(root, true);
-    fs::rename(root.join("a"), root.join("b")).unwrap();
-    fs::rename(root.join("b/x"), root.join("c/x")).unwrap();
-    fs::rename(root.join("b/y"), root.join("b/x")).unwrap();
-    fs::write(root.join("b/x/added"), "new child").unwrap();
-    let first = rescan_with_x_moving(&mut snapshot, root, "b");
-    let changes = settle_and_compare(&mut snapshot, root, first);
-    assert!(
-        changes.contains(&Change::Created {
-            path: "b/x/added".into(),
-            kind: EntryKind::File
-        }),
-        "{changes:?}"
-    );
-}
-
-#[cfg(target_os = "macos")]
-#[test]
-fn a_sibling_renamed_onto_a_carried_path_edit_of_deferred_sibling_is_not_attributed_to_held_file() {
-    let tmp = tempfile::tempdir().unwrap();
-    let root = tmp.path();
-    let mut snapshot = sibling_fixture(root, false);
-    fs::rename(root.join("a"), root.join("b")).unwrap();
-    fs::rename(root.join("b/x"), root.join("c/x")).unwrap();
-    fs::rename(root.join("b/y"), root.join("b/x")).unwrap();
-    fs::write(root.join("b/x"), "an edit to the sibling").unwrap();
-    let first = rescan_with_x_moving(&mut snapshot, root, "b");
-    let early = first.changes.clone();
-    let changes = settle_and_compare(&mut snapshot, root, first);
-    let modified = Change::Modified { path: "b/x".into() };
-    assert!(
-        !early.contains(&modified) && changes[early.len()..].contains(&modified),
-        "edit must be reported after the sibling rename; early={early:?}, all={changes:?}"
-    );
-}
-
-#[cfg(target_os = "macos")]
-#[test]
-fn a_sibling_renamed_onto_a_carried_path_occupied_put_back_slot_does_not_delete_moving_file() {
-    let tmp = tempfile::tempdir().unwrap();
-    let root = tmp.path();
-    let mut snapshot = sibling_fixture(root, false);
-    fs::rename(root.join("a"), root.join("b")).unwrap();
-    fs::rename(root.join("b/x"), root.join("c/x")).unwrap();
-    fs::rename(root.join("b/y"), root.join("b/x")).unwrap();
-    fs::write(root.join("b/y"), "new file at old sibling name").unwrap();
-    let first = rescan_with_x_moving(&mut snapshot, root, "b");
-    let changes = settle_and_compare(&mut snapshot, root, first);
-    assert!(
-        changes.contains(&renamed_change("b/x", "c/w", EntryKind::File))
-            || changes.contains(&renamed_change("a/x", "c/w", EntryKind::File)),
-        "{changes:?}"
-    );
-}
-
-#[cfg(target_os = "macos")]
-#[test]
-fn a_sibling_renamed_onto_a_carried_path_deferred_child_edit_has_a_snapshot_entry_when_reported() {
-    let tmp = tempfile::tempdir().unwrap();
-    let root = tmp.path();
-    let mut snapshot = sibling_fixture(root, true);
-    fs::rename(root.join("a"), root.join("b")).unwrap();
-    fs::rename(root.join("b/x"), root.join("c/x")).unwrap();
-    fs::rename(root.join("b/y"), root.join("b/x")).unwrap();
-    fs::write(
-        root.join("b/x/inner"),
-        "changed child with different length",
-    )
-    .unwrap();
-    let first = rescan_with_x_moving(&mut snapshot, root, "b");
-    let path = PathBuf::from("b/x/inner");
-    let early_entry = snapshot.entries.contains_key(&path);
-    let early_changes = first.changes.len();
-    let changes = settle_and_compare(&mut snapshot, root, first);
-    let modified = Change::Modified { path };
-    let consumable_early = early_entry && changes[..early_changes].contains(&modified);
-    assert!(
-        consumable_early || changes[early_changes..].contains(&modified),
-        "no edit at a path the caller can consume; first snapshot has child={early_entry}, changes={changes:?}"
-    );
-}
-#[cfg(target_os = "macos")]
-#[test]
-fn a_file_moved_into_a_sibling_renamed_onto_the_carried_path_is_not_removed() {
-    let dir = tempfile::tempdir().unwrap();
-    let root = dir.path();
-    for folder in ["a", "a/y", "c"] {
-        fs::create_dir(root.join(folder)).unwrap();
-    }
-    fs::write(root.join("a/x"), "x").unwrap();
-    fs::write(root.join("a/z"), "z").unwrap();
-    let mut snapshot = Snapshot::scan(root).unwrap();
-    fs::rename(root.join("a"), root.join("b")).unwrap();
-    fs::rename(root.join("b/x"), root.join("c/x")).unwrap();
-    fs::rename(root.join("b/y"), root.join("b/x")).unwrap();
-    fs::rename(root.join("b/z"), root.join("b/x/z")).unwrap();
-    let mut again = Some(());
-    let first = snapshot
-        .rescan_with(
-            root,
-            [PathBuf::from("a"), PathBuf::from("b")],
-            None,
-            &mut |cut| {
-                if matches!(cut, Cut::Located(at) if at == Path::new("c/x"))
-                    && again.take().is_some()
-                {
-                    fs::rename(root.join("c/x"), root.join("c/w")).unwrap();
-                }
-            },
-        )
-        .unwrap();
-    let mut changes = first.changes;
-    let mut unsettled = first.unsettled;
-    while !unsettled.is_empty() {
-        let rescan = snapshot.rescan(root, unsettled).unwrap();
-        changes.extend(rescan.changes);
-        unsettled = rescan.unsettled;
-    }
-    changes.extend(snapshot.rescan(root, [PathBuf::new()]).unwrap().changes);
-    assert!(
-        !(changes.iter())
-            .any(|change| matches!(change, Change::Removed { path, .. } if path.ends_with("z"))),
-        "{changes:?}"
-    );
-}
-
-#[cfg(target_os = "macos")]
-#[test]
-fn a_sibling_renamed_onto_a_carried_path_renaming_a_child_inside_the_deferred_sibling_keeps_the_hold()
- {
-    let tmp = tempfile::tempdir().unwrap();
-    let root = tmp.path();
-    let mut snapshot = sibling_fixture(root, true);
-    fs::rename(root.join("a"), root.join("b")).unwrap();
-    fs::rename(root.join("b/x"), root.join("c/x")).unwrap();
-    fs::rename(root.join("b/y"), root.join("b/x")).unwrap();
-    fs::rename(root.join("b/x/inner"), root.join("b/x/other")).unwrap();
-    let first = rescan_with_x_moving(&mut snapshot, root, "b");
-    assert!(
-        !first.changes.iter().any(
-            |change| matches!(change, Change::Removed { path, .. } if path == Path::new("a/x"))
-        ),
-        "{first:?}"
-    );
-    let changes = settle_and_compare(&mut snapshot, root, first);
-    assert!(
-        changes.contains(&renamed_change("b/x", "c/w", EntryKind::File)),
-        "{changes:?}"
-    );
-    assert!(
-        changes.contains(&renamed_change("b/y/inner", "b/x/other", EntryKind::File)),
-        "{changes:?}"
-    );
-}
-
-#[cfg(target_os = "macos")]
-#[test]
-fn a_sibling_renamed_onto_a_carried_path_a_file_still_moving_on_the_follow_up_rescan_is_not_deleted()
- {
-    for folder in [false, true] {
-        let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path();
-        let mut snapshot = sibling_fixture(root, folder);
-        fs::rename(root.join("a"), root.join("b")).unwrap();
-        fs::rename(root.join("b/x"), root.join("c/x")).unwrap();
-        fs::rename(root.join("b/y"), root.join("b/x")).unwrap();
-        let first = rescan_with_x_moving(&mut snapshot, root, "b");
-        assert_eq!(first.changes, [renamed_change("a", "b", EntryKind::Dir)]);
-        let mut fired = false;
-        let second = snapshot
-            .rescan_with(root, first.unsettled, None, &mut |cut| {
-                if matches!(cut, Cut::Located(at) if at == Path::new("c/w")) && !fired {
-                    fs::rename(root.join("c/w"), root.join("c/z")).unwrap();
-                    fired = true;
-                }
-            })
-            .unwrap();
-        assert!(fired, "{second:?}");
-        let early = second.changes.clone();
-        assert!(
-            !early
-                .iter()
-                .any(|change| matches!(change, Change::Removed { .. })),
-            "{second:?}"
-        );
-        let changes = settle_and_compare(&mut snapshot, root, second);
-        assert!(
-            changes.contains(&renamed_change("b/x", "c/z", EntryKind::File)),
-            "{changes:?}"
-        );
-    }
+    assert!(failures.is_empty(), "{failures:#?}");
 }

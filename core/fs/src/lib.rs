@@ -2389,9 +2389,7 @@ impl Snapshot {
                 .cloned()
                 .collect();
             let proven = hidden.contains(&path);
-            let carrier = (moves.iter())
-                .filter(|(from, _)| gone.starts_with(from) && *from != gone)
-                .max_by_key(|(from, _)| from.components().count());
+            let carrier = (moves.iter()).find(|(from, _)| gone.parent() == Some(*from));
             let mut targets = vec![place.clone()];
             let mut put_back: Vec<(PathBuf, &Path, &Path)> = Vec::new();
             let mut stuck = false;
@@ -2407,18 +2405,12 @@ impl Snapshot {
                     if (put_back.iter()).any(|(_, put, _)| from.starts_with(put)) {
                         continue;
                     }
-                    let back = carrier
-                        .and_then(|(folder, now)| Some(now.join(from.strip_prefix(folder).ok()?)))
-                        .filter(|back| {
-                            !(targets.iter())
-                                .any(|held| back.starts_with(held) || held.starts_with(back))
-                        });
-                    match back {
-                        Some(back) => {
-                            targets.push(back.clone());
-                            put_back.push((back, from, to));
+                    match (carrier, from.file_name()) {
+                        (Some((folder, now)), Some(name)) if from.parent() == Some(*folder) => {
+                            targets.push(now.join(name));
+                            put_back.push((now.join(name), from, to));
                         }
-                        None => stuck = true,
+                        _ => stuck = true,
                     }
                 }
             }
@@ -2435,8 +2427,9 @@ impl Snapshot {
             if (proven && !moving.contains(&path) && !occupant.is_empty())
                 || stuck
                 || (occupants.iter()).any(|inside| {
-                    !inside.ancestors().any(|above| created.contains(above))
-                        && !renamed_onto(inside)
+                    !renamed_onto(inside)
+                        && !(inside.starts_with(&place)
+                            && inside.ancestors().any(|above| created.contains(above)))
                 })
             {
                 continue;
