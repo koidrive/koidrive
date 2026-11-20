@@ -1164,7 +1164,7 @@ pub(crate) fn unparks_to(trees: &Trees, id: &NodeId, target: &Shape) -> bool {
 
 fn forked_aside(trees: &Trees, id: &NodeId, shape: &Shape) -> bool {
     trees.remote().live(id).is_none()
-        && trees.edited(id)
+        && (trees.edited(id) || trees.unknown_folder_holds_nodes(id))
         && (trees.remote().iter()).any(|(other, node)| {
             other != id
                 && !node.trashed
@@ -1219,6 +1219,12 @@ impl<'a> View<'a> {
                     return Step::Blocked(None);
                 }
                 return self.unpark(id, local, &local.shape);
+            }
+            (Some(_), None)
+                if self.trees.reverted().contains(id)
+                    && self.trees.unknown_folder_holds_nodes(id) =>
+            {
+                return Step::Blocked(None);
             }
             (Some(local), None) => return self.remove(id, local),
             (None, Some(remote)) => {
