@@ -392,17 +392,18 @@ impl Trees {
                 })
             })
             .chain(self.past_positions.iter().flat_map(|(id, positions)| {
-                (positions.iter()).map(|at| {
-                    (
-                        id.clone(),
-                        Field::Place,
-                        IntentId::legacy_place(
-                            &id.to_string(),
-                            at.rev,
-                            &at.parent.to_string(),
-                            &at.name,
-                        ),
-                    )
+                (positions.iter()).flat_map(|at| {
+                    let node = id.to_string();
+                    let place =
+                        IntentId::legacy_place(&node, at.rev, &at.parent.to_string(), &at.name);
+                    let trashed = (at.trash_group.as_deref()).map(|group| {
+                        (
+                            id.clone(),
+                            Field::Status,
+                            IntentId::legacy_trashed(&node, group),
+                        )
+                    });
+                    std::iter::once((id.clone(), Field::Place, place)).chain(trashed)
                 })
             }))
             .collect();
