@@ -708,22 +708,11 @@ fn a_parked_reverted_folder_no_tree_holds_is_created_as_a_new_node_for_a_folder_
     trees.set_local_changed("f".into(), local(dir("d", "f"), 1));
     trees.settle(&Default::default());
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
-    let mut commit = None;
-    for _ in 0..3 {
-        commit = build(&mut commits, &mut trees, &mut ids);
-        if commit.is_some() {
-            break;
-        }
-        let held: Vec<NodeId> = trees.local().iter().map(|(id, _)| id.clone()).collect();
-        for id in held {
-            effects_for(&mut trees, &mut ids, &id.to_string());
-        }
-        trees.settle(commits.aliases());
-    }
+    let commit = built_after_effects(&mut commits, &mut trees, &mut ids);
     let d = folder_named(&trees, "d");
     assert_ne!(d, "d");
     assert_eq!(
-        placed(&commit.unwrap()),
+        placed(&commit),
         [created(&d, ROOT, "d"), moved("f", &d, "f")]
     );
 }
@@ -3306,6 +3295,20 @@ fn placed(commit: &proto::Commit) -> Vec<(&'static str, String, String, String)>
         .collect()
 }
 
+fn built_after_effects(commits: &mut Commits, trees: &mut Trees, ids: &mut IdGen) -> proto::Commit {
+    for _ in 0..3 {
+        if let Some(commit) = build(commits, trees, ids) {
+            return commit;
+        }
+        let held: Vec<NodeId> = trees.local().iter().map(|(id, _)| id.clone()).collect();
+        for id in held {
+            effects_for(trees, ids, &id.to_string());
+        }
+        trees.settle(commits.aliases());
+    }
+    panic!("no commit after three rounds of effects");
+}
+
 fn folder_named(trees: &Trees, name: &str) -> String {
     (trees.local().iter())
         .find(|(_, node)| node.shape.name == name && node.shape.kind == Kind::Dir)
@@ -3540,4 +3543,69 @@ fn a_parked_reverted_folder_no_tree_holds_stays_parked_while_the_server_gives_it
     assert_ne!(d, "d");
     assert_eq!(effects_for(&mut trees, &mut ids, &d), []);
     assert!(trees.local().get(&d.as_str().into()).unwrap().parked);
+}
+
+#[test]
+fn a_parked_reverted_folder_no_tree_holds_is_kept_for_a_parked_new_file_in_it() {
+    let mut trees = trees(&[]);
+    trees.set_local(
+        "a".into(),
+        LocalNode {
+            parked: true,
+            ..local(dir(ROOT, "d"), 9)
+        },
+    );
+    trees.revert("a".into());
+    trees.set_local(
+        "z".into(),
+        LocalNode {
+            parked: true,
+            ..local(file("a", "f", 5), 1)
+        },
+    );
+    trees.settle(&Default::default());
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    assert_eq!(effects_for(&mut trees, &mut ids, "a"), []);
+    let commit = built_after_effects(&mut commits, &mut trees, &mut ids);
+    let d = folder_named(&trees, "d");
+    assert_eq!(
+        placed(&commit),
+        [created(&d, ROOT, "d"), created("z", &d, "f")]
+    );
+}
+
+#[test]
+fn a_parked_reverted_folder_no_tree_holds_is_kept_for_a_parked_file_moved_into_it_whose_server_name_is_taken()
+ {
+    let mut trees = trees(&[synced("f", file(ROOT, "f", 4))]);
+    trees.set_local(
+        "z".into(),
+        LocalNode {
+            parked: true,
+            ..local(dir(ROOT, "d"), 9)
+        },
+    );
+    trees.revert("z".into());
+    trees.set_local_changed("f".into(), local(file("z", "f", 4), 1));
+    trees.set_local(
+        "f".into(),
+        LocalNode {
+            parked: true,
+            ..local(file("z", "f", 4), 1)
+        },
+    );
+    trees.set_local_changed("h".into(), local(file(ROOT, "f", 6), 2));
+    trees.settle(&Default::default());
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    assert_eq!(effects_for(&mut trees, &mut ids, "z"), []);
+    let first = built_after_effects(&mut commits, &mut trees, &mut ids);
+    assert_eq!(placed(&first), [created("h", ROOT, "f")]);
+    applied(&mut trees, &mut commits, &first);
+    let commit = built_after_effects(&mut commits, &mut trees, &mut ids);
+    let d = folder_named(&trees, "d");
+    assert_ne!(d, "z");
+    assert_eq!(
+        placed(&commit),
+        [created(&d, ROOT, "d"), moved("f", &d, "f")]
+    );
 }

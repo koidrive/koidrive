@@ -1220,6 +1220,13 @@ impl<'a> View<'a> {
                 }
                 return self.unpark(id, local, &local.shape);
             }
+            (Some(local), None)
+                if local.parked
+                    && self.trees.reverted().contains(id)
+                    && self.trees.unknown_folder_holds_nodes(id) =>
+            {
+                return Step::Blocked(None);
+            }
             (Some(local), None) => return self.remove(id, local),
             (None, Some(remote)) => {
                 if let Some(blocked) = self.blocked(id, remote) {
