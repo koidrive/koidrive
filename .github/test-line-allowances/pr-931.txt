@@ -1,0 +1,2 @@
+70
+# Ignored-folder search: a miss must not be decided on a folder the search left unfinished, on an ancestor replaced after its own check, on a parent replaced or a folder gone in the last round of checks, or on a name gone at its stat that comes back. Each row stages one of these races at an exact step of the walk. The existing search rows never change a folder after the search passed it.

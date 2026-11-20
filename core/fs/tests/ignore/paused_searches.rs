@@ -508,7 +508,7 @@ fn a_search_keeps_a_move_while_ignored_folders_move_or_keep_being_replaced() {
                 None => removed("f.txt", File),
             };
             let missed = !strict
-                && matches!(&changes[..], [Change::Missing { path, .. }] if path == Path::new("f.txt"));
+                && matches!(&changes[..], [Change::Missing { path, kind: File, id: lost }] if path == Path::new("f.txt") && *lost == id);
             if !missed {
                 assert_eq!(changes, [expected], "{moved:?} budget {budget}");
             }
