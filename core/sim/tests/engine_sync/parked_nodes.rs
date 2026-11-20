@@ -56,6 +56,7 @@ fn a_parked_child_of_a_folder_renamed_in_an_earlier_commit_is_not_brought_back_f
     let answer = space.commit(&session, NOW, &renamed).unwrap().result;
     device.receive(&answer.changes, true);
     let seq = answer.seq;
+    device.acknowledged(&renamed, &answer.results);
     commits.received(answer).unwrap();
     assert!(commits.acknowledge(&mut device.trees, seq));
     device.trees.settle(commits.aliases());
@@ -116,6 +117,29 @@ fn a_parked_child_of_a_folder_renamed_in_an_earlier_commit_is_not_brought_back_f
         )
         .cloned();
     assert!(result.is_none());
+
+    let current: Vec<_> = space
+        .nodes()
+        .into_iter()
+        .filter(|n| n.node_id != space.space_id())
+        .collect();
+    let index = current.iter().position(|n| n.node_id == ancestor).unwrap();
+    let before_trash = space.head_seq();
+    remote_action(&mut space, &mut other, 2, &act(4, index, 0, 0, 0));
+    for record in space
+        .resume(&Resume {
+            since_seq: before_trash,
+            history_id: history,
+            ..Default::default()
+        })
+        .unwrap()
+    {
+        device.receive(&record.changes, false);
+    }
+    device.trees.settle(commits.aliases());
+    assert!(device.trees.remote().get(&ancestor).unwrap().trashed);
+    let quiet = BTreeSet::from([ancestor.clone()]);
+    assert!(revive_check(&device, &quiet, &ancestor).is_err());
 }
 
 #[test]

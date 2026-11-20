@@ -576,6 +576,7 @@ struct Device {
     rules: Rules,
     touched: BTreeSet<NodeId>,
     acted: BTreeSet<NodeId>,
+    acked: BTreeSet<NodeId>,
     removed_from: BTreeMap<NodeId, NodeId>,
     kept_back: BTreeSet<NodeId>,
     relocated: BTreeMap<NodeId, Relocation>,
@@ -610,6 +611,7 @@ impl Device {
             rules: Rules::default(),
             touched: BTreeSet::new(),
             acted: BTreeSet::new(),
+            acked: BTreeSet::new(),
             removed_from: BTreeMap::new(),
             kept_back: BTreeSet::new(),
             relocated: BTreeMap::new(),
@@ -691,7 +693,7 @@ impl Device {
                 chunks: Box::default(),
             };
             let id = NodeId::from(self.ids.uuid_v7(NOW as u64));
-            self.acted.insert(id.clone());
+            self.acted_on(id.clone());
             self.trees.set_local_changed(id, node);
         }
         self.rescan();
@@ -750,7 +752,7 @@ impl Device {
             parked: false,
             chunks: entry.chunks,
         };
-        self.acted.insert(id.clone());
+        self.acted_on(id.clone());
         self.off_disk.remove(&id);
         self.trees.set_local_changed(id.clone(), node);
         let mut above = left;
@@ -764,7 +766,7 @@ impl Device {
                 .insert(folder.clone(), above.clone().expect("lost folder in L"));
             self.kept_back.remove(&folder);
             self.relocated.remove(&folder);
-            self.acted.insert(folder.clone());
+            self.acted_on(folder.clone());
             self.trees.remove_local(&folder);
         }
         id
@@ -819,6 +821,27 @@ impl Device {
             .filter(|id| visible(&self.trees, id))
             .collect();
         self.trees.listed(&moved, Pending::default());
+    }
+
+    fn acted_on(&mut self, id: NodeId) {
+        self.acked.remove(&id);
+        self.acted.insert(id);
+    }
+
+    fn acknowledged(&mut self, commit: &Commit, results: &[OpResult]) {
+        for (op, outcome) in commit.ops.iter().zip(results) {
+            let id = match &op.op {
+                Some(op::Op::Delete(delete)) => &delete.node_id,
+                Some(op::Op::CreateFile(create)) => &create.node_id,
+                Some(op::Op::CreateDir(create)) => &create.node_id,
+                Some(op::Op::Move(moved)) => &moved.node_id,
+                Some(op::Op::UpdateContent(update)) => &update.node_id,
+                _ => continue,
+            };
+            if outcome.code == op_result::Code::Applied as i32 {
+                self.acked.insert(NodeId::from(id));
+            }
+        }
     }
 
     /// One change the user makes on disk, as the next rescan reports it. The user sees no parked
@@ -892,7 +915,7 @@ impl Device {
             below.push(name.to_owned());
             self.move_to_ignored_disk(&id, holder.clone(), below);
             self.touched.insert(id.clone());
-            self.acted.insert(id.clone());
+            self.acted_on(id.clone());
             self.trees.ignore_local(&id);
             return;
         }
@@ -949,7 +972,7 @@ impl Device {
                     chunks,
                 };
                 let id = NodeId::from(self.ids.uuid_v7(NOW as u64));
-                self.acted.insert(id.clone());
+                self.acted_on(id.clone());
                 self.trees.set_local_changed(id, node);
             }
             (2, Some((id, mut node))) if node.shape.kind == Kind::File => {
@@ -959,7 +982,7 @@ impl Device {
                 let written = Some(content(1, action.text));
                 if node.content() != written {
                     self.touched.insert(id.clone());
-                    self.acted.insert(id.clone());
+                    self.acted_on(id.clone());
                 }
                 (node.shape.content, node.chunks) = split(written);
                 self.trees.set_local_changed(id, node);
@@ -974,7 +997,7 @@ impl Device {
                         node.shape.name = name.into();
                         if before.parent != node.shape.parent || before.name != node.shape.name {
                             self.touched.insert(id.clone());
-                            self.acted.insert(id.clone());
+                            self.acted_on(id.clone());
                             self.relocate(&id, &before, &node.shape);
                         }
                         self.trees.set_local_changed(id, node);
@@ -1022,11 +1045,11 @@ impl Device {
                     !doomed.contains(holder) && !only_in_l.contains(holder)
                 });
                 for folder in &kept {
-                    self.acted.insert(folder.clone());
+                    self.acted_on(folder.clone());
                     self.trees.ignore_local(folder);
                 }
                 for folder in &only_in_l {
-                    self.acted.insert(folder.clone());
+                    self.acted_on(folder.clone());
                     self.trees.keep_lost_local(folder);
                 }
                 self.off_disk.extend(only_in_l);
@@ -1037,7 +1060,7 @@ impl Device {
                     }
                     self.kept_back.remove(&other);
                     self.relocated.remove(&other);
-                    self.acted.insert(other.clone());
+                    self.acted_on(other.clone());
                     self.trees.remove_local(&other);
                 }
             }
@@ -1850,7 +1873,10 @@ fn revive_check(
     id: &NodeId,
 ) -> Result<(), TestCaseError> {
     let trees = &device.trees;
-    let changed = |node: &NodeId| device.acted.contains(node) || device.touched.contains(node);
+    let changed = |node: &NodeId| {
+        (device.acted.contains(node) || device.touched.contains(node))
+            && !device.acked.contains(node)
+    };
     let parent = |node: &NodeId| match trees.local().get(node) {
         Some(local) => Some(local.shape.parent.clone()),
         None => trees
@@ -2765,6 +2791,7 @@ fn run_ignoring_answering_after(
         }
         last_seq = result.seq;
         prop_assert!(commits.acknowledge(&mut device.trees, last_seq));
+        device.acknowledged(&commit, &result.results);
         due = true;
         if restores.is_empty() {
             continue;
