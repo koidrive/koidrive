@@ -24,7 +24,6 @@ export interface MockRunAttempt {
 export class MockCloudflare {
   readonly workers = new Map<string, MockWorker>();
   readonly buckets = new Map<string, MockBucket>();
-  readonly namespaces: { id: string; class: string; script?: string }[] = [];
   readonly requests: string[] = [];
   createBucketStatus = 200;
   claimStatus = 200;
@@ -33,7 +32,10 @@ export class MockCloudflare {
   workerDeleteKeepsNamespaces = false;
   failingWorkerCall?: "GET" | "DELETE";
   bucketListStatus = 200;
-  bucketListCursor = "";
+  bucketListCursors: string[] = [];
+  private bucketListPages = 0;
+  readonly unnamedListings: Record<string, unknown>[] = [];
+  readonly namespaces: { id: string; class: string; script?: string | null }[] = [];
   readonly runAttempts = new Map<string, MockRunAttempt>();
   githubStatus = 200;
   readonly claimCode = "ZQ7K-M2XR-9WPD";
@@ -152,7 +154,7 @@ export class MockCloudflare {
         return worker ? ok({ id: worker.id, name: match[1], created_on: new Date().toISOString() }) : missing();
       }
       if (api === "/workers/scripts" && method === "GET") {
-        return ok([...this.workers].map(([name, worker]) => ({ id: name, created_on: worker.createdOn })));
+        return ok([...this.unnamedListings, ...[...this.workers].map(([name, worker]) => ({ id: name, created_on: worker.createdOn }))]);
       }
       if ((match = /^\/workers\/scripts\/([^/]+)$/.exec(api)) && method === "DELETE") {
         if (!this.workers.delete(match[1]!)) return missing();
@@ -203,7 +205,9 @@ export class MockCloudflare {
       if (api === "/r2/buckets" && method === "GET") {
         if (this.bucketListStatus !== 200) return send(this.bucketListStatus, { success: false, errors: [{ code: 10000, message: "Authentication error" }], messages: [], result: null });
         const contains = new URL(request.url ?? "/", this.url).searchParams.get("name_contains") ?? "";
-        return ok({ buckets: [...this.buckets].filter(([name]) => name.includes(contains)).map(([name, bucket]) => ({ name, ...(bucket.creationDate ? { creation_date: bucket.creationDate } : {}) })) }, this.bucketListCursor);
+        const named = [...this.buckets].filter(([name]) => name.includes(contains)).map(([name, bucket]) => ({ name, ...(bucket.creationDate ? { creation_date: bucket.creationDate } : {}) }));
+        const cursor = this.bucketListCursors[this.bucketListPages++ % Math.max(1, this.bucketListCursors.length)] ?? "";
+        return ok({ buckets: [...this.unnamedListings, ...named] }, cursor);
       }
       if ((match = /^\/r2\/buckets\/([^/]+)\/lifecycle$/.exec(api)) && method === "PUT") {
         const bucket = this.buckets.get(match[1]!);

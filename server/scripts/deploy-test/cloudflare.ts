@@ -148,13 +148,17 @@ export interface Bucket {
 
 export async function listBuckets(account: Account, prefix: string): Promise<Bucket[]> {
   const buckets = new Map<string, Bucket>();
+  const seen = new Set<string>();
   let cursor = "";
   for (;;) {
     const query = new URLSearchParams({ name_contains: prefix, per_page: "1000", ...(cursor ? { cursor } : {}) });
-    const page = await call<{ buckets?: { name: string; creation_date?: string }[] }>(account, "GET", `/accounts/${account.id}/r2/buckets?${query}`);
-    for (const bucket of page.result?.buckets ?? []) if (bucket.name.startsWith(prefix)) buckets.set(bucket.name, { name: bucket.name, creationDate: bucket.creation_date });
+    const page = await call<{ buckets?: { name?: unknown; creation_date?: unknown }[] }>(account, "GET", `/accounts/${account.id}/r2/buckets?${query}`);
+    for (const bucket of page.result?.buckets ?? []) {
+      if (typeof bucket.name === "string" && bucket.name.startsWith(prefix)) buckets.set(bucket.name, { name: bucket.name, creationDate: typeof bucket.creation_date === "string" ? bucket.creation_date : undefined });
+    }
     const next = page.result_info?.cursor ?? "";
-    if (!next || next === cursor || (page.result?.buckets ?? []).length === 0) return [...buckets.values()];
+    if (!next || seen.has(next) || (page.result?.buckets ?? []).length === 0) return [...buckets.values()];
+    seen.add(next);
     cursor = next;
   }
 }
@@ -245,8 +249,11 @@ export async function deleteWorker(account: Account, name: string): Promise<bool
 export async function listNamespaces(account: Account): Promise<Namespace[]> {
   const found: Namespace[] = [];
   for (let page = 1; ; page++) {
-    const listed = await call<Namespace[]>(account, "GET", `/accounts/${account.id}/workers/durable_objects/namespaces?per_page=1000&page=${page}`);
-    found.push(...(listed.result ?? []));
+    const listed = await call<{ id?: unknown; class?: unknown; script?: unknown }[]>(account, "GET", `/accounts/${account.id}/workers/durable_objects/namespaces?per_page=1000&page=${page}`);
+    for (const namespace of listed.result ?? []) {
+      if (typeof namespace.id !== "string" || typeof namespace.class !== "string") continue;
+      found.push({ id: namespace.id, class: namespace.class, ...(typeof namespace.script === "string" ? { script: namespace.script } : {}) });
+    }
     if (!listed.result_info?.total_pages || page >= listed.result_info.total_pages) return found;
   }
 }
@@ -260,8 +267,8 @@ export async function deleteNamespace(account: Account, id: string): Promise<boo
 }
 
 export async function listWorkers(account: Account): Promise<{ name: string; createdOn?: string }[]> {
-  const scripts = await call<{ id: string; created_on?: string }[]>(account, "GET", `/accounts/${account.id}/workers/scripts`);
-  return (scripts.result ?? []).map((script) => ({ name: script.id, createdOn: script.created_on }));
+  const scripts = await call<{ id?: unknown; created_on?: unknown }[]>(account, "GET", `/accounts/${account.id}/workers/scripts`);
+  return (scripts.result ?? []).flatMap((script) => (typeof script.id === "string" ? [{ name: script.id, createdOn: typeof script.created_on === "string" ? script.created_on : undefined }] : []));
 }
 
 export const WORKER_KEYS = ["$metadata.service", "$workers.scriptName"] as const;

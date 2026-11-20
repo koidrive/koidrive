@@ -223,12 +223,13 @@ describe("sweep", () => {
     mock.addBucket("koidrive-test-7-1");
     const full = mock.addBucket("koidrive-test-8-2", undefined, ["spaces/a/chunks/aa/aa/1"]);
     mock.addBucket("user-koidrive-test-7-1", undefined, ["theirs.txt"]);
-    mock.namespaces.push({ id: "no-script", class: "AccountDO" }, { id: "orphan-account", class: "AccountDO", script: "koidrive-test-8-2" });
-    mock.bucketListCursor = "the-same-cursor-every-time";
+    mock.namespaces.push({ id: "no-script", class: "AccountDO" }, { id: "null-script", class: "SpaceDO", script: null }, { id: "orphan-account", class: "AccountDO", script: "koidrive-test-8-2" });
+    mock.unnamedListings.push({ created_on: new Date().toISOString() });
+    mock.bucketListCursors = ["cursor-a", "cursor-b"];
     const { status, output } = await runTs("sweep");
     expect({ status, warnings: output.includes("::warning::") }).toEqual({ status: 0, warnings: false });
     expect(mock.workers.size).toBe(0);
-    expect(mock.namespaces).toEqual([{ id: "no-script", class: "AccountDO" }]);
+    expect(mock.namespaces.map((namespace) => namespace.id)).toEqual(["no-script", "null-script"]);
     expect([...mock.buckets.keys()].sort()).toEqual(["koidrive-test-8-2", "user-koidrive-test-7-1"]);
     expect(full.lifecycle).toEqual(EXPIRY);
     expect(full.objects.size).toBe(1);
