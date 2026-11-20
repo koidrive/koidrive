@@ -620,6 +620,7 @@ devices::rewinds_converge_from_seed_301	case-2148	both	DeleteUndone	the delete o
 devices::rewinds_converge_from_seed_301	case-2191	both	DeleteUndone	the delete of node 01a1c2c0-39a0-7735-80db-d7e668859a70 on device 0 came undone, and no change its user did not see brought the node back
 devices::rewinds_converge_from_seed_301	case-2212	both	DeleteUndone	the delete of node 01a1c2c0-39a0-760a-bbe1-ae4b9fee2e6e on device 0 came undone, and no change its user did not see brought the node back
 devices::rewinds_converge_from_seed_301	case-2215	both	DeleteUndone	the delete of node 01a1c2c0-39a0-7c5c-8466-a7d0954b76a3 on device 2 came undone, and no change its user did not see brought the node back
+devices::rewinds_converge_from_seed_301	case-2289	both	DeleteUndone	write 3 that the delete of node 01a1c2c0-39a0-76b6-8f17-7744bb83aba9 on device 2 saw is live again on node 01a1c2c0-39a0-7dff-b5f0-d7236d74b1d7, and no user copied it	GUN-665
 devices::rewinds_converge_from_seed_301	case-2342	both	DeleteUndone	the delete of node 01a1c2c0-39a0-7510-83bc-38d6c6b89fe4 on device 1 came undone, and no change its user did not see brought the node back
 devices::rewinds_converge_from_seed_301	case-2515	both	DeleteUndone	the delete of node 01a1c2c0-39a0-7ea7-93f8-3d888a182e12 on device 0 came undone, and no change its user did not see brought the node back
 devices::rewinds_converge_from_seed_301	case-258	both	DeleteUndone	the delete of node 01a1c2c0-39a0-7c5c-8466-a7d0954b76a3 on device 0 came undone, and no change its user did not see brought the node back
