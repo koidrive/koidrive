@@ -1,4 +1,4 @@
-4725
+4742
 # The RFC 0029 journal is new, so no test on main covers it. Redundant tests were merged and each kept test turned red under at least one mutant of the code it covers.
 # Engine journal unit tests: the §5.1 row states (a change over a sent or held row, a value returning to the one in flight), each §5.2 result holding, superseding or ending rows, the bounded history, delete seen lists, replays after a loss, the journal generator's own stream, and the legacy id vectors.
 # Engine intents: the row each scan, create, edit, move and delete writes; commits naming intents only when the server announces them; every result kind (APPLIED, APPLIED_RENAMED, SUPERSEDED, CONFLICT_COPY, MERGED_INTO, ID_EXISTS); compact held rows written out unchanged on every trigger and through the store; the backfill of a store from an earlier release; the first listing that names intents.

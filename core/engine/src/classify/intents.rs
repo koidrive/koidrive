@@ -1186,9 +1186,9 @@ impl Trees {
         &mut self,
         commit: &proto::Commit,
         result: &proto::CommitResult,
-    ) -> BTreeSet<NodeId> {
+    ) -> (BTreeSet<NodeId>, BTreeSet<NodeId>) {
         use op_result::Code;
-        let mut sent_again = BTreeSet::new();
+        let (mut sent_again, mut held_elsewhere) = (BTreeSet::new(), BTreeSet::new());
         let states: BTreeMap<NodeId, &proto::NodeState> = (result.changes.iter())
             .filter_map(|change| match &change.change {
                 Some(change_record::Change::Node(state)) => {
@@ -1267,6 +1267,7 @@ impl Trees {
                                     .map(|reported| (id, reported))
                             });
                         if let Some((target, (held, version_id, _))) = elsewhere {
+                            held_elsewhere.insert(node.clone());
                             (self.journal).held_elsewhere(
                                 &node,
                                 field,
@@ -1322,7 +1323,7 @@ impl Trees {
         for node in touched {
             self.compact_journal(&node, Compact::AfterChange);
         }
-        sent_again
+        (sent_again, held_elsewhere)
     }
 
     fn trash_seen(&self, id: &NodeId) -> Vec<Seen> {
