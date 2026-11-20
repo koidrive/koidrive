@@ -302,7 +302,7 @@ impl Site {
             .unwrap()
             .expect("the folder is not locked");
         let local = local_rules(sync).unwrap();
-        let loaded = Folder::load(&self.db, &link, local, &|| false)
+        let loaded = Folder::load(&self.db, &link, local, &|| false, || {})
             .unwrap()
             .unwrap();
         let (mut folder, snapshot) = Folder::open(loaded, link, &lock).unwrap();

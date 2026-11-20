@@ -30,6 +30,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
+use std::ops::ControlFlow;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -43,6 +44,15 @@ use migrations::{LEGACY_STEPS, MIGRATIONS, NAMED};
 use prost::Message;
 pub use restore::AskedRestore;
 use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior, params};
+
+macro_rules! next_row {
+    ($rows:ident, $abandoned:ident) => {
+        match $rows.next()? {
+            Some(_) if $abandoned() => return Ok(false),
+            row => row,
+        }
+    };
+}
 
 mod engine;
 mod questions;
@@ -504,6 +514,19 @@ impl Tx<'_> {
 
     /// Every node of the remote tree, live and trashed, ordered by `node_id`.
     pub fn remote_nodes(&self) -> Result<Vec<NodeState>> {
+        let mut nodes = Vec::new();
+        self.each_remote_node(|node| {
+            nodes.push(node);
+            ControlFlow::<()>::Continue(())
+        })?;
+        Ok(nodes)
+    }
+
+    /// Gives `each` the nodes of [`Tx::remote_nodes`] one at a time, and stops with what it breaks with.
+    pub fn each_remote_node<B>(
+        &self,
+        mut each: impl FnMut(NodeState) -> ControlFlow<B>,
+    ) -> Result<Option<B>> {
         let mut stmt = self.0.prepare_cached(
             "SELECT node_id, parent_id, name, kind, status, content_rev, meta_rev, trash_group, current,
                     edit_rev, meta_edit_rev, pending_for, pending_by
@@ -530,12 +553,14 @@ impl Tx<'_> {
                 row.get::<_, Option<Vec<u8>>>(8)?,
             ))
         })?;
-        rows.map(|row| {
+        for row in rows {
             let (mut node, current) = row?;
             node.current = decode(current)?;
-            Ok(node)
-        })
-        .collect()
+            if let ControlFlow::Break(stopped) = each(node) {
+                return Ok(Some(stopped));
+            }
+        }
+        Ok(None)
     }
 
     /// Inserts the remote node with `node.node_id`, or updates its row in place.
@@ -605,6 +630,19 @@ impl Tx<'_> {
 
     /// Every node of the synced tree, ordered by `node_id`.
     pub fn synced_nodes(&self) -> Result<Vec<SyncedNode>> {
+        let mut nodes = Vec::new();
+        self.each_synced_node(|node| {
+            nodes.push(node);
+            ControlFlow::<()>::Continue(())
+        })?;
+        Ok(nodes)
+    }
+
+    /// Gives `each` the nodes of [`Tx::synced_nodes`] one at a time, and stops with what it breaks with.
+    pub fn each_synced_node<B>(
+        &self,
+        mut each: impl FnMut(SyncedNode) -> ControlFlow<B>,
+    ) -> Result<Option<B>> {
         let mut stmt = self.0.prepare_cached(
             "SELECT node_id, parent_id, name, kind, content, pending_for FROM synced_nodes
              ORDER BY node_id",
@@ -616,15 +654,18 @@ impl Tx<'_> {
                 row.get::<_, Option<String>>(5)?.unwrap_or_default(),
             ))
         })?;
-        rows.map(|row| {
+        for row in rows {
             let (node_id, shape, pending_for) = row?;
-            Ok(SyncedNode {
+            let node = SyncedNode {
                 node_id: node_id.into(),
                 shape: shape.into_shape()?,
                 pending_for,
-            })
-        })
-        .collect()
+            };
+            if let ControlFlow::Break(stopped) = each(node) {
+                return Ok(Some(stopped));
+            }
+        }
+        Ok(None)
     }
 
     pub fn put_synced_node(&self, node: &SyncedNode) -> Result<()> {
@@ -655,6 +696,19 @@ impl Tx<'_> {
 
     /// Every node of the local tree, ordered by `node_id`.
     pub fn local_nodes(&self) -> Result<Vec<LocalNode>> {
+        let mut nodes = Vec::new();
+        self.each_local_node(|node| {
+            nodes.push(node);
+            ControlFlow::<()>::Continue(())
+        })?;
+        Ok(nodes)
+    }
+
+    /// Gives `each` the nodes of [`Tx::local_nodes`] one at a time, and stops with what it breaks with.
+    pub fn each_local_node<B>(
+        &self,
+        mut each: impl FnMut(LocalNode) -> ControlFlow<B>,
+    ) -> Result<Option<B>> {
         let mut stmt = self.0.prepare_cached(
             "SELECT node_id, parent_id, name, kind, content, ino, ino_high, birth_ns, parked,
                     left_out_when_placed, content_from_server, handle
@@ -674,19 +728,22 @@ impl Tx<'_> {
                 row.get::<_, bool>(10)?,
             ))
         })?;
-        rows.map(|row| {
+        for row in rows {
             let (node_id, shape, identity, parked, left_out_when_placed, content_from_server) =
                 row?;
-            Ok(LocalNode {
+            let node = LocalNode {
                 node_id: node_id.into(),
                 shape: shape.into_shape()?,
                 identity,
                 parked,
                 left_out_when_placed,
                 content_from_server,
-            })
-        })
-        .collect()
+            };
+            if let ControlFlow::Break(stopped) = each(node) {
+                return Ok(Some(stopped));
+            }
+        }
+        Ok(None)
     }
 
     /// Inserts the local node, or updates its row in place. `ino` is stored as the bit patterns of its low and high 64
@@ -729,11 +786,30 @@ impl Tx<'_> {
     /// For each local node that has one, the latest change time its file can have while it still holds what L records:
     /// the change time the file had when it was last read, or when L recorded a node it had not read.
     pub fn local_ctimes(&self) -> Result<BTreeMap<String, i64>> {
+        let mut ctimes = BTreeMap::new();
+        self.each_local_ctime(|node_id, ctime_ns| {
+            ctimes.insert(node_id, ctime_ns);
+            ControlFlow::<()>::Continue(())
+        })?;
+        Ok(ctimes)
+    }
+
+    /// Gives `each` the entries of [`Tx::local_ctimes`] one at a time, and stops with what it breaks with.
+    pub fn each_local_ctime<B>(
+        &self,
+        mut each: impl FnMut(String, i64) -> ControlFlow<B>,
+    ) -> Result<Option<B>> {
         let mut stmt = self.0.prepare_cached(
             "SELECT node_id, ctime_ns FROM local_nodes WHERE ctime_ns IS NOT NULL",
         )?;
         let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
-        Ok(rows.collect::<rusqlite::Result<_>>()?)
+        for row in rows {
+            let (node_id, ctime_ns) = row?;
+            if let ControlFlow::Break(stopped) = each(node_id, ctime_ns) {
+                return Ok(Some(stopped));
+            }
+        }
+        Ok(None)
     }
 
     /// Records the latest change time of the local node's file, as [`Tx::local_ctimes`] gives it.

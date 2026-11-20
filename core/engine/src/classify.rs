@@ -49,6 +49,10 @@ pub struct Changed {
 /// Every subset of a group is tried, so the search costs up to 2^n checks of n nodes.
 pub const SETTLE_GROUP_LIMIT: usize = 12;
 
+/// How many nodes the `_unless` variants, such as [`Trees::settle_unless`], handle between two calls of their
+/// `abandoned`.
+pub const CHECK_EVERY: usize = 4096;
+
 /// How many of the versions R held for one file before its current one
 /// [`Trees::replaced_versions`] keeps. A loss that rolls a file back further than that is not
 /// proven, and the file's content is kept beside R's as a conflict copy.
@@ -3729,9 +3733,9 @@ impl Trees {
         )
     }
 
-    fn note_unobserved(&mut self) {
+    fn note_unobserved(&mut self, abandoned: &dyn Fn() -> bool) -> Option<()> {
         if !self.rules_known || self.rules_changed.is_empty() {
-            return;
+            return Some(());
         }
         let changed = std::mem::take(&mut self.rules_changed);
         let below: Option<BTreeSet<NodeId>> = (!changed.contains(&Vec::new())).then(|| {
@@ -3745,10 +3749,10 @@ impl Trees {
                 .filter(|id| self.l.get(id).is_some())
                 .collect(),
         };
-        self.mark_left_out(&tops);
+        self.mark_left_out(&tops, abandoned)
     }
 
-    fn mark_left_out(&mut self, tops: &[NodeId]) {
+    fn mark_left_out(&mut self, tops: &[NodeId], abandoned: &dyn Fn() -> bool) -> Option<()> {
         let mut scopes = HashMap::new();
         let mut seen = HashSet::new();
         let mut below: Vec<&NodeId> = tops.iter().collect();
@@ -3756,6 +3760,9 @@ impl Trees {
         while let Some(node) = below.pop() {
             if !seen.insert(node) {
                 continue;
+            }
+            if seen.len() % CHECK_EVERY == 0 && abandoned() {
+                return None;
             }
             for names in [&self.l_names, &self.l_parked, &self.s_names, &self.r_names] {
                 below.extend(names.children(node));
@@ -3770,6 +3777,7 @@ impl Trees {
         for node in marked {
             self.set_unobserved(node);
         }
+        Some(())
     }
 
     fn below_rules(&self, dir: &[String]) -> BTreeSet<NodeId> {
@@ -5844,12 +5852,28 @@ impl Trees {
     /// content into S, unless an acknowledged update of the node waits, since content never breaks S, so a later change on either side is compared
     /// with the content both sides already hold. [`Trees::work`] gives the dirty nodes that are left.
     pub fn settle(&mut self, merged: &BTreeMap<NodeId, NodeId>) {
+        self.settle_unless(merged, &|| false)
+            .expect("a settle nobody abandons ends settled");
+    }
+
+    /// [`Trees::settle`], which gives up with `None` once `abandoned` holds at one of its checks, one per
+    /// [`CHECK_EVERY`] nodes. The trees it gives up on are half settled, fit only to be dropped.
+    pub fn settle_unless(
+        &mut self,
+        merged: &BTreeMap<NodeId, NodeId>,
+        abandoned: &dyn Fn() -> bool,
+    ) -> Option<()> {
         self.release_kept_entries_the_person_let_in();
         self.note_kept_causes();
-        let carried: Vec<NodeId> = (self.unsettled.iter())
-            .filter(|id| self.carried(id))
-            .cloned()
-            .collect();
+        let mut carried = Vec::new();
+        for (walked, id) in self.unsettled.iter().enumerate() {
+            if walked % CHECK_EVERY == 0 && abandoned() {
+                return None;
+            }
+            if self.carried(id) {
+                carried.push(id.clone());
+            }
+        }
         for id in carried {
             self.keep_rules_file(&id);
         }
@@ -5866,7 +5890,12 @@ impl Trees {
                     let mut changed: BTreeSet<NodeId> =
                         self.unsettled.union(&unwatched).cloned().collect();
                     let mut below: Vec<NodeId> = changed.iter().cloned().collect();
+                    let mut walked = 0;
                     while let Some(node) = below.pop() {
+                        walked += 1;
+                        if walked % CHECK_EVERY == 0 && abandoned() {
+                            return None;
+                        }
                         for child in self.local_children(&node) {
                             if changed.insert(child.clone()) {
                                 below.push(child.clone());
@@ -5879,14 +5908,15 @@ impl Trees {
             let unfit = first_link::adopt_equal_files(self, &changed);
             self.wait_to_link(unfit);
         }
-        self.settle_marked();
-        self.note_unobserved();
+        self.settle_marked(abandoned)?;
+        self.note_unobserved(abandoned)?;
         while self.link_due() {
-            self.settle_marked();
+            self.settle_marked(abandoned)?;
         }
         if std::mem::take(&mut self.release_due) && self.release_vanished() {
-            self.settle_marked();
+            self.settle_marked(abandoned)?;
         }
+        Some(())
     }
 
     pub(crate) fn wait_to_link(&mut self, pairs: Vec<(NodeId, NodeId)>) {
@@ -5934,7 +5964,7 @@ impl Trees {
         }
     }
 
-    fn settle_marked(&mut self) {
+    fn settle_marked(&mut self, abandoned: &dyn Fn() -> bool) -> Option<()> {
         let (l, r) = (&self.l, &self.r);
         self.lost_positions
             .retain(|id, _| match (l.live(id), r.live(id)) {
@@ -5952,6 +5982,9 @@ impl Trees {
         let mut next = 0;
         let mut changed = Vec::new();
         while let Some(id) = queue.get(next).cloned() {
+            if next % CHECK_EVERY == 0 && abandoned() {
+                return None;
+            }
             next += 1;
             let options = self.released(&id).unwrap_or_default();
             let fitting = (options.iter()).find(|next| self.fits_synced(&id, next.as_ref()));
@@ -5994,6 +6027,9 @@ impl Trees {
             .collect();
         let mut taken = Vec::new();
         loop {
+            if abandoned() {
+                return None;
+            }
             let before = pending.len();
             pending.retain(|id| {
                 let fits = self.take_remote(id);
@@ -6059,7 +6095,7 @@ impl Trees {
                 }
             }
         }
-        self.mark_left_out(&changed);
+        self.mark_left_out(&changed, abandoned)?;
         self.same = pending;
         self.reverted
             .retain(|id| match (self.l.get(id), self.r.live(id)) {
@@ -6069,7 +6105,10 @@ impl Trees {
                 }
                 (local, remote) => local.is_some() || remote.is_some(),
             });
-        for id in &queue {
+        for (sorted, id) in queue.iter().enumerate() {
+            if sorted % CHECK_EVERY == 0 && abandoned() {
+                return None;
+            }
             self.sort(id);
         }
         debug_assert!(self.creates.iter().all(|id| self.creates_only(id)));
@@ -6080,6 +6119,7 @@ impl Trees {
         }));
         debug_assert!(self.creates.is_disjoint(&self.others));
         debug_assert_eq!(self.creates.len() + self.others.len(), self.dirty.len());
+        Some(())
     }
 
     /// Every dirty node with its class, in `node_id` order. This reads the whole dirty set.
@@ -6978,15 +7018,39 @@ impl Trees {
     /// although it is parked or not in sync, an unsearched node that is not dirty, and a parked
     /// name for a node L does not hold as parked.
     pub fn restore(&mut self, state: TreesState) -> Result<(), StateError> {
+        self.restore_unless(state, &|| false)
+            .map(|restored| restored.expect("a restore nobody abandons ends restored"))
+    }
+
+    /// [`Trees::restore`], which gives up with `Ok(None)` once `abandoned` holds at one of its checks: after the
+    /// trees pass theirs, one per [`CHECK_EVERY`] entries it validates, and after every refusal. All come before
+    /// `state` replaces anything, so the trees it gives up on are as they were.
+    pub fn restore_unless(
+        &mut self,
+        state: TreesState,
+        abandoned: &dyn Fn() -> bool,
+    ) -> Result<Option<()>, StateError> {
+        let (walked, gave_up) = (Cell::new(0), Cell::new(false));
+        let go_on = || {
+            walked.set(walked.get() + 1);
+            if walked.get() % CHECK_EVERY == 0 && abandoned() {
+                gave_up.set(true);
+            }
+            !gave_up.get()
+        };
         if let Some((id, _)) = state
             .content_provenance
             .iter()
+            .take_while(|_| go_on())
             .find(|(_, value)| !value.valid())
         {
             return Err(StateError::InvalidContentProvenance(id.clone()));
         }
         self.check()
             .map_err(|(tree, error)| StateError::Tree(tree, error))?;
+        if abandoned() {
+            return Ok(None);
+        }
         let ids = (self.r.iter().map(|(id, _)| id))
             .chain(self.l.iter().map(|(id, _)| id))
             .chain(self.s.iter().map(|(id, _)| id));
@@ -6995,92 +7059,152 @@ impl Trees {
                 && !self.l.get(id).is_some_and(|node| node.parked)
                 && !state.unsent_edits.contains(id)
         };
-        if let Some(id) = ids
+        if let Some(id) = (ids.take_while(|_| go_on()))
             .filter(|id| !state.dirty.contains(*id))
             .find(|id| !settled(id))
         {
             return Err(StateError::NotDirty(id.clone()));
         }
-        if let Some(id) = state.unsearched.difference(&state.dirty).next() {
+        if let Some(id) =
+            (state.unsearched.iter().take_while(|_| go_on())).find(|id| !state.dirty.contains(*id))
+        {
             return Err(StateError::UnsearchedNotDirty(id.clone()));
         }
         let placed = |id: &&NodeId| !self.l.get(id).is_some_and(|node| node.parked);
-        if let Some(id) = state.parked_as.keys().find(placed) {
+        if let Some(id) = state.parked_as.keys().take_while(|_| go_on()).find(placed) {
             return Err(StateError::NotParked(id.clone()));
         }
         let trashed = |(id, seq): &(&NodeId, &u64)| {
             (self.r.get(id)).is_some_and(|remote| remote.trashed && remote.meta_rev == **seq)
         };
-        if let Some((id, _)) = state.trashed_here.iter().find(|entry| !trashed(entry)) {
+        if let Some((id, _)) = state
+            .trashed_here
+            .iter()
+            .take_while(|_| go_on())
+            .find(|entry| !trashed(entry))
+        {
             return Err(StateError::NotTrashedHere(id.clone()));
         }
-        if let Some((id, _)) = state.removed_here.iter().find(|entry| !trashed(entry)) {
+        if let Some((id, _)) = state
+            .removed_here
+            .iter()
+            .take_while(|_| go_on())
+            .find(|entry| !trashed(entry))
+        {
             return Err(StateError::NotRemovedHere(id.clone()));
         }
-        if let Some(id) = (state.outside.iter()).find(|id| self.l.get(id).is_none()) {
+        if let Some(id) = (state.outside.iter())
+            .take_while(|_| go_on())
+            .find(|id| self.l.get(id).is_none())
+        {
             return Err(StateError::NotIgnoredLocal(id.clone()));
         }
-        if let Some(id) = (state.lost.iter()).find(|id| !state.outside.contains(*id)) {
+        if let Some(id) = (state.lost.iter())
+            .take_while(|_| go_on())
+            .find(|id| !state.outside.contains(*id))
+        {
             return Err(StateError::NotIgnoredLocal(id.clone()));
         }
         if let Some(id) = (state.found.keys()).find(|id| !state.outside.contains(*id)) {
             return Err(StateError::NotIgnoredLocal(id.clone()));
         }
         let kept = |id: &&NodeId| self.l.get(id).is_none() && self.r.live(id).is_some();
-        if let Some(id) = state.displaced.keys().find(|id| !kept(id)) {
+        if let Some(id) = state
+            .displaced
+            .keys()
+            .take_while(|_| go_on())
+            .find(|id| !kept(id))
+        {
             return Err(StateError::NotDisplaced(id.clone()));
         }
-        if let Some(id) = (state.missing.iter()).find(|id| !state.displaced.contains_key(*id)) {
+        if let Some(id) = (state.missing.iter())
+            .take_while(|_| go_on())
+            .find(|id| !state.displaced.contains_key(*id))
+        {
             return Err(StateError::NotDisplaced(id.clone()));
         }
         let edited = |(id, seq): &(&NodeId, &u64)| {
             (self.r.get(id)).is_some_and(|remote| !remote.trashed && remote.edit_rev == **seq)
         };
-        if let Some((id, _)) = state.edited_here.iter().find(|entry| !edited(entry)) {
+        if let Some((id, _)) = state
+            .edited_here
+            .iter()
+            .take_while(|_| go_on())
+            .find(|entry| !edited(entry))
+        {
             return Err(StateError::NotEditedHere(id.clone()));
         }
         let moved = |(id, moved): &(&NodeId, &MovedHere)| {
             (self.r.get(id)).is_some_and(|remote| remote.meta_rev >= moved.seq)
         };
-        if let Some((id, _)) = state.moved_here.iter().find(|entry| !moved(entry)) {
+        if let Some((id, _)) = state
+            .moved_here
+            .iter()
+            .take_while(|_| go_on())
+            .find(|entry| !moved(entry))
+        {
             return Err(StateError::NotMovedHere(id.clone()));
         }
         if let Some(id) = state
             .past_positions
             .keys()
+            .take_while(|_| go_on())
             .find(|id| self.r.get(id).is_none())
         {
             return Err(StateError::NotPastPosition(id.clone()));
         }
-        if let Some(id) = (state.synced_positions.keys()).find(|id| self.r.get(id).is_none()) {
+        if let Some(id) = (state.synced_positions.keys())
+            .take_while(|_| go_on())
+            .find(|id| self.r.get(id).is_none())
+        {
             return Err(StateError::NotSyncedPosition(id.clone()));
         }
         if let Some(id) = state
             .unsent_edits
             .iter()
+            .take_while(|_| go_on())
             .find(|id| self.l.get(id).is_none())
         {
             return Err(StateError::NotUnsentEdit(id.clone()));
         }
-        if let Some(id) = (state.unseen_changes.iter()).find(|id| self.s.get(id).is_none()) {
+        if let Some(id) = (state.unseen_changes.iter())
+            .take_while(|_| go_on())
+            .find(|id| self.s.get(id).is_none())
+        {
             return Err(StateError::NotUnseenChange(id.clone()));
         }
-        if let Some(id) = (state.replaced_versions.keys()).find(|id| self.r.get(id).is_none()) {
+        if let Some(id) = (state.replaced_versions.keys())
+            .take_while(|_| go_on())
+            .find(|id| self.r.get(id).is_none())
+        {
             return Err(StateError::NotRemote(id.clone()));
         }
-        if let Some(id) = (state.resends.iter()).find(|id| self.l.get(id).is_none()) {
+        if let Some(id) = (state.resends.iter())
+            .take_while(|_| go_on())
+            .find(|id| self.l.get(id).is_none())
+        {
             return Err(StateError::NotResend(id.clone()));
         }
-        if let Some(id) = (state.local_changes.iter()).find(|id| self.l.get(id).is_none()) {
+        if let Some(id) = (state.local_changes.iter())
+            .take_while(|_| go_on())
+            .find(|id| self.l.get(id).is_none())
+        {
             return Err(StateError::NotLocalChange(id.clone()));
         }
-        if let Some(id) = (state.lost_positions.keys()).find(|id| self.l.get(id).is_none()) {
+        if let Some(id) = (state.lost_positions.keys())
+            .take_while(|_| go_on())
+            .find(|id| self.l.get(id).is_none())
+        {
             return Err(StateError::NotLostPosition(id.clone()));
         }
         if let Some(id) = (state.lost_creates.iter())
+            .take_while(|_| go_on())
             .find(|id| self.r.get(id).is_some() || self.l.get(id).is_none())
         {
             return Err(StateError::NotLostCreate(id.clone()));
+        }
+        if gave_up.get() || abandoned() {
+            return Ok(None);
         }
         let TreesState {
             dirty,
@@ -7183,7 +7307,7 @@ impl Trees {
         self.pending_finishes = pending_finishes.into();
         self.rules_known = false;
         self.unknown_rules.clear();
-        Ok(())
+        Ok(Some(()))
     }
 }
 

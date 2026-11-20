@@ -10,9 +10,10 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::hash::BuildHasher;
+use std::ops::ControlFlow;
 use std::path::{Component, Path, PathBuf};
 
-use koidrive_engine::classify::{Pending, Trees};
+use koidrive_engine::classify::{CHECK_EVERY, Pending, Trees};
 use koidrive_engine::commit::{Base, Commits, Halt};
 use koidrive_engine::effects::Effects;
 use koidrive_engine::first_link::History;
@@ -27,7 +28,7 @@ use koidrive_fs::{Ctime, Entry, EntryKind, FileId, Known, Mount, Snapshot};
 use koidrive_proto::v1::{
     CaughtUp, ChangeRecord, CommitRecord, NodeKind, NodeState, TrashPage, TreePage, change_record,
 };
-use koidrive_store::{Cursor, EngineChanges, Error, StoredQuestion, SyncedNode, Tx};
+use koidrive_store::{Cursor, EngineChanges, EngineState, Error, StoredQuestion, SyncedNode, Tx};
 
 use crate::ItemKind;
 use crate::disk::Stop;
@@ -73,90 +74,12 @@ impl Engine {
     /// The engine state of the space whose root node is `root`, as the store holds it. A space that never stored an
     /// ID generator gets one with a random seed.
     pub fn load(tx: &Tx<'_>, root: &str) -> Result<Self, Error> {
-        Self::load_unless(tx, root, &|| false)
+        let mut stored = Stored::new(root);
+        let whole = stored.read_unless(tx, root, &|| false)?;
+        assert!(whole, "a read nobody abandons reads every row");
+        stored
+            .engine_unless(&|| false)
             .map(|engine| engine.expect("a load nobody abandons ends with the engine"))
-    }
-
-    pub fn load_unless(
-        tx: &Tx<'_>,
-        root: &str,
-        abandoned: &dyn Fn() -> bool,
-    ) -> Result<Option<Self>, Error> {
-        let mut trees = Trees::new(root);
-        for state in tx.remote_nodes()? {
-            if state.node_id == root {
-                continue;
-            }
-            let (id, node) = RemoteNode::from_state(&state)
-                .map_err(|error| invalid(format!("remote node {}: {error:?}", state.node_id)))?;
-            trees.set_remote(id, node);
-        }
-        if abandoned() {
-            return Ok(None);
-        }
-        for node in tx.synced_nodes()? {
-            trees.set_synced(node.node_id.clone(), Some(shape(node.shape)?));
-            let mark = Some(node.pending_for).filter(|name| !name.is_empty());
-            trees.set_synced_mark(node.node_id, mark);
-        }
-        if abandoned() {
-            return Ok(None);
-        }
-        for node in tx.local_nodes()? {
-            let local = LocalNode {
-                shape: shape(node.shape)?,
-                identity: file_identity(node.identity),
-                parked: node.parked,
-                left_out_when_placed: node.left_out_when_placed,
-                content_from_server: node.content_from_server,
-            };
-            trees.set_local(node.node_id, local);
-        }
-        if abandoned() {
-            return Ok(None);
-        }
-        let stored = tx.engine_state()?;
-        trees
-            .restore(stored.trees)
-            .map_err(|error| invalid(format!("{error:?}")))?;
-        trees.take_changed();
-        let stored_questions = stored.commits.questions.clone();
-        let commits =
-            Commits::from_state(stored.commits).map_err(|error| invalid(format!("{error:?}")))?;
-        commits.hold(&mut trees);
-        let effects = effects_of(stored.effects)?;
-        let ids = match tx.id_generator()? {
-            Some(bytes) => {
-                let state = <[u8; 8]>::try_from(bytes.as_slice()).map_err(|_| {
-                    invalid(format!("an ID generator state of {} bytes", bytes.len()))
-                })?;
-                IdGen::new(u64::from_le_bytes(state))
-            }
-            None => IdGen::new(
-                std::collections::hash_map::RandomState::new()
-                    .hash_one(std::time::SystemTime::now()),
-            ),
-        };
-        Ok(Some(Engine {
-            trees,
-            effects,
-            commits,
-            ids,
-            cursor: tx.cursor()?,
-            stored_questions,
-            asked: false,
-            reshown_since_load: false,
-            recovery_cause: None,
-            unscanned: None,
-            mounts: tx.volume_mounts()?,
-            stored_ctimes: (tx.local_ctimes()?.into_iter())
-                .map(|(id, ctime)| (NodeId::from(id), ctime))
-                .collect(),
-            unstored_ctimes: BTreeMap::new(),
-            local_written_since_load: false,
-            removed_at: BTreeMap::new(),
-            owed: BTreeSet::new(),
-        }))
     }
 
     /// Ends a step that changed the engine, inside the step's transaction. It settles the trees, then writes the L
@@ -758,11 +681,21 @@ impl Engine {
     /// [`Trees::ignore_local`] recorded is left out with what is under it, since the disk does not hold it there: an
     /// entry the scan finds at its path is reported as created.
     pub fn snapshot(&self) -> Snapshot {
+        self.snapshot_unless(&|| false)
+            .expect("a snapshot nobody abandons ends with every entry")
+    }
+
+    pub fn snapshot_unless(&self, abandoned: &dyn Fn() -> bool) -> Option<Snapshot> {
         let local = self.trees.local();
         let mut entries = BTreeMap::new();
         let mut pending = vec![(PathBuf::new(), local.root.clone())];
+        let mut walked = 0;
         while let Some((path, id)) = pending.pop() {
             for child in self.trees.local_children(&id) {
+                walked += 1;
+                if walked % CHECK_EVERY == 0 && abandoned() {
+                    return None;
+                }
                 let Some(node) = local.get(child) else {
                     continue;
                 };
@@ -809,10 +742,10 @@ impl Engine {
                 pending.push((at, child.clone()));
             }
         }
-        Snapshot {
+        Some(Snapshot {
             entries,
             ..Snapshot::default()
-        }
+        })
     }
 
     /// The path of a node L holds, relative to the root. `None` for a node L does not hold under the root, such as
@@ -1696,6 +1629,181 @@ impl Engine {
             }
             touched.insert(id);
         }
+    }
+}
+
+pub(crate) struct Stored {
+    trees: Trees,
+    state: EngineState,
+    ids: Option<Vec<u8>>,
+    cursor: Option<Cursor>,
+    mounts: BTreeMap<PathBuf, Mount>,
+    ctimes: BTreeMap<NodeId, i64>,
+}
+
+impl Stored {
+    pub fn new(root: &str) -> Self {
+        Stored {
+            trees: Trees::new(root),
+            state: EngineState::default(),
+            ids: None,
+            cursor: None,
+            mounts: BTreeMap::new(),
+            ctimes: BTreeMap::new(),
+        }
+    }
+
+    pub fn read_unless(
+        &mut self,
+        tx: &Tx<'_>,
+        root: &str,
+        abandoned: &dyn Fn() -> bool,
+    ) -> Result<bool, Error> {
+        let trees = &mut self.trees;
+        let mut walked = 0;
+        let mut abandoned_now = || {
+            walked += 1;
+            walked % CHECK_EVERY == 0 && abandoned()
+        };
+        let stopped = tx.each_remote_node(|state| {
+            if abandoned_now() {
+                return ControlFlow::Break(Ok(false));
+            }
+            if state.node_id == root {
+                return ControlFlow::Continue(());
+            }
+            match RemoteNode::from_state(&state) {
+                Ok((id, node)) => trees.set_remote(id, node),
+                Err(error) => {
+                    let error = invalid(format!("remote node {}: {error:?}", state.node_id));
+                    return ControlFlow::Break(Err(error));
+                }
+            }
+            ControlFlow::Continue(())
+        })?;
+        if let Some(stopped) = stopped {
+            return stopped;
+        }
+        if abandoned() {
+            return Ok(false);
+        }
+        let stopped = tx.each_synced_node(|node| {
+            if abandoned_now() {
+                return ControlFlow::Break(Ok(false));
+            }
+            let shape = match shape(node.shape) {
+                Ok(shape) => shape,
+                Err(error) => return ControlFlow::Break(Err(error)),
+            };
+            trees.set_synced(node.node_id.clone(), Some(shape));
+            let mark = Some(node.pending_for).filter(|name| !name.is_empty());
+            trees.set_synced_mark(node.node_id, mark);
+            ControlFlow::Continue(())
+        })?;
+        if let Some(stopped) = stopped {
+            return stopped;
+        }
+        if abandoned() {
+            return Ok(false);
+        }
+        let stopped = tx.each_local_node(|node| {
+            if abandoned_now() {
+                return ControlFlow::Break(Ok(false));
+            }
+            let shape = match shape(node.shape) {
+                Ok(shape) => shape,
+                Err(error) => return ControlFlow::Break(Err(error)),
+            };
+            let local = LocalNode {
+                shape,
+                identity: file_identity(node.identity),
+                parked: node.parked,
+                left_out_when_placed: node.left_out_when_placed,
+                content_from_server: node.content_from_server,
+            };
+            trees.set_local(node.node_id, local);
+            ControlFlow::Continue(())
+        })?;
+        if let Some(stopped) = stopped {
+            return stopped;
+        }
+        if abandoned() {
+            return Ok(false);
+        }
+        if !tx.engine_state_unless(&mut self.state, &mut abandoned_now)? {
+            return Ok(false);
+        }
+        let ctimes = &mut self.ctimes;
+        let stopped = tx.each_local_ctime(|node_id, ctime_ns| {
+            if abandoned_now() {
+                return ControlFlow::Break(());
+            }
+            ctimes.insert(NodeId::from(node_id), ctime_ns);
+            ControlFlow::Continue(())
+        })?;
+        if stopped.is_some() || abandoned() {
+            return Ok(false);
+        }
+        self.ids = tx.id_generator()?;
+        self.cursor = tx.cursor()?;
+        self.mounts = tx.volume_mounts()?;
+        Ok(true)
+    }
+
+    pub fn engine_unless(self, abandoned: &dyn Fn() -> bool) -> Result<Option<Engine>, Error> {
+        let Stored {
+            mut trees,
+            state,
+            ids,
+            cursor,
+            mounts,
+            ctimes,
+        } = self;
+        if abandoned() {
+            return Ok(None);
+        }
+        let restored = trees
+            .restore_unless(state.trees, abandoned)
+            .map_err(|error| invalid(format!("{error:?}")))?;
+        if restored.is_none() {
+            return Ok(None);
+        }
+        trees.take_changed();
+        let stored_questions = state.commits.questions.clone();
+        let commits =
+            Commits::from_state(state.commits).map_err(|error| invalid(format!("{error:?}")))?;
+        commits.hold(&mut trees);
+        let effects = effects_of(state.effects)?;
+        let ids = match ids {
+            Some(bytes) => {
+                let state = <[u8; 8]>::try_from(bytes.as_slice()).map_err(|_| {
+                    invalid(format!("an ID generator state of {} bytes", bytes.len()))
+                })?;
+                IdGen::new(u64::from_le_bytes(state))
+            }
+            None => IdGen::new(
+                std::collections::hash_map::RandomState::new()
+                    .hash_one(std::time::SystemTime::now()),
+            ),
+        };
+        Ok(Some(Engine {
+            trees,
+            effects,
+            commits,
+            ids,
+            cursor,
+            stored_questions,
+            asked: false,
+            reshown_since_load: false,
+            recovery_cause: None,
+            unscanned: None,
+            mounts,
+            stored_ctimes: ctimes,
+            unstored_ctimes: BTreeMap::new(),
+            local_written_since_load: false,
+            removed_at: BTreeMap::new(),
+            owed: BTreeSet::new(),
+        }))
     }
 }
 

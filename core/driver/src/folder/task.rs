@@ -70,6 +70,7 @@ pub(crate) struct FolderTask {
     pub owner: Owner,
     /// The observer's thread, joined before the task ends so the folder's lock is released with it.
     pub observer: Mutex<Option<JoinHandle<()>>>,
+    pub released: Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
     /// Marked whenever the folder's status changes (`Driver::watch`).
     pub changed: Arc<watch::Sender<()>>,
     pub progressed: Arc<watch::Sender<()>>,
@@ -91,10 +92,17 @@ pub(crate) struct ObserveFault {
 }
 
 #[cfg(test)]
-type Parked = Box<dyn FnOnce(&dyn Fn() -> bool) + Send>;
+pub(crate) type Parked = Box<dyn FnOnce(&dyn Fn() -> bool) + Send>;
+
+#[cfg(test)]
+pub(crate) static WHILE_READING: Mutex<std::collections::BTreeMap<PathBuf, Parked>> =
+    Mutex::new(std::collections::BTreeMap::new());
 
 #[cfg(test)]
 pub(crate) static WHILE_LOADING: Mutex<std::collections::BTreeMap<PathBuf, Parked>> =
+    Mutex::new(std::collections::BTreeMap::new());
+
+pub(crate) static LOADS: Mutex<std::collections::BTreeMap<PathBuf, Arc<tokio::sync::Mutex<()>>>> =
     Mutex::new(std::collections::BTreeMap::new());
 
 #[cfg(test)]
@@ -154,11 +162,11 @@ impl FolderTask {
                 self.changed.send_replace(());
             }
             let Some(halted) = halted else {
-                self.join_observer().await;
+                self.join_threads().await;
                 return;
             };
             if let Halt::Reconnect = halted {
-                self.join_observer().await;
+                self.join_threads().await;
                 continue;
             }
             tracing::warn!(space_id, reason = %halted, "sync of a folder halted");
@@ -178,7 +186,7 @@ impl FolderTask {
             };
             self.status.halt(why, problem, recovery);
             self.changed.send_replace(());
-            self.join_observer().await;
+            self.join_threads().await;
             if let Halt::Person(..) = halted {
                 let _ = stop.wait_for(|stop| *stop).await;
                 return;
@@ -200,8 +208,11 @@ impl FolderTask {
         }
     }
 
-    /// Waits for the observer's thread, which ends soon after `sync` has dropped its receiver.
-    async fn join_observer(&self) {
+    async fn join_threads(&self) {
+        let released = self.released.lock().unwrap().take();
+        if let Some(released) = released {
+            let _ = released.await;
+        }
         let thread = self.observer.lock().unwrap().take();
         if let Some(thread) = thread {
             let _ = tokio::task::spawn_blocking(move || thread.join()).await;
@@ -239,15 +250,24 @@ impl FolderTask {
         if let Some(before_open) = BEFORE_OPEN.with(|hook| hook.borrow_mut().take()) {
             before_open();
         }
+        let load = (LOADS.lock().unwrap().entry(self.store.clone()))
+            .or_default()
+            .clone();
+        let alone = load.lock_owned().await;
         let (sent, loading) = tokio::sync::oneshot::channel();
+        let (release, released) = tokio::sync::oneshot::channel();
+        *self.released.lock().unwrap() = Some(released);
         std::thread::spawn({
             let (store, link, local) = (self.store.clone(), link.clone(), self.local.clone());
             move || {
-                if let Some(loaded) =
-                    Folder::load(&store, &link, local, &|| sent.is_closed()).transpose()
-                {
+                let loaded =
+                    Folder::load(&store, &link, local, &|| sent.is_closed(), || drop(release));
+                if let Some(loaded) = loaded.transpose() {
                     let _ = sent.send(loaded);
                 }
+                let mut loads = LOADS.lock().unwrap();
+                drop(alone);
+                loads.retain(|_, load| Arc::strong_count(load) > 1);
             }
         });
         let loaded = loading

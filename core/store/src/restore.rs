@@ -127,13 +127,23 @@ impl Tx<'_> {
     /// The restores the engine holds: those without an outcome in request order, and those that
     /// ended, oldest first.
     pub fn restores(&self) -> Result<(BTreeMap<RestoreId, RestoreIntent>, Vec<Resolved>)> {
+        let (mut queued, mut resolved) = (BTreeMap::new(), Vec::new());
+        self.read_restores(&mut queued, &mut resolved, &mut || false)?;
+        Ok((queued, resolved))
+    }
+
+    pub(crate) fn read_restores(
+        &self,
+        queued: &mut BTreeMap<RestoreId, RestoreIntent>,
+        resolved: &mut Vec<Resolved>,
+        abandoned: &mut dyn FnMut() -> bool,
+    ) -> Result<bool> {
         let mut stmt = self.0.prepare_cached(&format!(
             "SELECT restore_id, {INTENT}, outcome, outcome_node_id, outcome_name, reject_reason
              FROM restore_intents ORDER BY position, restore_id"
         ))?;
         let mut rows = stmt.query([])?;
-        let (mut queued, mut resolved) = (BTreeMap::new(), Vec::new());
-        while let Some(row) = rows.next()? {
+        while let Some(row) = next_row!(rows, abandoned) {
             let id: RestoreId = row.get(0)?;
             let intent = intent(row)?;
             let text = |column: usize| Ok::<_, Error>(row.get::<_, Option<String>>(column)?);
@@ -166,7 +176,7 @@ impl Tx<'_> {
                 outcome,
             });
         }
-        Ok((queued, resolved))
+        Ok(true)
     }
 
     /// Writes the engine's restores into the emptied `restore_intents`.

@@ -83,12 +83,23 @@ impl Tx<'_> {
     /// The stored engine state, or the default state of a space that never stored one.
     pub fn engine_state(&self) -> Result<EngineState> {
         let mut state = EngineState::default();
-        let mut sets = node_sets(&mut state);
+        self.engine_state_unless(&mut state, &mut || false)?;
+        Ok(state)
+    }
+
+    /// Reads the stored engine state into `state`, which starts as the default, and tells whether it read all of it.
+    /// It stops once `abandoned`, which is asked once per row read, returns true.
+    pub fn engine_state_unless(
+        &self,
+        state: &mut EngineState,
+        abandoned: &mut dyn FnMut() -> bool,
+    ) -> Result<bool> {
+        let mut sets = node_sets(state);
         let mut stmt = self
             .0
             .prepare_cached("SELECT node_set, node_id FROM node_sets")?;
         let mut rows = stmt.query([])?;
-        while let Some(row) = rows.next()? {
+        while let Some(row) = next_row!(rows, abandoned) {
             let name: String = row.get(0)?;
             let (_, set) = sets
                 .iter_mut()
@@ -96,12 +107,12 @@ impl Tx<'_> {
                 .ok_or_else(|| invalid(format!("unknown node set {name:?}")))?;
             set.insert(NodeId::from(row.get::<_, String>(1)?));
         }
-        let mut maps = node_maps(&mut state);
+        let mut maps = node_maps(state);
         let mut stmt = self
             .0
             .prepare_cached("SELECT node_map, node_id, target FROM node_maps")?;
         let mut rows = stmt.query([])?;
-        while let Some(row) = rows.next()? {
+        while let Some(row) = next_row!(rows, abandoned) {
             let name: String = row.get(0)?;
             let (_, map) = maps
                 .iter_mut()
@@ -117,7 +128,7 @@ impl Tx<'_> {
             "SELECT node_id, parent_id, name, kind, content, slot, released FROM waiting_updates",
         )?;
         let mut rows = stmt.query([])?;
-        while let Some(row) = rows.next()? {
+        while let Some(row) = next_row!(rows, abandoned) {
             let shape = match row.get::<_, Option<String>>(2)? {
                 None => None,
                 Some(name) => Some(Shape {
@@ -141,7 +152,7 @@ impl Tx<'_> {
             .0
             .prepare_cached("SELECT node_id, changed FROM watched_contents")?;
         let mut rows = stmt.query([])?;
-        while let Some(row) = rows.next()? {
+        while let Some(row) = next_row!(rows, abandoned) {
             state
                 .trees
                 .watched
@@ -151,7 +162,7 @@ impl Tx<'_> {
             .0
             .prepare_cached("SELECT node_id, rev, parent_id, name FROM watched_positions")?;
         let mut rows = stmt.query([])?;
-        while let Some(row) = rows.next()? {
+        while let Some(row) = next_row!(rows, abandoned) {
             let parent = row.get::<_, Option<String>>(2)?.unwrap_or_default();
             let agreed = (row.get::<_, Option<u64>>(1)?)
                 .zip(row.get::<_, Option<String>>(3)?)
@@ -169,7 +180,7 @@ impl Tx<'_> {
             .0
             .prepare_cached("SELECT node_id, seq FROM trashed_here")?;
         let mut rows = stmt.query([])?;
-        while let Some(row) = rows.next()? {
+        while let Some(row) = next_row!(rows, abandoned) {
             state
                 .trees
                 .trashed_here
@@ -179,7 +190,7 @@ impl Tx<'_> {
             .0
             .prepare_cached("SELECT node_id, seq FROM removed_here")?;
         let mut rows = stmt.query([])?;
-        while let Some(row) = rows.next()? {
+        while let Some(row) = next_row!(rows, abandoned) {
             state
                 .trees
                 .removed_here
@@ -189,7 +200,7 @@ impl Tx<'_> {
             "SELECT node_id, parent_id, name, kind, content FROM discarded_nodes",
         )?;
         let mut rows = stmt.query([])?;
-        while let Some(row) = rows.next()? {
+        while let Some(row) = next_row!(rows, abandoned) {
             let shape = Shape {
                 parent: NodeId::from(row.get::<_, Option<String>>(1)?.unwrap_or_default()),
                 name: row.get(2)?,
@@ -205,7 +216,7 @@ impl Tx<'_> {
             .0
             .prepare_cached("SELECT node_id, parent_id FROM removed_from")?;
         let mut rows = stmt.query([])?;
-        while let Some(row) = rows.next()? {
+        while let Some(row) = next_row!(rows, abandoned) {
             state.trees.removed_from.insert(
                 NodeId::from(row.get::<_, String>(0)?),
                 NodeId::from(row.get::<_, String>(1)?),
@@ -215,7 +226,7 @@ impl Tx<'_> {
             "SELECT node_id, parent_id, name, kind, content FROM forgotten_shapes",
         )?;
         let mut rows = stmt.query([])?;
-        while let Some(row) = rows.next()? {
+        while let Some(row) = next_row!(rows, abandoned) {
             let shape = Shape {
                 parent: NodeId::from(row.get::<_, Option<String>>(1)?.unwrap_or_default()),
                 name: row.get(2)?,
@@ -231,7 +242,7 @@ impl Tx<'_> {
             .0
             .prepare_cached("SELECT node_id, parent_id, name, kind, content FROM lost_shapes")?;
         let mut rows = stmt.query([])?;
-        while let Some(row) = rows.next()? {
+        while let Some(row) = next_row!(rows, abandoned) {
             let shape = Shape {
                 parent: NodeId::from(row.get::<_, Option<String>>(1)?.unwrap_or_default()),
                 name: row.get(2)?,
@@ -247,7 +258,7 @@ impl Tx<'_> {
             .0
             .prepare_cached("SELECT node_id FROM published_nodes")?;
         let mut rows = stmt.query([])?;
-        while let Some(row) = rows.next()? {
+        while let Some(row) = next_row!(rows, abandoned) {
             state
                 .commits
                 .published
@@ -256,7 +267,7 @@ impl Tx<'_> {
         let mut stmt = (self.0)
             .prepare_cached("SELECT node_id, content_rev, meta_rev, held_here FROM given_up")?;
         let mut rows = stmt.query([])?;
-        while let Some(row) = rows.next()? {
+        while let Some(row) = next_row!(rows, abandoned) {
             let given = GivenUp {
                 revisions: Revisions {
                     content_rev: row.get(1)?,
@@ -271,7 +282,7 @@ impl Tx<'_> {
         }
         let mut stmt = (self.0).prepare_cached("SELECT node_id FROM answer_moves")?;
         let mut rows = stmt.query([])?;
-        while let Some(row) = rows.next()? {
+        while let Some(row) = next_row!(rows, abandoned) {
             state
                 .commits
                 .answer_moves
@@ -281,7 +292,7 @@ impl Tx<'_> {
             "SELECT node_id, ino, ino_high, birth_ns, lost, handle, found FROM recorded_nodes",
         )?;
         let mut rows = stmt.query([])?;
-        while let Some(row) = rows.next()? {
+        while let Some(row) = next_row!(rows, abandoned) {
             let node: NodeId = NodeId::from(row.get::<_, String>(0)?);
             match row.get::<_, Option<i64>>(1)? {
                 Some(ino) => {
@@ -308,7 +319,7 @@ impl Tx<'_> {
             .0
             .prepare_cached("SELECT node_id, seq FROM edited_here")?;
         let mut rows = stmt.query([])?;
-        while let Some(row) = rows.next()? {
+        while let Some(row) = next_row!(rows, abandoned) {
             state
                 .trees
                 .edited_here
@@ -318,7 +329,7 @@ impl Tx<'_> {
             .0
             .prepare_cached("SELECT node_id, seq, upgraded FROM moved_here")?;
         let mut rows = stmt.query([])?;
-        while let Some(row) = rows.next()? {
+        while let Some(row) = next_row!(rows, abandoned) {
             let moved = MovedHere {
                 seq: row.get(1)?,
                 upgraded: row.get(2)?,
@@ -332,7 +343,7 @@ impl Tx<'_> {
             "SELECT node_id, rev, parent_id, name FROM past_positions ORDER BY node_id, position",
         )?;
         let mut rows = stmt.query([])?;
-        while let Some(row) = rows.next()? {
+        while let Some(row) = next_row!(rows, abandoned) {
             let past = Agreed {
                 rev: row.get(1)?,
                 parent: NodeId::from(row.get::<_, Option<String>>(2)?.unwrap_or_default()),
@@ -350,7 +361,7 @@ impl Tx<'_> {
             "SELECT node_id, parent_id, name FROM synced_positions ORDER BY node_id, position",
         )?;
         let mut rows = stmt.query([])?;
-        while let Some(row) = rows.next()? {
+        while let Some(row) = next_row!(rows, abandoned) {
             let position = SyncedPosition {
                 parent: NodeId::from(row.get::<_, Option<String>>(1)?.unwrap_or_default()),
                 name: row.get(2)?,
@@ -365,7 +376,7 @@ impl Tx<'_> {
         }
         let mut stmt = self.0.prepare_cached("SELECT node_id FROM unsent_edits")?;
         let mut rows = stmt.query([])?;
-        while let Some(row) = rows.next()? {
+        while let Some(row) = next_row!(rows, abandoned) {
             state
                 .trees
                 .unsent_edits
@@ -373,7 +384,7 @@ impl Tx<'_> {
         }
         let mut stmt = self.0.prepare_cached("SELECT node_id FROM dropped_edits")?;
         let mut rows = stmt.query([])?;
-        while let Some(row) = rows.next()? {
+        while let Some(row) = next_row!(rows, abandoned) {
             state
                 .trees
                 .dropped_edits
@@ -383,7 +394,7 @@ impl Tx<'_> {
             .0
             .prepare_cached("SELECT node_id FROM cycle_reverted")?;
         let mut rows = stmt.query([])?;
-        while let Some(row) = rows.next()? {
+        while let Some(row) = next_row!(rows, abandoned) {
             state
                 .trees
                 .cycle_reverted
@@ -391,7 +402,7 @@ impl Tx<'_> {
         }
         let mut stmt = self.0.prepare_cached("SELECT node_id FROM unobserved")?;
         let mut rows = stmt.query([])?;
-        while let Some(row) = rows.next()? {
+        while let Some(row) = next_row!(rows, abandoned) {
             state
                 .trees
                 .unobserved
@@ -399,7 +410,7 @@ impl Tx<'_> {
         }
         let mut stmt = self.0.prepare_cached("SELECT node_id FROM missing_nodes")?;
         let mut rows = stmt.query([])?;
-        while let Some(row) = rows.next()? {
+        while let Some(row) = next_row!(rows, abandoned) {
             state
                 .trees
                 .missing
@@ -407,7 +418,7 @@ impl Tx<'_> {
         }
         let mut stmt = self.0.prepare_cached("SELECT node_id FROM unsent_moves")?;
         let mut rows = stmt.query([])?;
-        while let Some(row) = rows.next()? {
+        while let Some(row) = next_row!(rows, abandoned) {
             state
                 .trees
                 .unsent_moves
@@ -415,7 +426,7 @@ impl Tx<'_> {
         }
         let mut stmt = self.0.prepare_cached("SELECT node_id FROM kept_folders")?;
         let mut rows = stmt.query([])?;
-        while let Some(row) = rows.next()? {
+        while let Some(row) = next_row!(rows, abandoned) {
             state
                 .trees
                 .kept_folders
@@ -425,7 +436,7 @@ impl Tx<'_> {
             .0
             .prepare_cached("SELECT node_id FROM unsent_creates")?;
         let mut rows = stmt.query([])?;
-        while let Some(row) = rows.next()? {
+        while let Some(row) = next_row!(rows, abandoned) {
             state
                 .trees
                 .unsent_creates
@@ -435,7 +446,7 @@ impl Tx<'_> {
             .0
             .prepare_cached("SELECT node_id, entries FROM kept_entries")?;
         let mut rows = stmt.query([])?;
-        while let Some(row) = rows.next()? {
+        while let Some(row) = next_row!(rows, abandoned) {
             let bytes: Vec<u8> = row.get(1)?;
             let kept = serde_json::from_slice(&bytes)
                 .map_err(|error| invalid(format!("kept entries: {error}")))?;
@@ -448,7 +459,7 @@ impl Tx<'_> {
             .0
             .prepare_cached("SELECT node_id, cause FROM kept_nodes")?;
         let mut rows = stmt.query([])?;
-        while let Some(row) = rows.next()? {
+        while let Some(row) = next_row!(rows, abandoned) {
             let bytes: Option<Vec<u8>> = row.get(1)?;
             let cause = bytes.and_then(|bytes| serde_json::from_slice(&bytes).ok());
             state
@@ -460,7 +471,7 @@ impl Tx<'_> {
             .0
             .prepare_cached("SELECT node_id FROM unseen_changes")?;
         let mut rows = stmt.query([])?;
-        while let Some(row) = rows.next()? {
+        while let Some(row) = next_row!(rows, abandoned) {
             state
                 .trees
                 .unseen_changes
@@ -470,7 +481,7 @@ impl Tx<'_> {
             "SELECT node_id, version_id FROM replaced_versions ORDER BY node_id, position",
         )?;
         let mut rows = stmt.query([])?;
-        while let Some(row) = rows.next()? {
+        while let Some(row) = next_row!(rows, abandoned) {
             (state
                 .trees
                 .replaced_versions
@@ -480,7 +491,7 @@ impl Tx<'_> {
         }
         let mut stmt = self.0.prepare_cached("SELECT node_id FROM resends")?;
         let mut rows = stmt.query([])?;
-        while let Some(row) = rows.next()? {
+        while let Some(row) = next_row!(rows, abandoned) {
             state
                 .trees
                 .resends
@@ -490,7 +501,7 @@ impl Tx<'_> {
             .0
             .prepare_cached("SELECT node_id, provenance FROM content_provenance")?;
         let mut rows = stmt.query([])?;
-        while let Some(row) = rows.next()? {
+        while let Some(row) = next_row!(rows, abandoned) {
             let bytes: Vec<u8> = row.get(1)?;
             let provenance: ContentProvenance = serde_json::from_slice(&bytes)
                 .map_err(|error| invalid(format!("content provenance: {error}")))?;
@@ -501,7 +512,7 @@ impl Tx<'_> {
         }
         let mut stmt = self.0.prepare_cached("SELECT node_id FROM local_changes")?;
         let mut rows = stmt.query([])?;
-        while let Some(row) = rows.next()? {
+        while let Some(row) = next_row!(rows, abandoned) {
             state
                 .trees
                 .local_changes
@@ -511,7 +522,7 @@ impl Tx<'_> {
             .0
             .prepare_cached("SELECT node_id, parent_id, name FROM lost_positions")?;
         let mut rows = stmt.query([])?;
-        while let Some(row) = rows.next()? {
+        while let Some(row) = next_row!(rows, abandoned) {
             let at = LostPosition {
                 parent: NodeId::from(row.get::<_, String>(1)?),
                 name: row.get(2)?,
@@ -523,7 +534,7 @@ impl Tx<'_> {
         }
         let mut stmt = self.0.prepare_cached("SELECT node_id FROM lost_creates")?;
         let mut rows = stmt.query([])?;
-        while let Some(row) = rows.next()? {
+        while let Some(row) = next_row!(rows, abandoned) {
             state
                 .trees
                 .lost_creates
@@ -533,7 +544,7 @@ impl Tx<'_> {
             .0
             .prepare_cached("SELECT node_id, kept FROM kept_originals")?;
         let mut rows = stmt.query([])?;
-        while let Some(row) = rows.next()? {
+        while let Some(row) = next_row!(rows, abandoned) {
             state.trees.kept_originals.insert(
                 NodeId::from(row.get::<_, String>(0)?),
                 NodeId::from(row.get::<_, String>(1)?),
@@ -543,7 +554,7 @@ impl Tx<'_> {
             .0
             .prepare_cached("SELECT node_id, trash_group FROM trash_groups")?;
         let mut rows = stmt.query([])?;
-        while let Some(row) = rows.next()? {
+        while let Some(row) = next_row!(rows, abandoned) {
             state
                 .commits
                 .trash_groups
@@ -553,7 +564,7 @@ impl Tx<'_> {
             "SELECT restore_id, trash_group, parent_id, name, folders, landed_parent_id, landed_name FROM split_restores",
         )?;
         let mut rows = stmt.query([])?;
-        while let Some(row) = rows.next()? {
+        while let Some(row) = next_row!(rows, abandoned) {
             let folders: String = row.get(4)?;
             let split = SplitRestore {
                 trash_group: row.get(1)?,
@@ -572,7 +583,7 @@ impl Tx<'_> {
             .0
             .prepare_cached("SELECT node_id, pending_for FROM unsent_marks")?;
         let mut rows = stmt.query([])?;
-        while let Some(row) = rows.next()? {
+        while let Some(row) = next_row!(rows, abandoned) {
             state
                 .trees
                 .unsent_marks
@@ -582,7 +593,7 @@ impl Tx<'_> {
             "SELECT node_id, parent_id, pending_name, name, meta_rev, disk_first, base, sending FROM pending_finishes",
         )?;
         let mut rows = stmt.query([])?;
-        while let Some(row) = rows.next()? {
+        while let Some(row) = next_row!(rows, abandoned) {
             let finish = PendingFinish {
                 parent: NodeId::from(row.get::<_, String>(1)?),
                 pending: row.get(2)?,
@@ -626,13 +637,18 @@ impl Tx<'_> {
             state.commits.halted = halt.halt()?;
             state.commits.cap = cap;
         }
-        state.commits.in_flight = self.in_flight()?;
-        (state.commits.restores, state.commits.resolved) = self.restores()?;
+        if !self.in_flight(&mut state.commits.in_flight, abandoned)? {
+            return Ok(false);
+        }
+        let (restores, resolved) = (&mut state.commits.restores, &mut state.commits.resolved);
+        if !self.read_restores(restores, resolved, abandoned)? {
+            return Ok(false);
+        }
         let mut stmt = self.0.prepare_cached(
             "SELECT device_seq, seq, commit_id, committed_at_ms FROM commit_slots",
         )?;
         let mut rows = stmt.query([])?;
-        while let Some(row) = rows.next()? {
+        while let Some(row) = next_row!(rows, abandoned) {
             let made = Slot {
                 seq: row.get(1)?,
                 commit_id: row.get(2)?,
@@ -644,13 +660,16 @@ impl Tx<'_> {
             .0
             .prepare_cached("SELECT device_seq, commit_ids FROM commit_slot_given_up")?;
         let mut rows = stmt.query([])?;
-        while let Some(row) = rows.next()? {
+        while let Some(row) = next_row!(rows, abandoned) {
             let ids: String = row.get(1)?;
             let ids = ids.split_whitespace().map(str::to_owned).collect();
             state.commits.given_up.insert(row.get(0)?, ids);
         }
-        state.commits.questions = self.open_questions()?;
-        state.commits.guard = self.guard()?;
+        if !self.open_questions(&mut state.commits.questions, abandoned)?
+            || !self.guard(&mut state.commits.guard, abandoned)?
+        {
+            return Ok(false);
+        }
 
         if let Some(cleared) = self
             .0
@@ -665,7 +684,7 @@ impl Tx<'_> {
             .0
             .prepare_cached("SELECT record FROM effects_in_flight ORDER BY position")?;
         let mut rows = stmt.query([])?;
-        while let Some(row) = rows.next()? {
+        while let Some(row) = next_row!(rows, abandoned) {
             let record = StoredRecord::decode(row.get::<_, Vec<u8>>(0)?.as_slice())?;
             state
                 .effects
@@ -676,14 +695,14 @@ impl Tx<'_> {
             .0
             .prepare_cached("SELECT node_id, effect FROM failed_effects")?;
         let mut rows = stmt.query([])?;
-        while let Some(row) = rows.next()? {
+        while let Some(row) = next_row!(rows, abandoned) {
             let effect = StoredEffect::decode(row.get::<_, Vec<u8>>(1)?.as_slice())?;
             state.effects.failed.insert(
                 NodeId::from(row.get::<_, String>(0)?),
                 Effect::try_from(effect)?,
             );
         }
-        Ok(state)
+        Ok(true)
     }
 
     /// Replaces the stored engine state with `state`.
@@ -1442,7 +1461,11 @@ impl Tx<'_> {
         Ok(())
     }
 
-    fn in_flight(&self) -> Result<Option<InFlight>> {
+    fn in_flight(
+        &self,
+        into: &mut Option<InFlight>,
+        abandoned: &mut dyn FnMut() -> bool,
+    ) -> Result<bool> {
         let Some((commit, result)) = self
             .0
             .query_row(
@@ -1452,20 +1475,21 @@ impl Tx<'_> {
             )
             .optional()?
         else {
-            return Ok(None);
+            return Ok(true);
         };
-        let mut deletes: BTreeMap<NodeId, Vec<NodeId>> = self
+        let mut deletes: BTreeMap<NodeId, Vec<NodeId>> = BTreeMap::new();
+        let mut stmt = self
             .0
-            .prepare_cached("SELECT target FROM commit_in_flight_deletes")?
-            .query_map([], |row| {
-                Ok((NodeId::from(row.get::<_, String>(0)?), Vec::new()))
-            })?
-            .collect::<rusqlite::Result<_>>()?;
+            .prepare_cached("SELECT target FROM commit_in_flight_deletes")?;
+        let mut rows = stmt.query([])?;
+        while let Some(row) = next_row!(rows, abandoned) {
+            deletes.insert(NodeId::from(row.get::<_, String>(0)?), Vec::new());
+        }
         let mut stmt = self.0.prepare_cached(
             "SELECT target, node_id FROM commit_in_flight_delete_members ORDER BY target, position",
         )?;
         let mut rows = stmt.query([])?;
-        while let Some(row) = rows.next()? {
+        while let Some(row) = next_row!(rows, abandoned) {
             let target: NodeId = NodeId::from(row.get::<_, String>(0)?);
             let Some(nodes) = deletes.get_mut(&target) else {
                 return Err(invalid(format!(
@@ -1479,24 +1503,28 @@ impl Tx<'_> {
             "SELECT op, node_id FROM commit_in_flight_restore_members ORDER BY op, position",
         )?;
         let mut rows = stmt.query([])?;
-        while let Some(row) = rows.next()? {
+        while let Some(row) = next_row!(rows, abandoned) {
             restores
                 .entry(row.get(0)?)
                 .or_default()
                 .push(NodeId::from(row.get::<_, String>(1)?));
         }
-        let owners = self
+        let mut owners = BTreeMap::new();
+        let mut stmt = self
             .0
-            .prepare_cached("SELECT op, restore_id FROM commit_in_flight_restore_owners")?
-            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
-            .collect::<rusqlite::Result<_>>()?;
-        Ok(Some(InFlight {
+            .prepare_cached("SELECT op, restore_id FROM commit_in_flight_restore_owners")?;
+        let mut rows = stmt.query([])?;
+        while let Some(row) = next_row!(rows, abandoned) {
+            owners.insert(row.get(0)?, row.get(1)?);
+        }
+        *into = Some(InFlight {
             commit: Commit::decode(commit.as_slice())?,
             deletes,
             restores,
             owners,
             result: decode(result)?,
-        }))
+        });
+        Ok(true)
     }
 }
 
