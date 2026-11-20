@@ -14,7 +14,7 @@ use rustix::io::Errno;
 
 use crate::mark::MarkLog;
 use crate::root::{PRIVATE_DIR, make_dir};
-use crate::{DIR_FLAGS, FileId, FileType, is_gone, stat_at, stat_fd, stat_path};
+use crate::{DIR_FLAGS, EntryKind, FileId, FileType, is_gone, stat_at, stat_fd, stat_path};
 
 /// The folder inside the private folder that holds parked entries (design
 /// §2.5).
@@ -201,6 +201,27 @@ impl Space {
                 Ok((self.folder(base, dirs)?, name))
             }
         }
+    }
+
+    /// The kind of the file or folder at a name under its expected parent: none when nothing is there or the entry is
+    /// neither. An error means the name could not be checked.
+    pub fn kind_at(&self, dirs: &[Dir], name: &OsStr) -> Result<Option<EntryKind>, Unresolved> {
+        check_name(name)?;
+        let folder = self.folder(&Base::Root, dirs)?;
+        let kind = match stat_at(folder.fd(), name) {
+            Ok(stat) if stat.file_type == FileType::RegularFile => Some(EntryKind::File),
+            Ok(stat) if stat.file_type == FileType::Directory => Some(EntryKind::Dir),
+            Ok(_) => None,
+            Err(err) if err.kind() == io::ErrorKind::NotFound => None,
+            Err(err) => {
+                return Err(Unresolved::Io {
+                    path: folder.path().join(name),
+                    err,
+                });
+            }
+        };
+        self.recheck(&folder)?;
+        Ok(kind)
     }
 
     /// Resolves `dirs` from `base`, checking every folder's identity.

@@ -59,6 +59,7 @@ pub(crate) struct Engine {
     pub local_written_since_load: bool,
     removed_at: BTreeMap<NodeId, u64>,
     owed: BTreeSet<NodeId>,
+    stored_owed: BTreeSet<NodeId>,
 }
 
 const DELETE_WAIT_MS: u64 = 2_000;
@@ -122,6 +123,16 @@ impl Engine {
                 self.local_written_since_load = true;
             }
         }
+        let trees = &self.trees;
+        self.owed
+            .retain(|id| trees.local().get(id).is_none() && trees.synced().live(id).is_some());
+        for id in self.owed.difference(&self.stored_owed) {
+            tx.set_owed_delete(&id.to_string(), true)?;
+        }
+        for id in self.stored_owed.difference(&self.owed) {
+            tx.set_owed_delete(&id.to_string(), false)?;
+        }
+        self.stored_owed.clone_from(&self.owed);
         for id in &changed.synced {
             match self.trees.synced().get(id) {
                 Some(shape) => tx.put_synced_node(&SyncedNode {
@@ -1117,6 +1128,7 @@ impl Engine {
                                 .is_some_and(|names| !self.trees.ignores(&names, Kind::File))
                         {
                             self.removed_at.insert(id.clone(), now_ms);
+                            self.owed.insert(id.clone());
                         }
                         self.remove(&id, &moving, true, missing, &mut touched, &mut gone);
                     }
@@ -1353,11 +1365,28 @@ impl Engine {
             .extend(std::mem::take(&mut self.removed_at).into_keys());
     }
 
-    pub fn owed_deletes(&mut self) -> BTreeSet<NodeId> {
+    pub(super) fn owed_deletes(
+        &mut self,
+        name_absent: impl Fn(&Trees, &Shape) -> Option<bool>,
+    ) -> BTreeSet<NodeId> {
         let trees = &self.trees;
-        self.owed
-            .retain(|id| trees.local().get(id).is_none() && trees.synced().live(id).is_some());
-        self.owed.clone()
+        let mut ready = BTreeSet::new();
+        self.owed.retain(|id| {
+            if let Some(synced) = trees.synced().live(id)
+                && trees.local().get(id).is_none()
+                && trees.excluded(id)
+            {
+                match name_absent(trees, synced) {
+                    Some(true) => {
+                        ready.insert(id.clone());
+                    }
+                    Some(false) => return false,
+                    None => {}
+                }
+            }
+            true
+        });
+        ready
     }
 
     pub fn deletes_due(&self) -> Option<u64> {
@@ -1677,6 +1706,7 @@ pub(crate) struct Stored {
     mounts: BTreeMap<PathBuf, Mount>,
     unread: Option<BTreeMap<PathBuf, i64>>,
     ctimes: BTreeMap<NodeId, i64>,
+    owed: BTreeSet<NodeId>,
 }
 
 impl Stored {
@@ -1689,6 +1719,7 @@ impl Stored {
             mounts: BTreeMap::new(),
             unread: None,
             ctimes: BTreeMap::new(),
+            owed: BTreeSet::new(),
         }
     }
 
@@ -1788,6 +1819,7 @@ impl Stored {
         self.cursor = tx.cursor()?;
         self.mounts = tx.volume_mounts()?;
         self.unread = tx.unread_folders()?;
+        self.owed = (tx.owed_deletes()?.into_iter()).map(NodeId::from).collect();
         Ok(true)
     }
 
@@ -1800,6 +1832,7 @@ impl Stored {
             mounts,
             unread,
             ctimes,
+            owed,
         } = self;
         if abandoned() {
             return Ok(None);
@@ -1845,7 +1878,8 @@ impl Stored {
             unstored_ctimes: BTreeMap::new(),
             local_written_since_load: false,
             removed_at: BTreeMap::new(),
-            owed: BTreeSet::new(),
+            owed: owed.clone(),
+            stored_owed: owed,
         }))
     }
 }
@@ -2722,6 +2756,7 @@ mod tests {
             local_written_since_load: false,
             removed_at: BTreeMap::new(),
             owed: BTreeSet::new(),
+            stored_owed: BTreeSet::new(),
         };
         Case {
             name,

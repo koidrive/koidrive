@@ -1081,6 +1081,11 @@ pub fn location_of(trees: &Trees, id: &NodeId) -> Option<Location> {
     View::new(trees).location(id)
 }
 
+/// The location of a name under a folder L holds, whether or not L holds an entry at that name.
+pub fn location_in(trees: &Trees, parent: &NodeId, name: &str) -> Option<Location> {
+    View::new(trees).location_in(parent, name)
+}
+
 pub(crate) fn unparks_to(trees: &Trees, id: &NodeId, target: &Shape) -> bool {
     let view = View::new(trees);
     view.blocked(id, target).is_none()

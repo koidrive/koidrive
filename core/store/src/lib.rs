@@ -1068,6 +1068,22 @@ impl Tx<'_> {
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
+    pub fn owed_deletes(&self) -> Result<BTreeSet<String>> {
+        let mut stmt = self.0.prepare_cached("SELECT node_id FROM owed_deletes")?;
+        let rows = stmt.query_map([], |row| row.get(0))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    pub fn set_owed_delete(&self, node_id: &str, owed: bool) -> Result<()> {
+        let sql = if owed {
+            "INSERT OR IGNORE INTO owed_deletes (node_id) VALUES (?1)"
+        } else {
+            "DELETE FROM owed_deletes WHERE node_id = ?1"
+        };
+        self.0.prepare_cached(sql)?.execute(params![node_id])?;
+        Ok(())
+    }
+
     pub fn set_volume_mounts(&self, mounts: &BTreeMap<PathBuf, Mount>) -> Result<()> {
         self.0.execute("DELETE FROM volume_mounts", [])?;
         let mut stmt = self

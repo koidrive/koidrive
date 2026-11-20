@@ -47,12 +47,13 @@ use koidrive_chunk::ChunkerConfig;
 use koidrive_engine::classify::Trees;
 use koidrive_engine::effects::{
     Base as EngineBase, BatchLimit, Dir as EngineDir, Displaced as EngineDisplaced,
-    Effect as EngineEffect, EffectRecord, Effects, Location as EngineLocation, location_of,
+    Effect as EngineEffect, EffectRecord, Effects, Location as EngineLocation, location_in,
+    location_of,
 };
 use koidrive_engine::first_link::{self, Marks};
 use koidrive_engine::ignore::is_rules_file;
 use koidrive_engine::question::{RecoveryCause, RecoveryTrigger};
-use koidrive_engine::tree::{Content, FileIdentity, Kind, LocalNode, NodeId};
+use koidrive_engine::tree::{Content, FileIdentity, Kind, LocalNode, NodeId, Shape};
 use koidrive_fs::{
     Action, Base, BroughtBack, Contents, Ctime, Dir, Displaced, Effect, Entry, EntryKind, FileId,
     Known, Location, Marker, Minted, Outcome, Reason, Reclaimed, Refusal, RootAt, RootProblem,
@@ -998,6 +999,30 @@ impl Disk {
         self.hold(engine);
         self.record(engine);
         Ok(())
+    }
+
+    pub(super) fn owed_name_absent(&self, trees: &Trees, synced: &Shape) -> Option<bool> {
+        let parent = &synced.parent;
+        if *parent != trees.local().root
+            && trees.local().get(parent).is_none()
+            && !trees.missing().contains(parent)
+            && !trees.displaced_local().contains_key(parent)
+        {
+            return Some(true);
+        }
+        let Location::At {
+            base: Base::Root,
+            dirs,
+            name,
+        } = location(&location_in(trees, &synced.parent, &synced.name)?).ok()?
+        else {
+            return None;
+        };
+        let kind = match synced.kind {
+            Kind::File => EntryKind::File,
+            Kind::Dir => EntryKind::Dir,
+        };
+        Some(self.space.kind_at(&dirs, &name).ok()? != Some(kind))
     }
 
     /// True while an effect or a failed upload waits for a scan of its paths. Until then the engine holds what L, S or R

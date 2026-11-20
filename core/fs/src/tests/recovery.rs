@@ -1,6 +1,43 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #[test]
+fn a_name_missing_from_a_replacement_folder_is_not_checked_in_the_original() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    fs::create_dir(root.join("docs")).unwrap();
+    fs::write(root.join("docs/report.txt"), "kept").unwrap();
+    let space = Space::bind(open_root(root).unwrap(), root).unwrap();
+    let id = Snapshot::scan(root).unwrap().entries[Path::new("docs")].id;
+    let docs = [Dir {
+        name: "docs".into(),
+        id,
+    }];
+    let report = std::ffi::OsStr::new("report.txt");
+    assert_eq!(space.kind_at(&docs, report).unwrap(), Some(EntryKind::File));
+    fs::rename(root.join("docs"), root.join("papers")).unwrap();
+    assert!(matches!(
+        space.kind_at(&docs, report),
+        Err(Unresolved::Missing(_))
+    ));
+    fs::create_dir(root.join("docs")).unwrap();
+    assert!(matches!(
+        space.kind_at(&docs, report),
+        Err(Unresolved::Replaced { .. })
+    ));
+    fs::remove_file(root.join("papers/report.txt")).unwrap();
+    let papers = [Dir {
+        name: "papers".into(),
+        id,
+    }];
+    assert_eq!(space.kind_at(&papers, report).unwrap(), None);
+    fs::create_dir(root.join("papers/report.txt")).unwrap();
+    assert_eq!(
+        space.kind_at(&papers, report).unwrap(),
+        Some(EntryKind::Dir)
+    );
+}
+
+#[test]
 fn utc_dates_follow_the_calendar() {
     let date = |secs: i64| {
         let time = if secs < 0 {
