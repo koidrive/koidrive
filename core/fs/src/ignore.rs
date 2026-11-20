@@ -171,6 +171,7 @@ struct Walk {
 mod passed {
     use std::collections::{BTreeMap, BTreeSet, HashSet};
     use std::ffi::{OsStr, OsString};
+    use std::ops::Bound;
     use std::os::fd::BorrowedFd;
     use std::path::{Path, PathBuf};
 
@@ -320,6 +321,13 @@ mod passed {
             self.seen.keys()
         }
 
+        pub(super) fn after(&self, dir: Option<&Path>) -> Option<&PathBuf> {
+            let from = dir.map_or(Bound::Unbounded, Bound::Excluded);
+            (self.seen.range::<Path, _>((from, Bound::Unbounded)))
+                .next()
+                .map(|(dir, _)| dir)
+        }
+
         pub(super) fn remove(&mut self, dir: &Path) {
             self.seen.remove(dir);
         }
@@ -450,13 +458,16 @@ impl Walk {
         let (Some(up), Some(child)) = (replaced.parent(), replaced.file_name()) else {
             return false;
         };
-        let checked: Vec<PathBuf> = (self.passed.keys())
-            .take_while(|dir| self.check.last().is_none_or(|next| *dir < next))
-            .filter(|dir| !dir.starts_with(&replaced))
-            .cloned()
-            .collect();
         let mut above = Ancestors::default();
-        for dir in checked {
+        let mut last: Option<PathBuf> = None;
+        while let Some(dir) = (self.passed.after(last.as_deref()))
+            .filter(|dir| self.check.last().is_none_or(|next| *dir < next))
+            .cloned()
+        {
+            last = Some(dir.clone());
+            if dir.starts_with(&replaced) {
+                continue;
+            }
             if *cost >= limit {
                 return false;
             }
@@ -560,8 +571,12 @@ impl Walk {
         parent.names.extend(added.iter().cloned());
         let dir = parent.dir.clone();
         if expected.is_none_or(|sum| sum == now.listing()) {
+            let fresh: HashSet<&OsStr> = match cfg!(debug_assertions) {
+                true => added.iter().map(OsString::as_os_str).collect(),
+                false => HashSet::new(),
+            };
             self.passed.record(&dir, now, false, |name| {
-                child.as_deref() == Some(name) || added.iter().any(|new| new == name)
+                child.as_deref() == Some(name) || fresh.contains(name)
             });
         }
     }
@@ -852,7 +867,9 @@ impl Rules {
             unopened: walk
                 .as_ref()
                 .map_or_else(BTreeSet::new, |walk| walk.unopened.clone()),
-            replaced: walk.map_or_else(BTreeSet::new, |walk| walk.replaced),
+            replaced: walk.map_or_else(BTreeSet::new, |walk| {
+                walk.replaced.into_iter().chain(walk.owed).collect()
+            }),
         };
         for (key, _) in search.pending.drain() {
             search.decided.insert(key, Decided::Unproven);
@@ -2051,5 +2068,17 @@ mod rechecks {
                 "a passed entry changed: {passed_entry_changed}"
             );
         }
+    }
+
+    #[test]
+    fn a_search_ended_early_reports_the_folders_its_last_round_still_owes() {
+        let mut rules = Rules::new(Box::new(IgnoredFolder));
+        let mut walk = Walk::new(&rules.ignored, 0);
+        walk.replaced.insert("ig/a".into());
+        walk.owed.insert("ig/z".into());
+        rules.search.walk = Some(walk);
+        rules.end_search();
+        let replaced = BTreeSet::from(["ig/a".into(), "ig/z".into()]);
+        assert_eq!(rules.coverage().replaced, replaced);
     }
 }
