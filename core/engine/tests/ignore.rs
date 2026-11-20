@@ -3382,3 +3382,41 @@ fn a_parked_child_does_not_mark_its_displaced_parent_unobserved() {
     assert!(!trees.unobserved(&d));
     assert_eq!(trees.check(), Ok(()));
 }
+
+#[test]
+fn a_file_moved_out_of_a_vanished_folder_keeps_its_acknowledged_shape_as_its_base() {
+    let mut trees = trees(&[
+        synced("d", dir(ROOT, "d")),
+        (
+            "z",
+            Some(file(ROOT, "zz", 9)),
+            Some(file("d", "z", 1)),
+            Some(file("d", "z", 9)),
+        ),
+    ]);
+    let mut state = trees.state();
+    let acknowledged = Waiting {
+        shape: Some(file("d", "z", 9)),
+        origin: Origin::Other,
+    };
+    state.waiting.insert("z".into(), acknowledged);
+    assert_eq!(trees.restore(state), Ok(()));
+    trees.set_rules(&AT_ROOT, Source::Koiignore, rules("/d/\n"));
+    trees.rules_scanned();
+    trees.settle(&Default::default());
+    trees.remove_local(&"d".into());
+    trees.settle(&Default::default());
+    trees.set_rules(&AT_ROOT, Source::Koiignore, None);
+    trees.listed(&[ROOT.into()], Pending::default());
+    trees.settle(&Default::default());
+    let mut edited = trees.local().get(&"z".into()).unwrap().clone();
+    edited.shape.content = Some(content(7));
+    trees.set_local_changed("z".into(), edited);
+    effects(&mut trees);
+    let sent = ops(&mut trees);
+    assert!(
+        matches!(&sent[..], [op::Op::Move(moved), op::Op::UpdateContent(update)]
+            if moved.node_id == "z" && update.node_id == "z"),
+        "{sent:?}"
+    );
+}
