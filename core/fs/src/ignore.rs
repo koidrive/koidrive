@@ -94,12 +94,15 @@ pub struct Coverage {
     pub ended_early: bool,
     /// The left-out folders and entries the search could not open or stat.
     pub unopened: BTreeSet<PathBuf>,
+    /// The left-out folders and entries that were replaced or moved while the search walked them, after it had
+    /// started over for the replacements it allows in one search. The search went on without them.
+    pub replaced: BTreeSet<PathBuf>,
 }
 
 impl Coverage {
     /// Whether the search looked everywhere, so that an entry it did not find is not on the disk.
     pub fn everywhere(&self) -> bool {
-        !self.ended_early && self.unopened.is_empty()
+        !self.ended_early && self.unopened.is_empty() && self.replaced.is_empty()
     }
 }
 
@@ -142,60 +145,121 @@ struct Listing {
 
 struct Walk {
     listings: Vec<Listing>,
+    base: Option<(PathBuf, OwnedFd)>,
     folders: Vec<Folder>,
-    later: Vec<(PathBuf, FileId)>,
-    reach: Option<Reach>,
-    above: Option<OwnedFd>,
+    reach: Option<(usize, Option<OwnedFd>)>,
     bases: Vec<(PathBuf, Vec<FileId>)>,
+    restarts: usize,
+    relisted: HashSet<PathBuf>,
     unopened: BTreeSet<PathBuf>,
-}
-
-struct Reach {
-    dir: PathBuf,
-    expect: Vec<FileId>,
-    seen: Vec<FileId>,
-    fd: OwnedFd,
-    confirm: bool,
+    replaced: BTreeSet<PathBuf>,
 }
 
 struct Folder {
     dir: PathBuf,
     id: FileId,
-    entries: Dir,
     names: Vec<OsString>,
+    next: usize,
+    fd: Option<OwnedFd>,
 }
 
-impl Folder {
-    fn open(
-        dir: PathBuf,
-        id: FileId,
-        fd: OwnedFd,
-        unopened: &mut BTreeSet<PathBuf>,
-    ) -> Option<Self> {
-        let Ok(mut entries) = Dir::new(fd) else {
-            unopened.insert(dir);
-            return None;
+enum Replaced {
+    Folder(usize, Option<OwnedFd>),
+    Path(PathBuf),
+}
+
+fn listed(
+    fd: BorrowedFd<'_>,
+    dir: &Path,
+    unopened: &mut BTreeSet<PathBuf>,
+) -> Option<Vec<OsString>> {
+    let Ok(mut entries) = Dir::read_from(fd) else {
+        unopened.insert(dir.to_path_buf());
+        return None;
+    };
+    let mut names: Vec<OsString> = Vec::new();
+    for item in std::iter::from_fn(|| entries.read()) {
+        let Ok(item) = item else {
+            unopened.insert(dir.to_path_buf());
+            break;
         };
-        let mut names: Vec<OsString> = Vec::new();
-        for item in std::iter::from_fn(|| entries.read()) {
-            let Ok(item) = item else {
-                unopened.insert(dir.clone());
-                break;
-            };
-            names.push(OsStr::from_bytes(item.file_name().to_bytes()).to_os_string());
+        names.push(OsStr::from_bytes(item.file_name().to_bytes()).to_os_string());
+    }
+    names.retain(|name| *name != "." && *name != "..");
+    names.sort_unstable();
+    Some(names)
+}
+
+impl Walk {
+    fn new(ignored: &BTreeMap<PathBuf, BTreeSet<OsString>>, restarts: usize) -> Self {
+        Self {
+            listings: (ignored.iter())
+                .map(|(dir, names)| Listing {
+                    dir: dir.clone(),
+                    names: names.iter().rev().cloned().collect(),
+                })
+                .rev()
+                .collect(),
+            base: None,
+            folders: Vec::new(),
+            reach: None,
+            bases: Vec::new(),
+            restarts,
+            relisted: HashSet::new(),
+            unopened: BTreeSet::new(),
+            replaced: BTreeSet::new(),
         }
-        names.retain(|name| *name != "." && *name != "..");
-        names.sort_unstable_by(|a, b| b.cmp(a));
-        Some(Self {
-            dir,
-            id,
-            entries,
-            names,
-        })
+    }
+
+    fn above(&self, at: usize) -> Option<BorrowedFd<'_>> {
+        match at.checked_sub(1) {
+            None => self.base.as_ref().map(|(_, fd)| fd.as_fd()),
+            Some(parent) => self.folders[parent].fd.as_ref().map(|fd| fd.as_fd()),
+        }
+    }
+
+    fn push(&mut self, folder: Folder) {
+        self.folders.push(folder);
+        if let Some(lowest) = self.folders.len().checked_sub(OPEN_FOLDERS + 1) {
+            self.folders[lowest].fd = None;
+        }
+    }
+
+    fn leave(&mut self, replaced: Replaced) {
+        let (at, through) = match replaced {
+            Replaced::Folder(at, through) => (at, through),
+            Replaced::Path(path) => {
+                self.replaced.insert(path);
+                return;
+            }
+        };
+        self.replaced.insert(self.folders[at].dir.clone());
+        self.folders.truncate(at);
+        self.reach = None;
+        let Some(parent) = self.folders.last_mut() else {
+            return;
+        };
+        if through.is_some() {
+            parent.fd = through;
+        }
+        if !self.relisted.insert(parent.dir.clone()) {
+            return;
+        }
+        let Some(now) =
+            (parent.fd.as_ref()).and_then(|fd| listed(fd.as_fd(), &parent.dir, &mut self.unopened))
+        else {
+            return;
+        };
+        let added: Vec<OsString> = (now.into_iter())
+            .filter(|name| parent.names.binary_search(name).is_err())
+            .collect();
+        parent.names.extend(added);
     }
 }
 
 const OPEN_FOLDERS: usize = 16;
+
+const RESTARTS: usize = 8;
 
 const SEARCH_BUDGET: usize = 20_000;
 
@@ -228,9 +292,13 @@ impl Rules {
     /// So does each entry a search misses after it could not open a left-out folder ([`Rules::coverage`]).
     pub fn end_search(&mut self) {
         let search = &mut self.search;
+        let walk = search.walk.take();
         search.coverage = Coverage {
             ended_early: true,
-            unopened: (search.walk.take()).map_or_else(BTreeSet::new, |walk| walk.unopened),
+            unopened: walk
+                .as_ref()
+                .map_or_else(BTreeSet::new, |walk| walk.unopened.clone()),
+            replaced: walk.map_or_else(BTreeSet::new, |walk| walk.replaced),
         };
         for (key, _) in search.pending.drain() {
             search.decided.insert(key, Decided::Unproven);
@@ -631,182 +699,163 @@ impl<'r> Pending<'r> {
         let mut left = if bounded { *budget } else { usize::MAX };
         let mut looked = false;
         let mut checked = false;
-        while (left > 0 || !looked) && !pending.is_empty() {
+        'walk: while (left > 0 || !looked) && !pending.is_empty() {
             let walk = walking.get_or_insert_with(|| {
                 *walks += 1;
-                Walk {
-                    listings: (ignored.iter())
-                        .map(|(dir, names)| Listing {
-                            dir: dir.clone(),
-                            names: names.iter().rev().cloned().collect(),
-                        })
-                        .rev()
-                        .collect(),
-                    folders: Vec::new(),
-                    later: Vec::new(),
-                    reach: None,
-                    above: None,
-                    bases: Vec::new(),
-                    unopened: BTreeSet::new(),
-                }
+                Walk::new(ignored, 0)
             });
-            let mut opened: Option<(PathBuf, OwnedFd)> = None;
-            let mut moved = false;
-            if !checked {
-                checked = true;
-                let mut parent = walk.above.as_ref().map(|fd| fd.as_fd());
-                for folder in &walk.folders {
-                    left = left.saturating_sub(1);
-                    cut(Cut::Confirming(&folder.dir));
-                    let still = (parent.zip(folder.dir.file_name()))
-                        .and_then(|(parent, name)| stat_at(parent, name).ok())
-                        .and_then(|stat| stat.entry())
-                        .is_some_and(|entry| entry.id.same(&folder.id));
-                    if !still {
-                        moved = true;
-                        break;
+            let replaced = 'step: {
+                if !checked {
+                    checked = true;
+                    if walk.folders.is_empty() {
+                        walk.base = None;
                     }
-                    parent = folder.entries.fd().ok();
-                }
-            }
-            while !moved && (left > 0 || !looked) && !pending.is_empty() {
-                let (dir, name) = match walk.folders.last_mut() {
-                    Some(Folder { dir, names, .. }) => {
-                        let Some(name) = names.pop() else {
-                            walk.folders.pop();
+                    for at in 0..walk.folders.len() {
+                        let Some(above) = walk.above(at) else {
                             continue;
                         };
-                        (dir.clone(), name)
+                        let folder = &walk.folders[at];
+                        left = left.saturating_sub(1);
+                        cut(Cut::Confirming(&folder.dir));
+                        let still = (folder.dir.file_name())
+                            .and_then(|name| stat_at(above, name).ok())
+                            .and_then(|stat| stat.entry())
+                            .is_some_and(|entry| entry.id.same(&folder.id));
+                        if !still {
+                            break 'step Replaced::Folder(at, None);
+                        }
+                    }
+                    continue 'walk;
+                }
+                if walk.folders.last().is_some_and(|folder| {
+                    folder.next == folder.names.len()
+                        && (folder.fd.is_some() || walk.folders.len() == 1)
+                }) {
+                    walk.folders.pop();
+                    continue 'walk;
+                }
+                if let Some(top) = walk.folders.len().checked_sub(1)
+                    && walk.folders[top].fd.is_none()
+                {
+                    left = left.saturating_sub(1);
+                    looked = true;
+                    let (at, through) = walk.reach.take().unwrap_or((0, None));
+                    let (dir, expected) = (walk.folders[at].dir.clone(), walk.folders[at].id);
+                    cut(Cut::OpeningDir(&dir));
+                    let opened = (through.as_ref().map(|fd| fd.as_fd()))
+                        .or_else(|| walk.above(at))
+                        .zip(dir.file_name())
+                        .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))
+                        .and_then(|(above, name)| open_dir_at(above, name))
+                        .and_then(|fd| Ok((stat_fd(fd.as_fd())?.id, fd)));
+                    match opened {
+                        Ok((id, fd)) if id.same(&expected) => {
+                            if at + OPEN_FOLDERS <= top {
+                                walk.reach = Some((at + 1, Some(fd)));
+                            } else {
+                                walk.folders[at].fd = Some(fd);
+                                walk.reach = (at < top).then_some((at + 1, None));
+                            }
+                        }
+                        Err(err) if !is_gone(&err) => {
+                            walk.unopened.insert(dir);
+                            walk.folders.truncate(at);
+                        }
+                        _ => break 'step Replaced::Folder(at, through),
+                    }
+                    continue 'walk;
+                }
+                let name = match walk.folders.last_mut() {
+                    Some(folder) => {
+                        let Some(name) = folder.names.get(folder.next).cloned() else {
+                            walk.folders.pop();
+                            continue 'walk;
+                        };
+                        folder.next += 1;
+                        name
                     }
                     None => {
-                        if walk.reach.is_none() && !walk.later.is_empty() {
-                            let Ok(fd) = root.try_clone_to_owned() else {
-                                (left, looked) = (0, true);
-                                break;
-                            };
-                            walk.reach = (walk.later.pop()).map(|(dir, id)| Reach {
-                                dir,
-                                expect: vec![id],
-                                seen: Vec::new(),
-                                fd,
-                                confirm: false,
-                            });
-                            continue;
-                        }
-                        if let Some(reach) = &mut walk.reach {
-                            left = left.saturating_sub(1);
-                            looked = true;
-                            let depth = reach.dir.components().count();
-                            let below: PathBuf =
-                                reach.dir.iter().take(reach.seen.len() + 1).collect();
-                            cut(Cut::OpeningDir(&below));
-                            let at = (reach.seen.len() + reach.expect.len()).checked_sub(depth);
-                            let opened = (below.file_name())
-                                .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))
-                                .and_then(|name| open_dir_at(reach.fd.as_fd(), name))
-                                .and_then(|next| Ok((stat_fd(next.as_fd())?.id, next)));
-                            let (id, next) = match opened {
-                                Ok((id, next))
-                                    if at.is_none_or(|at| {
-                                        reach.expect.get(at).is_some_and(|dir| dir.same(&id))
-                                    }) =>
-                                {
-                                    (id, next)
-                                }
-                                Err(err) if !is_gone(&err) => {
-                                    walk.unopened.insert(below);
-                                    walk.reach = None;
-                                    continue;
-                                }
-                                _ => {
-                                    moved = true;
-                                    break;
-                                }
-                            };
-                            reach.seen.push(id);
-                            let before = std::mem::replace(&mut reach.fd, next);
-                            if reach.seen.len() < depth {
-                                continue;
-                            }
-                            let Some(Reach {
-                                dir,
-                                mut seen,
-                                fd,
-                                confirm,
-                                ..
-                            }) = walk.reach.take()
-                            else {
-                                continue;
-                            };
-                            if confirm {
-                                continue;
-                            }
-                            let Some(folder) = Folder::open(dir, id, fd, &mut walk.unopened) else {
-                                continue;
-                            };
-                            seen.pop();
-                            if let Some(parent) = folder.dir.parent()
-                                && !walk.bases.iter().any(|(at, _)| at == parent)
-                            {
-                                walk.bases.push((parent.to_path_buf(), seen));
-                            }
-                            walk.above = Some(before);
-                            walk.folders.push(folder);
-                            continue;
-                        }
                         let Some(listing) = walk.listings.last_mut() else {
-                            if walk.later.is_empty() && !walk.bases.is_empty() {
-                                let Ok(fd) = root.try_clone_to_owned() else {
-                                    (left, looked) = (0, true);
-                                    break;
+                            let Some((dir, chain)) = walk.bases.pop() else {
+                                *coverage = Coverage {
+                                    ended_early: false,
+                                    unopened: std::mem::take(&mut walk.unopened),
+                                    replaced: std::mem::take(&mut walk.replaced),
                                 };
-                                walk.reach = (walk.bases.pop()).map(|(dir, expect)| Reach {
-                                    dir,
-                                    expect,
-                                    seen: Vec::new(),
-                                    fd,
-                                    confirm: true,
+                                *walking = None;
+                                let everywhere = coverage.everywhere();
+                                let done = *walks;
+                                pending.retain(|key, needs| {
+                                    let open = *needs > done;
+                                    if !open {
+                                        let missed = if everywhere {
+                                            Decided::Missed
+                                        } else {
+                                            Decided::Unproven
+                                        };
+                                        decided.insert(*key, missed);
+                                    }
+                                    open
                                 });
-                                continue;
+                                continue 'walk;
+                            };
+                            left = left.saturating_sub(dir.components().count());
+                            looked = true;
+                            match open_attached(root, &dir, cut) {
+                                Ok(Some((_, now)))
+                                    if now.len() == chain.len()
+                                        && now
+                                            .iter()
+                                            .zip(&chain)
+                                            .all(|(now, was)| now.same(was)) => {}
+                                Err(_) => {
+                                    walk.unopened.insert(dir);
+                                }
+                                _ => break 'step Replaced::Path(dir),
                             }
-                            break;
+                            continue 'walk;
                         };
                         let Some(name) = listing.names.pop() else {
                             walk.listings.pop();
-                            continue;
+                            continue 'walk;
                         };
-                        (listing.dir.clone(), name)
+                        let dir = listing.dir.clone();
+                        if walk.base.as_ref().is_none_or(|(at, _)| *at != dir) {
+                            left = left.saturating_sub(dir.components().count());
+                            match open_attached(root, &dir, cut) {
+                                Ok(Some((fd, chain))) => {
+                                    if !chain.is_empty()
+                                        && !walk.bases.iter().any(|(at, _)| *at == dir)
+                                    {
+                                        walk.bases.push((dir.clone(), chain));
+                                    }
+                                    walk.base = Some((dir, fd));
+                                }
+                                gone => {
+                                    if gone.is_err() {
+                                        walk.unopened.insert(dir);
+                                    }
+                                    walk.listings.pop();
+                                    continue 'walk;
+                                }
+                            }
+                        }
+                        name
                     }
                 };
                 left = left.saturating_sub(1);
                 looked = true;
-                if walk.folders.is_empty() && opened.as_ref().is_none_or(|(at, _)| *at != dir) {
-                    left = left.saturating_sub(dir.components().count());
-                    opened = match open_attached(root, &dir, cut) {
-                        Ok(Some((fd, chain))) => {
-                            if !chain.is_empty() && !walk.bases.iter().any(|(at, _)| *at == dir) {
-                                walk.bases.push((dir.clone(), chain));
-                            }
-                            Some((dir.clone(), fd))
-                        }
-                        gone => {
-                            if gone.is_err() {
-                                walk.unopened.insert(dir);
-                            }
-                            walk.listings.pop();
-                            continue;
-                        }
-                    };
-                }
-                let parent = match (walk.folders.last(), &opened) {
-                    (Some(Folder { entries, .. }), _) => entries.fd().ok(),
-                    (None, Some((_, fd))) => Some(fd.as_fd()),
-                    (None, None) => None,
+                let (dir, above) = match (walk.folders.last(), &walk.base) {
+                    (Some(folder), _) => (&folder.dir, folder.fd.as_ref()),
+                    (None, Some((dir, fd))) => (dir, Some(fd)),
+                    (None, None) => continue 'walk,
                 };
-                let Some(parent) = parent else { continue };
+                let Some(above) = above.map(|fd| fd.as_fd()) else {
+                    continue 'walk;
+                };
                 let path = dir.join(&name);
                 cut(Cut::Searching(&path));
-                let entry = match stat_at(parent, &name) {
+                let entry = match stat_at(above, &name) {
                     Ok(stat) => stat.entry(),
                     Err(err) => {
                         if !is_gone(&err) {
@@ -815,15 +864,14 @@ impl<'r> Pending<'r> {
                         None
                     }
                 };
-                let Some(entry) = entry else { continue };
+                let Some(entry) = entry else { continue 'walk };
                 let keys: Vec<Key> = keys_of(&entry)
                     .filter(|key| pending.contains_key(key))
                     .collect();
                 if let Some(&key) = keys.first() {
                     left = left.saturating_sub(path.components().count());
                     if !holds(root, &path, key) {
-                        moved = true;
-                        break;
+                        break 'step Replaced::Path(path);
                     }
                 }
                 for key in keys {
@@ -834,65 +882,42 @@ impl<'r> Pending<'r> {
                     decided.insert(key, Decided::Found(path.clone()));
                 }
                 if entry.kind != EntryKind::Dir {
-                    continue;
-                }
-                if walk.folders.len() >= OPEN_FOLDERS {
-                    walk.later.push((path, entry.id));
-                    continue;
+                    continue 'walk;
                 }
                 left = left.saturating_sub(1);
                 cut(Cut::OpeningDir(&path));
-                let sub = match open_dir_at(parent, &name) {
-                    Ok(sub) => sub,
-                    Err(err) => {
-                        if !is_gone(&err) {
-                            walk.unopened.insert(path);
-                        }
-                        continue;
+                let opened =
+                    open_dir_at(above, &name).and_then(|sub| Ok((stat_fd(sub.as_fd())?.id, sub)));
+                let sub = match opened {
+                    Ok((id, sub)) if id.same(&entry.id) => sub,
+                    Err(err) if !is_gone(&err) => {
+                        walk.unopened.insert(path);
+                        continue 'walk;
                     }
+                    _ => break 'step Replaced::Path(path),
                 };
-                let Some(folder) = Folder::open(path, entry.id, sub, &mut walk.unopened) else {
-                    continue;
+                let Some(names) = listed(sub.as_fd(), &path, &mut walk.unopened) else {
+                    continue 'walk;
                 };
-                if walk.folders.is_empty() {
-                    walk.above = opened.take().map(|(_, fd)| fd);
-                }
-                walk.folders.push(folder);
-            }
-            if moved {
-                *walking = None;
-                let again = *walks + 1;
-                for needs in pending.values_mut() {
-                    *needs = again;
-                }
-                continue;
-            }
-            if walk.listings.is_empty()
-                && walk.folders.is_empty()
-                && walk.later.is_empty()
-                && walk.reach.is_none()
-                && walk.bases.is_empty()
-            {
-                *coverage = Coverage {
-                    ended_early: false,
-                    unopened: std::mem::take(&mut walk.unopened),
-                };
-                *walking = None;
-                let everywhere = coverage.everywhere();
-                let done = *walks;
-                pending.retain(|key, needs| {
-                    let open = *needs > done;
-                    if !open {
-                        let missed = if everywhere {
-                            Decided::Missed
-                        } else {
-                            Decided::Unproven
-                        };
-                        decided.insert(*key, missed);
-                    }
-                    open
+                walk.push(Folder {
+                    dir: path,
+                    id: entry.id,
+                    names,
+                    next: 0,
+                    fd: Some(sub),
                 });
+                continue 'walk;
+            };
+            if walk.restarts < RESTARTS {
+                let restarts = walk.restarts + 1;
+                *walks += 1;
+                *walking = Some(Walk::new(ignored, restarts));
+                for needs in pending.values_mut() {
+                    *needs = *walks;
+                }
+                continue 'walk;
             }
+            walk.leave(replaced);
         }
         if pending.is_empty() {
             *walking = None;
