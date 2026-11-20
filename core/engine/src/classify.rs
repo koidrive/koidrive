@@ -3698,6 +3698,18 @@ impl Trees {
         self.move_out_of_l(id);
     }
 
+    pub fn displace_removed_local(&mut self, id: &NodeId, created_in_flight: bool) {
+        if self
+            .r
+            .get(id)
+            .map_or(created_in_flight, RemoteNode::is_live)
+        {
+            self.displace_local(id);
+        } else {
+            self.take_out_local(id);
+        }
+    }
+
     fn move_out_of_l(&mut self, id: &NodeId) {
         let Some(node) = self.l.remove(id) else {
             return;
@@ -3719,9 +3731,7 @@ impl Trees {
             .cloned()
             .collect();
         for id in unheld {
-            self.displaced.remove(&id);
-            self.missing.remove(&id);
-            self.mark(&id);
+            self.take_out_local(&id);
         }
     }
 

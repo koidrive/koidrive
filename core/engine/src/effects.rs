@@ -727,7 +727,8 @@ impl Effects {
             });
         for id in below.iter().rev() {
             if trees.recorded_local(id) {
-                trees.displace_local(id, in_flight.is_some_and(|flight| flight.creates(id)));
+                trees
+                    .displace_removed_local(id, in_flight.is_some_and(|flight| flight.creates(id)));
                 continue;
             }
             trees.give_up(id);

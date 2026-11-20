@@ -439,7 +439,7 @@ fn a_displaced_node_r_does_not_hold_live_is_not_recorded() {
     let mut trees = trees(&[synced("a", file(ROOT, "a.txt", 1))]);
     trees.ignore_local(&"a".into());
     trash(&mut trees, "a");
-    trees.displace_local(&NodeId::from("a"), false);
+    trees.displace_removed_local(&NodeId::from("a"), false);
     assert!(trees.local().get(&NodeId::from("a")).is_none() && trees.displaced_local().is_empty());
 }
 
@@ -3043,7 +3043,7 @@ fn a_moved_out_copy_trashed_before_its_create_answer_leaves_no_displaced_record(
     trees.ignore_local(&node);
     let creating = commits.in_flight().unwrap().creates(&node);
     assert!(creating);
-    trees.displace_local(&node, creating);
+    trees.displace_removed_local(&node, creating);
 
     trees.restore(trees.state()).unwrap();
     assert!(trees.displaced_local().is_empty());

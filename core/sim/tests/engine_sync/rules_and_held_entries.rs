@@ -2278,7 +2278,8 @@ fn renaming_an_entry_the_user_moved_in_from_a_folder_another_device_then_brings_
 
 #[test]
 fn a_displaced_node_keeps_its_write_counted_but_proves_it_kept_only_while_it_owes_it() {
-    let mut trees = Trees::new("root");
+    let mut device = Device::new(Trees::new("root"));
+    let trees = &mut device.trees;
     let file = NodeId::from("f");
     let written = content(1, 1);
     let current = content(2, 1);
@@ -2286,10 +2287,10 @@ fn a_displaced_node_keeps_its_write_counted_but_proves_it_kept_only_while_it_owe
         parent: "root".into(),
         name: "a".into(),
         kind: Kind::File,
-        content: Some(written.clone()),
+        content: Some(ContentKey::try_from(&written).unwrap()),
     };
     let on_server = Shape {
-        content: Some(current.clone()),
+        content: Some(ContentKey::try_from(&current).unwrap()),
         ..shape.clone()
     };
     trees.set_synced(file.clone(), Some(on_server.clone()));
@@ -2297,7 +2298,8 @@ fn a_displaced_node_keeps_its_write_counted_but_proves_it_kept_only_while_it_owe
         file.clone(),
         RemoteNode {
             made_over: Vec::new(),
-            shape: on_server,
+            shape: on_server.clone(),
+            chunks: current.chunks.into(),
             trashed: false,
             content_rev: 2,
             meta_rev: 1,
@@ -2317,32 +2319,37 @@ fn a_displaced_node_keeps_its_write_counted_but_proves_it_kept_only_while_it_owe
             shape,
             identity: identity(2),
             parked: false,
+            chunks: written.chunks.into(),
         },
     );
     trees.ignore_local(&file);
     let mut writes = BTreeSet::from([written.manifest_digest.clone()]);
-    let check = |trees: &Trees, writes: &BTreeSet<Vec<u8>>| {
-        let server = std::iter::once(Some(current.clone()));
-        check_local_writes(trees, &BTreeSet::new(), server, writes)
+    let check = |device: &Device, writes: &BTreeSet<Vec<u8>>| {
+        local_writes_check(
+            device,
+            &[(file.clone(), Some(on_server.clone()))],
+            &BTreeSet::new(),
+            writes,
+        )
     };
-    check(&trees, &writes).unwrap();
-    let before = held(&trees);
-    trees.displace_local(&file);
-    assert!(trees.local().get(&file).is_none());
+    check(&device, &writes).unwrap();
+    let before = held(&device.trees);
+    device.trees.displace_local(&file);
+    assert!(device.trees.local().get(&file).is_none());
     rewritten(
         &before,
-        &held(&trees),
-        &trees,
+        &held(&device.trees),
+        &device.trees,
         [&mut writes, &mut BTreeSet::new()],
     );
     assert!(writes.contains(&written.manifest_digest));
-    let lost = check(&trees, &writes).unwrap_err();
+    let lost = check(&device, &writes).unwrap_err();
     assert!(
         lost.to_string().contains("a local write was lost"),
         "{lost}"
     );
-    let mut state = trees.state();
+    let mut state = device.trees.state();
     state.unsent_edits.insert(file.clone());
-    trees.restore(state).unwrap();
-    check(&trees, &writes).unwrap();
+    device.trees.restore(state).unwrap();
+    check(&device, &writes).unwrap();
 }

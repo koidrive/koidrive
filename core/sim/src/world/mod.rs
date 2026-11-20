@@ -3505,8 +3505,9 @@ impl World {
                 return fail("R waits for a listing".into());
             }
             let trees = &engine.trees;
-            let in_history = |id: &NodeId, content: &Content| {
-                retained(&self.space, id).contains(&content.manifest_digest)
+            let in_history = |id: &NodeId, content: &ContentKey| {
+                (retained(&self.space, id).iter())
+                    .any(|digest| digest.as_slice() == content.manifest_digest())
             };
             if let Some((id, _)) = (trees.local_entries()).find(|(id, node)| {
                 trees.local().get(id).is_none()

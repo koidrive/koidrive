@@ -1463,21 +1463,6 @@ fn owned(trees: &Trees, id: &NodeId, node: &LocalNode) -> bool {
         || trees.remote().get(id).is_none()
 }
 
-fn check_local_writes(
-    trees: &Trees,
-    waiting: &BTreeSet<NodeId>,
-    server: impl Iterator<Item = Option<ContentKey>>,
-    local_writes: &BTreeSet<Vec<u8>>,
-) -> Result<(), TestCaseError> {
-    let unsent = (trees.local_entries())
-        .filter(|(id, node)| trees.local().get(id).is_some() || owned(trees, id, node))
-        .filter(|(id, _)| trees.ignored(id) || waiting.contains(*id))
-        .map(|(_, node)| node.shape.content);
-    let kept = written(server.chain(unsent), 1);
-    prop_assert!(local_writes.is_subset(&kept), "a local write was lost");
-    Ok(())
-}
-
 fn held(trees: &Trees) -> BTreeSet<(String, Vec<u8>)> {
     trees
         .local_entries()

@@ -361,7 +361,7 @@ impl Engine {
                     true => {
                         let created =
                             (self.commits.in_flight()).is_some_and(|flight| flight.creates(id));
-                        self.trees.displace_local(id, created)
+                        self.trees.displace_removed_local(id, created)
                     }
                     false => self.trees.remove_local(id),
                 }
