@@ -10385,9 +10385,14 @@ fn a_place_published_on_the_question_a_discard_was_asked_again_under_reaches_the
         ],
     ];
     let world = converge(3, &phases).unwrap();
-    let writes =
-        (world.space().nodes().into_iter()).filter_map(|node| Some(tag(&node.current?.content?)));
-    assert!(writes.collect::<Vec<_>>().contains(&4));
+    let node = (world.space().nodes().into_iter())
+        .find(|node| node.node_id == "01a1c2c0-39a0-753e-807a-44e7920b02c1")
+        .expect("the server holds the node device 2 published");
+    assert_eq!(node.name, "a (conflict from device-2 2026-11-09)");
+    assert_eq!(
+        node.current.and_then(|v| v.content).map(|c| tag(&c)),
+        Some(4)
+    );
 }
 
 #[test]

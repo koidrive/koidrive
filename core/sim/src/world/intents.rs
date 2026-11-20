@@ -834,6 +834,7 @@ impl Intents {
                 }
                 let later = field == Field::Place
                     && !self.saw(i, j)
+                    && !(self.shown[intent.author].get(&j)).is_some_and(|at| *at <= intent.made)
                     && (other.applied > intent.applied || other.held);
                 let held_as = |k: usize| match (&intent.value, &self.list[k].value) {
                     (
@@ -1174,6 +1175,37 @@ mod tests {
         intents.answered(1, 3, 1, at("a"), Answered::Settles, false);
         intents.sync(&server, 4, None);
         assert_eq!(check(&intents), Err(missing));
+    }
+
+    #[test]
+    fn an_answer_is_not_settled_by_a_move_its_question_showed() {
+        let settles = |shown: bool| {
+            let mut intents = Intents::new(2);
+            for nodes in &mut intents.nodes {
+                nodes.insert(1, [NodeId::from("n")].into());
+            }
+            let at = |name: &str| Value::Place {
+                parent: None,
+                name: name.to_owned(),
+            };
+            let at_upper = NodeState {
+                node_id: "n".into(),
+                parent_id: "root".into(),
+                name: "A".into(),
+                status: NodeStatus::Live as i32,
+                ..NodeState::default()
+            };
+            let server = Server::of("root", vec![at_upper]);
+            let moved = intents.record(1, 1, 1, "move", at("A"));
+            intents.sync(&server, 2, None);
+            if shown {
+                intents.shown[0].insert(moved, 3);
+            }
+            intents.answered(0, 3, 1, at("a"), Answered::Owed, true);
+            intents.check(&server, |_| false, |_, _| false).is_ok()
+        };
+        assert!(settles(false));
+        assert!(!settles(true));
     }
 
     #[test]
