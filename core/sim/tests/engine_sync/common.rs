@@ -913,6 +913,28 @@ impl Device {
         Some(path)
     }
 
+    fn ignored_disk_path(&self, holder: &NodeId, below: &[String]) -> Option<Vec<String>> {
+        let mut path: Vec<String> = below.iter().rev().cloned().collect();
+        let mut current = holder;
+        let trees = &self.trees;
+        for _ in 0..=trees.local().len() + trees.displaced_local().len() {
+            if *current == trees.local().root {
+                path.reverse();
+                return Some(path);
+            }
+            if self.off_disk.contains(current) {
+                return None;
+            }
+            let node = trees.local_entry(current)?;
+            if node.parked {
+                return None;
+            }
+            path.push(node.shape.name.clone());
+            current = &node.shape.parent;
+        }
+        None
+    }
+
     fn on_disk(&self, id: &NodeId) -> bool {
         let local = self.trees.local();
         let mut current = id;
@@ -3277,9 +3299,8 @@ fn run_ignoring_answering_after(
                 entry.original.as_ref().is_some_and(|(original, identity)| {
                     original == id && *identity == node.identity
                 }) && entry.content == node.shape.content
-                    && device.on_disk(holder)
                     && device
-                        .disk_path(holder, below)
+                        .ignored_disk_path(holder, below)
                         .is_some_and(|path| trees.ignores(&path, entry.kind))
             })
         };
@@ -3501,7 +3522,7 @@ fn local_writes_check(
         .map(|(_, node)| node.shape.content);
     let in_ignored_folders = (device.ignored.iter())
         .filter(|((holder, below), entry)| {
-            (device.disk_path(holder, below))
+            (device.ignored_disk_path(holder, below))
                 .is_some_and(|path| device.trees.ignores(&path, entry.kind))
         })
         .map(|(_, entry)| entry.content);
