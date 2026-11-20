@@ -4017,12 +4017,14 @@ impl Trees {
                 marked.push(node.to_owned());
             }
         }
-        let above: BTreeSet<&NodeId> = (tops.iter())
-            .flat_map(|top| {
-                (self.local_chain(top).skip(1))
-                    .take_while(|folder| **folder != self.l.root && !self.known_to_server(folder))
-            })
-            .collect();
+        let mut above = BTreeSet::new();
+        for top in tops {
+            for folder in self.local_chain(top).skip(1) {
+                if *folder == self.l.root || self.known_to_server(folder) || !above.insert(folder) {
+                    break;
+                }
+            }
+        }
         for folder in above {
             if !seen.contains(folder)
                 && !self.unobserved.contains(folder)
