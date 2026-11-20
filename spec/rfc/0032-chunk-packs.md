@@ -44,7 +44,7 @@ A step must leave a database that already has its effect unchanged (`docs/design
 CREATE INDEX IF NOT EXISTS chunks_pack ON chunks(pack_id) WHERE pack_id IS NOT NULL;
 CREATE TABLE IF NOT EXISTS packs (pack_id TEXT PRIMARY KEY, size INTEGER NOT NULL, state INTEGER NOT NULL,
   live_count INTEGER NOT NULL, live_bytes INTEGER NOT NULL, hold_until_ms INTEGER NOT NULL);
-CREATE INDEX IF NOT EXISTS packs_sparse ON packs(live_bytes) WHERE state = 2 AND live_bytes * 2 < size;
+CREATE INDEX IF NOT EXISTS packs_sparse ON packs(live_bytes) WHERE state = 2 AND (live_bytes + live_count * 36 + 16) * 2 < size;
 ```
 
 The Account DO step (`server/src/account/schema.ts:6`) runs `CREATE TABLE IF NOT EXISTS pack_retirements (space_id TEXT NOT NULL, pack_id TEXT NOT NULL, retired_at_ms INTEGER NOT NULL, PRIMARY KEY (space_id, pack_id))`. Both `storage.space` and `storage.account` rise by one (RFC 0025 §2 rule 1).
@@ -99,7 +99,7 @@ A pack whose live bytes fall under half its size is rewritten. GC runs compactio
 
 Steps 2 to 5 interleave with commits, uploads and GC, since a Durable Object handles other events while it awaits R2. A commit changes refcount and state, not location. A receipt cannot add a row to a source (§3 rule 1 accepts no pack older than 6 days) or to the output, which stays `writing` until step 5. A download target issued before step 5 names the source, which outlives the 1-hour ticket (`server/src/space/limits.ts:9`). A rewind restarts the object (`server/src/space/space.ts:1448-1451`), and completion turns a restored `writing` pack `live` under a hold (§6 rule 5).
 
-**Threshold.** A pack is compacted when `live_bytes * 2 < size`, so each compaction writes fewer bytes than it reclaims. Packs older than 7 days and not waiting for a pass are at least half live, so their storage stays under 2 times their live bytes, plus young packs and the sources of the last `chunk_grace_days` of compactions. A threshold of 1/4 would allow 4 times the live bytes, and 3/4 would rewrite 3 bytes for each byte reclaimed. At $0.015 per GB-month ([R2 pricing](https://developers.cloudflare.com/r2/pricing/)), 10 GB of dead bytes costs $0.15 a month.
+**Threshold.** A pack is compacted when `(live_bytes + live_count * 36 + 16) * 2 < size`: twice its live chunks with their index entries and a footer, which is what they take in an output, is still smaller than the pack. So each compaction writes fewer bytes than it reclaims, and a pack whose chunks are all live is never picked, however small its chunks. Packs older than 7 days and not waiting for a pass are at least half live counting index bytes, so their storage stays under 2 times their live bytes and index, plus young packs and the sources of the last `chunk_grace_days` of compactions. A threshold of 1/4 would allow 4 times the live bytes, and 3/4 would rewrite 3 bytes for each byte reclaimed. At $0.015 per GB-month ([R2 pricing](https://developers.cloudflare.com/r2/pricing/)), 10 GB of dead bytes costs $0.15 a month.
 
 **Cost per GC pass.** At most 16 Class B `get`s, at most 8 Class A writes (16 sources under 2 MiB live fill at most 8 outputs), one `retirePacks` call, and deletes, which R2 does not charge for (same page). That is at most about $0.00004 per pass. Memory peaks near 8 MiB, one source plus one output. The pass sets `more` (`server/src/space/space.ts:1418`) when it used all 16 sources.
 

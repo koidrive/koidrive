@@ -137,7 +137,7 @@ export const MIGRATIONS: readonly Migration[] = [
     sql.exec("CREATE INDEX IF NOT EXISTS chunks_pack ON chunks(pack_id) WHERE pack_id IS NOT NULL");
     sql.exec(`CREATE TABLE IF NOT EXISTS packs (pack_id TEXT PRIMARY KEY, size INTEGER NOT NULL, state INTEGER NOT NULL,
       live_count INTEGER NOT NULL, live_bytes INTEGER NOT NULL, hold_until_ms INTEGER NOT NULL)`);
-    sql.exec("CREATE INDEX IF NOT EXISTS packs_sparse ON packs(live_bytes) WHERE state = 2 AND live_bytes * 2 < size");
+    sql.exec("CREATE INDEX IF NOT EXISTS packs_sparse ON packs(live_bytes) WHERE state = 2 AND (live_bytes + live_count * 36 + 16) * 2 < size");
   },
 ];
 
