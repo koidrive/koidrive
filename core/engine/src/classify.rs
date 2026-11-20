@@ -6358,13 +6358,11 @@ impl Trees {
             node.trashed && !self.asked.contains(id) && !self.kept_folders.contains(id)
         })?;
         let local = self.l.get(id)?;
-        let last_synced = (local.parked && !self.unsent_moves.contains(id))
-            .then_some(&local.shape)
-            .or_else(|| self.forgotten_shapes.get(id));
-        let given = [Some(&remote.shape), last_synced]
-            .into_iter()
-            .flatten()
-            .any(|place| local.shape.same_position(place));
+        let last_synced = (self.synced_positions.get(id)).and_then(|earlier| earlier.last());
+        let given = local.shape.same_position(&remote.shape)
+            || last_synced.is_some_and(|place| {
+                place.parent == local.shape.parent && same_name(&place.name, &local.shape.name)
+            });
         (given && !self.revives(id)).then(|| Shape {
             parent: local.shape.parent.clone(),
             name: local.shape.name.clone(),

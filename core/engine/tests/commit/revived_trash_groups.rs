@@ -1302,10 +1302,11 @@ fn a_parked_folder_another_device_renamed_and_trashed_goes_to_the_local_trash() 
         (
             "p",
             Some(dir(ROOT, "ß")),
-            None,
+            Some(dir(ROOT, "ß")),
             Some(trashed(dir(ROOT, "renamed"))),
         ),
     ]);
+    trees.set_synced("p".into(), None);
     trees.set_local(
         "p".into(),
         LocalNode {
@@ -1319,30 +1320,6 @@ fn a_parked_folder_another_device_renamed_and_trashed_goes_to_the_local_trash() 
     let effects = effects_for(&mut trees, &mut ids, "p");
     assert!(
         matches!(&effects[..], [Effect::RemoveDir { .. }]),
-        "{effects:?}"
-    );
-}
-
-#[test]
-fn a_file_a_server_loss_made_s_forget_that_another_device_renamed_and_trashed_goes_to_the_local_trash()
- {
-    let mut trees = trees(&[(
-        "f",
-        Some(file(ROOT, "old", 1)),
-        None,
-        Some(trashed(file(ROOT, "new", 1))),
-    )]);
-    with_state(&mut trees, |state| {
-        state
-            .forgotten_shapes
-            .insert("f".into(), file(ROOT, "old", 1));
-        state.unsent_edits.remove(&NodeId::from("f"));
-    });
-    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
-    assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
-    let effects = effects_for(&mut trees, &mut ids, "f");
-    assert!(
-        matches!(&effects[..], [Effect::RemoveFile { .. }]),
         "{effects:?}"
     );
 }
@@ -1369,4 +1346,30 @@ fn a_node_its_user_moves_back_to_a_place_the_server_held_it_at_before_is_brought
         .map(|commit| ops(&commit))
         .unwrap_or_default();
     assert!(sent.contains(&mv("f", ROOT, "old")), "{sent:?}");
+}
+
+#[test]
+fn a_parked_folder_its_user_moved_before_parking_is_brought_back_when_another_device_trashes_it() {
+    let mut trees = trees(&[(
+        "p",
+        Some(dir(ROOT, "moved")),
+        Some(dir(ROOT, "p")),
+        Some(trashed(dir(ROOT, "p"))),
+    )]);
+    trees.set_synced("p".into(), None);
+    trees.set_local(
+        "p".into(),
+        LocalNode {
+            parked: true,
+            ..local(dir(ROOT, "moved"), 2)
+        },
+    );
+    trees.settle(&Default::default());
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    let effects = effects_for(&mut trees, &mut ids, "p");
+    assert!(matches!(&effects[..], [Effect::Move { .. }]), "{effects:?}");
+    let sent = build(&mut commits, &mut trees, &mut ids)
+        .map(|commit| ops(&commit))
+        .unwrap_or_default();
+    assert!(sent.contains(&mv("p", ROOT, "moved")), "{sent:?}");
 }
