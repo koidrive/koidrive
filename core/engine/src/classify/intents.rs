@@ -80,7 +80,11 @@ fn named_place(parent: &str, name: &str, mark: &str) -> Value {
 fn sent_content(content: Option<&proto::Content>) -> Option<Value> {
     content.map(|content| Value::Content {
         version_id: None,
-        value: ContentValue::from(content),
+        value: ContentValue {
+            size: content.size,
+            manifest_digest: content.manifest_digest.clone(),
+            executable: content.executable,
+        },
     })
 }
 

@@ -186,9 +186,10 @@ fn first_upload() -> (Trees, usize) {
                 kind,
                 content,
             };
+            let id = NodeId::from(id);
             let mut intents = NodeIntents::default();
             for field in Field::ALL {
-                let row = trees.journal_row(&NodeId::from(&id), field);
+                let row = trees.journal_row(&id, field);
                 intents.set(
                     field,
                     row.map(|row| FieldIntent {
@@ -218,7 +219,7 @@ fn first_upload() -> (Trees, usize) {
                 chunks,
                 intents: Some(intents),
             };
-            trees.set_remote_made_here(NodeId::from(id), node);
+            trees.set_remote_made_here(id, node);
         }
         let applied = OpResult {
             code: op_result::Code::Applied as i32,

@@ -10,18 +10,19 @@ use koidrive_engine::journal::{
 };
 use koidrive_engine::state::{Agreed, CommitsState, ContentValue};
 use koidrive_engine::tree::{
-    Content, FileIdentity, Kind, LocalNode, NodeId, RemoteNode, Shape, Tree,
+    ContentKey, FileIdentity, Kind, LocalNode, NodeId, RemoteNode, Shape, Tree,
 };
 use koidrive_proto::v1::{self as proto, Welcome, op, op_result};
 
 const ROOT: &str = "root";
 
-fn content(digest: u8) -> Content {
-    Content {
+fn content(digest: u8) -> ContentKey {
+    ContentKey::try_from(&proto::Content {
         size: 3,
         manifest_digest: vec![digest; 32],
         ..Default::default()
-    }
+    })
+    .unwrap()
 }
 
 fn file(parent: &str, name: &str, digest: u8) -> Shape {
@@ -58,6 +59,7 @@ fn remote(shape: Shape, rev: u64) -> RemoteNode {
         edit_rev: rev,
         pending_for: None,
         pending_by: None,
+        chunks: Box::default(),
         intents: None,
     }
 }
@@ -73,6 +75,7 @@ fn local(shape: Shape) -> LocalNode {
             handle: None,
         },
         parked: false,
+        chunks: Box::default(),
     }
 }
 
@@ -794,9 +797,9 @@ fn node_state(
         status: proto::NodeStatus::Live as i32,
         content_rev: rev,
         meta_rev: rev,
-        current: shape.content.clone().map(|content| proto::VersionInfo {
+        current: shape.content.map(|content| proto::VersionInfo {
             version_id: format!("v{rev}"),
-            content: Some(content),
+            content: Some(content.content(&[])),
             ..Default::default()
         }),
         intents,
