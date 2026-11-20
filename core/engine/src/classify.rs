@@ -4880,14 +4880,12 @@ impl Trees {
         None
     }
 
-    fn sent(&self, id: &NodeId) -> Option<(Vec<&str>, Kind)> {
+    fn sent_apart(&self, id: &NodeId) -> Option<(Vec<&str>, Kind)> {
         let local = self.l.get(id)?;
-        let mut names = vec![local.shape.name.as_str()];
         let mut current = &local.shape.parent;
         for _ in 0..=self.l.len() {
             if *current == self.l.root {
-                names.reverse();
-                return Some((names, local.shape.kind));
+                return None;
             }
             let folder = &self.l.get(current)?.shape;
             let placed = self.acknowledged(current).or_else(|| self.s.live(current));
@@ -4895,13 +4893,19 @@ impl Trees {
             let unlinked = self.kept_folders.contains(current);
             if !moved
                 && !unlinked
-                && let Some((above, _)) = self.held_in_r(current)
+                && let Some(apart) = self.held_apart_from_l(current)
             {
-                names.extend(above.into_iter().rev());
-                names.reverse();
+                let (mut names, _) = self.held_in_r(current).filter(|_| apart)?;
+                let mut below = vec![local.shape.name.as_str()];
+                let mut up = &local.shape.parent;
+                while up != current {
+                    let shape = &self.l.get(up)?.shape;
+                    below.push(&shape.name);
+                    up = &shape.parent;
+                }
+                names.extend(below.into_iter().rev());
                 return Some((names, local.shape.kind));
             }
-            names.push(&folder.name);
             current = &folder.parent;
         }
         None
@@ -4913,7 +4917,7 @@ impl Trees {
         };
         (self.l.get(id)).is_some_and(|node| {
             (self.r.get(&node.shape.parent)).is_some_and(|folder| folder.trashed)
-        }) && ignored(self.sent(id))
+        }) && ignored(self.sent_apart(id))
             && !ignored(path(&self.l, id))
             && self.never_held_by_the_server(id)
     }
@@ -4931,6 +4935,22 @@ impl Trees {
             below.extend(self.local_children_placed_or_parked(current));
         }
         true
+    }
+
+    fn held_apart_from_l(&self, id: &NodeId) -> Option<bool> {
+        let mut apart = false;
+        let mut current = id;
+        for _ in 0..=self.r.len() {
+            if *current == self.r.root {
+                return Some(apart);
+            }
+            let remote = &self.r.get(current)?.shape;
+            apart |= self.l.get(current).is_none_or(|local| {
+                local.shape.parent != remote.parent || local.shape.name != remote.name
+            });
+            current = &remote.parent;
+        }
+        None
     }
 
     fn held_in_r(&self, id: &NodeId) -> Option<(Vec<&str>, Kind)> {
@@ -4964,7 +4984,7 @@ impl Trees {
             (Some(local), Some(synced)) => !local.shape.same_position(synced),
             _ => false,
         };
-        if ignored(self.sent(id)) == Some(true) && self.never_held_by_the_server(id) {
+        if ignored(self.sent_apart(id)) == Some(true) && self.never_held_by_the_server(id) {
             return Some(true);
         }
         if local == Some(false) && moved {
