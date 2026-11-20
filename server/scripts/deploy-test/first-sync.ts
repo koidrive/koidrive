@@ -219,9 +219,9 @@ int main(int argc, char **argv) {
 `;
 
 function footprintTool(): string {
-  const tool = work("bin", "phys-footprint");
+  const tool = work("tools", "phys-footprint");
   if (existsSync(tool)) return tool;
-  mkdirSync(work("bin"), { recursive: true });
+  mkdirSync(work("tools"), { recursive: true });
   execFileSync("cc", ["-O2", "-x", "c", "-", "-o", tool], { input: FOOTPRINT_SOURCE, stdio: ["pipe", "inherit", "inherit"] });
   return tool;
 }
@@ -332,7 +332,6 @@ async function measureRun(run: Run, build: BuiltKoi, shape: Shape, capMs: number
       const status = folderStatus(on);
       const used = usage(pid);
       const physical = footprint(tool, pid);
-      if (physical) peakFootprintBytes = Math.max(peakFootprintBytes ?? 0, physical.peakBytes);
       const seconds = (Date.now() - started) / 1000;
       samples.push({ seconds, status, cpuSeconds: used?.cpuSeconds ?? null, rssBytes: used?.rssBytes ?? null, footprintBytes: physical?.bytes ?? null });
       if (synced(status, shape.entries)) {
@@ -350,6 +349,9 @@ async function measureRun(run: Run, build: BuiltKoi, shape: Shape, capMs: number
     }
   } finally {
     store = storeBytes(on, before.spaceId);
+    const last = alive(pid) ? footprint(tool, pid) : null;
+    peakFootprintBytes = last?.peakBytes ?? null;
+    if (!last && ended !== "failed") console.log("::warning::" + on.name + "'s peak physical footprint could not be read at the end of the run, so the run reports none");
     if (alive(pid)) {
       process.kill(pid, "SIGTERM");
       const deadline = Date.now() + DAEMON_STOP_MS;
