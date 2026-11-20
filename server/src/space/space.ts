@@ -60,7 +60,7 @@ import { verifyAccessToken } from "../auth";
 import { type ChunkObject, type PackLocation, type PackedRead, signChunkGrant, signPackedGet, verifyChunkGrant, verifyPackedReceipt } from "../crypto";
 import { errorText } from "../errors";
 import type { Database, ObjectState, ObjectStore, Socket, Sql, SqlRow } from "../host";
-import { fromHex, isUuidV7, toHex, uuidv7, uuidv7Ms } from "../ids";
+import { fromHex, isUuidV7, toHex, uuidv7, uuidv7Ms, uuidv7Prefix } from "../ids";
 import { GIT_TRACKED } from "../features";
 import { policy } from "../policy";
 import { causeOf } from "../cause";
@@ -107,6 +107,7 @@ import {
   MAX_OPS,
   MAX_CHUNKS_PER_CALL,
   MAX_HEAD_CHECKS,
+  PACK_FREE_AGE_MS,
   PACK_RECEIPT_AGE_MS,
   MIN_CHUNK_GRACE_DAYS,
   MAX_MISSING_LISTED,
@@ -119,6 +120,7 @@ import {
   PURGE_BYTES,
   GC_RETRY_MS,
   R2_DELETE_BATCH,
+  R2_DELETE_ROUNDS,
   ORPHAN_SWEEP_MS,
   CLOSED_RECHECK_MS,
   EXPORT_RETRY_MS,
@@ -205,6 +207,7 @@ export interface RewindCompletion {
   completedAtMs: number;
   revokedDevices: string[];
   retired: { hashHex: string; incarnation: string }[];
+  retiredPacks: string[];
 }
 
 export interface RewindReceipt {
@@ -219,10 +222,12 @@ export interface GcReport {
   purgedNodes: number;
   deletedChunks: number;
   sweptChunks: number;
+  deletedPacks: number;
+  sweptPacks: number;
   more: boolean;
 }
 
-export type Directory = Pick<AccountDO, "checkSessions" | "isSpaceClosed" | "recordUsage" | "retireChunks" | "serverKey" | "shareResolve">;
+export type Directory = Pick<AccountDO, "checkSessions" | "isSpaceClosed" | "recordUsage" | "retireChunks" | "retirePacks" | "serverKey" | "shareResolve">;
 
 export function spaceLogic<B extends abstract new (...args: any[]) => object>(Base: B) {
   abstract class Space extends Base {
@@ -238,6 +243,7 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
     sleep: (ms: number) => Promise<void> = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
     snapshotPageNodes = 1000;
     protected readonly traffic = new UsageTally(() => this.clock(), "do_space_active_ms");
+    protected readonly compacting = new Set<string>();
     private usageArmed = false;
     private storedHour: number | undefined;
     private exporting: Promise<void> | undefined;
@@ -1161,7 +1167,7 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
           if (await verifyChunkGrant(this.spaceKey, "receipt", object, receipt.size, receipt.token, nowMs)) valid = true;
           if (first) continue;
           const v2 = await verifyPackedReceipt(this.spaceKey, object, receipt.size, receipt.token, nowMs);
-          if (v2 && uuidv7Ms(v2.at.packId) > nowMs - PACK_RECEIPT_AGE_MS && this.packTakesLocations(v2.at)) first = v2;
+          if (v2 && this.packTakesLocations(v2.at, nowMs)) first = v2;
         }
         if (valid) receipted.push(object);
         else if (first?.expired) expired.push({ object, size: chunk.size, at: first.at });
@@ -1181,20 +1187,22 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
         located.push(...rows.filter(({ at }) => at.packSize === head?.size));
       }
       this.recordConfirmed(checked, nowMs);
-      this.recordLocations(located, nowMs);
+      this.recordLocations(located);
       return receipted;
     }
 
-    private packTakesLocations(at: PackLocation): boolean {
+    private packTakesLocations(at: PackLocation, nowMs: number): boolean {
+      if (uuidv7Ms(at.packId) <= nowMs - PACK_RECEIPT_AGE_MS) return false;
       const pack = this.sql.exec("SELECT state, size FROM packs WHERE pack_id = ?", at.packId).toArray()[0];
       return !pack || (pack.state === PackState.LIVE && pack.size === at.packSize);
     }
 
-    private recordLocations(located: readonly Located[], nowMs: number): void {
+    private recordLocations(located: readonly Located[]): void {
       if (located.length === 0) return;
+      const nowMs = this.clock();
       this.db.transactionSync(() => {
         for (const { object, size, at } of located) {
-          if (!this.packTakesLocations(at)) continue;
+          if (!this.packTakesLocations(at, nowMs)) continue;
           const moved = this.sql.exec(
             `UPDATE chunks SET pack_id = ?, pack_offset = ?, hold_until_ms = MAX(hold_until_ms, ?)
              WHERE hash = ? AND state = ? AND incarnation = ? AND pack_id IS NULL AND head_checked = 0`,
@@ -1486,19 +1494,41 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
       if (purge.record) await this.broadcast(purge.record);
 
       const marked = this.db.transactionSync(() => {
-        const hashes = this.sql
+        const due = this.sql
           .exec(
-            `SELECT hash FROM chunks WHERE refcount = 0 AND hold_until_ms < ? AND pack_id IS NULL
+            `SELECT hash, size, pack_id FROM chunks WHERE refcount = 0 AND hold_until_ms < ?
                AND (state = 1 OR (state = 2 AND zero_since_ms < ?)) LIMIT ?`,
             nowMs,
             nowMs - settings.chunk_grace_days * DAY_MS,
             GC_BATCH,
           )
           .toArray();
-        for (const { hash } of hashes) this.sql.exec("UPDATE chunks SET state = 3 WHERE hash = ?", hash);
-        return hashes.length;
+        for (const { hash, size, pack_id } of due) {
+          if (pack_id === null) {
+            this.sql.exec("UPDATE chunks SET state = 3 WHERE hash = ?", hash);
+            continue;
+          }
+          this.sql.exec("DELETE FROM chunks WHERE hash = ?", hash);
+          this.sql.exec("UPDATE packs SET live_count = live_count - 1, live_bytes = live_bytes - ? WHERE pack_id = ?", size, pack_id);
+        }
+        const freed = this.sql.exec(
+          `UPDATE packs SET state = ? WHERE pack_id IN
+             (SELECT pack_id FROM packs WHERE state IN (?, ?) AND live_count = 0 AND hold_until_ms < ? AND pack_id < ? LIMIT ?) RETURNING pack_id`,
+          PackState.DELETING,
+          PackState.LIVE,
+          PackState.DRAINED,
+          nowMs,
+          uuidv7Prefix(nowMs - PACK_FREE_AGE_MS),
+          GC_BATCH,
+        ).toArray().length;
+        for (const { pack_id } of this.sql.exec("SELECT pack_id FROM packs WHERE state = ? AND live_count = 0", PackState.WRITING).toArray()) {
+          if (!this.compacting.has(String(pack_id))) this.sql.exec("UPDATE packs SET state = ? WHERE pack_id = ?", PackState.DELETING, pack_id);
+        }
+        return Math.max(due.length, freed);
       });
 
+      const graceStart = nowMs - settings.chunk_grace_days * DAY_MS;
+      const rewound = Number(getMeta(this.sql, "rewind_completed_ms") ?? 0) > graceStart;
       let sweptChunks = 0;
       let sweeping = false;
       if (nowMs >= Number(getMeta(this.sql, "orphan_sweep_due_ms") ?? 0)) {
@@ -1507,14 +1537,12 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
           cursor: String(getMeta(this.sql, "orphan_sweep_cursor") ?? "") || undefined,
           limit: GC_BATCH,
         });
-        const graceStart = nowMs - settings.chunk_grace_days * DAY_MS;
-        const rewound = Number(getMeta(this.sql, "rewind_completed_ms") ?? 0) > graceStart;
         this.db.transactionSync(() => {
           for (const object of listed.objects) {
             const parsed = parseChunkKey(spaceId, object.key);
             if (!parsed || rewound || object.uploaded.getTime() > graceStart) continue;
             const hash = fromHex(parsed.hashHex)!;
-            if (this.sql.exec("SELECT 1 FROM chunks WHERE hash = ? AND incarnation = ?", hash, parsed.incarnation).toArray().length > 0) continue;
+            if (this.sql.exec("SELECT 1 FROM chunks WHERE hash = ? AND incarnation = ? AND pack_id IS NULL", hash, parsed.incarnation).toArray().length > 0) continue;
             this.sql.exec("INSERT INTO orphans (key, hash, incarnation) VALUES (?, ?, ?) ON CONFLICT DO NOTHING", object.key, hash, parsed.incarnation);
             sweptChunks++;
           }
@@ -1524,8 +1552,28 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
         sweeping = listed.truncated;
       }
 
+      let sweptPacks = 0;
+      if (nowMs >= Number(getMeta(this.sql, "pack_sweep_due_ms") ?? 0)) {
+        const prefix = `spaces/${spaceId}/packs/`;
+        const listed = await this.objects.list({ prefix, cursor: String(getMeta(this.sql, "pack_sweep_cursor") ?? "") || undefined, limit: GC_BATCH });
+        this.db.transactionSync(() => {
+          for (const object of listed.objects) {
+            const packId = object.key.slice(prefix.length);
+            if (!isUuidV7(packId) || rewound || object.uploaded.getTime() > graceStart) continue;
+            if (this.sql.exec("SELECT 1 FROM packs WHERE pack_id = ?", packId).toArray().length > 0) continue;
+            this.sql.exec("INSERT INTO packs (pack_id, size, state, live_count, live_bytes, hold_until_ms) VALUES (?, ?, ?, 0, 0, 0)", packId, object.size, PackState.DELETING);
+            sweptPacks++;
+          }
+          setMeta(this.sql, "pack_sweep_cursor", listed.truncated ? listed.cursor : "");
+          if (!listed.truncated) setMeta(this.sql, "pack_sweep_due_ms", nowMs + ORPHAN_SWEEP_MS);
+        });
+        sweeping ||= listed.truncated;
+      }
+
       let deletedChunks = 0;
-      for (;;) {
+      let deletedPacks = 0;
+      let deferred = false;
+      for (let round = 0; ; round++) {
         const rows = this.sql
           .exec("SELECT hash, incarnation FROM chunks WHERE state = 3 LIMIT ?", R2_DELETE_BATCH)
           .toArray()
@@ -1534,7 +1582,15 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
           .exec("SELECT key, hash, incarnation FROM orphans LIMIT ?", R2_DELETE_BATCH - rows.length)
           .toArray()
           .map((row) => ({ key: String(row.key), hash: new Uint8Array(row.hash as ArrayBuffer), incarnation: String(row.incarnation) }));
-        if (rows.length + orphans.length === 0) break;
+        const packs = this.sql
+          .exec("SELECT pack_id FROM packs WHERE state = ? AND live_count = 0 LIMIT ?", PackState.DELETING, R2_DELETE_BATCH - rows.length - orphans.length)
+          .toArray()
+          .map((row) => String(row.pack_id));
+        if (rows.length + orphans.length + packs.length === 0) break;
+        if (round === R2_DELETE_ROUNDS) {
+          deferred = true;
+          break;
+        }
         const objects = [
           ...rows.flatMap(({ hash, incarnation }) => (incarnation === null ? [] : [{ hashHex: toHex(hash), incarnation }])),
           ...orphans.map(({ hash, incarnation }) => ({ hashHex: toHex(hash), incarnation })),
@@ -1542,13 +1598,20 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
         if (objects.length > 0) {
           const retired = await this.account().retireChunks(spaceId, objects);
           if (!retired.ok) throw new Error(`chunk retirement refused: ${retired.message}`);
-          await this.objects.delete(objects.map((object) => chunkKey(spaceId, object.hashHex, object.incarnation)));
         }
+        if (packs.length > 0) {
+          const retired = await this.account().retirePacks(spaceId, packs);
+          if (!retired.ok) throw new Error(`pack retirement refused: ${retired.message}`);
+        }
+        const keys = [...objects.map((object) => chunkKey(spaceId, object.hashHex, object.incarnation)), ...packs.map((packId) => packKey(spaceId, packId))];
+        if (keys.length > 0) await this.objects.delete(keys);
         this.db.transactionSync(() => {
           for (const { hash } of rows) this.sql.exec("DELETE FROM chunks WHERE hash = ? AND state = 3", hash);
           for (const { key } of orphans) this.sql.exec("DELETE FROM orphans WHERE key = ?", key);
+          for (const packId of packs) this.sql.exec("DELETE FROM packs WHERE pack_id = ? AND state = ?", packId, PackState.DELETING);
         });
         deletedChunks += rows.length + orphans.length;
+        deletedPacks += packs.length;
       }
       const { expiredVersions, purgedNodes, full } = purge;
       return {
@@ -1556,7 +1619,9 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
         purgedNodes,
         deletedChunks,
         sweptChunks,
-        more: expiredVersions === GC_BATCH || purgedNodes === GC_BATCH || full || marked === GC_BATCH || sweeping,
+        deletedPacks,
+        sweptPacks,
+        more: expiredVersions === GC_BATCH || purgedNodes === GC_BATCH || full || marked === GC_BATCH || sweeping || deferred,
       };
     }
 
@@ -1603,6 +1668,8 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
       if (this.sql.exec("SELECT 1 FROM rewind_markers WHERE rewind_id = ? AND attempt = ?", args.rewindId, args.attempt).toArray().length > 0) {
         return { state: "marker" };
       }
+      if (!Array.isArray(args.retiredPacks)) throw new Error("the rewind completion lists no retired packs, so the Account DO runs older code; retry once it is updated");
+      const retiredPacks = JSON.stringify(args.retiredPacks);
       const receipt = this.db.transactionSync((): RewindReceipt => {
         const stored = getMeta(this.sql, "rewind_receipt");
         const previous = stored === undefined ? undefined : (JSON.parse(String(stored)) as RewindReceipt);
@@ -1626,6 +1693,27 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
         }
         this.sql.exec("UPDATE chunks SET state = ?, incarnation = NULL, head_checked = 0 WHERE state = ? AND pack_id IS NULL", ChunkState.PENDING, ChunkState.DELETING);
         const holdUntil = args.completedAtMs + this.settings().chunk_grace_days * DAY_MS;
+        this.sql.exec(
+          "UPDATE chunks SET state = ?, incarnation = NULL, head_checked = 0, pack_id = NULL, pack_offset = NULL WHERE pack_id IN (SELECT value FROM json_each(?))",
+          ChunkState.PENDING,
+          retiredPacks,
+        );
+        this.sql.exec("UPDATE packs SET state = ?, live_count = 0, live_bytes = 0 WHERE pack_id IN (SELECT value FROM json_each(?))", PackState.DELETING, retiredPacks);
+        this.sql.exec(
+          `UPDATE packs SET state = ?,
+             live_count = (SELECT COUNT(*) FROM chunks WHERE chunks.pack_id = packs.pack_id AND chunks.state IN (?, ?)),
+             live_bytes = (SELECT COALESCE(SUM(size), 0) FROM chunks WHERE chunks.pack_id = packs.pack_id AND chunks.state IN (?, ?))
+           WHERE state IN (?, ?) AND pack_id NOT IN (SELECT value FROM json_each(?))`,
+          PackState.LIVE,
+          ChunkState.PENDING,
+          ChunkState.LIVE,
+          ChunkState.PENDING,
+          ChunkState.LIVE,
+          PackState.WRITING,
+          PackState.DELETING,
+          retiredPacks,
+        );
+        this.sql.exec("UPDATE packs SET hold_until_ms = MAX(hold_until_ms, ?) WHERE pack_id NOT IN (SELECT value FROM json_each(?))", holdUntil, retiredPacks);
         this.sql.exec("UPDATE chunks SET state = ?, hold_until_ms = ? WHERE refcount = 0", ChunkState.PENDING, holdUntil);
         this.sql.exec("DELETE FROM rewind_markers");
         this.sql.exec("DELETE FROM commit_bookmarks");

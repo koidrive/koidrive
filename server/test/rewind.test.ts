@@ -674,6 +674,7 @@ describe("space rewind (RFC 0003)", () => {
       completedAtMs: completedAtMs + DAY,
       revokedDevices: [],
       retired: [],
+      retiredPacks: [],
     });
     expect(replay).toMatchObject({ state: "completed", receipt: { rewindId, historyId: record.history_id, restoreSeq: 3, completedAtMs } });
     expect(await device().history()).toBe(record.history_id);

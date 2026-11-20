@@ -580,6 +580,16 @@ export function accountLogic<B extends abstract new (...args: any[]) => object>(
       return ok(null);
     }
 
+    async retirePacks(spaceId: string, packIds: string[]): Promise<Outcome<null>> {
+      const nowMs = Date.now();
+      if (this.spaceClosed(spaceId)) return failure(Error_Code.RETRY_LATER, "the space is being rewound");
+      this.sql.exec("DELETE FROM pack_retirements WHERE space_id = ? AND retired_at_ms < ?", spaceId, nowMs - RETIREMENT_KEEP_MS);
+      for (const packId of packIds) {
+        this.sql.exec("INSERT INTO pack_retirements (space_id, pack_id, retired_at_ms) VALUES (?, ?, ?) ON CONFLICT DO NOTHING", spaceId, packId, nowMs);
+      }
+      return ok(null);
+    }
+
     async checkSessions(deviceIds: string[], spaceId: string): Promise<Record<string, SessionCheck>> {
       return Object.fromEntries(await Promise.all(deviceIds.map(async (deviceId) => [deviceId, await this.checkSession(deviceId, spaceId)])));
     }
@@ -902,6 +912,10 @@ export function accountLogic<B extends abstract new (...args: any[]) => object>(
                 .exec("SELECT hash_hex, incarnation FROM chunk_retirements WHERE space_id = ?", row.space_id)
                 .toArray()
                 .map((r) => ({ hashHex: String(r.hash_hex), incarnation: String(r.incarnation) })),
+              retiredPacks: this.sql
+                .exec("SELECT pack_id FROM pack_retirements WHERE space_id = ?", row.space_id)
+                .toArray()
+                .map((r) => String(r.pack_id)),
             });
             if (completion.state === "marker") {
               this.sql.exec("UPDATE rewinds SET phase = 'admitted', attempt = attempt + 1 WHERE rewind_id = ?", rewindId);

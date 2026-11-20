@@ -16,6 +16,11 @@ export function uuidv7(nowMs: number = Date.now()): string {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
+export function uuidv7Prefix(ms: number): string {
+  const hex = ms.toString(16).padStart(12, "0");
+  return `${hex.slice(0, 8)}-${hex.slice(8)}`;
+}
+
 export function uuidv7Ms(id: string): number {
   return parseInt(id.slice(0, 8) + id.slice(9, 13), 16);
 }

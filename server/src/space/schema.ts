@@ -139,6 +139,7 @@ export const MIGRATIONS: readonly Migration[] = [
       live_count INTEGER NOT NULL, live_bytes INTEGER NOT NULL, hold_until_ms INTEGER NOT NULL)`);
     sql.exec("CREATE INDEX IF NOT EXISTS packs_sparse ON packs(live_bytes) WHERE state = 2 AND size > (live_bytes + live_count * 36 + 16) * 2");
   },
+  (sql) => sql.exec("CREATE INDEX IF NOT EXISTS packs_empty ON packs(state, hold_until_ms) WHERE live_count = 0"),
 ];
 
 export const LEGACY_INTENTS_DUE = "legacy_intents_due";
@@ -150,4 +151,4 @@ export function migrate(sql: Sql): void {
 export const NodeKindValue = { DIR: 1, FILE: 2 } as const;
 export const NodeStatusValue = { LIVE: 1, TRASHED: 2 } as const;
 export const ChunkState = { PENDING: 1, LIVE: 2, DELETING: 3 } as const;
-export const PackState = { LIVE: 2 } as const;
+export const PackState = { WRITING: 1, LIVE: 2, DRAINED: 3, DELETING: 4 } as const;
