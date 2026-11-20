@@ -1852,9 +1852,14 @@ fn a_file_removed_while_a_folder_stays_unreadable_is_removed() {
     fs::create_dir(root.join("box")).unwrap();
     fs::write(root.join("report.docx"), b"report").unwrap();
     fs::set_permissions(root.join("box"), fs::Permissions::from_mode(0o000)).unwrap();
+    let blocked = blocks_reads(
+        "a_file_removed_while_a_folder_stays_unreadable_is_removed",
+        fs::read_dir(root.join("box")),
+    );
     let mut scanned = Snapshot::scan(&root).unwrap();
     let deadline = Instant::now() + Duration::from_secs(5);
-    while Instant::now() < deadline
+    while blocked
+        && Instant::now() < deadline
         && !(scanned.unread.as_ref())
             .and_then(|unread| unread.get(Path::new("box")))
             .is_some_and(|unread| unread.ctime_ns.is_some())
@@ -1863,10 +1868,6 @@ fn a_file_removed_while_a_folder_stays_unreadable_is_removed() {
         scanned.rescan(&root, [PathBuf::new()]).unwrap();
     }
     fs::remove_file(root.join("report.docx")).unwrap();
-    let blocked = blocks_reads(
-        "a_file_removed_while_a_folder_stays_unreadable_is_removed",
-        fs::read_dir(root.join("box")),
-    );
     let rescans = blocked.then(|| {
         [scanned.clone(), restarted(&scanned)]
             .map(|mut snapshot| snapshot.rescan(&root, [PathBuf::new()]))
@@ -2094,6 +2095,7 @@ fn a_file_waiting_on_an_unreadable_folder_keeps_its_place_when_a_narrow_scan_can
         "renamed",
         "renamed and replaced by a file",
         "parent made unreadable",
+        "parent made unreadable once the file waits",
         "moved out of the tree",
     ]
     .into_iter()
@@ -2106,7 +2108,7 @@ fn waiting_folder_out_of_reach(case: &str) -> Option<String> {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().join("root");
     let folder = match case {
-        "parent made unreadable" => PathBuf::from("p/box"),
+        case if case.starts_with("parent") => PathBuf::from("p/box"),
         _ => PathBuf::from("box"),
     };
     fs::create_dir_all(root.join(&folder)).unwrap();
@@ -2131,15 +2133,19 @@ fn waiting_folder_out_of_reach(case: &str) -> Option<String> {
     .unwrap();
     mode(&root.join(&folder), 0o000);
     std::thread::sleep(Duration::from_millis(50));
-    let held = match case {
+    let mut held = match case {
         "parent made unreadable" => Vec::new(),
         _ => snapshot.rescan(&root, [PathBuf::new()]).unwrap().changes,
     };
     mode(&root.join(&folder), 0o755);
     let place = match case {
-        "parent made unreadable" => {
+        case if case.starts_with("parent") => {
             mode(&root.join(&folder), 0o000);
             mode(&root.join("p"), 0o000);
+            if case.ends_with("waits") {
+                std::thread::sleep(Duration::from_millis(50));
+                held.extend(snapshot.rescan(&root, [PathBuf::new()]).unwrap().changes);
+            }
             Some(folder.join("report.docx"))
         }
         "moved out of the tree" => {

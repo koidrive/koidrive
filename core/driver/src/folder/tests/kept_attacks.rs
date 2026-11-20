@@ -1798,6 +1798,10 @@ fn a_kept_env_moved_into_a_folder_the_scan_may_not_read_stays_off_the_server() {
     fs::create_dir(site.root.join("vault")).unwrap();
     fs::rename(site.root.join("app/.env"), site.root.join("vault/.env")).unwrap();
     fs::set_permissions(site.root.join("vault"), fs::Permissions::from_mode(0o000)).unwrap();
+    if fs::read_dir(site.root.join("vault")).is_ok() {
+        fs::set_permissions(site.root.join("vault"), fs::Permissions::from_mode(0o755)).unwrap();
+        return;
+    }
     for _ in 0..5 {
         b.scan(Duration::from_millis(100));
         b.pull(&remote);
