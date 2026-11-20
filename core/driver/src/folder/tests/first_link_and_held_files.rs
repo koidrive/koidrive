@@ -175,10 +175,6 @@ fn discarded_held_folder_with(unknown: &str) -> (Remote, Site, Device, PathBuf) 
     fs::create_dir(site.root.join("held")).unwrap();
     fs::write(site.root.join("held/a.txt"), b"listed").unwrap();
     let entry = site.root.join("held").join(unknown);
-    match unknown {
-        "link" => std::os::unix::fs::symlink("/etc/hosts", &entry).unwrap(),
-        _ => fs::write(&entry, b"left out").unwrap(),
-    }
     let sync = SyncRules {
         include: Vec::new(),
         exclude: vec!["*.log".into()],
@@ -190,6 +186,10 @@ fn discarded_held_folder_with(unknown: &str) -> (Remote, Site, Device, PathBuf) 
     b.run(&mut remote);
     b.settle();
     b.run(&mut remote);
+    match unknown {
+        "link" => std::os::unix::fs::symlink("/etc/hosts", &entry).unwrap(),
+        _ => fs::write(&entry, b"unobserved").unwrap(),
+    }
     answer(&site, Answer::Discard);
     let step = b.folder.requested();
     b.take(step).unwrap();
@@ -205,12 +205,8 @@ fn discarded_held_folder_with(unknown: &str) -> (Remote, Site, Device, PathBuf) 
     (remote, site, b, entry)
 }
 
-/// Discard on a first link whose held folder also holds an entry L does not know: a file the device's rules exclude,
-/// or a symlink. Discard moves the listed file to the local trash and keeps the folder with that entry. The folder's
-/// removal is not planned again on a timer, and the status names the entry.
 #[test]
-fn discarding_a_held_folder_that_holds_an_entry_l_does_not_know_keeps_the_folder_and_names_the_entry()
- {
+fn discarding_a_folder_with_an_unobserved_excluded_entry_keeps_it_without_a_problem() {
     for unknown in ["build.log", "link"] {
         let (_, site, b, entry) = discarded_held_folder_with(unknown);
         assert!(
@@ -226,18 +222,18 @@ fn discarding_a_held_folder_that_holds_an_entry_l_does_not_know_keeps_the_folder
             (FolderState::UpToDate, 0),
             "{unknown}"
         );
-        let problem = view.problem.unwrap_or_default();
-        assert!(
-            problem.contains(&format!("\"held\" (the server's change could not be made here: the folder holds entries this device does not sync: {unknown:?})")),
-            "{problem}"
-        );
+        assert_eq!(view.problem, None, "{unknown}");
+        assert!(b.folder.stuck_effects.is_empty() && b.folder.effect_failures.is_empty());
     }
 }
 
 #[test]
 fn a_stuck_folder_the_person_deletes_drops_its_failure_entries() {
-    let (mut remote, site, mut b, _) = discarded_held_folder_with("build.log");
+    let (mut remote, site, mut b, entry) = discarded_held_folder_with("unseen.txt");
     assert!(!b.folder.stuck_effects.is_empty() && !b.folder.effect_failures.is_empty());
+    assert_eq!(fs::read(entry).unwrap(), b"unobserved");
+    let problem = b.folder.view().problem.unwrap();
+    assert!(problem.contains("unseen.txt"), "{problem}");
     fs::remove_dir_all(site.root.join("held")).unwrap();
     b.settle();
     b.run(&mut remote);
