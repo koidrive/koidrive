@@ -2835,6 +2835,7 @@ impl Trees {
         self.s_children(id).chain(removals).all(|child| {
             self.l.get(child).is_some()
                 || deleting.contains(child)
+                || self.unobserved.contains(child)
                 || self
                     .removed_from
                     .get(child)
