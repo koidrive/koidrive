@@ -1044,7 +1044,15 @@ impl Device {
 
     fn left_out_root_holds(&self, name: &str) -> bool {
         let key = name_key(name);
-        self.left_out_folders.iter().any(|held| name_key(held) == key)
+        self.left_out_folders
+            .iter()
+            .any(|held| name_key(held) == key)
+            || self.ignored.iter().any(|((parent, path), entry)| {
+                *parent == self.trees.local().root
+                    && entry.kind == Kind::Dir
+                    && entry.original.is_none()
+                    && matches!(path.as_slice(), [held] if name_key(held) == key)
+            })
     }
 
     fn disk_name_taken(&self, holder: &NodeId, below: &[String], name: &str) -> bool {
