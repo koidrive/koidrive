@@ -2971,6 +2971,8 @@ fn a_purged_folder_kept_for_an_excluded_file_sends_nothing_after_rename_or_resta
         .unwrap();
 
     let mut restarted = Trees::new(ROOT);
+    restarted.set_local("d".into(), trees.local().get(&"d".into()).unwrap().clone());
+    restarted.set_rules(&AT_ROOT, Source::Koiignore, rules("*.txt\n"));
     restarted.restore(trees.state()).unwrap();
     place(&mut trees, "d", ROOT, "e");
     for (mut current, name) in [(trees, "e"), (restarted, "d")] {
