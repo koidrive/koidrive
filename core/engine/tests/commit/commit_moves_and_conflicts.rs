@@ -1859,6 +1859,38 @@ fn a_sent_conflict_rename_keeps_its_record_until_the_answer_even_if_r_or_l_chang
 }
 
 #[test]
+fn an_edit_of_a_parked_file_does_not_end_the_refusal_until_it_lands() {
+    let id = NodeId::from("n");
+    let mut trees = trees(&[("n", None, None, Some(remote(file(ROOT, "ss", 1))))]);
+    trees.set_rules::<&str>(
+        &[],
+        koidrive_engine::ignore::Source::Koiignore,
+        Some(RuleFile::parse(b"ss/\n")),
+    );
+    trees.rules_scanned();
+    let mut entry = local(file(ROOT, "ss", 1), 1);
+    entry.parked = true;
+    trees.set_local(id.clone(), entry);
+    trees.settle(&Default::default());
+    let mut effects = Effects::default();
+    let mut ids = IdGen::new(1);
+    let refused = effects.plan(&trees, None, &mut ids, NOW, BatchLimit::ONE)[0]
+        .effect_id
+        .clone();
+    effects
+        .taken(&mut trees, &refused, Some(Kind::Dir))
+        .unwrap();
+    assert!(trees.name_left_out(&id));
+    let mut edited = local(file(ROOT, "ss", 2), 1);
+    edited.parked = true;
+    trees.set_local_changed(id.clone(), edited.clone());
+    assert!(trees.name_left_out(&id));
+    edited.parked = false;
+    trees.set_local(id.clone(), edited);
+    assert!(!trees.name_left_out(&id));
+}
+
+#[test]
 fn a_parked_file_waiting_for_its_synced_place_can_rename_over_a_recorded_refusal() {
     for left_out in [false, true] {
         let file_at_a = file(ROOT, "a", 1);

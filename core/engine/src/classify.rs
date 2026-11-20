@@ -2156,9 +2156,9 @@ impl Trees {
         self.lost.remove(&id);
         self.removed_from.remove(&id);
         self.found.remove(&id);
-        if (self.r.live(&id)).is_some_and(|remote| node.shape.same_position(remote))
-            && !self.left_out_rename_sent(&id)
-        {
+        let home = !node.parked
+            && (self.r.live(&id)).is_some_and(|remote| node.shape.same_position(remote));
+        if home && !self.left_out_rename_sent(&id) {
             self.names_left_out.remove(&id);
         }
         if self.outside.remove(&id) {
@@ -2172,8 +2172,6 @@ impl Trees {
             finish.disk_first |=
                 node.shape.parent == finish.parent && nfc(&node.shape.name) == nfc(&finish.name);
         }
-        let home = !node.parked
-            && (self.r.live(&id)).is_some_and(|remote| node.shape.same_position(remote));
         if home
             && (self.discarded.get(&id)).is_some_and(|shape| self.r.get(&shape.parent).is_none())
         {
