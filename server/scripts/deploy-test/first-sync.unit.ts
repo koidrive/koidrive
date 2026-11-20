@@ -30,6 +30,7 @@ import {
   type Status,
   shapeOf,
   summary,
+  TEARDOWN_MINUTES,
 } from "./first-sync-model.ts";
 
 const ENTRIES = 1000;
@@ -496,6 +497,11 @@ describe("deploy-test workflow", () => {
     expect(timeout("Free disk space")).toBe(SETUP_MINUTES.disk);
     expect(timeout("Generate the tree")).toBe(SETUP_MINUTES.tree);
     expect(timeout("Download the sealed pairing codes")).toBe(SETUP_MINUTES.pairing);
+  });
+
+  it("gives the teardown step the minutes the hold and telemetry steps leave it", () => {
+    const teardown = steps("deploy-test").find((step) => step.startsWith("name: Tear down the Worker, its Durable Objects and the R2 bucket\n"));
+    expect(Number(/timeout-minutes: (\d+)\n/.exec(teardown!)?.[1])).toBe(TEARDOWN_MINUTES);
   });
 
   it("records each first-sync job's start in its first step and uploads the sync job's start with its key", () => {

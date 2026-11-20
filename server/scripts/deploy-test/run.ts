@@ -22,6 +22,7 @@ import {
   getWorker,
   graphql,
   listObjects,
+  listObjectsUntil,
   type Namespace,
   namespacesOf,
   requireAccount,
@@ -44,6 +45,7 @@ const CODE_LIFETIME_MS = 60 * 60_000;
 const DEPLOY_ATTEMPTS = 3;
 const DEPLOY_RETRY_MS = 10_000;
 const PROPAGATION_MS = 15_000;
+const COUNT_MS = 2 * 60_000;
 /** The first commit whose server/ deploys on its own (#38); an upgrade cannot start earlier. */
 const FIRST_DEPLOYABLE = "8c9bf4a";
 const CLAIM_CODE = /Koidrive claim code[^:]*: ([A-Z0-9-]+)/;
@@ -345,6 +347,7 @@ async function claim(account: Account): Promise<void> {
 }
 
 interface Storage {
+  counted: boolean;
   objects: number;
   bytes: number;
   chunkObjects: number;
@@ -354,10 +357,10 @@ interface Storage {
 }
 
 async function emptyAndDeleteBucket(account: Account, name: string): Promise<Storage | undefined> {
-  const first = await listObjects(account, name);
+  const first = await listObjectsUntil(account, name, Date.now() + COUNT_MS);
   if (!first) return undefined;
-  const storage: Storage = { objects: 0, bytes: 0, chunkObjects: 0, chunkBytes: 0, exportObjects: 0, exportBytes: 0 };
-  for (const object of first) {
+  const storage: Storage = { counted: first.complete, objects: 0, bytes: 0, chunkObjects: 0, chunkBytes: 0, exportObjects: 0, exportBytes: 0 };
+  for (const object of first.objects) {
     storage.objects++;
     storage.bytes += object.size;
     if (/^spaces\/[^/]+\/chunks\//.test(object.key)) {
@@ -368,8 +371,8 @@ async function emptyAndDeleteBucket(account: Account, name: string): Promise<Sto
       storage.exportBytes += object.size;
     }
   }
-  let objects = first;
-  if (first.length > 1000) {
+  let objects = first.objects;
+  if (!first.complete || objects.length > 1000) {
     await emptyBucket(account, name);
     objects = (await listObjects(account, name)) ?? [];
   }
@@ -384,6 +387,10 @@ async function emptyAndDeleteBucket(account: Account, name: string): Promise<Sto
       objects = (await listObjects(account, name)) ?? [];
     }
   }
+}
+
+function objectCount(storage: Storage): string {
+  return storage.counted ? String(storage.objects) : "at least " + storage.objects + " (counted for " + COUNT_MS / 60_000 + " minutes)";
 }
 
 function bytes(n: number): string {
@@ -487,7 +494,7 @@ async function teardown(account: Account): Promise<void> {
   const bucket = await attempt("reading the R2 bucket", () => getBucket(account, name));
   if (bucket && bucket.creationDate === state.owned.bucketCreationDate) {
     storage = await attempt("emptying and deleting the R2 bucket", () => emptyAndDeleteBucket(account, name));
-    if (storage) console.log("Deleted the R2 bucket " + name + " and its " + storage.objects + " objects");
+    if (storage) console.log("Deleted the R2 bucket " + name + " and its " + objectCount(storage) + " objects");
   } else if (bucket) {
     problems.push("an R2 bucket named " + name + " (created " + bucket.creationDate + ") exists, but this run did not record creating it, so it was left alone");
   } else if (state.owned.bucketCreationDate) {
@@ -500,7 +507,7 @@ async function teardown(account: Account): Promise<void> {
     ["Worker and bucket", name],
     ["Deployed", deployments.map((deployment) => deployment.ref + " (" + deployment.sha.slice(0, 12) + ", version " + deployment.versionId + ")").join(", then ") || "nothing"],
     ["Test client requests", state.stats.requests + " HTTPS and WebSocket requests, " + bytes(state.stats.bytesUp) + " sent, " + bytes(state.stats.bytesDown) + " received"],
-    ["R2 storage at teardown", storage ? storage.objects + " objects, " + bytes(storage.bytes) : "no bucket deleted"],
+    ["R2 storage at teardown", storage ? objectCount(storage) + " objects, " + bytes(storage.bytes) : "no bucket deleted"],
     ["  chunks", storage ? storage.chunkObjects + " objects, " + bytes(storage.chunkBytes) : "-"],
     ["  metadata export", storage ? storage.exportObjects + " objects, " + bytes(storage.exportBytes) : "-"],
     ["Durable Object namespaces", namespaces.map((namespace) => namespace.class).join(", ") || "none deleted"],

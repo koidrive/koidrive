@@ -177,16 +177,21 @@ export async function workerTag(account: Account, name: string, tag: string): Pr
 }
 
 export async function listObjects(account: Account, bucket: string, prefix = ""): Promise<R2Object[] | undefined> {
+  return (await listObjectsUntil(account, bucket, Infinity, prefix))?.objects;
+}
+
+export async function listObjectsUntil(account: Account, bucket: string, stopAtMs: number, prefix = ""): Promise<{ objects: R2Object[]; complete: boolean } | undefined> {
   const objects: R2Object[] = [];
   let cursor = "";
   for (;;) {
+    if (Date.now() >= stopAtMs) return { objects, complete: false };
     const query = new URLSearchParams({ per_page: "1000", ...(prefix ? { prefix } : {}), ...(cursor ? { cursor } : {}) });
     const response = await send(account, "GET", `/accounts/${account.id}/r2/buckets/${bucket}/objects?${query}`, { allowMissing: true });
     if (!response) return undefined;
     const page = (await response.json()) as Envelope<{ key: string; size: number }[]>;
     for (const object of page.result ?? []) objects.push({ key: object.key, size: Number(object.size) });
     cursor = page.result_info?.cursor ?? "";
-    if (!page.result_info?.is_truncated || !cursor) return objects;
+    if (!page.result_info?.is_truncated || !cursor) return { objects, complete: true };
   }
 }
 
@@ -207,7 +212,7 @@ function bucketJob(value: unknown): { id: string; status: "ENQUEUED" | "RUNNING"
 
 export async function emptyBucket(account: Account, bucket: string): Promise<void> {
   const path = `/accounts/${account.id}/r2/buckets/${bucket}/jobs`;
-  const deadline = { atMs: Date.now() + 6 * 60_000, what: "bucket-emptying job exceeded its six-minute deadline" };
+  const deadline = { atMs: Date.now() + 8 * 60_000, what: "bucket-emptying job exceeded its eight-minute deadline" };
   const created = await send(account, "POST", path, { body: { jobType: "prefixDelete", prefix: "" }, deadline, retry: false });
   let job = bucketJob(await json(created!, deadline));
   const id = job.id;

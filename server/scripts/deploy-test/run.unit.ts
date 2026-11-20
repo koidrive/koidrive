@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { emptyBucket, LISTING_MS, newestDeployment, serves, workerTag } from "./cloudflare.ts";
+import { emptyBucket, LISTING_MS, listObjectsUntil, newestDeployment, serves, workerTag } from "./cloudflare.ts";
 import { MockCloudflare } from "./mock-cloudflare.ts";
 import type { State } from "./state.ts";
 
@@ -199,15 +199,34 @@ describe("teardown", () => {
     expect(mock.deletes()).toEqual([]);
   });
 
-  it("stops polling a running bucket-emptying job at six minutes", async () => {
+  it("stops polling a running bucket-emptying job at eight minutes", async () => {
     vi.useFakeTimers();
     const fetchJob = vi.fn(async () => Response.json({ result: { id: "empty-1", status: "RUNNING" } }));
     vi.stubGlobal("fetch", fetchJob);
     try {
-      const finished = expect(emptyBucket({ id: "dummy-account", token: "dummy-token" }, NAME)).rejects.toThrow("six-minute deadline");
-      await vi.advanceTimersByTimeAsync(6 * 60_000);
+      const finished = expect(emptyBucket({ id: "dummy-account", token: "dummy-token" }, NAME)).rejects.toThrow("eight-minute deadline");
+      await vi.advanceTimersByTimeAsync(8 * 60_000);
       await finished;
-      expect(fetchJob).toHaveBeenCalledTimes(72);
+      expect(fetchJob).toHaveBeenCalledTimes(96);
+    } finally {
+      vi.useRealTimers();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("stops counting a bucket's objects at the count deadline and says the count is incomplete", async () => {
+    vi.useFakeTimers();
+    let pages = 0;
+    const fetchPage = vi.fn(async () => {
+      vi.setSystemTime(Date.now() + 30_000);
+      pages++;
+      return Response.json({ result: Array.from({ length: 1000 }, (_, i) => ({ key: pages + "-" + i, size: 1 })), result_info: { is_truncated: true, cursor: String(pages) } });
+    });
+    vi.stubGlobal("fetch", fetchPage);
+    try {
+      const listed = await listObjectsUntil({ id: "dummy-account", token: "dummy-token" }, NAME, Date.now() + 2 * 60_000);
+      expect({ objects: listed?.objects.length, complete: listed?.complete }).toEqual({ objects: 4000, complete: false });
+      expect(fetchPage).toHaveBeenCalledTimes(4);
     } finally {
       vi.useRealTimers();
       vi.unstubAllGlobals();
