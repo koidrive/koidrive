@@ -1,0 +1,8 @@
+class = "P"
+issue = "GUN-1450"
+tests = ["a_node_another_device_moves_onto_a_folder_the_rules_leave_out_here_settles"]
+message = '''a parked node is neither on its way out nor reported at \S+\.rs:<line>\.'''
+examples = ["a parked node is neither on its way out nor reported at core/sim/tests/engine_sync/common.rs:2890."]
+cases = [
+  "e254728256ba",
+]
