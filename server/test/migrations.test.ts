@@ -250,6 +250,29 @@ describe("upgraded objects keep working", () => {
     expect([...(await desk.tree()).values()].map((node) => node.name).sort()).toEqual(["", "a", "b", "inside"]);
   });
 
+  it("lists the device that deleted a node trashed before the deletion device had its own column", async () => {
+    const spaceId = uuidv7();
+    const stub = SPACE.stub(spaceId) as DurableObjectStub<SpaceDO>;
+    await stub.init({ spaceId, name: "Upgraded", ownerUserId: OWNER, spaceKey: SPACE_KEY });
+    const laptop = await client({ spaceId, stub }, "Laptop");
+    const desk = await client({ spaceId, stub }, "Desk");
+    const folder = uuidv7();
+    await laptop.commit([op.mkdir(folder, spaceId, "Project")]);
+    desk.baseSeq = laptop.baseSeq;
+    const deleted = await desk.commit([op.delete(folder)]);
+    await inObject(stub, (sql) => {
+      sql.exec("ALTER TABLE nodes DROP COLUMN trashed_dev");
+      const beforeTrashedDev = SPACE_MIGRATIONS.findIndex((step) => step.toString().includes("trashed_dev"));
+      sql.exec("UPDATE meta SET value = ? WHERE key = 'schema_version'", beforeTrashedDev);
+    });
+    await evictDurableObject(stub);
+    const page = await laptop.call({ case: "listTrash", value: {} });
+    if (page.case !== "trash") throw new Error("listTrash failed");
+    expect(page.value.trashed.map(({ nodeId, trashedAtMs, deviceId }) => ({ nodeId, trashedAtMs, deviceId }))).toEqual([
+      { nodeId: folder, trashedAtMs: deleted.committedAtMs, deviceId: desk.session.deviceId },
+    ]);
+  });
+
   for (const state of oldStates(ACCOUNT)) {
     it(`claims a deployment whose Account DO storage was at ${state.label}`, async () => {
       const stub = ACCOUNT.stub(`claim-${state.label}`) as DurableObjectStub<AccountDO>;

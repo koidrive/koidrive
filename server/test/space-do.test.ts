@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { fromBinary } from "@bufbuild/protobuf";
+import { create, fromBinary } from "@bufbuild/protobuf";
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
-import { OpResult_Code } from "../src/gen/koidrive/v1/commit_pb";
-import { CommitRecordSchema, NodeStatus } from "../src/gen/koidrive/v1/model_pb";
+import { type Op, OpResult_Code, OpSchema } from "../src/gen/koidrive/v1/commit_pb";
+import { CommitRecordSchema, IntentSchema, NodeStatus } from "../src/gen/koidrive/v1/model_pb";
 import { ChunkPlan_Action, Error_Code } from "../src/gen/koidrive/v1/rpc_pb";
-import { toHex, uuidv7 } from "../src/ids";
+import { fromHex, toHex, uuidv7 } from "../src/ids";
 import type { SpaceDO } from "../src/space-do";
 import { conflictName, nameKey } from "../src/space/names";
 import { chunkKey } from "../src/space/store";
@@ -629,6 +629,29 @@ describe("RFC 0023 deletion time and device in ListTrash", () => {
     await setClock(space, 3_000_000);
     await b.commit([op.delete(file)]);
     expect(await trash(a)).toEqual(new Map([[file, { trashedAtMs: 3_000_000n, deviceId: b.session.deviceId }]]));
+  });
+
+  it("keeps the device that deleted a folder when another device's Delete only adds what it held to the folder's trash", async () => {
+    const space = await setup();
+    const { a, b, root } = space;
+    const intentId = () => fromHex(uuidv7().replaceAll("-", ""))!;
+    const holding = (nodeId: string, c: TestClient): Op =>
+      create(OpSchema, {
+        op: { case: "delete", value: { nodeId, unseen: [], held: [intentId()], trashGroup: "" } },
+        intent: create(IntentSchema, { id: intentId(), authorDeviceId: c.session.deviceId }),
+      });
+    const [dir, sub] = [uuidv7(), uuidv7()];
+    await setClock(space, 500_000);
+    await a.commit([op.mkdir(dir, root, "Project"), op.mkdir(sub, dir, "slides")]);
+    b.baseSeq = a.baseSeq;
+    await setClock(space, 1_000_000);
+    await b.commit([holding(dir, b)]);
+    const byB = { trashedAtMs: 1_000_000n, deviceId: b.session.deviceId };
+    expect(await trash(a)).toEqual(new Map([[dir, byB], [sub, byB]]));
+    await setClock(space, 2_000_000);
+    const merged = await a.commit([holding(sub, a)]);
+    expect(merged.changes.length).toBeGreaterThan(0);
+    expect(await trash(a)).toEqual(new Map([[dir, byB], [sub, byB]]));
   });
 });
 
