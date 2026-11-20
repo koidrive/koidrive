@@ -5914,6 +5914,65 @@ fn a_server_folder_the_user_removed_an_entry_from_before_the_rules_left_it_out_i
 }
 
 #[test]
+fn a_server_folder_the_user_removed_an_entry_from_is_not_taken_along_after_another_device_renames_it_out_of_the_rules()
+ {
+    for restart in [false, true] {
+        let mut trees = trees(
+            &[
+                ("f", dir(ROOT, "new")),
+                ("x", dir(ROOT, "server")),
+                ("e", file("x", "kept", 5)),
+            ],
+            &[("x", dir(ROOT, "server")), ("e", file("x", "kept", 5))],
+        );
+        let (mut commits, mut ids) = (Commits::default(), IdGen::new(7));
+        commits.first_link(&mut trees, &mut ids, NOW, PriorSync::Shown);
+        let asked = question(&commits);
+        trees.remove_local(&"e".into());
+        if restart {
+            trees = restarted(&trees);
+        }
+        let mut renamed = trees.remote().get(&"e".into()).unwrap().clone();
+        renamed.shape.name = "left".into();
+        renamed.meta_rev += 1;
+        renamed.meta_edit_rev += 1;
+        trees.set_remote("e".into(), renamed);
+        trees.set_rules(
+            &[] as &[&str],
+            Source::Koiignore,
+            Some(RuleFile::parse(b"ignored\nleft\n")),
+        );
+        trees.settle(commits.aliases());
+        let mut moved = trees.local().get(&"x".into()).unwrap().clone();
+        moved.shape.parent = "f".into();
+        moved.shape.name = "ignored".into();
+        trees.set_local_changed("x".into(), moved);
+        trees.settle(commits.aliases());
+        assert!(commits.decide(&mut trees, &asked.id, Answer::Discard));
+        assert!(
+            ops(&mut commits, &mut trees, &mut ids).is_empty(),
+            "{restart}"
+        );
+        trees.set_rules(&[] as &[&str], Source::Koiignore, None);
+        let sent = drive_until_quiet(&mut commits, &mut trees, &mut ids);
+        assert_eq!(
+            sent,
+            [("create dir", "f".to_owned()), ("move", "x".to_owned())],
+            "{restart}"
+        );
+        assert_eq!(
+            local(&trees),
+            [
+                ("e".into(), "x".into(), "left".into()),
+                ("f".into(), ROOT.into(), "new".into()),
+                ("x".into(), "f".into(), "ignored".into())
+            ],
+            "{restart}"
+        );
+    }
+}
+
+#[test]
 fn an_entry_moved_into_another_taken_along_folder_and_deleted_at_an_excluded_path_comes_back() {
     let mut trees = trees(
         &[
