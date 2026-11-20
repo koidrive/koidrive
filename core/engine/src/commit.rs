@@ -1271,7 +1271,7 @@ impl Commits {
         left: Vec<NodeId>,
         ids: &mut IdGen,
         now_ms: u64,
-    ) -> Vec<Question> {
+    ) -> (Vec<Question>, BTreeSet<NodeId>) {
         let mut asked: BTreeMap<RecoveryGroup, Question> = BTreeMap::new();
         let mut groups = recovery::regroup(trees, left, &BTreeMap::new(), cause.as_ref());
         groups.remove(&RecoveryGroup::CreatedOnThisDevice);
@@ -1315,6 +1315,7 @@ impl Commits {
         }
         let mut updates = Vec::new();
         let mut released = Vec::new();
+        let mut recovery_deletes = BTreeSet::new();
         for (group, nodes) in groups {
             let Some(question) = recovery::ask(
                 trees,
@@ -1336,7 +1337,12 @@ impl Commits {
                 Answer::Publish | Answer::Keep => trees.approve(question.holds().cloned()),
                 _ => {}
             }
-            updates.extend(recovery::release(trees, &question, answer));
+            updates.extend(recovery::release(
+                trees,
+                &question,
+                answer,
+                &mut recovery_deletes,
+            ));
             if matches!(answer, Answer::Publish | Answer::Keep | Answer::Delete) {
                 released.push(question);
             }
@@ -1361,7 +1367,7 @@ impl Commits {
             trees.wait(id, shape, Origin::Other);
         }
         self.hold(trees);
-        released
+        (released, recovery_deletes)
     }
 
     /// Keeps each answered question of `answered` for the members no acknowledged commit carried
@@ -1587,7 +1593,7 @@ impl Commits {
         }
         let cause = self.questions.iter().find_map(Question::cause).cloned();
         let left = self.ask_again(trees, ids, now_ms);
-        let released = self.ask_recovery(trees, cause, left, ids, now_ms);
+        let (released, recovery_deletes) = self.ask_recovery(trees, cause, left, ids, now_ms);
         let reclaimed = trees.reclaim(|_| true);
         let discardable = reclaimed
             .into_iter()
@@ -1987,6 +1993,9 @@ impl Commits {
                 continue;
             };
             let node = NodeId::from(&delete.node_id);
+            if recovery_deletes.contains(&node) && !delete.unseen.is_empty() {
+                trees.accept_recovery_delete_view(&node, &mut delete.unseen);
+            }
             let deletion = deletions.get(&node).unwrap_or(&node);
             if *deletion == node && !self.trash_groups.contains_key(deletion) {
                 continue;
