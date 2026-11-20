@@ -339,12 +339,22 @@ impl Intents {
         answer: Answered,
         held: bool,
     ) {
+        let same = |earlier: &Value| match (earlier, &value) {
+            (
+                Value::Place { parent, name },
+                Value::Place {
+                    parent: given_parent,
+                    name: given,
+                },
+            ) => parent == given_parent && nfc(name) == nfc(given),
+            _ => *earlier == value,
+        };
         let discarded = answer == Answered::Settles
             && !held
             && (self.list.iter()).any(|intent| {
                 intent.discarded
                     && (intent.author, intent.ino) == (author, ino)
-                    && intent.value == value
+                    && same(&intent.value)
             });
         self.record(author, made, ino, "publish", value);
         let intent = self.list.last_mut().expect("recorded above");
@@ -845,6 +855,7 @@ impl Intents {
                         },
                     ) => {
                         k != i
+                            && self.list[k].answer != Some(Answered::Settles)
                             && (intent.applied > 0 && digest == seen
                                 || intent.answer.is_some() && write == seen_write)
                             && self.nodes(i).any(|id| self.on(k, id))
@@ -1206,6 +1217,37 @@ mod tests {
         };
         assert!(settles(false));
         assert!(!settles(true));
+    }
+
+    #[test]
+    fn a_settled_answer_does_not_give_back_a_discarded_place_spelled_another_way() {
+        let mut intents = Intents::new(1);
+        intents.nodes[0].insert(1, [NodeId::from("n")].into());
+        let place = |name: &str| Value::Place {
+            parent: None,
+            name: name.to_owned(),
+        };
+        intents.record(0, 1, 1, "move", place("E\u{301}"));
+        intents.give_up(
+            &Server::of("root", Vec::new()),
+            0,
+            &[NodeId::from("n")].into(),
+        );
+        intents.answered(0, 2, 1, place("\u{c9}"), Answered::Settles, false);
+        assert!(!intents.placed(Some(0), "n", "root", "\u{c9}", "root"));
+    }
+
+    #[test]
+    fn a_settled_answer_is_no_witness_that_a_later_write_replaced_a_value() {
+        let mut intents = Intents::new(2);
+        for nodes in &mut intents.nodes {
+            nodes.insert(1, [NodeId::from("n")].into());
+        }
+        intents.record(1, 1, 1, "write", content(1));
+        intents.sync(&holding(1), 2, None);
+        intents.answered(0, 3, 1, content(1), Answered::Settles, false);
+        intents.record(0, 4, 1, "write", content(2));
+        assert!(intents.check(&holding(2), |_| false, |_, _| false).is_err());
     }
 
     #[test]
