@@ -13110,3 +13110,29 @@ fn a_held_file_another_device_deletes_with_the_same_bytes_stays_deleted() {
     )
     .unwrap();
 }
+
+#[test]
+fn publishing_a_rename_of_a_kept_copy_preserves_another_devices_edit() {
+    let phases = [
+        vec![
+            (0, folder("a")),
+            (0, Step::Backup),
+            (2, file("a")),
+        ],
+        vec![
+            (0, Step::Rewind),
+            (2, folder("b")),
+            (0, user(0, 0, 1, "a")),
+            (2, overwrite(0)),
+            (0, rename(0, 0, "A")),
+        ],
+        vec![
+            (0, Step::Backup),
+            (0, Step::Rewind),
+            (1, overwrite(1)),
+            (0, file("a")),
+            (2, rename(4, 0, "a")),
+        ],
+    ];
+    converge(3, &phases).unwrap();
+}

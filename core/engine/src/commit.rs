@@ -2356,7 +2356,9 @@ impl Commits {
                             agreed.extend(agree(trees, &create_id, result.seq));
                             synced.set(&create_id, Some(shape));
                         }
-                        if trees.source_version_id(&create_id).is_none() {
+                        if (trees.source_version_id(&create_id))
+                            .is_none_or(|source| source == create.source_version_id)
+                        {
                             trees.sent_version(
                                 &create_id,
                                 create.content.as_ref(),
