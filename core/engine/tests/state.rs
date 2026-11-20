@@ -378,6 +378,7 @@ fn commits_state() -> CommitsState {
         halted: Some(Halt::Recovery {
             cause: RecoveryCause::rewind(4, 1_700_000_000_000),
             policy: None,
+            store_behind_disk: false,
         }),
         cap: Some(4),
         split: ["s".into()].into(),

@@ -7,6 +7,7 @@ upgrade_case!(recovery_policy, |store| {
             let halt = koidrive_engine::commit::Halt::Recovery {
                 cause: koidrive_engine::question::RecoveryCause::rewind(4, 1_700_000_000_000),
                 policy: Some(7),
+                store_behind_disk: false,
             };
             state.commits.halted = Some(halt);
             tx.set_engine_state(&state)?;

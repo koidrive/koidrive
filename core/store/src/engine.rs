@@ -665,7 +665,7 @@ impl Tx<'_> {
             .0
             .query_row(
                 "SELECT accepted, halt, policy_code, recovery_trigger, restore_seq, restore_point_ms,
-                        cap, recovery_policy_code
+                        cap, recovery_policy_code, store_behind_disk
                  FROM commit_state WHERE id = 1",
                 [],
                 |row| {
@@ -676,6 +676,7 @@ impl Tx<'_> {
                         restore_seq: row.get(4)?,
                         restore_point_ms: row.get(5)?,
                         recovery_policy_code: row.get(7)?,
+                        store_behind_disk: row.get(8)?,
                     };
                     Ok((row.get::<_, u64>(0)?, halt, row.get::<_, Option<usize>>(6)?))
                 },
@@ -1280,7 +1281,7 @@ impl Tx<'_> {
             self.0.execute(
                 "UPDATE commit_state
                  SET halt = ?1, policy_code = ?2, recovery_trigger = ?3, restore_seq = ?4,
-                     restore_point_ms = ?5, recovery_policy_code = ?6
+                     restore_point_ms = ?5, recovery_policy_code = ?6, store_behind_disk = ?7
                  WHERE id = 1",
                 params![
                     halt.halt,
@@ -1288,7 +1289,8 @@ impl Tx<'_> {
                     halt.recovery_trigger,
                     halt.restore_seq,
                     halt.restore_point_ms,
-                    halt.recovery_policy_code
+                    halt.recovery_policy_code,
+                    halt.store_behind_disk
                 ],
             )?;
         }
@@ -1646,6 +1648,7 @@ struct HaltRow {
     restore_seq: Option<u64>,
     restore_point_ms: Option<i64>,
     recovery_policy_code: Option<i32>,
+    store_behind_disk: Option<bool>,
 }
 
 impl HaltRow {
@@ -1662,7 +1665,11 @@ impl HaltRow {
                 policy_code: Some(code),
                 ..HaltRow::default()
             },
-            Some(Halt::Recovery { cause, policy }) => HaltRow {
+            Some(Halt::Recovery {
+                cause,
+                policy,
+                store_behind_disk,
+            }) => HaltRow {
                 halt: named("recovery"),
                 recovery_trigger: named(match cause.trigger {
                     RecoveryTrigger::SpaceRewound => "space_rewound",
@@ -1672,6 +1679,7 @@ impl HaltRow {
                 restore_seq: cause.restore_seq,
                 restore_point_ms: cause.restore_point_ms,
                 recovery_policy_code: policy,
+                store_behind_disk: store_behind_disk.then_some(true),
                 ..HaltRow::default()
             },
         }
@@ -1685,6 +1693,7 @@ impl HaltRow {
             restore_seq,
             restore_point_ms,
             recovery_policy_code,
+            store_behind_disk,
         } = self;
         let trigger = match recovery_trigger.as_deref() {
             None => None,
@@ -1703,6 +1712,7 @@ impl HaltRow {
                     restore_point_ms,
                 },
                 policy: recovery_policy_code,
+                store_behind_disk: store_behind_disk == Some(true),
             }),
             (Some("policy"), Some(code), None) => Some(Halt::Policy { code }),
             _ => {

@@ -986,6 +986,43 @@ fn a_file_deleted_across_a_rewind_is_downloaded_once_the_server_trashed_or_chang
 }
 
 #[test]
+fn a_file_missing_from_a_disk_the_store_was_older_than_is_downloaded_once_another_device_keeps_it()
+{
+    let behind = RecoveryCause::of(RecoveryTrigger::StoreOlderThanDisk);
+    for causes in [vec![behind], vec![behind, rewind()]] {
+        let kept = file(ROOT, "c", 1);
+        let mut trees = trees(&[("c", kept.clone())], &[("c", kept.clone())], &[]);
+        trees.remove_local(&"c".into());
+        let mut commits = Commits::default();
+        let mut ids = IdGen::new(7);
+        for cause in &causes {
+            commits.enter_recovery(*cause);
+        }
+        let last = *causes.last().unwrap();
+        commits.recover(
+            &mut trees,
+            0,
+            false,
+            &last,
+            &LogRead::default(),
+            &Marks::new(),
+            &mut ids,
+            NOW,
+        );
+        trees.settle(commits.aliases());
+        assert!(trees.state().unsent_deletes.is_empty(), "{causes:?}");
+        trees.set_remote("c".into(), server_version(kept, "", &[], 2));
+        trees.settle(commits.aliases());
+        assert_eq!(ops(&mut commits, &mut trees, &mut ids), [], "{causes:?}");
+        let done = effects(&mut trees, &mut ids);
+        assert!(
+            matches!(&done[..], [(node, Effect::WriteFile { .. })] if node == "c"),
+            "{causes:?}: {done:?}"
+        );
+    }
+}
+
+#[test]
 fn a_file_the_rewind_removed_that_the_server_holds_at_its_place_under_another_id_is_linked() {
     let mut written = file(ROOT, "new", 2);
     written.content.as_mut().expect("a file").mtime_ns = 1_794_268_740_123_456_789;
@@ -2724,7 +2761,8 @@ fn a_rewind_a_refused_commit_found_takes_its_restore_point_from_the_next_welcome
         commits.halted(),
         Some(Halt::Recovery {
             cause: RecoveryCause::rewind(4, NOW as i64),
-            policy: None
+            policy: None,
+            store_behind_disk: false,
         })
     );
 }
