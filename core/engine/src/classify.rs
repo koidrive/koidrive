@@ -4356,7 +4356,7 @@ impl Trees {
                 !node.parked
             }
             Some(Some(_)) if self.placed_alike(id) || self.moved_from_s(id) => false,
-            _ => self.excluded(id),
+            _ => !node.parked && self.ignored_in_place(id),
         }
     }
 
