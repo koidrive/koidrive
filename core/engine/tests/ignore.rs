@@ -3275,3 +3275,95 @@ fn a_new_file_in_a_reverted_folder_the_server_keeps_at_an_excluded_path_is_left_
         assert_eq!(ops(&mut trees), [], "{synced_at}");
     }
 }
+
+fn a_new_folder_around_a_synced_file_under_a_folder_the_server_renamed() -> Trees {
+    let mut trees = trees(&[
+        synced("p", dir(ROOT, "p")),
+        ("new", Some(dir("p", "new")), None, None),
+        (
+            "f",
+            Some(file("new", "f", 1)),
+            Some(file(ROOT, "f", 1)),
+            Some(file(ROOT, "f", 1)),
+        ),
+    ]);
+    trees.set_rules(&AT_ROOT, Source::Koiignore, rules("/blocked/\n"));
+    trees.set_remote(
+        "p".into(),
+        RemoteNode {
+            meta_rev: 8,
+            meta_edit_rev: 8,
+            ..remote(dir(ROOT, "blocked"))
+        },
+    );
+    trees.settle(&Default::default());
+    let new = NodeId::from("new");
+    assert!(!trees.excluded(&new) && !trees.unobserved(&new));
+    trees
+}
+
+#[test]
+fn a_new_folder_left_out_on_the_server_once_its_last_synced_entry_leaves_it_is_unobserved() {
+    for removed in [false, true] {
+        let mut trees = a_new_folder_around_a_synced_file_under_a_folder_the_server_renamed();
+        let f = NodeId::from("f");
+        if removed {
+            trees.remove_local(&f);
+        } else {
+            trees.set_local(f, local(file(ROOT, "f", 1), 3));
+        }
+        trees.settle(&Default::default());
+        let new = NodeId::from("new");
+        assert!(trees.excluded(&new), "{removed}");
+        assert!(trees.unobserved(&new), "{removed}");
+    }
+}
+
+#[test]
+fn a_new_folder_left_out_on_the_server_once_the_server_forgets_its_last_entry_is_unobserved() {
+    let mut trees = a_new_folder_around_a_synced_file_under_a_folder_the_server_renamed();
+    let f = NodeId::from("f");
+    trees.remove_remote(&f);
+    trees.set_synced(f, None);
+    trees.settle(&Default::default());
+    let new = NodeId::from("new");
+    assert!(trees.excluded(&new));
+    assert!(trees.unobserved(&new));
+}
+
+#[test]
+fn a_parked_child_does_not_mark_its_displaced_parent_unobserved() {
+    let mut trees = trees(&[
+        synced("q", dir(ROOT, "q")),
+        ("d", Some(dir("q", "d")), None, None),
+        (
+            "f",
+            None,
+            Some(file(ROOT, "f", 1)),
+            Some(file(ROOT, "f", 1)),
+        ),
+    ]);
+    let d = NodeId::from("d");
+    let parked = LocalNode {
+        parked: true,
+        ..local(file("d", "f", 1), 3)
+    };
+    trees.set_local("f".into(), parked);
+    trees.settle(&Default::default());
+    let mut commits = Commits::default();
+    commits
+        .build(&mut trees, &mut IdGen::new(1), NOW, HISTORY, "me", 7)
+        .unwrap();
+    assert!(commits.in_flight().unwrap().creates(&d));
+    trees.ignore_local(&d);
+    trees.displace_local(&d, commits.in_flight().unwrap().creates(&d));
+    trees.settle(&Default::default());
+    assert!(commits.abandon(&mut trees));
+    assert!(trees.displaced_local().contains_key(&d));
+    assert!(!trees.unobserved(&d));
+    assert_eq!(trees.check(), Ok(()));
+    set_content(&mut trees, "f", 2);
+    trees.settle(&Default::default());
+    assert!(!trees.unobserved(&d));
+    assert_eq!(trees.check(), Ok(()));
+}

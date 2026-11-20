@@ -628,6 +628,7 @@ pub struct Trees {
     unobserved: TrackedSet<NodeId>,
     rules_changed: BTreeSet<Vec<String>>,
     relist: BTreeSet<NodeId>,
+    left_folders: BTreeSet<NodeId>,
     released: Vec<NodeId>,
     cycles_may_end: bool,
     moved: bool,
@@ -766,6 +767,7 @@ impl Trees {
             unobserved: TrackedSet::default(),
             rules_changed: BTreeSet::new(),
             relist: BTreeSet::new(),
+            left_folders: BTreeSet::new(),
             released: Vec::new(),
             cycles_may_end: false,
             moved: false,
@@ -2116,6 +2118,9 @@ impl Trees {
         let left_kept_name = (self.l.get(&id))
             .filter(|old| !old.shape.same_position(&node.shape))
             .and_then(|old| Some((self.kept_at_name(&id)?.clone(), old.shape.name.clone())));
+        let left_folder = (self.l.get(&id))
+            .map(|old| old.shape.parent.clone())
+            .filter(|parent| *parent != node.shape.parent);
         if let Some(old) = self.l.get(&id) {
             node.left_out_when_placed = old.left_out_when_placed;
             node.content_from_server = old.content_from_server;
@@ -2193,6 +2198,9 @@ impl Trees {
         .and_modify(|ids| ids.insert(id.clone()))
         .or_insert_with(|| Holders::One(id.clone()));
         self.mark(&id);
+        if let Some(folder) = left_folder {
+            self.left_folders.insert(folder);
+        }
         self.count_held_trash(&id, false);
         self.moved |= match self.l.get(&id) {
             Some(old) => repositioned(&old.shape, &node.shape) || old.parked != node.parked,
@@ -2435,6 +2443,7 @@ impl Trees {
             }
             self.forget_identity(id, &old.identity);
             self.mark(id);
+            self.left_folders.insert(old.shape.parent);
         }
         if self.s.get(id).is_none() {
             let released = (self.waiting.get(id)).is_some_and(|w| w.origin == Origin::Released);
@@ -4016,6 +4025,30 @@ impl Trees {
                 marked.push(node.to_owned());
             }
         }
+        let mut above = BTreeSet::new();
+        let starts = (tops.iter())
+            .filter_map(|top| self.l.get(top).map(|node| &node.shape.parent))
+            .chain(self.left_folders.iter());
+        for start in starts {
+            for folder in self.local_chain(start) {
+                if *folder == self.l.root
+                    || self.l.get(folder).is_none()
+                    || self.known_to_server(folder)
+                    || !above.insert(folder)
+                {
+                    break;
+                }
+            }
+        }
+        for folder in above {
+            if !seen.contains(folder)
+                && !self.unobserved.contains(folder)
+                && self.left_out(folder, &self.ignore, &mut scopes)
+            {
+                marked.push(folder.to_owned());
+            }
+        }
+        self.left_folders.clear();
         for node in marked {
             self.set_unobserved(node);
         }
@@ -4992,16 +5025,19 @@ impl Trees {
             if !seen.insert(current) {
                 continue;
             }
-            if self.r.get(current).is_some()
-                || self.s.get(current).is_some()
-                || self.waiting.contains_key(current)
-                || self.watched_positions.contains_key(current)
-            {
+            if self.known_to_server(current) {
                 return false;
             }
             below.extend(self.local_children_placed_or_parked(current));
         }
         true
+    }
+
+    fn known_to_server(&self, id: &NodeId) -> bool {
+        self.r.get(id).is_some()
+            || self.s.get(id).is_some()
+            || self.waiting.contains_key(id)
+            || self.watched_positions.contains_key(id)
     }
 
     fn held_apart_from_l(&self, id: &NodeId) -> Option<bool> {
@@ -7491,6 +7527,7 @@ impl Trees {
             unobserved,
             rules_changed: _,
             relist: _,
+            left_folders: _,
             released: _,
             cycles_may_end: _,
             moved: _,
