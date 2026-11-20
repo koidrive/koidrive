@@ -2337,15 +2337,26 @@ impl Trees {
     }
 
     /// Takes out of L a node this device's user removed from the disk. A node R holds that the
-    /// rules let sync is recorded with the folder L held it in ([`TreesState::removed_from`]).
+    /// rules let sync and that the device observes is recorded with the folder L held it in
+    /// ([`TreesState::removed_from`]); an unobserved one downloads again (section 5.10).
     pub fn remove_local(&mut self, id: &NodeId) {
         let left_out = self.excluded(id) && self.ignored_in_remote(id);
-        let removed = (self.l.get(id)).filter(|_| self.r.live(id).is_some() && !left_out);
+        let unobserved = self.unobserved.contains(id) || self.left_out_by_new_rules(id);
+        let removed =
+            (self.l.get(id)).filter(|_| self.r.live(id).is_some() && !left_out && !unobserved);
         if let Some(local) = removed {
             let folder = local.shape.parent.clone();
             self.removed_from.insert(id.to_owned(), folder);
         }
         self.drop_local(id);
+    }
+
+    fn left_out_by_new_rules(&self, id: &NodeId) -> bool {
+        self.rules_known
+            && !self.rules_changed.is_empty()
+            && !self.unobserved.contains(id)
+            && self.l.get(id).is_some()
+            && self.left_out(id, &self.ignore, &mut HashMap::new())
     }
 
     pub(crate) fn drop_local(&mut self, id: &NodeId) {
@@ -2394,12 +2405,7 @@ impl Trees {
                 provenance.unversioned_bases.clear();
             });
         self.content_provenance.prune(id, &self.r);
-        let left_out = self.rules_known
-            && !self.rules_changed.is_empty()
-            && !self.unobserved.contains(id)
-            && self.l.get(id).is_some()
-            && self.left_out(id, &self.ignore, &mut HashMap::new());
-        if left_out {
+        if self.left_out_by_new_rules(id) {
             self.set_unobserved(id.to_owned());
         }
         self.observe_removal_in_held_folder(id);

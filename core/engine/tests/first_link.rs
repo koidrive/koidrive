@@ -5880,19 +5880,129 @@ mod a_server_file_moved_into_an_asked_folder {
     }
 
     #[test]
-    fn a_server_file_deleted_before_a_scan_sees_it_is_asked_about_again_and_comes_back_with_its_taken_along_folder()
+    fn a_server_file_deleted_before_a_scan_sees_it_is_not_asked_about_again_and_comes_back_with_its_taken_along_folder()
      {
+        for unseen in [
+            "",
+            "while a scan is pending",
+            "renamed by the server out of the rules",
+            "excluded by a rule the same scan reports",
+        ] {
+            let (mut c, mut t, mut i) = server_folder_moved_in_while_left_out();
+            let asked = question(&c).id;
+            let same_scan = unseen == "excluded by a rule the same scan reports";
+            if same_scan {
+                scan(&mut t, "sc", file("sf", "c", 9));
+            }
+            assert!(c.decide(&mut t, &asked, Answer::Discard));
+            if same_scan {
+                let rules = RuleFile::parse(b"/new/ignored/c\n");
+                t.set_rules(&[] as &[&str], Source::Koiignore, Some(rules));
+            }
+            t.remove_local(&"sc".into());
+            match unseen {
+                "while a scan is pending" => {
+                    t.listed(&[], Pending::new([["new", "ignored"]]));
+                }
+                "renamed by the server out of the rules" => {
+                    t.set_rules(
+                        &[] as &[&str],
+                        Source::Koiignore,
+                        Some(RuleFile::parse(b"hidden\n")),
+                    );
+                    on_the_server(&mut t, "sc", |node| node.shape.name = "hidden".into());
+                }
+                _ => {}
+            }
+            t.settle(&Default::default());
+            assert_eq!(settle(&mut c, &mut t, &mut i), [], "{unseen}");
+            assert!(
+                c.questions().iter().all(|open| open.answer.is_some()),
+                "{unseen}: {:?}",
+                c.questions()
+            );
+            if unseen.is_empty() {
+                assert_sc_comes_back(&t);
+            }
+        }
+    }
+
+    #[test]
+    fn a_left_out_file_removed_after_s_gives_up_its_place_is_not_asked_about_again() {
         let (mut c, mut t, mut i) = server_folder_moved_in_while_left_out();
-        let asked = question(&c).id;
-        assert!(c.decide(&mut t, &asked, Answer::Discard));
-        t.remove_local(&"sc".into());
+        let sc = NodeId::from("sc");
+        assert!(t.unobserved(&sc));
+        assert!(c.decide(&mut t, &question(&c).id, Answer::Discard));
+        assert!(question(&c).frozen.is_some());
+        set_rules(&mut t, Some(b"c-leftout\nignored-dest/\n"));
+        on_the_server(&mut t, "rd", |node| node.shape = dir(ROOT, "ignored-dest"));
+        let mut copy = t.local().get(&sc).unwrap().clone();
+        copy.shape.parent = "f".into();
+        copy.shape.name = "c-leftout".into();
+        t.set_local_changed(sc.clone(), copy);
+        on_the_server(&mut t, "sc", |node| node.shape.parent = "rd".into());
+        assert!(t.local().get(&sc).is_some());
+        assert!(t.synced().get(&sc).is_none(), "{:?}", t.synced().get(&sc));
+        assert!(t.unobserved(&sc));
+        assert_eq!(t.check(), Ok(()));
+        t.set_rules(&[] as &[&str], Source::Koiignore, None);
+        t.remove_local(&sc);
         t.settle(&Default::default());
         assert_eq!(settle(&mut c, &mut t, &mut i), []);
-        let again = question(&c);
-        assert_ne!(again.id, asked);
-        assert_eq!(again.answer, None);
-        assert!(c.decide(&mut t, &again.id, Answer::Discard));
+        assert!(
+            c.questions().iter().all(|open| open.answer.is_some()),
+            "{:?}",
+            c.questions()
+        );
+        assert_eq!(
+            t.local().get(&sc).map(|node| &node.shape),
+            Some(&file("rd", "c", 9))
+        );
+    }
+
+    #[test]
+    fn a_left_out_file_removed_as_the_rules_change_after_s_gives_up_its_place_is_not_asked_about_again()
+     {
+        let (mut c, mut t, mut i) = server_folder_moved_in_while_left_out();
+        let sc = NodeId::from("sc");
+        assert!(t.unobserved(&sc));
+        assert!(c.decide(&mut t, &question(&c).id, Answer::Discard));
+        assert!(question(&c).frozen.is_some());
+        set_rules(&mut t, Some(b"c-leftout\nignored-dest/\n"));
+        on_the_server(&mut t, "rd", |node| node.shape = dir(ROOT, "ignored-dest"));
+        let mut copy = t.local().get(&sc).unwrap().clone();
+        copy.shape.parent = "f".into();
+        copy.shape.name = "c-leftout".into();
+        t.set_local_changed(sc.clone(), copy);
+        on_the_server(&mut t, "sc", |node| node.shape.parent = "rd".into());
+        assert!(t.local().get(&sc).is_some());
+        assert!(t.synced().get(&sc).is_none(), "{:?}", t.synced().get(&sc));
+        assert!(t.unobserved(&sc));
+        assert_eq!(t.check(), Ok(()));
+        set_rules(&mut t, None);
+        scan(&mut t, "sc", file("f", "c-leftout", 9));
+        assert!(!t.unobserved(&sc));
+        assert!(t.synced().get(&sc).is_none());
+        t.set_rules(
+            &[] as &[&str],
+            Source::Koiignore,
+            Some(RuleFile::parse(b"c-leftout\n")),
+        );
+        t.remove_local(&sc);
+        t.settle(&Default::default());
         assert_eq!(settle(&mut c, &mut t, &mut i), []);
+        assert!(
+            c.questions().iter().all(|open| open.answer.is_some()),
+            "{:?}",
+            c.questions()
+        );
+        assert_eq!(
+            t.local().get(&sc).map(|node| &node.shape),
+            Some(&file("rd", "c", 9))
+        );
+    }
+
+    fn assert_sc_comes_back(t: &Trees) {
         assert!(
             t.remote()
                 .get(&"sc".into())
@@ -6769,4 +6879,121 @@ fn deleting_only_the_discarded_note_while_stopped_keeps_its_server_folder_taken_
             .is_some_and(|node| !node.trashed)
     );
     assert_eq!(local(&trees), [("x".into(), ROOT.into(), "server".into())]);
+}
+
+#[test]
+fn a_server_folder_whose_unobserved_delete_reverts_is_taken_along_before_its_entries_download_again()
+ {
+    for unobserved in [true, false] {
+        let mut trees = trees(
+            &[
+                ("f", dir(ROOT, "new")),
+                ("x", dir(ROOT, "server")),
+                ("y", dir("x", "y")),
+                ("c", file("y", "c", 5)),
+            ],
+            &[
+                ("x", dir(ROOT, "server")),
+                ("y", dir("x", "y")),
+                ("c", file("y", "c", 5)),
+            ],
+        );
+        let (mut commits, mut ids) = (Commits::default(), IdGen::new(7));
+        commits.first_link(&mut trees, &mut ids, NOW, PriorSync::Shown);
+        let asked = question(&commits);
+        trees.set_rules(
+            &[] as &[&str],
+            Source::Koiignore,
+            Some(RuleFile::parse(b"ignored\n")),
+        );
+        if unobserved {
+            let mut renamed = trees.local().get(&"y".into()).unwrap().clone();
+            renamed.shape.name = "ignored".into();
+            trees.set_local_changed("y".into(), renamed);
+            trees.settle(commits.aliases());
+            assert!(trees.unobserved(&"c".into()));
+            trees.remove_local(&"c".into());
+            trees.remove_local(&"y".into());
+        } else {
+            trees.remove_local(&"c".into());
+        }
+        trees.settle(commits.aliases());
+        let mut moved = trees.local().get(&"x".into()).unwrap().clone();
+        moved.shape.parent = "f".into();
+        moved.shape.name = "ignored".into();
+        trees.set_local_changed("x".into(), moved);
+        trees.settle(commits.aliases());
+        assert!(commits.decide(&mut trees, &asked.id, Answer::Discard));
+        assert!(
+            ops(&mut commits, &mut trees, &mut ids).is_empty(),
+            "{unobserved}"
+        );
+        trees.set_rules(&[] as &[&str], Source::Koiignore, None);
+        let sent = drive_until_quiet(&mut commits, &mut trees, &mut ids);
+        if !unobserved {
+            assert_eq!(
+                sent,
+                [
+                    ("create dir", "f".to_owned()),
+                    ("move", "x".to_owned()),
+                    ("delete", "c".to_owned())
+                ]
+            );
+            assert_eq!(
+                trees.local().get(&"x".into()).unwrap().shape,
+                dir("f", "ignored")
+            );
+            continue;
+        }
+        assert!(sent.is_empty(), "{sent:?}");
+        assert!(drive_until_quiet(&mut commits, &mut trees, &mut ids).is_empty());
+        assert_eq!(
+            local(&trees),
+            [
+                ("c".into(), "y".into(), "c".into()),
+                ("x".into(), ROOT.into(), "server".into()),
+                ("y".into(), "x".into(), "y".into())
+            ]
+        );
+    }
+}
+
+#[test]
+fn an_unobserved_delete_in_the_batch_that_changes_the_rules_does_not_make_the_folder_the_users() {
+    let mut trees = trees(
+        &[
+            ("f", dir(ROOT, "new")),
+            ("x", dir(ROOT, "server")),
+            ("y", dir("x", "y")),
+            ("c", file("y", "c", 5)),
+        ],
+        &[
+            ("x", dir(ROOT, "server")),
+            ("y", dir("x", "y")),
+            ("c", file("y", "c", 5)),
+        ],
+    );
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(7));
+    commits.first_link(&mut trees, &mut ids, NOW, PriorSync::Shown);
+    let asked = question(&commits);
+    trees.set_rules(
+        &[] as &[&str],
+        Source::Koiignore,
+        Some(RuleFile::parse(b"ignored\n")),
+    );
+    let mut renamed = trees.local().get(&"y".into()).unwrap().clone();
+    renamed.shape.name = "ignored".into();
+    trees.set_local_changed("y".into(), renamed);
+    trees.remove_local(&"c".into());
+    trees.remove_local(&"y".into());
+    trees.settle(commits.aliases());
+    let mut moved = trees.local().get(&"x".into()).unwrap().clone();
+    moved.shape.parent = "f".into();
+    moved.shape.name = "ignored".into();
+    trees.set_local_changed("x".into(), moved);
+    trees.settle(commits.aliases());
+    assert!(commits.decide(&mut trees, &asked.id, Answer::Discard));
+    assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
+    trees.set_rules(&[] as &[&str], Source::Koiignore, None);
+    assert_eq!(drive_until_quiet(&mut commits, &mut trees, &mut ids), []);
 }
