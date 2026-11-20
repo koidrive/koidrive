@@ -625,7 +625,70 @@ fn a_server_file_deleted_with_a_deep_chain_of_new_folders_is_acted_below_the_fol
     device.trees.set_remote("f".into(), remote(server, &chunks));
     device.act(&act(4, 0, 0, 0, 0));
     assert!(device.trees.local().get(&"f".into()).is_none());
-    assert!(acted_below(&device, &"k".into(), &BTreeMap::new()));
+    assert!(acted_below(
+        &device,
+        &"k".into(),
+        &BTreeMap::new(),
+        &BTreeMap::new()
+    ));
+}
+
+#[test]
+fn a_change_inside_a_discarded_held_folder_is_not_acted_below_the_server_folder_that_holds_it() {
+    let mut device = Device::new(Trees::new("root"));
+    let folder = |parent: &str, name: &str| koidrive_engine::tree::Shape {
+        parent: parent.into(),
+        name: name.into(),
+        kind: Kind::Dir,
+        content: None,
+    };
+    for (id, parent) in [("s", "root"), ("h", "s"), ("n", "h")] {
+        let identity = device.identity();
+        device.trees.set_local(
+            id.into(),
+            LocalNode {
+                left_out_when_placed: false,
+                content_from_server: false,
+                shape: folder(parent, id),
+                identity,
+                parked: false,
+                chunks: Box::default(),
+            },
+        );
+    }
+    let server = device.trees.local().get(&"s".into()).unwrap().shape.clone();
+    device.trees.set_remote(
+        "s".into(),
+        RemoteNode {
+            made_over: Vec::new(),
+            shape: server,
+            trashed: false,
+            content_rev: 1,
+            meta_rev: 1,
+            meta_edit_rev: 1,
+            trash_group: String::new(),
+            version_id: String::new(),
+            edit_rev: 1,
+            pending_for: None,
+            pending_by: None,
+            chunks: Box::default(),
+        },
+    );
+    let discarded = BTreeMap::from([("h".into(), folder("s", "h"))]);
+    device.acted.insert("n".into());
+    assert!(!acted_below(
+        &device,
+        &"s".into(),
+        &BTreeMap::new(),
+        &discarded
+    ));
+    device.acted.insert("h".into());
+    assert!(acted_below(
+        &device,
+        &"s".into(),
+        &BTreeMap::new(),
+        &discarded
+    ));
 }
 
 fn an_edit_moved_into_b(b_is_a_node: bool, moved: bool) -> Device {
