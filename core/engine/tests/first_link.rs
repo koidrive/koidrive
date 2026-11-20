@@ -5910,6 +5910,66 @@ mod a_server_file_moved_into_an_asked_folder {
         );
     }
 
+    #[test]
+    fn a_server_file_deleted_after_a_scan_sees_it_is_sent_and_a_second_discard_takes_its_folder_home()
+     {
+        for answered_before_the_ack in [false, true] {
+            let (mut c, mut t, mut i) = server_folder_moved_in_while_left_out();
+            let asked = question(&c).id;
+            assert!(c.decide(&mut t, &asked, Answer::Discard));
+            t.listed(&["f".into(), "sf".into()], Pending::default());
+            assert!(!t.unobserved(&"sc".into()));
+            t.remove_local(&"sc".into());
+            t.settle(&Default::default());
+            assert_eq!(ops(&mut c, &mut t, &mut i), [("delete", "sc".to_owned())]);
+            let again = question(&c);
+            assert_ne!(again.id, asked);
+            assert_eq!(
+                again.holds().cloned().collect::<Vec<_>>(),
+                [NodeId::from("e"), NodeId::from("f")]
+            );
+            let applied = |c: &mut Commits, t: &mut Trees| {
+                let mut node = t.remote().get(&"sc".into()).unwrap().clone();
+                node.trashed = true;
+                node.trash_group = "1:0".into();
+                (node.meta_rev, node.meta_edit_rev) = (1, 1);
+                t.set_remote("sc".into(), node);
+                let results = vec![OpResult {
+                    code: op_result::Code::Applied as i32,
+                    ..Default::default()
+                }];
+                (c.received(CommitResult {
+                    seq: 1,
+                    results,
+                    ..Default::default()
+                }))
+                .unwrap();
+                assert!(c.acknowledge(t, 1));
+            };
+            if !answered_before_the_ack {
+                applied(&mut c, &mut t);
+            }
+            assert!(c.decide(&mut t, &again.id, Answer::Discard));
+            if answered_before_the_ack {
+                applied(&mut c, &mut t);
+            }
+            let sent = drive_until_quiet(&mut c, &mut t, &mut i);
+            assert!(sent.is_empty(), "{answered_before_the_ack}: {sent:?}");
+            assert!(
+                c.questions().is_empty(),
+                "{answered_before_the_ack}: {:?}",
+                c.questions()
+            );
+            assert_eq!(
+                t.local().get(&"sf".into()).map(|node| &node.shape),
+                Some(&dir(ROOT, "server")),
+                "{answered_before_the_ack}"
+            );
+            assert!(t.local().get(&"sc".into()).is_none());
+            assert!(drive_until_quiet(&mut c, &mut t, &mut i).is_empty());
+        }
+    }
+
     fn on_the_server(t: &mut Trees, id: &str, change: impl FnOnce(&mut RemoteNode)) {
         let mut node = (t
             .remote()
