@@ -262,6 +262,8 @@ impl Folder {
                 .find_map(koidrive_engine::question::Question::cause)
                 .cloned(),
         };
+        let in_flight =
+            (self.engine.commits.in_flight()).map(|flight| flight.commit.commit_id.as_str());
         View {
             recovery,
             state,
@@ -274,6 +276,9 @@ impl Folder {
             problem,
             wait,
             questions: self.questions,
+            answered_questions: (self.engine.commits.questions().iter())
+                .filter(|question| question.answer_waits(in_flight))
+                .count() as u64,
             held_disks: (self.detached.iter())
                 .map(|(path, why)| HeldDisk {
                     path: path.to_string_lossy().into_owned().into(),
@@ -408,6 +413,7 @@ impl Folder {
             }
         }
         let questions_holding_changes = (self.engine.commits.questions().iter())
+            .filter(|question| question.answer.is_none())
             .filter(|question| question.holds().any(|id| waiting.contains(id)))
             .count() as u64;
         drop(stays_out);

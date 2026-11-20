@@ -55,6 +55,19 @@ impl Question {
             _ => None,
         }
     }
+
+    /// Whether the person answered and the answer waits to take effect: `in_flight`, the ID of the
+    /// commit in flight, is not the commit that carries it. The question stays open, and holds
+    /// what it held, until one does.
+    pub fn answer_waits(&self, in_flight: Option<&str>) -> bool {
+        let sent_in = match &self.kind {
+            QuestionKind::Recovery { sent_in, .. } | QuestionKind::Conflict { sent_in, .. } => {
+                sent_in.as_deref()
+            }
+            _ => None,
+        };
+        self.answer.is_some() && (sent_in.is_none() || sent_in != in_flight)
+    }
 }
 
 /// One item a question holds: its topmost node and the nodes below it that the answer applies to,

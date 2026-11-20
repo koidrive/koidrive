@@ -382,6 +382,11 @@ pub struct LinkedFolder {
     /// add nothing. It never decreases while the daemon runs and starts from zero again when the daemon
     /// restarts, so treat a decrease as a new baseline.
     pub bytes_moved: u64,
+    /// Questions the person answered whose answer waits to take effect, until a commit carries
+    /// it. [`SessionState::questions`] no longer lists them, and
+    /// [`FolderActivity::AwaitingAnswers`] doesn't count them.
+    #[uniffi(default = 0)]
+    pub answered_questions: u64,
 }
 
 /// What a syncing folder is busy with besides moving file content (docs/design/driver.md, "A
@@ -399,7 +404,7 @@ pub enum FolderActivity {
     /// Changes that move no file content, such as new folders, renames, moves and removals.
     Applying { changes: u64 },
     /// Nothing is left to sync but what `questions` unanswered questions hold until the person
-    /// answers them.
+    /// answers them. A question whose answer waits to take effect doesn't count.
     AwaitingAnswers { questions: u64 },
     /// The folder waits for the rest of the server's changes or for the server to take its own.
     CatchingUp,

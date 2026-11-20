@@ -393,6 +393,7 @@ impl FolderData {
             remote_nodes: 0,
             local_entries: None,
             questions: 0,
+            answered_questions: 0,
             problem: self.problem,
             relinkable: false,
             remedy: None,

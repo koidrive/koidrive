@@ -696,6 +696,37 @@ fn keep_the_copy_deletes_the_copy_only_while_the_original_holds_the_content_it_t
 }
 
 #[test]
+fn a_conflict_answer_whose_commit_is_dropped_waits_and_is_sent_again() {
+    let (mut commits, mut trees, mut ids, copy) = answered_conflict(Answer::KeepOriginal);
+    let sent = build(&mut commits, &mut trees, &mut ids).unwrap().commit_id;
+    assert!(!commits.questions()[0].answer_waits(Some(&sent)));
+    assert_eq!(
+        commits.failed(&mut trees, &refusal(error::Code::HeadMoved, 0)),
+        Ok(Failure::Abandoned)
+    );
+    assert!(commits.in_flight().is_none());
+    assert!(commits.questions()[0].answer_waits(None));
+    let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
+    assert_eq!(ops(&commit), [delete_copy_requiring(4, 3)]);
+    assert!(!commits.questions()[0].answer_waits(Some(&commit.commit_id)));
+    let in_trash = RemoteNode {
+        trashed: true,
+        trash_group: "1:0".into(),
+        ..remote_at(copy, 1)
+    };
+    trees.set_remote("y".into(), in_trash);
+    acknowledge(
+        &mut commits,
+        &mut trees,
+        vec![outcome(op_result::Code::Applied)],
+    );
+    assert_eq!(
+        kept_originals(&trees),
+        [(NodeId::from("y"), NodeId::from("f"))]
+    );
+}
+
+#[test]
 fn a_kept_original_is_forgotten_once_another_device_restores_the_copy() {
     let mut trees = kept_original_recorded();
     trees.set_remote("y".into(), remote_at(file(ROOT, "f (conflict)", 2), 7));

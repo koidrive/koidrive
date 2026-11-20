@@ -91,6 +91,10 @@ pub struct FolderStatus {
     pub local_entries: Option<u64>,
     /// Questions waiting for an answer.
     pub questions: u64,
+    /// Questions the person answered whose answer waits to take effect, until a commit carries it. `questions`
+    /// doesn't count them.
+    #[serde(default)]
+    pub answered_questions: u64,
     /// Why the folder is halted, or what the last transient failure was.
     pub problem: Option<String>,
     /// Whether `Driver::relink` resolves the halt.
@@ -250,7 +254,8 @@ pub enum Activity {
     Checking { files: u64, bytes: u64 },
     /// Changes that move no file content, such as new folders, renames, moves and removals.
     Applying { changes: u64 },
-    /// Nothing is left to sync but what `questions` unanswered questions hold until the person answers.
+    /// Nothing is left to sync but what `questions` unanswered questions hold until the person answers. A question
+    /// whose answer waits to take effect doesn't count.
     AwaitingAnswers { questions: u64 },
     /// The folder waits for the rest of the server's changes or for the server to take its own.
     CatchingUp,

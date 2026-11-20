@@ -981,6 +981,7 @@ impl Core for FakeCore {
                 state: FolderState::UpToDate,
                 activity: None,
                 bytes_moved: 0,
+                answered_questions: 0,
             };
             saved.folders.push(linked.clone());
             Ok(linked)

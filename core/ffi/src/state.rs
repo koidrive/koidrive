@@ -137,6 +137,7 @@ pub(crate) fn folder(folder: &driver::FolderStatus) -> LinkedFolder {
             driver::Activity::Unknown => None,
         }),
         bytes_moved: folder.bytes_moved,
+        answered_questions: folder.answered_questions,
     }
 }
 
@@ -567,6 +568,7 @@ mod tests {
             remote_nodes: 0,
             local_entries: None,
             questions: 0,
+            answered_questions: 0,
             problem: problem.map(str::to_owned),
             relinkable: false,
             remedy: None,
@@ -761,6 +763,20 @@ mod tests {
         assert_eq!(received.activity, Some(driver::Activity::Unknown));
         let shown = folder(&received);
         assert_eq!((shown.state, shown.activity), (FolderState::Syncing, None));
+    }
+
+    #[test]
+    fn answered_questions_cross_the_bridge_and_an_older_daemon_reports_none() {
+        let waiting = driver::FolderStatus {
+            answered_questions: 2,
+            ..folder_in(DriverFolderState::CatchingUp, None)
+        };
+        let mut json = serde_json::to_value(&waiting).unwrap();
+        let received: driver::FolderStatus = serde_json::from_value(json.clone()).unwrap();
+        assert_eq!(folder(&received).answered_questions, 2);
+        json.as_object_mut().unwrap().remove("answered_questions");
+        let older: driver::FolderStatus = serde_json::from_value(json).unwrap();
+        assert_eq!(folder(&older).answered_questions, 0);
     }
 
     #[test]
@@ -1125,6 +1141,7 @@ mod unreachable_tests {
                 remote_nodes: 0,
                 local_entries: None,
                 questions: 0,
+                answered_questions: 0,
                 problem: Some(
                     "no internet connection; trying again at 2026-11-14 12:00 UTC".into(),
                 ),
@@ -1175,6 +1192,7 @@ mod unreachable_tests {
                     remote_nodes: 0,
                     local_entries: None,
                     questions: 0,
+                    answered_questions: 0,
                     problem: Some("the folder is missing".into()),
                     relinkable: false,
                     remedy: None,
