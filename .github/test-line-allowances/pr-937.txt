@@ -1,4 +1,4 @@
-328
+424
 # A delete made offline around a server loss must stay deleted when another device's Keep or resend brings the node back,
 # whether R learns of it from the log, a listing or a restart, and must give way where that device moved the node, changed
 # its content, or the user answered Restore. Where another device renamed the deleted folder, the file's record waits for
@@ -12,3 +12,5 @@
 # No record is made by a recovery once any of its causes found the store older than the disk, also after a rewind replaced
 # that cause: the engine test covers both, and the store tests cover the new halt column on a fresh store, before its
 # migration and on an upgrade.
+# A folder removal that such a recovery left waiting for a child records nothing when the child's answer releases it,
+# also after a bootstrap forgets the folder meanwhile; the store tests cover the waiting origin before and after the migration.
