@@ -2155,7 +2155,9 @@ impl Staging {
     }
 
     pub fn replay_result(&mut self, at: Base, changes: &[ChangeRecord]) -> Result<(), Stop> {
-        self.remember(&at, changes);
+        if (self.history.as_ref()).is_some_and(|(through, _)| at.seq == *through + 1) {
+            self.remember(&at, changes);
+        }
         if at.seq == self.last.seq + 1 {
             self.replay_commit(at, changes)?;
         }
@@ -2329,6 +2331,21 @@ mod tests {
             committed_at_ms: 40,
             ..Default::default()
         };
+        staging.replay_result(result, &[]).unwrap();
+        assert!(staging.take_history().is_some());
+    }
+
+    #[test]
+    fn a_call_result_ahead_of_the_backlog_leaves_the_log_to_its_ordered_delivery() {
+        let mut staging = backlog_through(0);
+        let result = koidrive_engine::commit::Base {
+            seq: 4,
+            committed_at_ms: 40,
+            ..Default::default()
+        };
+        staging.replay_result(result.clone(), &[]).unwrap();
+        let backlog: Vec<CommitRecord> = (1..=3).map(|seq| record(seq, Vec::new())).collect();
+        staging.replay(&backlog).unwrap();
         staging.replay_result(result, &[]).unwrap();
         assert!(staging.take_history().is_some());
     }
