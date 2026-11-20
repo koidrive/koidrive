@@ -14,7 +14,6 @@ use crate::first_link;
 use crate::ignore::{Key, LocalRules, Matcher, RuleFile, is_rules_file};
 use crate::names::{name_key, nfc, same_name};
 use crate::provenance::Provenances;
-pub use crate::provenance::check_content_provenance;
 use crate::question::Frozen;
 use crate::state::{
     Agreed, ContentProvenance, ContentValue, ContentVersion, FinishOrigin, KeptCause, KeptEntries,
@@ -1549,6 +1548,12 @@ impl Trees {
                 !remote.version_id.is_empty() && version.bases().contains(&remote.version_id)
             })
         })
+    }
+
+    /// Stops these trees from keeping the full copy of their content provenance that builds with debug assertions
+    /// check every read and change against, so they hold what a release build holds.
+    pub fn skip_provenance_check(&mut self) {
+        self.content_provenance.uncheck();
     }
 
     fn provenance(&self, id: &NodeId) -> Option<Cow<'_, ContentProvenance>> {

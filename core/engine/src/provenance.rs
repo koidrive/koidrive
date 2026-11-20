@@ -2,21 +2,11 @@
 
 use std::borrow::Cow;
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::state::{ContentProvenance, ContentVersion, MapChanges};
 use crate::tree::{NodeId, RemoteNode, Tree, read_entries};
 
 const IMPLIED: &str = "R holds every node whose provenance it implies";
-
-static CHECKED: AtomicBool = AtomicBool::new(cfg!(debug_assertions));
-
-/// Sets whether the trees created from here on keep every content provenance record in full beside the ones R
-/// implies, and panic when the two answer a read, a write, a state or a change set differently. A restore keeps
-/// checked trees checked. On from the start in builds with debug assertions.
-pub fn check_content_provenance(on: bool) {
-    CHECKED.store(on, Ordering::Relaxed);
-}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Implied {
@@ -63,7 +53,7 @@ impl Default for Provenances {
             held: BTreeMap::new(),
             implied: BTreeMap::new(),
             before: BTreeMap::new(),
-            full: CHECKED.load(Ordering::Relaxed).then(Box::default),
+            full: cfg!(debug_assertions).then(Box::default),
         }
     }
 }
@@ -74,7 +64,7 @@ impl Provenances {
         records: BTreeMap<NodeId, ContentProvenance>,
         r: &Tree<RemoteNode>,
     ) {
-        let checked = self.full.is_some() || CHECKED.load(Ordering::Relaxed);
+        let checked = self.full.is_some();
         *self = Self {
             full: checked.then(|| {
                 Box::new(Full {
@@ -91,6 +81,10 @@ impl Provenances {
                 self.held.insert(id, record);
             }
         }
+    }
+
+    pub(crate) fn uncheck(&mut self) {
+        self.full = None;
     }
 
     pub(crate) fn get(
