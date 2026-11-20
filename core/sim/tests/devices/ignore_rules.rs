@@ -124,11 +124,11 @@ fn a_folder_made_in_a_folder_another_device_renamed_to_a_name_its_rules_exclude_
  {
     let phases = [
         vec![(0, folder("a"))],
-        vec![(0, rename(0, 0, "c.txt"))],
+        vec![(0, rename(0, 0, "E\u{301}"))],
         vec![(1, user(0, 0, 1, "b"))],
     ];
-    let world = converge_excluding(&[vec![], vec!["*.txt"]], &phases).unwrap();
-    assert_eq!(live_node_at(&world, &["c.txt", "b"]), None);
+    let world = converge_excluding(&[vec![], vec!["e\u{301}/"]], &phases).unwrap();
+    assert_eq!(live_node_at(&world, &["\u{c9}", "b"]), None);
     ino_at(&world, 1, &["a", "b"]);
 }
 
