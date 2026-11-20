@@ -1354,7 +1354,14 @@ impl Engine {
     ) {
         let sent =
             |id: &NodeId| (self.commits.in_flight()).is_some_and(|flight| flight.deletes_node(id));
-        type Save = (NodeId, u64, NodeId, PathBuf, FileIdentity, Option<Content>);
+        type Save = (
+            NodeId,
+            u64,
+            NodeId,
+            (NodeId, String),
+            FileIdentity,
+            Option<Content>,
+        );
         let mut saves: Vec<Save> = (self.renamed_away.iter())
             .filter_map(|(id, (parent, name, renamed))| {
                 let removed = *self.removed_at.get(id)?;
@@ -1377,7 +1384,7 @@ impl Engine {
                     taker.clone(),
                     *renamed,
                     id.clone(),
-                    self.path_of(taker)?,
+                    (parent.clone(), name.clone()),
                     saved.identity,
                     saved.content(),
                 ))
@@ -1385,11 +1392,14 @@ impl Engine {
             .collect();
         saves.sort_by(|a, b| (&a.0, a.1).cmp(&(&b.0, b.1)));
         let mut taken = BTreeSet::new();
-        for (taker, _, id, path, identity, content) in saves {
+        for (taker, _, id, slot, identity, content) in saves {
             self.renamed_away.remove(&id);
-            if !taken.insert(taker) {
+            if !taken.insert(taker.clone()) {
                 continue;
             }
+            let Some(path) = self.path_of(&taker) else {
+                continue;
+            };
             self.place(
                 Some(id.clone()),
                 &path,
@@ -1401,8 +1411,8 @@ impl Engine {
                 touched,
                 gone,
             );
-            if let Some((_, _, staged)) =
-                (self.took_slot.values_mut()).find(|(taker, _, _)| *taker == id)
+            if let Some((holder, _, staged)) = self.took_slot.get_mut(&slot)
+                && *holder == id
             {
                 *staged = false;
             }

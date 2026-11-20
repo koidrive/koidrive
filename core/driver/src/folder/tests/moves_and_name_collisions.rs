@@ -2051,3 +2051,66 @@ fn a_safe_save_promotes_a_temp_file_that_synced_before_its_last_write() {
     assert_eq!(remote.names(), ["report.docx"]);
     safe_save_assert(&remote, &before);
 }
+
+#[test]
+fn a_safe_save_overlapping_word_saves_cleaned_up_in_separate_scans_keep_the_node() {
+    let name = "\u{00e9}.docx";
+    let (mut remote, _site, mut a, docs, before) = doc_fixture(name);
+    let report = docs.join(name);
+    for (stage, backup, bytes) in [
+        ("~WRD0000.tmp", "~WRL0001.tmp", b"version two".as_slice()),
+        ("~WRD0002.tmp", "~WRL0003.tmp", b"version three".as_slice()),
+    ] {
+        a.create(&mut remote, &docs.join(stage), bytes);
+        a.rest(&mut remote);
+        clock::advance_to(clock::instant() + Duration::from_millis(100));
+        fs::rename(&report, docs.join(backup)).unwrap();
+        fs::rename(docs.join(stage), &report).unwrap();
+        a.rescan();
+        a.scan_until(|a| tracks(a, backup));
+        a.rest(&mut remote);
+    }
+
+    fs::remove_file(docs.join("~WRL0001.tmp")).unwrap();
+    a.rescan();
+    a.rest(&mut remote);
+    assert_eq!(live_id(&server_nodes(&remote), name), before);
+
+    fs::remove_file(docs.join("~WRL0003.tmp")).unwrap();
+    a.rescan();
+    a.rest(&mut remote);
+    let nodes = server_nodes(&remote);
+    let after = live_id(&nodes, name);
+    assert_eq!(server_bytes(&remote, &after), b"version three");
+    assert_eq!(after, before, "{nodes:?}");
+}
+
+#[test]
+fn a_safe_save_copy_then_overwrite_and_a_large_tmp_swap_keep_the_node() {
+    for large in [false, true] {
+        let name = "report.txt";
+        let (mut remote, _site, mut a, docs, before) = doc_fixture(name);
+        let report = docs.join(name);
+        let backup = docs.join("report.txt~");
+        if large {
+            let stage = docs.join("report.txt.tmp");
+            a.create(&mut remote, &stage, b"version two");
+            a.rest(&mut remote);
+            fs::rename(&report, &backup).unwrap();
+            fs::rename(&stage, &report).unwrap();
+        } else {
+            fs::copy(&report, &backup).unwrap();
+            fs::write(&report, b"version two").unwrap();
+        }
+        a.rescan();
+        a.scan_until(|a| tracks(a, "report.txt~"));
+        a.rest(&mut remote);
+        fs::remove_file(&backup).unwrap();
+        a.rescan();
+        a.rest(&mut remote);
+        let nodes = server_nodes(&remote);
+        let after = live_id(&nodes, name);
+        assert_eq!(server_bytes(&remote, &after), b"version two");
+        assert_eq!(after, before, "{large}: {nodes:?}");
+    }
+}
