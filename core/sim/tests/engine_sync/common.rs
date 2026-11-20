@@ -23,7 +23,7 @@ use koidrive_engine::restore::{Outcome, Rejection, Resolved, RestoreIntent};
 use koidrive_engine::state::StateError;
 
 use koidrive_engine::tree::{
-    ContentKey, FileIdentity, Kind, LocalNode, Names, NodeId, RemoteNode, Shape, same,
+    ContentKey, FileIdentity, Kind, LocalNode, Names, NodeId, RemoteNode, Shape, Tree, same,
 };
 
 use koidrive_proto::v1::{
@@ -1066,6 +1066,40 @@ impl Device {
         }
     }
 
+    fn follow_new_ids(&mut self, before: &Tree<LocalNode>) {
+        let local = self.trees.local();
+        let renamed: Vec<(NodeId, NodeId)> = (before.iter())
+            .filter(|(id, _)| local.get(id).is_none())
+            .filter_map(|(old, node)| {
+                let (new, _) = (local.iter()).find(|(_, now)| {
+                    now.identity.ino == node.identity.ino
+                        && now.identity.birth_ns == node.identity.birth_ns
+                })?;
+                Some((old.clone(), new.clone()))
+            })
+            .collect();
+        for (old, new) in renamed {
+            self.rekey(&old, &new);
+        }
+    }
+
+    fn rekey(&mut self, old: &NodeId, new: &NodeId) {
+        self.ignored = (std::mem::take(&mut self.ignored).into_iter())
+            .map(|((holder, path), mut entry)| {
+                if let Some((id, _)) = entry.original.as_mut().filter(|(id, _)| id == old) {
+                    *id = new.clone();
+                }
+                let holder = if holder == *old { new.clone() } else { holder };
+                ((holder, path), entry)
+            })
+            .collect();
+        for ids in [&mut self.off_disk, &mut self.moved_into_ignored] {
+            if ids.remove(old) {
+                ids.insert(new.clone());
+            }
+        }
+    }
+
     /// True when `ancestor` is `id` or holds it in L.
     fn holds(&self, ancestor: &NodeId, id: &NodeId) -> bool {
         let mut current = id;
@@ -2075,11 +2109,14 @@ fn run_ignoring_answering_after(
     let mut sent_nodes: BTreeSet<NodeId> = BTreeSet::new();
     let mut pending: Option<(Question, BTreeMap<NodeId, koidrive_engine::tree::Shape>)> = None;
     let mut during = during.iter();
+    let mut known_local = device.trees.local().clone();
     while !quiet {
         steps += 1;
         prop_assert!(steps <= STEPS, "no convergence within {} steps", STEPS);
         device.trees.settle(commits.aliases());
         prop_assert_eq!(device.trees.check(), Ok(()));
+        device.follow_new_ids(&known_local);
+        known_local = device.trees.local().clone();
         note_agreements(&device, &mut sent_since, &mut agreed, &mut from_server);
         if (due || steps % 2 == 0)
             && let Some((on_device, actions)) = during.next()
@@ -2578,6 +2615,7 @@ fn run_ignoring_answering_after(
                 let created = NodeId::from(&create.node_id);
                 let merged = NodeId::from(&outcome.node_id);
                 merged_into.insert(created.clone(), merged.clone());
+                device.rekey(&created, &merged);
                 for records in [&mut discarded, &mut kept_with] {
                     if let Some(shape) = records.remove(&created) {
                         records.insert(merged.clone(), shape);
