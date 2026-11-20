@@ -1846,8 +1846,8 @@ fn a_second_save_landing_with_the_first_backup_delete_keeps_the_node() {
 }
 
 #[test]
-fn a_second_save_after_the_first_was_sent_keeps_the_new_bytes() {
-    let (mut remote, _site, mut a, docs, _) = doc_fixture("report.txt");
+fn a_second_save_after_the_first_was_sent_keeps_the_node() {
+    let (mut remote, _site, mut a, docs, before) = doc_fixture("report.txt");
     vim_save(&docs, &mut a, b"version two");
     a.run(&mut remote);
     vim_save_again(&docs);
@@ -1855,10 +1855,30 @@ fn a_second_save_after_the_first_was_sent_keeps_the_new_bytes() {
     a.rest(&mut remote);
     let nodes = server_nodes(&remote);
     assert_eq!(live_names(&remote), ["docs", "report.txt"]);
+    let after = live_id(&nodes, "report.txt");
+    assert_eq!(server_bytes(&remote, &after), b"version three");
+    assert_eq!(after, before, "{nodes:?}");
+}
+
+#[test]
+fn a_save_after_a_case_only_rename_in_a_renamed_folder_keeps_the_node() {
+    let (mut remote, site, mut a, docs, before) = doc_fixture("report.txt");
+    fs::rename(&docs, site.root.join("Docs")).unwrap();
+    let docs = site.root.join("Docs");
+    fs::rename(docs.join("report.txt"), docs.join("Report.txt")).unwrap();
+    a.scan_until(|a| tracks(a, "Report.txt"));
+    fs::rename(docs.join("Report.txt"), docs.join("Report.txt~")).unwrap();
+    fs::write(docs.join("Report.txt"), b"version two").unwrap();
+    a.scan_until(|a| tracks(a, "Report.txt~"));
+    fs::remove_file(docs.join("Report.txt~")).unwrap();
+    a.rest(&mut remote);
+    let nodes = server_nodes(&remote);
+    assert_eq!(live_names(&remote), ["Docs", "Report.txt"]);
     assert_eq!(
-        server_bytes(&remote, &live_id(&nodes, "report.txt")),
-        b"version three"
+        server_bytes(&remote, &live_id(&nodes, "Report.txt")),
+        b"version two"
     );
+    assert_eq!(live_id(&nodes, "Report.txt"), before);
 }
 
 #[test]
@@ -2012,4 +2032,22 @@ fn a_safe_save_whose_backup_is_deleted_one_scan_later_keeps_its_node() {
             assert_eq!(at, before, "{shape} sending {sending}: {nodes:?}");
         }
     }
+}
+
+#[test]
+fn a_safe_save_promotes_a_temp_file_that_synced_before_its_last_write() {
+    let (mut remote, site, mut a, before) = safe_save_fixture();
+    let temp = site.root.join("~WRD0000.tmp");
+    a.create(&mut remote, &temp, b"partial stage");
+    a.rest(&mut remote);
+    clock::advance_to(clock::instant() + Duration::from_secs(3));
+    a.create(&mut remote, &temp, b"version two");
+    a.rest(&mut remote);
+    safe_save_swap(&site, &mut a);
+    fs::rename(&temp, site.root.join("report.docx")).unwrap();
+    a.rescan();
+    a.scan_until(|_| local_holds(&site, "report.docx"));
+    safe_save_cleanup(&site, &mut a, &mut remote);
+    assert_eq!(remote.names(), ["report.docx"]);
+    safe_save_assert(&remote, &before);
 }

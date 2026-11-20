@@ -59,14 +59,12 @@ pub(crate) struct Engine {
     pub local_written_since_load: bool,
     removed_at: BTreeMap<NodeId, u64>,
     renamed_away: BTreeMap<NodeId, (NodeId, String, u64)>,
-    arrived_at: BTreeMap<NodeId, u64>,
-    took_slot: BTreeMap<(NodeId, String), (NodeId, u64)>,
+    took_slot: BTreeMap<(NodeId, String), (NodeId, u64, bool)>,
     owed: BTreeSet<NodeId>,
     stored_owed: BTreeSet<NodeId>,
 }
 
 const DELETE_WAIT_MS: u64 = 2_000;
-const SAVE_WINDOW_MS: u64 = 60_000;
 
 /// What applying a batch of the log did.
 #[derive(Debug, PartialEq)]
@@ -935,8 +933,7 @@ impl Engine {
         let unscanned = self.unscanned.take();
         let wait = 2 * DELETE_WAIT_MS;
         (self.renamed_away).retain(|_, (_, _, at)| now_ms < at.saturating_add(wait));
-        (self.took_slot).retain(|_, (_, at)| now_ms < at.saturating_add(wait));
-        (self.arrived_at).retain(|_, at| now_ms < at.saturating_add(SAVE_WINDOW_MS + wait));
+        (self.took_slot).retain(|_, (_, at, _)| now_ms < at.saturating_add(wait));
         let mut before: Vec<Option<NodeId>> = changes
             .iter()
             .map(|change| match change {
@@ -1357,25 +1354,17 @@ impl Engine {
     ) {
         let sent =
             |id: &NodeId| (self.commits.in_flight()).is_some_and(|flight| flight.deletes_node(id));
-        type Save = (
-            NodeId,
-            (bool, u64),
-            NodeId,
-            PathBuf,
-            FileIdentity,
-            Option<Content>,
-        );
+        type Save = (NodeId, u64, NodeId, PathBuf, FileIdentity, Option<Content>);
         let mut saves: Vec<Save> = (self.renamed_away.iter())
             .filter_map(|(id, (parent, name, renamed))| {
                 let removed = *self.removed_at.get(id)?;
-                let (taker, took) = self.took_slot.get(&(parent.clone(), name.clone()))?;
-                let arrived = *self.arrived_at.get(taker)?;
+                let (taker, took, staged) = self.took_slot.get(&(parent.clone(), name.clone()))?;
                 let saved = self.trees.local().get(taker)?;
                 let continues = self.trees.local_child(parent, name) == Some(taker)
                     && removed < renamed.saturating_add(DELETE_WAIT_MS)
                     && now_ms < removed.saturating_add(DELETE_WAIT_MS)
                     && took >= renamed
-                    && arrived.saturating_add(SAVE_WINDOW_MS) >= *renamed
+                    && *staged
                     && taker != id
                     && saved.shape.kind == Kind::File
                     && self.trees.local().get(id).is_none()
@@ -1386,7 +1375,7 @@ impl Engine {
                 continues.then_some(())?;
                 Some((
                     taker.clone(),
-                    (self.arrived_at.contains_key(id), *renamed),
+                    *renamed,
                     id.clone(),
                     self.path_of(taker)?,
                     saved.identity,
@@ -1401,9 +1390,8 @@ impl Engine {
             if !taken.insert(taker) {
                 continue;
             }
-            self.arrived_at.remove(&id);
             self.place(
-                Some(id),
+                Some(id.clone()),
                 &path,
                 EntryKind::File,
                 identity,
@@ -1413,6 +1401,11 @@ impl Engine {
                 touched,
                 gone,
             );
+            if let Some((_, _, staged)) =
+                (self.took_slot.values_mut()).find(|(taker, _, _)| *taker == id)
+            {
+                *staged = false;
+            }
         }
     }
 
@@ -1615,13 +1608,7 @@ impl Engine {
             .or_else(|| self.trees.vanished_at(&parent, name, kind).cloned());
         let existing = node.as_ref().and_then(|id| self.trees.local().get(id));
         let given = node.clone();
-        let previous = existing.map(|old| {
-            (
-                old.shape.parent.clone(),
-                old.shape.name.clone(),
-                old.shape.content,
-            )
-        });
+        let previous = existing.map(|old| (old.shape.parent.clone(), old.shape.name.clone()));
         let unchanged = existing.is_some_and(|old| {
             !old.parked
                 && node
@@ -1692,23 +1679,19 @@ impl Engine {
             })
             .flatten();
         if kind == Kind::File {
-            match previous.filter(|_| given.as_ref() == Some(&id)) {
-                Some((parent, name, content)) => {
-                    if (&parent, &name) != (&shape.parent, &shape.name) {
-                        self.renamed_away.insert(id.clone(), (parent, name, now_ms));
-                    }
-                    let revised = !matches!((content, shape.content), (Some(old), Some(new)) if same_content(&old, &new));
-                    if revised && self.trees.synced().live(&id).is_some() {
-                        self.arrived_at.remove(&id);
-                    }
-                }
-                None if given.is_none() => {
-                    self.arrived_at.insert(id.clone(), now_ms);
-                }
-                None => {}
-            }
+            let moved = (previous.filter(|_| given.as_ref() == Some(&id)))
+                .filter(|(parent, name)| (parent, name) != (&shape.parent, &shape.name));
             let slot = (shape.parent.clone(), shape.name.clone());
-            self.took_slot.insert(slot, (id.clone(), now_ms));
+            let held = (self.took_slot.get(&slot)).is_some_and(|(taker, _, _)| *taker == id);
+            if let Some((parent, name)) = moved {
+                let staged = Path::new(&name)
+                    .extension()
+                    .is_some_and(|extension| extension.eq_ignore_ascii_case("tmp"));
+                self.renamed_away.insert(id.clone(), (parent, name, now_ms));
+                self.took_slot.insert(slot, (id.clone(), now_ms, staged));
+            } else if !held {
+                self.took_slot.insert(slot, (id.clone(), now_ms, true));
+            }
         }
         self.trees.set_local_changed(
             id.clone(),
@@ -1987,7 +1970,6 @@ impl Stored {
             local_written_since_load: false,
             removed_at: BTreeMap::new(),
             renamed_away: BTreeMap::new(),
-            arrived_at: BTreeMap::new(),
             took_slot: BTreeMap::new(),
             owed: owed.clone(),
             stored_owed: owed,
@@ -2867,7 +2849,6 @@ mod tests {
             local_written_since_load: false,
             removed_at: BTreeMap::new(),
             renamed_away: BTreeMap::new(),
-            arrived_at: BTreeMap::new(),
             took_slot: BTreeMap::new(),
             owed: BTreeSet::new(),
             stored_owed: BTreeSet::new(),
