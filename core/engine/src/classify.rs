@@ -6253,8 +6253,11 @@ impl Trees {
                 self.wait(id, None, Origin::Other);
             } else {
                 self.remember_lost_shape(&id);
-                self.record_unsent_delete(&id);
-                self.set_synced(id, None);
+                let seen = self.unsent_delete(&id);
+                self.set_synced(id.clone(), None);
+                if let Some(seen) = seen {
+                    self.record_unsent_delete(id, seen);
+                }
             }
         }
         let gone: Vec<NodeId> = (self.forgotten_shapes.iter())
@@ -6455,10 +6458,14 @@ impl Trees {
         }
     }
 
-    pub(crate) fn record_unsent_delete(&mut self, id: &NodeId) {
+    pub(crate) fn unsent_delete(&self, id: &NodeId) -> Option<Shape> {
         let deleted = self.l.get(id).is_none() && self.r.get(id).is_none() && !self.unobserved(id);
-        if let Some(seen) = self.s.live(id).filter(|_| deleted).cloned() {
-            self.unsent_deletes.insert(id.clone(), seen);
+        self.s.live(id).filter(|_| deleted).cloned()
+    }
+
+    pub(crate) fn record_unsent_delete(&mut self, id: NodeId, seen: Shape) {
+        if self.s.get(&id).is_none() {
+            self.unsent_deletes.insert(id, seen);
         }
     }
 
