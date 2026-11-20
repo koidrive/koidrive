@@ -144,8 +144,11 @@ export const MIGRATIONS: readonly Migration[] = [
     const columns = sql.exec("SELECT name FROM pragma_table_info('nodes')").toArray().map((row) => row.name);
     if (columns.includes("trashed_dev")) return;
     sql.exec("ALTER TABLE nodes ADD COLUMN trashed_dev TEXT");
-    sql.exec(`UPDATE nodes SET trashed_dev = COALESCE((SELECT device_id FROM commits
-      WHERE commit_id = substr(nodes.trash_group, 1, instr(nodes.trash_group, ':') - 1) AND committed_at_ms = nodes.trashed_at_ms), meta_dev)
+    sql.exec(`UPDATE nodes SET trashed_dev = COALESCE(
+      (SELECT device_id FROM commits WHERE seq = nodes.meta_edit_rev AND committed_at_ms = nodes.trashed_at_ms),
+      (SELECT device_id FROM commits
+        WHERE commit_id = substr(nodes.trash_group, 1, instr(nodes.trash_group, ':') - 1) AND committed_at_ms = nodes.trashed_at_ms),
+      meta_dev)
       WHERE trashed_at_ms IS NOT NULL`);
   },
 ];
