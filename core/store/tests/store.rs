@@ -1589,7 +1589,7 @@ fn engine_state() -> EngineState {
     };
     EngineState {
         trees: TreesState {
-            journal: journal_state(),
+            journal: JournalState::default(),
             dirty: nodes(["a", "b"]),
             unsearched: nodes(["b"]),
             reverted: nodes(["r"]),
@@ -1974,7 +1974,8 @@ fn engine_state() -> EngineState {
 fn engine_state_survives_a_reopen() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("state.db");
-    let state = engine_state();
+    let mut state = engine_state();
+    state.trees.journal = journal_state();
     let mut store = Store::open(&path).unwrap();
     assert_eq!(
         store.transaction(|tx| tx.engine_state()).unwrap(),
@@ -2216,7 +2217,8 @@ fn an_engine_state_update_writes_rows_for_the_change_alone() {
 fn engine_state_updates_store_every_part() {
     let dir = tempfile::tempdir().unwrap();
     let mut store = Store::open(dir.path().join("state.db")).unwrap();
-    let full = engine_state();
+    let mut full = engine_state();
+    full.trees.journal = journal_state();
     let mut changed = full.clone();
     changed.commits.halted = Some(Halt::Policy { code: 3 });
     changed.commits.cap = Some(2);
