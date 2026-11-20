@@ -296,14 +296,11 @@ impl World {
         self.deletions.push(deletion);
     }
 
-    pub(super) fn forget_restored_deletes<'a>(
-        &mut self,
-        d: usize,
-        restored: impl IntoIterator<Item = &'a NodeId>,
-    ) {
-        let restored: BTreeSet<&NodeId> = restored.into_iter().collect();
+    pub(super) fn forget_restored_deletes(&mut self, d: usize) {
+        let server = Server::of(self.space.space_id(), self.space.nodes());
         for deletion in (self.deletions.iter_mut()).filter(|deletion| deletion.device == d) {
-            (deletion.files).retain(|file| !restored.contains(&file.node));
+            let intent = deletion.intent;
+            (deletion.files).retain(|file| !self.intents.undid(intent, &file.node, &server));
             deletion.watched &= !deletion.files.is_empty();
         }
     }

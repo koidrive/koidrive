@@ -693,6 +693,26 @@ impl Intents {
         }
     }
 
+    pub(super) fn undid(&self, j: usize, node: &NodeId, server: &Server) -> bool {
+        let delete = &self.list[j];
+        let Value::Trashed { subtree, .. } = &delete.value else {
+            return false;
+        };
+        let covered: BTreeSet<&NodeId> = (subtree.iter())
+            .flat_map(|ino| self.nodes_of(delete.author, *ino, delete.made))
+            .collect();
+        let above = server.above(node);
+        let brings_back = |id: &NodeId| id == node || above.contains(id) && covered.contains(id);
+        delete.restored
+            || (self.list.iter().enumerate())
+                .skip(j + 1)
+                .any(|(k, later)| {
+                    later.author == delete.author
+                        && later.value == Value::Live
+                        && self.nodes(k).any(brings_back)
+                })
+    }
+
     pub(super) fn restore_deleted(&mut self, d: usize, nodes: &BTreeSet<NodeId>) {
         for i in 0..self.list.len() {
             let restored = self.list[i].author == d
@@ -904,6 +924,7 @@ impl Intents {
                         && self.saw(j, k)
                         && self.same_value(i, k)
                 });
+                let undone = self.nodes(i).any(|id| self.undid(j, id, server));
                 let merged = self.nodes(i).any(|id| {
                     self.merged.contains_key(id)
                         || (self.merged.iter()).any(|(from, into)| into == id && self.on(j, from))
@@ -914,7 +935,8 @@ impl Intents {
                         || saw_the_value
                         || merged
                         || field != Field::Content && intent.lost && other.made > intent.made
-                        || (other.made > intent.made || intent.answer.is_some())
+                        || !undone
+                            && (other.made > intent.made || intent.answer.is_some())
                             && (0..self.list.len()).any(|k| held_as(k) && self.saw(j, k))
                         || intent.restore_answer()
                             && other.author != intent.author
@@ -1185,6 +1207,91 @@ mod tests {
         assert_eq!(settles(1), Ok(()));
         let unseen = settles(2).expect_err("the deleting user never saw write 2");
         assert!(unseen.0.contains("write 2 of the publish"), "{}", unseen.0);
+    }
+
+    #[test]
+    fn a_delete_settles_an_answer_that_republishes_the_write_it_saw_only_while_it_stands() {
+        let node = |id: &str, parent: &str, write: Option<u8>| NodeState {
+            node_id: id.into(),
+            parent_id: parent.into(),
+            name: id.into(),
+            status: NodeStatus::Live as i32,
+            current: write.map(|write| koidrive_proto::v1::VersionInfo {
+                content: Some(koidrive_proto::v1::Content {
+                    manifest_digest: vec![write],
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..NodeState::default()
+        };
+        let in_folder = Server::of(
+            "root",
+            vec![
+                node("f", "root", None),
+                node("n", "f", Some(0)),
+                node("m", "f", Some(0)),
+            ],
+        );
+        let alone = holding(0);
+        let kept = |folder: bool, answered: u64, undo: &dyn Fn(&mut Intents, u128, u64)| {
+            let mut intents = Intents::new(2);
+            for nodes in &mut intents.nodes {
+                nodes.insert(10, [NodeId::from("f")].into());
+                nodes.insert(1, [NodeId::from("n")].into());
+                nodes.insert(2, [NodeId::from("m")].into());
+            }
+            let write = intents.record(1, 1, 1, "write", content(1));
+            intents.seen[0].insert(write, 1);
+            let server = if folder { &in_folder } else { &alone };
+            intents.rewound(server, 2);
+            let keep = |intents: &mut Intents| {
+                intents.answered(1, answered, 1, content(1), Answered::Owed, true);
+            };
+            if answered < 3 {
+                keep(&mut intents);
+            }
+            let (deleted, subtree) = if folder {
+                (10, vec![10, 1, 2])
+            } else {
+                (1, vec![1])
+            };
+            let trashed = Value::Trashed {
+                subtree,
+                replaced_by: None,
+            };
+            intents.record(0, 3, deleted, "delete", trashed);
+            undo(&mut intents, deleted, 4);
+            if answered > 4 {
+                keep(&mut intents);
+            }
+            intents.check(server, |_| false, |_, _| false)
+        };
+        let restore_answer = |intents: &mut Intents, deleted: u128, at| {
+            let node = intents.nodes[0][&deleted].clone();
+            intents.restore_deleted(0, &node);
+            intents.record(0, at, deleted, RESTORE_ANSWER, Value::Live);
+        };
+        let from_the_trash = |intents: &mut Intents, deleted: u128, at| {
+            intents.record(0, at, deleted, "restore", Value::Live);
+        };
+        let the_other_file = |intents: &mut Intents, _: u128, at| {
+            intents.record(0, at, 2, "restore", Value::Live);
+        };
+        for (folder, answered, undo) in [
+            (
+                false,
+                5,
+                &restore_answer as &dyn Fn(&mut Intents, u128, u64),
+            ),
+            (true, 5, &restore_answer),
+            (false, 5, &from_the_trash),
+            (false, 2, &from_the_trash),
+        ] {
+            let lost = kept(folder, answered, undo).expect_err("the user undid the delete");
+            assert!(lost.0.contains("write 1 of the publish"), "{}", lost.0);
+        }
+        assert_eq!(kept(true, 5, &the_other_file), Ok(()));
     }
 
     #[test]

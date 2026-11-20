@@ -1536,7 +1536,7 @@ impl World {
                     (self.intents).record(d, self.moment, ino, RESTORE_ANSWER, Value::Live);
                 }
             }
-            self.forget_restored_deletes(d, question.holds());
+            self.forget_restored_deletes(d);
         }
         Ok(true)
     }
