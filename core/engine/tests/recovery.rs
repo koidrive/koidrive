@@ -6160,3 +6160,558 @@ fn a_folder_another_device_trashed_stays_trashed_everywhere_when_a_commit_built_
  {
     p7_after_another_device_trashed_the_destinations_old_folder(false);
 }
+
+fn replayed(
+    commits: &mut Commits,
+    trees: &mut Trees,
+    ids: &mut IdGen,
+) -> Vec<Vec<(&'static str, String)>> {
+    let mut sent = Vec::new();
+    for seq in 2..12 {
+        let built = ops(commits, trees, ids);
+        if built.is_empty() {
+            return sent;
+        }
+        let before: BTreeMap<NodeId, RemoteNode> = (trees.remote().iter())
+            .map(|(id, node)| (id.clone(), node.clone()))
+            .collect();
+        let mut server = before.clone();
+        let inside = |server: &BTreeMap<NodeId, RemoteNode>, node: &NodeId, top: &NodeId| {
+            let mut at = Some(node);
+            while let Some(id) = at {
+                if id == top {
+                    return true;
+                }
+                at = server.get(id).map(|node| &node.shape.parent);
+            }
+            false
+        };
+        let mut codes = Vec::new();
+        for op in &commits.in_flight().unwrap().commit.ops {
+            let (id, place): (NodeId, Option<(NodeId, String)>) = match &op.op {
+                Some(op::Op::Move(moved)) => {
+                    let place = (moved.new_parent_id.as_str().into(), moved.new_name.clone());
+                    (NodeId::from(moved.node_id.as_str()), Some(place))
+                }
+                Some(op::Op::CreateDir(create)) => {
+                    let place = (create.parent_id.as_str().into(), create.name.clone());
+                    (NodeId::from(create.node_id.as_str()), Some(place))
+                }
+                Some(op::Op::CreateFile(create)) => {
+                    let place = (create.parent_id.as_str().into(), create.name.clone());
+                    (NodeId::from(create.node_id.as_str()), Some(place))
+                }
+                Some(op::Op::Delete(delete)) => (NodeId::from(delete.node_id.as_str()), None),
+                other => panic!("unexpected op {other:?}"),
+            };
+            if let Some(op::Op::Move(moved)) = &op.op
+                && let Some(from) = &moved.from
+            {
+                let node = &server[&id];
+                let into = moved.new_parent_id == ROOT
+                    || (server.get(&moved.new_parent_id.as_str().into()))
+                        .is_some_and(|parent| !parent.trashed);
+                let at = (node.shape.parent.clone(), node.shape.name.as_str());
+                if node.trashed
+                    || at != (from.parent_id.as_str().into(), from.name.as_str())
+                    || !into
+                {
+                    codes.push(op_result::Code::Superseded);
+                    continue;
+                }
+            }
+            codes.push(op_result::Code::Applied);
+            let Some((parent, name)) = place else {
+                let group = format!("{seq}-{id}");
+                let below: Vec<NodeId> = (server.keys())
+                    .filter(|node| inside(&server, node, &id))
+                    .cloned()
+                    .collect();
+                for node in below {
+                    let node = server.get_mut(&node).unwrap();
+                    if !node.trashed {
+                        (node.trashed, node.trash_group) = (true, group.clone());
+                    }
+                }
+                continue;
+            };
+            if let Some(group) = server.get(&id).filter(|node| node.trashed) {
+                let group = group.trash_group.clone();
+                let mut parents = vec![id.clone()];
+                while let Some(up) = parents.pop() {
+                    for (child, node) in server.iter_mut() {
+                        if node.trashed && node.shape.parent == up && node.trash_group == group {
+                            node.trashed = false;
+                            parents.push(child.clone());
+                        }
+                    }
+                }
+            }
+            let mut at = Some(parent.clone());
+            while let Some(folder) = at.and_then(|at| server.get_mut(&at)) {
+                folder.trashed = false;
+                at = Some(folder.shape.parent.clone());
+            }
+            let taken = (server.iter()).find(|(other, node)| {
+                **other != id
+                    && !node.trashed
+                    && node.shape.parent == parent
+                    && same_name(&node.shape.name, &name)
+            });
+            assert_eq!(
+                taken.map(|(other, _)| other),
+                None,
+                "{parent}/{name} in {built:?}"
+            );
+            assert!(
+                !inside(&server, &parent, &id),
+                "{id} into itself in {built:?}"
+            );
+            let shape = (trees.local().get(&id).map(|local| local.shape.clone()))
+                .unwrap_or_else(|| server[&id].shape.clone());
+            let node = server.entry(id).or_insert_with(|| RemoteNode {
+                made_over: Vec::new(),
+                shape,
+                trashed: false,
+                content_rev: 1,
+                edit_rev: 1,
+                meta_rev: seq,
+                meta_edit_rev: seq,
+                trash_group: String::new(),
+                version_id: String::new(),
+                pending_for: None,
+                pending_by: None,
+                chunks: Box::default(),
+            });
+            (node.shape.parent, node.shape.name, node.trashed) = (parent, name, false);
+            node.meta_rev = seq;
+        }
+        for (id, node) in &server {
+            let revived = before.get(id).is_some_and(|before| before.trashed) && !node.trashed;
+            assert!(
+                !revived || trees.local().get(id).is_some(),
+                "{id} revived and left in {built:?}"
+            );
+            trees.set_remote(id.clone(), node.clone());
+        }
+        let results = (codes.into_iter())
+            .map(|code| OpResult {
+                code: code as i32,
+                ..Default::default()
+            })
+            .collect();
+        commits
+            .received(CommitResult {
+                seq,
+                results,
+                ..Default::default()
+            })
+            .unwrap();
+        assert!(commits.acknowledge(trees, seq));
+        trees.settle(commits.aliases());
+        sent.push(built);
+    }
+    panic!("still sending after ten commits: {sent:?}");
+}
+
+fn settled(commits: &Commits, trees: &Trees, sent: &[Vec<(&str, String)>]) {
+    assert_eq!(commits.questions(), [], "{sent:?}");
+    for (id, _) in trees.local().iter() {
+        assert!(
+            trees.remote().get(id).is_some(),
+            "{id} never reached the server in {sent:?}"
+        );
+    }
+    for (id, remote) in trees.remote().iter() {
+        let place = |shape: &Shape| (shape.parent.clone(), shape.name.clone());
+        let local = trees.local().get(id).map(|local| place(&local.shape));
+        let synced = trees.synced().live(id).map(place);
+        let expected = match remote.trashed {
+            true if local == synced => None,
+            false if local.is_none() && synced.is_none() => Some(place(&remote.shape)),
+            _ => local,
+        };
+        assert_eq!(
+            (!remote.trashed).then(|| place(&remote.shape)),
+            expected,
+            "{id} in {sent:?}"
+        );
+    }
+}
+
+#[test]
+fn carried_moves_go_after_the_moves_they_need_and_leave_no_revived_trash_behind() {
+    struct Case {
+        name: &'static str,
+        local: Vec<(&'static str, Shape)>,
+        synced: Vec<(&'static str, Shape)>,
+        remote: Vec<Remote<'static>>,
+        groups: Vec<(&'static str, &'static str)>,
+        moved: Vec<(&'static str, Shape)>,
+        order: Vec<[(&'static str, &'static str); 2]>,
+    }
+    let live_folder_swap = |extra: Vec<(&'static str, Shape, Option<Shape>)>, name| {
+        let mut case = Case {
+            name,
+            local: vec![
+                ("a", dir(ROOT, "new")),
+                ("c", dir("a", "c")),
+                ("b", file("c", "child", 1)),
+                ("x", dir(ROOT, "x")),
+            ],
+            synced: vec![
+                ("a", dir(ROOT, "old")),
+                ("c", dir("a", "c")),
+                ("b", file("c", "child", 1)),
+                ("x", dir(ROOT, "x")),
+                ("d", dir("x", "d")),
+            ],
+            remote: vec![
+                Remote("a", dir(ROOT, "old"), true, 1),
+                Remote("c", dir("a", "c"), true, 1),
+                Remote("b", file("c", "child", 1), true, 1),
+                Remote("x", dir(ROOT, "x"), false, 1),
+                Remote("d", dir("x", "d"), false, 1),
+            ],
+            groups: vec![],
+            moved: vec![("b", file("d", "child", 1))],
+            order: vec![[("move", "d"), ("move", "b")]],
+        };
+        for (id, here, before) in extra {
+            case.local.push((id, here));
+            if let Some(before) = before {
+                case.synced.push((id, before.clone()));
+                case.remote.push(Remote(id, before, false, 1));
+            }
+        }
+        case
+    };
+    let carried_into_a_new_folder = |extra: Vec<(&'static str, Shape)>,
+                                     more: Vec<Remote<'static>>,
+                                     moved: Vec<(&'static str, Shape)>,
+                                     name| {
+        let mut local = vec![
+            ("a", dir(ROOT, "b")),
+            ("n", dir("a", "n")),
+            ("b", dir("n", "b")),
+            ("c", dir("a", "c")),
+            ("d", dir("c", "d")),
+        ];
+        let mut synced = vec![
+            ("a", dir(ROOT, "a")),
+            ("b", dir(ROOT, "b")),
+            ("c", dir("a", "c")),
+            ("d", dir("c", "d")),
+        ];
+        let mut remote = vec![
+            Remote("a", dir(ROOT, "a"), true, 1),
+            Remote("b", dir(ROOT, "b"), false, 1),
+            Remote("c", dir("a", "c"), true, 1),
+            Remote("d", dir("c", "d"), true, 1),
+        ];
+        for (id, shape) in extra {
+            local.push((id, shape.clone()));
+            if more.iter().any(|Remote(other, ..)| *other == id) {
+                synced.push((id, shape));
+            }
+        }
+        remote.extend(more);
+        Case {
+            name,
+            local,
+            synced,
+            remote,
+            groups: vec![],
+            moved,
+            order: vec![],
+        }
+    };
+    let mut cases = vec![
+        Case {
+            name: "the original hazard: a live folder's own move goes before the move carried into it",
+            local: vec![
+                ("a", dir(ROOT, "new")),
+                ("c", dir("a", "c")),
+                ("b", file("c", "child", 1)),
+                ("x", dir(ROOT, "x")),
+                ("d", dir(ROOT, "d")),
+            ],
+            synced: vec![
+                ("a", dir(ROOT, "old")),
+                ("c", dir("a", "c")),
+                ("b", file("c", "child", 1)),
+                ("x", dir(ROOT, "x")),
+                ("d", dir("x", "d")),
+            ],
+            remote: vec![
+                Remote("a", dir(ROOT, "old"), true, 1),
+                Remote("c", dir("a", "c"), true, 1),
+                Remote("b", file("c", "child", 1), true, 1),
+                Remote("x", dir(ROOT, "x"), false, 1),
+                Remote("d", dir("x", "d"), false, 1),
+            ],
+            groups: vec![],
+            moved: vec![("b", file("d", "child", 1))],
+            order: vec![
+                [("move", "d"), ("move", "b")],
+                [("move", "a"), ("move", "b")],
+                [("move", "b"), ("delete", "c")],
+            ],
+        },
+        live_folder_swap(
+            vec![("n", dir(ROOT, "n"), None), ("d", dir("n", "d"), None)],
+            "p3b: the folder moves into a new folder",
+        ),
+        live_folder_swap(
+            vec![
+                ("y", dir(ROOT, "y"), Some(dir("d", "y"))),
+                ("d", dir("y", "d"), None),
+            ],
+            "p4: the folder moves into its own child",
+        ),
+        live_folder_swap(
+            vec![
+                ("y", dir(ROOT, "y"), Some(dir("d", "y"))),
+                ("d", dir("y", "d"), None),
+                ("z", dir("d", "z"), Some(dir(ROOT, "y"))),
+            ],
+            "p17: the folder moves into its child, which takes a name a leaving node holds",
+        ),
+        Case {
+            name: "the answer is set aside under a name the carried folder leaves",
+            local: vec![
+                ("b", dir(ROOT, "a")),
+                ("a", dir("b", "a")),
+                ("d", dir("a", "d")),
+                ("f", file("a", "b", 1)),
+            ],
+            synced: vec![
+                ("b", dir(ROOT, "b")),
+                ("c", dir("b", "c")),
+                ("d", dir("c", "d")),
+                ("a", dir(ROOT, "a")),
+            ],
+            remote: vec![
+                Remote("b", dir(ROOT, "b"), true, 1),
+                Remote("c", dir("b", "c"), true, 1),
+                Remote("d", dir("c", "d"), true, 1),
+                Remote("a", dir(ROOT, "a"), false, 1),
+            ],
+            groups: vec![],
+            moved: vec![],
+            order: vec![
+                [("move", "b"), ("move", "d")],
+                [("move", "d"), ("delete", "c")],
+            ],
+        },
+        carried_into_a_new_folder(
+            vec![],
+            vec![],
+            vec![("d", dir("b", "d"))],
+            "r5: the carried move goes into a folder that moves into a new folder",
+        ),
+        carried_into_a_new_folder(
+            vec![("f", file("d", "f", 1))],
+            vec![Remote("f", file("d", "f", 1), true, 1)],
+            vec![("d", dir("b", "d")), ("f", file("n", "f", 1))],
+            "KOI-1523: an earlier carried move takes another moved node out of the trashed folder",
+        ),
+        carried_into_a_new_folder(
+            vec![("f", file(ROOT, "b (pending)", 1))],
+            vec![],
+            vec![("d", dir("b", "d"))],
+            "the made-up name: a new file takes the name the carried folder leaves",
+        ),
+        Case {
+            name: "KOI-1523: a second answer waits for its folder's move once the first lets it go",
+            local: vec![
+                ("a", dir(ROOT, "a1")),
+                ("n", dir("a", "n")),
+                ("b", dir("n", "b")),
+                ("c", dir("a", "c")),
+                ("d", dir("c", "d")),
+                ("e", dir(ROOT, "e1")),
+                ("g", dir("e", "g")),
+                ("i", dir("g", "i")),
+                ("h", dir("n", "h")),
+                ("x", dir(ROOT, "x")),
+            ],
+            synced: vec![
+                ("a", dir(ROOT, "a")),
+                ("b", dir(ROOT, "b")),
+                ("c", dir("a", "c")),
+                ("d", dir("c", "d")),
+                ("e", dir(ROOT, "e")),
+                ("g", dir("e", "g")),
+                ("i", dir("g", "i")),
+                ("h", dir("x", "h")),
+                ("x", dir(ROOT, "x")),
+            ],
+            remote: vec![
+                Remote("a", dir(ROOT, "a"), true, 1),
+                Remote("b", dir(ROOT, "b"), false, 1),
+                Remote("c", dir("a", "c"), true, 1),
+                Remote("d", dir("c", "d"), true, 1),
+                Remote("e", dir(ROOT, "e"), true, 1),
+                Remote("g", dir("e", "g"), true, 1),
+                Remote("i", dir("g", "i"), true, 1),
+                Remote("h", dir("x", "h"), false, 1),
+                Remote("x", dir(ROOT, "x"), false, 1),
+            ],
+            groups: vec![("e", "e"), ("g", "e"), ("i", "e")],
+            moved: vec![("d", dir("b", "d")), ("i", dir("h", "i"))],
+            order: vec![[("move", "h"), ("move", "i")]],
+        },
+        Case {
+            name: "a carried folder's destination moves out of a trashed parent in another trash group",
+            local: vec![
+                ("a", dir(ROOT, "new")),
+                ("x", dir(ROOT, "x")),
+                ("d", dir("x", "d")),
+                ("b", dir("d", "b")),
+            ],
+            synced: vec![
+                ("a", dir(ROOT, "old")),
+                ("c", dir("a", "c")),
+                ("b", dir("c", "b")),
+                ("d", dir(ROOT, "d")),
+                ("p", dir(ROOT, "p")),
+                ("x", dir("p", "x")),
+            ],
+            remote: vec![
+                Remote("a", dir(ROOT, "old"), true, 1),
+                Remote("c", dir("a", "c"), true, 1),
+                Remote("b", dir("c", "b"), true, 1),
+                Remote("d", dir(ROOT, "d"), false, 1),
+                Remote("p", dir(ROOT, "p"), true, 1),
+                Remote("x", dir("p", "x"), true, 1),
+            ],
+            groups: vec![("p", "p"), ("x", "x")],
+            moved: vec![],
+            order: vec![
+                [("move", "x"), ("move", "d")],
+                [("move", "d"), ("move", "b")],
+            ],
+        },
+        Case {
+            name: "a carried folder brings back its own trash group",
+            local: vec![
+                ("a", dir(ROOT, "new")),
+                ("c", dir("a", "c")),
+                ("b", dir("c", "b")),
+                ("x", dir(ROOT, "x")),
+            ],
+            synced: vec![
+                ("a", dir(ROOT, "old")),
+                ("c", dir("a", "c")),
+                ("b", dir("c", "b")),
+                ("f", dir("b", "f")),
+                ("x", dir(ROOT, "x")),
+            ],
+            remote: vec![
+                Remote("a", dir(ROOT, "old"), true, 1),
+                Remote("c", dir("a", "c"), true, 1),
+                Remote("b", dir("c", "b"), true, 1),
+                Remote("f", dir("b", "f"), true, 1),
+                Remote("x", dir(ROOT, "x"), false, 1),
+            ],
+            groups: vec![("b", "inner"), ("f", "inner")],
+            moved: vec![("b", dir("x", "b"))],
+            order: vec![
+                [("move", "b"), ("delete", "f")],
+                [("delete", "f"), ("move", "a")],
+            ],
+        },
+    ];
+    cases.retain(|case| std::env::var("CASE").map_or(true, |name| case.name.contains(&name)));
+    assert!(!cases.is_empty(), "no case matches CASE");
+    for case in cases {
+        let mut trees = trees(&case.local, &case.synced, &case.remote);
+        for (id, group) in &case.groups {
+            let mut node = trees.remote().get(&(*id).into()).unwrap().clone();
+            node.trash_group = (*group).to_owned();
+            trees.set_remote((*id).into(), node);
+        }
+        let (mut commits, mut ids) = recovered(&mut trees, 0);
+        for question in commits.questions().to_vec() {
+            assert!(
+                commits.decide(&mut trees, &question.id, Answer::Publish),
+                "{}",
+                case.name
+            );
+        }
+        for (id, shape) in &case.moved {
+            let mut moved = trees.local().get(&(*id).into()).unwrap().clone();
+            moved.shape = shape.clone();
+            trees.set_local((*id).into(), moved);
+        }
+        trees.settle(&Default::default());
+        let sent = replayed(&mut commits, &mut trees, &mut ids);
+        let all: Vec<_> = sent.iter().flatten().collect();
+        let at = |op: (&str, &str)| {
+            (all.iter().position(|sent| **sent == (op.0, op.1.into())))
+                .unwrap_or_else(|| panic!("{}: {op:?} not in {sent:?}", case.name))
+        };
+        for [first, then] in &case.order {
+            assert!(at(*first) < at(*then), "{}: {sent:?}", case.name);
+        }
+        settled(&commits, &trees, &sent);
+    }
+}
+
+#[test]
+fn a_move_carried_into_a_folder_another_question_holds_lands_at_its_server_place() {
+    let mut trees = trees(
+        &[
+            ("a", dir(ROOT, "new")),
+            ("c", dir("a", "c")),
+            ("b", file("c", "child", 1)),
+            ("x", dir(ROOT, "x")),
+            ("q", dir(ROOT, "q")),
+            ("d", dir("q", "d")),
+        ],
+        &[
+            ("a", dir(ROOT, "old")),
+            ("c", dir("a", "c")),
+            ("b", file("c", "child", 1)),
+            ("x", dir(ROOT, "x")),
+            ("d", dir("x", "d")),
+            ("q", dir(ROOT, "q")),
+        ],
+        &[
+            Remote("a", dir(ROOT, "old"), true, 1),
+            Remote("c", dir("a", "c"), true, 1),
+            Remote("b", file("c", "child", 1), true, 1),
+            Remote("x", dir(ROOT, "x"), false, 1),
+            Remote("d", dir("x", "d"), false, 1),
+        ],
+    );
+    let (mut commits, mut ids) = recovered(&mut trees, 0);
+    let holding = |commits: &Commits, id: &str| {
+        let id = NodeId::from(id);
+        (commits.questions().iter())
+            .find(|question| question.holds().any(|node| *node == id))
+            .map(|question| question.id.clone())
+            .unwrap()
+    };
+    assert!(commits.decide(&mut trees, &holding(&commits, "a"), Answer::Publish));
+    let mut moved = trees.local().get(&"b".into()).unwrap().clone();
+    moved.shape = file("d", "child", 1);
+    trees.set_local("b".into(), moved);
+    trees.settle(&Default::default());
+    let first = replayed(&mut commits, &mut trees, &mut ids);
+    let place = |trees: &Trees, id: &str| {
+        trees
+            .remote()
+            .get(&id.into())
+            .map(|node| node.shape.clone())
+    };
+    assert_eq!(place(&trees, "b"), Some(file("d", "child", 1)), "{first:?}");
+    assert_eq!(place(&trees, "d"), Some(dir("x", "d")), "{first:?}");
+    commits.hold(&mut trees);
+    assert!(trees.set_aside(&"d".into()) && trees.set_aside(&"q".into()));
+    assert!(commits.decide(&mut trees, &holding(&commits, "q"), Answer::Keep));
+    let mut sent = first;
+    sent.extend(replayed(&mut commits, &mut trees, &mut ids));
+    settled(&commits, &trees, &sent);
+}

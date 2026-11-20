@@ -6407,8 +6407,10 @@ impl<'a> Scratch<'a> {
 
     /// The wants that must go into the same commit right after `want`, so that what it brings
     /// back from the trash with an answered node's trash group (R8) and L does not keep is trashed
-    /// again (section 6.4), or none when one of them would not apply after it: the indices of the
-    /// planned moves that must leave a folder before it is trashed again, then the trashes.
+    /// again (section 6.4), or none when one of them would not apply after it or the result would
+    /// leave live a node brought back from the trash that L does not hold: the indices of the
+    /// planned moves that must leave a folder before it is trashed again, ordered against every
+    /// pending move as ordinary planning orders them, then the trashes.
     fn compensation(
         &self,
         want: &Want,
@@ -6504,6 +6506,23 @@ impl<'a> Scratch<'a> {
             })
             .cloned()
             .collect();
+        let follows_answer = |node: &NodeId| {
+            let mut at = placed(node);
+            for _ in 0..=revived.len() + self.creating.len() + self.moves.len() {
+                let Some(up) = at else {
+                    return false;
+                };
+                if up == id || revived.contains(up) {
+                    return true;
+                }
+                at = placed(up);
+            }
+            false
+        };
+        let pending: BTreeSet<NodeId> = (moving.iter())
+            .filter(|node| *node != id && !follows_answer(node))
+            .cloned()
+            .collect();
         let mut carried = Vec::new();
         let mut bundle = Vec::new();
         for top in &outside {
@@ -6513,7 +6532,7 @@ impl<'a> Scratch<'a> {
             {
                 continue;
             }
-            let leaving: Vec<usize> = (wants.iter().enumerate())
+            let mut leaving: Vec<usize> = (wants.iter().enumerate())
                 .filter(|(at, slot)| {
                     matches!(slot, Some(moved @ Want::Move { id: moved_id, .. })
                         if moved_id != id
@@ -6523,52 +6542,68 @@ impl<'a> Scratch<'a> {
                 })
                 .map(|(at, _)| at)
                 .collect();
-            for at in leaving {
-                let moved = wants[at].as_ref().expect("found");
-                let Want::Move {
-                    id,
-                    parent,
-                    name,
-                    guarded,
-                    ..
-                } = moved
-                else {
-                    unreachable!("only moves leave");
-                };
-                let kind = scratch.kind(id).expect("moved nodes are in R");
-                let pending_at = match scratch.kind(parent) {
-                    None => match scratch.parent(top) {
-                        Some(at) => Some(at.to_owned()),
-                        None => return unfit(),
-                    },
-                    Some(_) => match scratch.fit(moved, &BTreeSet::new()) {
-                        Fit::Valid => None,
-                        Fit::NameTaken
-                            if (scratch.name_holders(moved))
-                                .all(|holder| holder == id || outside.contains(holder)) =>
-                        {
-                            Some(parent.clone())
+            while !leaving.is_empty() {
+                let waiting = leaving.len();
+                for at in std::mem::take(&mut leaving) {
+                    let moved = wants[at].as_ref().expect("found");
+                    let Want::Move {
+                        id,
+                        parent,
+                        name,
+                        guarded,
+                        ..
+                    } = moved
+                    else {
+                        unreachable!("only moves leave");
+                    };
+                    let kind = scratch.kind(id).expect("moved nodes are in R");
+                    let trashed = (scratch.group(id))
+                        .filter(|_| !scratch.live(id))
+                        .map(str::to_owned);
+                    let pending_at = match scratch.kind(parent) {
+                        None => match scratch.parent(top) {
+                            Some(at) => Some(at.to_owned()),
+                            None => return unfit(),
+                        },
+                        Some(_) => match scratch.fit(moved, &pending) {
+                            Fit::Valid => None,
+                            Fit::Wait => {
+                                leaving.push(at);
+                                continue;
+                            }
+                            Fit::NameTaken
+                                if (scratch.name_holders(moved))
+                                    .all(|holder| holder == id || outside.contains(holder)) =>
+                            {
+                                Some(parent.clone())
+                            }
+                            _ => return unfit(),
+                        },
+                    };
+                    let aside = pending_at.map(|at| Want::Move {
+                        id: id.clone(),
+                        name: scratch.free_name(&at, name),
+                        parent: at,
+                        pending_for: Some(name.clone()),
+                        guarded: *guarded,
+                    });
+                    match &aside {
+                        Some(aside @ Want::Move { parent, name, .. }) => {
+                            if scratch.fit(aside, &pending) != Fit::Valid {
+                                return None;
+                            }
+                            scratch.place(id, parent, name, kind);
                         }
-                        _ => return unfit(),
-                    },
-                };
-                let aside = pending_at.map(|at| Want::Move {
-                    id: id.clone(),
-                    name: scratch.free_name(&at, name),
-                    parent: at,
-                    pending_for: Some(name.clone()),
-                    guarded: *guarded,
-                });
-                match &aside {
-                    Some(aside @ Want::Move { parent, name, .. }) => {
-                        if scratch.fit(aside, &BTreeSet::new()) != Fit::Valid {
-                            return None;
-                        }
-                        scratch.place(id, parent, name, kind);
+                        _ => scratch.place(id, parent, name, kind),
                     }
-                    _ => scratch.place(id, parent, name, kind),
+                    if let Some(group) = trashed {
+                        scratch.revive_group(id, &group);
+                    }
+                    carried.push((at, aside));
                 }
-                carried.push((at, aside));
+                if leaving.len() == waiting {
+                    return unfit();
+                }
             }
             let members = (scratch.subtree(top).into_iter())
                 .filter(|node| outside.contains(node))
@@ -6583,6 +6618,15 @@ impl<'a> Scratch<'a> {
             }
             scratch.trash(top);
             bundle.push(retrash);
+        }
+        let left_behind = (scratch.nodes.iter()).any(|(node, entry)| {
+            entry.live
+                && !self.live(node)
+                && trees.local().get(node).is_none()
+                && !restored.contains(node)
+        });
+        if answered.is_some() && left_behind {
+            return None;
         }
         Some((carried, bundle))
     }
@@ -6718,5 +6762,85 @@ mod ancestry_size_tests {
         }
         assert!(encoded <= estimated, "{encoded} > {estimated}");
         assert!(estimated <= MAX_COMMIT_BYTES, "{estimated}");
+    }
+}
+
+#[cfg(test)]
+mod compensation_tests {
+    use super::*;
+    use crate::tree::{FileIdentity, LocalNode, RemoteNode};
+
+    fn dir(parent: &str, name: &str) -> Shape {
+        Shape {
+            parent: parent.into(),
+            name: name.into(),
+            kind: Kind::Dir,
+            content: None,
+        }
+    }
+
+    #[test]
+    fn a_bundle_that_leaves_a_folder_live_that_the_trash_gave_back_and_l_does_not_hold_is_refused()
+    {
+        let mut trees = Trees::new("root");
+        let local = [
+            ("a", dir("root", "new")),
+            ("x", dir("root", "x")),
+            ("b", dir("x", "b")),
+        ];
+        for (ino, (id, shape)) in local.into_iter().enumerate() {
+            let identity = FileIdentity {
+                ino: ino as u128 + 1,
+                birth_ns: Some(0),
+                handle: None,
+            };
+            let node = LocalNode {
+                left_out_when_placed: false,
+                content_from_server: false,
+                shape,
+                identity,
+                parked: false,
+                chunks: Box::default(),
+            };
+            trees.set_local(id.into(), node);
+        }
+        let remote = [
+            ("a", dir("root", "old"), "g1"),
+            ("c", dir("a", "c"), "g1"),
+            ("b", dir("c", "b"), "g1"),
+            ("p", dir("root", "p"), "g2"),
+            ("x", dir("p", "x"), "g3"),
+        ];
+        for (id, shape, group) in remote {
+            trees.set_synced(id.into(), Some(shape.clone()));
+            let node = RemoteNode {
+                made_over: Vec::new(),
+                shape,
+                trashed: true,
+                content_rev: 1,
+                edit_rev: 1,
+                meta_rev: 1,
+                meta_edit_rev: 1,
+                trash_group: group.into(),
+                version_id: String::new(),
+                pending_for: None,
+                pending_by: None,
+                chunks: Box::default(),
+            };
+            trees.set_remote(id.into(), node);
+        }
+        let moved = |id: &str, parent: &str, name: &str| Want::Move {
+            id: id.into(),
+            parent: parent.into(),
+            name: name.into(),
+            guarded: false,
+            pending_for: None,
+        };
+        let wants = [Some(moved("a", "root", "new")), Some(moved("b", "x", "b"))];
+        let moving = BTreeSet::from(["a".into(), "b".into()]);
+        let answers = BTreeSet::from(["a".into()]);
+        let scratch = Scratch::new(&trees);
+        let answer = wants[0].as_ref().unwrap();
+        assert!((scratch.compensation(answer, &answers, &trees, &wants, &moving)).is_none());
     }
 }
