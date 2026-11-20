@@ -1665,3 +1665,41 @@ fn a_copy_of_a_resend_beside_another_devices_later_edit_is_no_change_of_this_dev
     assert!(state.resends.contains(&NodeId::from(&create.node_id)));
     assert!(!state.local_changes.contains(&NodeId::from(&create.node_id)));
 }
+
+#[test]
+fn a_node_sent_again_after_a_loss_to_a_place_its_rules_exclude_on_the_server_is_created_where_l_holds_it() {
+    for renamed in [false, true] {
+        let folder = if renamed { "p" } else { "blocked" };
+        let mut trees = trees(&[
+            synced("b", dir(ROOT, folder)),
+            synced("f", file(ROOT, "f", 1)),
+        ]);
+        if renamed {
+            trees.set_remote("b".into(), remote_at(dir(ROOT, "blocked"), 2));
+        }
+        trees.set_rules(
+            &[] as &[&str],
+            koidrive_engine::ignore::Source::Koiignore,
+            Some(koidrive_engine::ignore::RuleFile::parse(b"/blocked/\n")),
+        );
+        trees.set_remote("f".into(), remote_at(file("b", "f", 1), 3));
+        trees.settle(&Default::default());
+        assert!(trees.excluded(&"f".into()), "{renamed}");
+        let synced = trees.taken_from_others(|_| false);
+        trees.remove_remote(&"f".into());
+        trees.forget_lost(Vec::new(), Vec::new(), synced, Vec::new(), Vec::new(), Default::default(), &Default::default(), 0, 0);
+        trees.settle(&Default::default());
+        assert!(trees.state().lost_positions.contains_key(&"f".into()), "{renamed}");
+        assert!(!trees.excluded(&"f".into()), "{renamed}");
+        let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+        let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
+        let created: Vec<(String, String, String)> = (ops(&commit).into_iter())
+            .filter_map(|op| match op {
+                op::Op::CreateFile(create) => Some((create.node_id, create.parent_id, create.name)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(created, [("f".into(), ROOT.into(), "f".into())], "{renamed}");
+    }
+}
+

@@ -4776,8 +4776,18 @@ fn plan(
                 let Want::Create { id, shape, .. } = want else {
                     return None;
                 };
+                let left_out = || {
+                    let above = match shape.parent == trees.local().root {
+                        true => Some(Vec::new()),
+                        false => path(trees.remote(), &shape.parent).map(|(names, _)| names),
+                    };
+                    above.is_some_and(|mut names| {
+                        names.push(&shape.name);
+                        trees.ignores(&names, shape.kind)
+                    })
+                };
                 let local = (trees.local().get(id))
-                    .filter(|_| trees.lost_position(id).is_some() && !placed(id))?;
+                    .filter(|_| trees.lost_position(id).is_some() && (!placed(id) || left_out()))?;
                 let parent = aliases
                     .get(&local.shape.parent)
                     .unwrap_or(&local.shape.parent);
