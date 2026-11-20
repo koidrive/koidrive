@@ -2691,7 +2691,7 @@ impl Commits {
                         agreed.extend(agree(trees, &create_id, result.seq));
                         synced.set(&create_id, Some(shape));
                     } else if superseded && trees.remote().get(&create_id).is_none() {
-                        trees.take_lost_position(
+                        trees.give_way_to_purge(
                             create_id.clone(),
                             shape,
                             Origin::Commit(flight.commit.device_seq),
@@ -6358,7 +6358,7 @@ impl<'a> Scratch<'a> {
         if self.inside(parent, id) {
             return Fit::Cycle;
         }
-        if self.kind(parent) != Some(Kind::Dir) {
+        if self.kind(parent) != Some(Kind::Dir) && !self.trees.purged_folder(parent) {
             return Fit::Wait;
         }
         let taken = self.holders(parent, name).any(|other| other != id);
