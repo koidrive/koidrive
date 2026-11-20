@@ -578,7 +578,7 @@ struct Device {
     acted: BTreeSet<NodeId>,
     acked: BTreeSet<NodeId>,
     removed_from: BTreeMap<NodeId, NodeId>,
-    brought_by_others: BTreeSet<NodeId>,
+    arrivals: BTreeMap<NodeId, BTreeSet<NodeId>>,
     on_server_when_taken_along: BTreeMap<NodeId, BTreeMap<NodeId, NodeId>>,
     kept_back: BTreeSet<NodeId>,
     relocated: BTreeMap<NodeId, Relocation>,
@@ -614,6 +614,38 @@ impl Device {
         }
     }
 
+    fn note_arrival(&mut self, node: &NodeId) {
+        let inside = |parent: &dyn Fn(&NodeId) -> Option<NodeId>, folder: &NodeId| {
+            let mut seen = BTreeSet::new();
+            let mut current = Some(node.clone());
+            while let Some(at) = current.filter(|at| seen.insert(at.clone())) {
+                if at == *folder {
+                    return true;
+                }
+                current = parent(&at);
+            }
+            false
+        };
+        let remote = |at: &NodeId| {
+            self.trees
+                .remote()
+                .live(at)
+                .map(|shape| shape.parent.clone())
+        };
+        let folders: BTreeSet<NodeId> = (self.on_server_when_taken_along.iter())
+            .filter(|(folder, baseline)| {
+                inside(&remote, folder) && !inside(&|at| baseline.get(at).cloned(), folder)
+            })
+            .map(|(folder, _)| folder.clone())
+            .collect();
+        if !folders.is_empty() {
+            self.arrivals
+                .entry(node.clone())
+                .or_default()
+                .extend(folders);
+        }
+    }
+
     fn new(trees: Trees) -> Self {
         Self {
             trees,
@@ -625,7 +657,7 @@ impl Device {
             acted: BTreeSet::new(),
             acked: BTreeSet::new(),
             removed_from: BTreeMap::new(),
-            brought_by_others: BTreeSet::new(),
+            arrivals: BTreeMap::new(),
             on_server_when_taken_along: BTreeMap::new(),
             kept_back: BTreeSet::new(),
             relocated: BTreeMap::new(),
@@ -667,7 +699,7 @@ impl Device {
                 continue;
             };
             if !answered {
-                self.brought_by_others.insert(node.clone());
+                self.note_arrival(&node);
             }
             let Some(moved) = self.relocated.get_mut(&node) else {
                 continue;
@@ -2028,13 +2060,14 @@ fn acted_below(
         let mut seen = BTreeSet::new();
         let mut current = Some(entry.to_owned());
         while let Some(at) = current.filter(|at| at != id && seen.insert(at.clone())) {
-            if device.brought_by_others.contains(&at)
-                && !belongs_here(&at)
-                && reaches(&at, &in_remote)
+            if device
+                .arrivals
+                .get(&at)
+                .is_some_and(|folders| folders.contains(id))
             {
                 return true;
             }
-            current = in_local(&at);
+            current = in_remote(&at);
         }
         false
     };

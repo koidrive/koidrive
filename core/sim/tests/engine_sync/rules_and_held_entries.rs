@@ -763,7 +763,7 @@ fn renaming_an_entry_another_device_brought_into_a_taken_along_folder_changes_th
         local.shape.name = "g2".into();
         device.trees.set_local(g.clone(), local);
         if brought {
-            device.brought_by_others.insert(g.clone());
+            device.note_arrival(&g);
         }
         device.acted.insert(g);
         assert_eq!(
@@ -1551,4 +1551,82 @@ fn a_synced_file_moved_into_a_new_folder_below_a_folder_renamed_out_on_the_serve
         .unwrap();
         assert_eq!((ran.deletes, ran.removals, ran.trashed), (0, 0, 0));
     }
+}
+fn an_arrival(device: &mut Device, parent: &str) {
+    device.receive(
+        &[ChangeRecord {
+            change: Some(change_record::Change::Node(NodeState {
+                node_id: "arrival".into(),
+                parent_id: parent.into(),
+                name: "arrival".into(),
+                kind: 1,
+                status: 1,
+                ..Default::default()
+            })),
+        }],
+        false,
+    );
+}
+
+#[test]
+fn an_entry_the_user_creates_inside_an_arrival_makes_the_discarded_folder_the_users() {
+    let (mut device, kept, discarded) = a_file_in_a_taken_along_server_folder();
+    device.note_taken_along([&"s".into()]);
+    an_arrival(&mut device, "s");
+    place_dir(&mut device, "arrival", Some(("s", "arrival")), None);
+    let arrival: NodeId = "arrival".into();
+    let parent = 1 + device
+        .trees
+        .local()
+        .iter()
+        .filter(|(_, n)| n.shape.kind == Kind::Dir)
+        .position(|(id, _)| id == &arrival)
+        .unwrap();
+    device.act(&act(0, 0, parent, 0, 0));
+    let child = device.acted.iter().next().unwrap();
+    assert_eq!(
+        device.trees.local().get(child).unwrap().shape.parent,
+        arrival
+    );
+    assert!(device.trees.remote().get(child).is_none());
+    assert!(
+        revive(&device, &discarded, &kept, &BTreeSet::new()).contains(&"h".into()),
+        "creating a new entry under the arrival still changes s, and h should be reclaimed"
+    );
+}
+
+#[test]
+fn a_rename_of_an_arrival_another_device_then_moves_out_changes_that_entry_alone() {
+    let (mut device, kept, discarded) = a_file_in_a_taken_along_server_folder();
+    let (arrival, s): (NodeId, NodeId) = ("arrival".into(), "s".into());
+    device.note_taken_along([&s]);
+    an_arrival(&mut device, "s");
+    place_dir(&mut device, "arrival", Some(("s", "arrival")), None);
+    let fetched = device.trees.remote().live(&arrival).cloned();
+    device.trees.set_synced(arrival.clone(), fetched);
+    let parent = 1 + device
+        .trees
+        .local()
+        .iter()
+        .filter(|(_, n)| n.shape.kind == Kind::Dir)
+        .position(|(id, _)| id == &s)
+        .unwrap();
+    let target = device
+        .trees
+        .local()
+        .iter()
+        .position(|(id, _)| id == &arrival)
+        .unwrap();
+    device.act(&act(3, target, parent, 0, 0));
+    assert_eq!(device.trees.local().get(&arrival).unwrap().shape.parent, s);
+    assert_ne!(
+        device.trees.local().get(&arrival).unwrap().shape.name,
+        "arrival"
+    );
+    assert!(!acted_below(&device, &s, &kept, &discarded));
+    an_arrival(&mut device, "root");
+    assert!(
+        !revive(&device, &discarded, &kept, &BTreeSet::new()).contains(&"h".into()),
+        "the user's outstanding rename was to an arrival, even after R moved the entry away"
+    );
 }
