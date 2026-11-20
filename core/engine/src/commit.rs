@@ -4083,7 +4083,7 @@ fn settle_kept_folders(trees: &mut Trees, ids: &mut IdGen, now_ms: u64) {
     trees.keep_folders_of_kept_folders();
     loop {
         let ended: Vec<NodeId> = (trees.kept_folders().iter())
-            .filter(|id| !trees.kept_folder(id) && !trees.kept_rules_file(id))
+            .filter(|id| !trees.holds_kept_folder(id) && !trees.kept_rules_file(id))
             .cloned()
             .collect();
         if ended.is_empty() {
@@ -4098,9 +4098,18 @@ fn settle_kept_folders(trees: &mut Trees, ids: &mut IdGen, now_ms: u64) {
                 continue;
             }
             if local.kind == Kind::File {
+                trees.give_up(&id);
                 rekey(trees, &id, &NodeId::from(ids.uuid_v7(now_ms)));
                 continue;
             }
+            let rules: Vec<NodeId> = (trees.local_children(&id))
+                .filter(|child| trees.left_rules_file(child))
+                .cloned()
+                .collect();
+            for child in &rules {
+                trees.give_up(child);
+            }
+            trees.give_up(&id);
             let taken = twin(trees, &local, true);
             if taken.is_some() {
                 trees.take_kept_entries(&id);
@@ -4112,11 +4121,10 @@ fn settle_kept_folders(trees: &mut Trees, ids: &mut IdGen, now_ms: u64) {
             if taken.is_some() {
                 trees.set_synced_if_valid(to.clone(), Some(local));
             }
-            let rules: Vec<(NodeId, Shape)> = (trees.local_children(&to))
-                .filter(|child| trees.left_rules_file(child))
-                .filter_map(|child| Some((child.clone(), trees.local().get(child)?.shape.clone())))
-                .collect();
-            for (child, shape) in rules {
+            for child in rules {
+                let Some(shape) = trees.local().get(&child).map(|node| node.shape.clone()) else {
+                    continue;
+                };
                 let deleted = (trees.remote().get(&child))
                     .is_some_and(|remote| same_contents(&remote.shape, &shape));
                 match (twin(trees, &shape, true), taken.is_some() && deleted) {

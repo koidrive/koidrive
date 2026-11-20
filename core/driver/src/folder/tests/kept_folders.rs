@@ -2188,29 +2188,20 @@ fn a_rules_file_edited_after_a_purge_stays_beside_a_folder_made_at_its_kept_fold
 #[test]
 fn a_rules_file_edited_while_its_emptied_kept_folder_waits_to_go_survives_a_purge() {
     for rules in [".koiignore", ".gitignore"] {
-        let (mut remote, _, _, site, mut b, old) =
-            deleted_with_rules_files(&[(rules, ".env\n")], &["README.md"], &[".env"]);
-        let file = site.root.join("app").join(rules);
-        let target = file.clone();
-        let edited = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let edits = edited.clone();
-        b.folder.disk.set_hook(Box::new(move |cut| {
-            if cut == crate::disk::Cut::AfterPlan
-                && !edits.swap(true, std::sync::atomic::Ordering::SeqCst)
-            {
-                fs::write(&target, b".env\n*.log\n").unwrap();
-            }
-        }));
-        fs::remove_file(site.root.join("app/.env")).unwrap();
-        b.scan_until(|_| edited.load(std::sync::atomic::Ordering::SeqCst));
-        for (name, id, _) in server_nodes(&remote) {
-            assert!(name == "app" || remote.space.purge(&id, NOW), "{name}");
-        }
-        assert!(remote.space.purge(&old, NOW));
-        b.pull(&remote);
+        let (mut remote, site, mut b, old, old_rules) = purged_while_editing_kept_rules(rules);
         settled(&mut b, &mut remote);
-
+        assert!(b.sent.is_empty(), "{:?}", b.sent);
+        let file = site.root.join("app").join(rules);
         assert_eq!(fs::read(&file).unwrap(), b".env\n*.log\n", "{rules}");
+        let trees = &b.folder.engine.trees;
+        for id in [old, old_rules].map(koidrive_engine::tree::NodeId::from) {
+            assert!(trees.synced().get(&id).is_none(), "{id}");
+            assert!(
+                !trees.journal_rows().any(|((node, _), _)| node == id),
+                "{id}"
+            );
+        }
+        assert!(remote.names().is_empty());
     }
 }
 #[test]
@@ -2254,4 +2245,62 @@ fn discarding_the_rules_file_a_relinked_copy_of_a_kept_folder_holds_asks_about_i
         let path = site.root.join("app").join(path);
         assert_eq!(fs::read_to_string(&path).unwrap(), local_only(&path));
     }
+}
+
+#[test]
+fn a_new_file_in_a_kept_folder_with_edited_rules_uploads_both_under_new_ids() {
+    for rules in [".koiignore", ".gitignore"] {
+        let (mut remote, site, mut b, old, old_rules) = purged_while_editing_kept_rules(rules);
+        fs::write(site.root.join("app/new.txt"), b"new file").unwrap();
+        settled(&mut b, &mut remote);
+        for sent in b.sent.iter().flat_map(|commit| &commit.ops) {
+            let (id, parent) = match &sent.op {
+                Some(op::Op::CreateDir(create)) => (&create.node_id, &create.parent_id),
+                Some(op::Op::CreateFile(create)) => (&create.node_id, &create.parent_id),
+                other => panic!("{other:?}"),
+            };
+            assert!(id != &old && id != &old_rules && parent != &old, "{sent:?}");
+        }
+        let nodes = server_nodes(&remote);
+        assert_ne!(live_id(&nodes, "app"), old);
+        assert_ne!(live_id(&nodes, rules), old_rules);
+        assert_eq!(
+            remote.tree().keys().cloned().collect::<Vec<_>>(),
+            [
+                "app".to_owned(),
+                format!("app/{rules}"),
+                "app/new.txt".to_owned()
+            ]
+        );
+        assert_eq!(
+            fs::read(site.root.join("app").join(rules)).unwrap(),
+            b".env\n*.log\n"
+        );
+    }
+}
+
+fn purged_while_editing_kept_rules(rules: &str) -> (Remote, Site, Device, String, String) {
+    let (mut remote, _, _, site, mut b, old) =
+        deleted_with_rules_files(&[(rules, ".env\n")], &["README.md"], &[".env"]);
+    let target = site.root.join("app").join(rules);
+    let edited = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let edits = edited.clone();
+    b.folder.disk.set_hook(Box::new(move |cut| {
+        if cut == crate::disk::Cut::AfterPlan
+            && !edits.swap(true, std::sync::atomic::Ordering::SeqCst)
+        {
+            fs::write(&target, b".env\n*.log\n").unwrap();
+        }
+    }));
+    fs::remove_file(site.root.join("app/.env")).unwrap();
+    b.scan_until(|_| edited.load(std::sync::atomic::Ordering::SeqCst));
+    let old_rules = (server_nodes(&remote).into_iter())
+        .find_map(|(name, id, _)| (name == rules).then_some(id))
+        .unwrap();
+    for (name, id, _) in server_nodes(&remote) {
+        assert!(name == "app" || remote.space.purge(&id, NOW), "{name}");
+    }
+    assert!(remote.space.purge(&old, NOW));
+    b.pull(&remote);
+    (remote, site, b, old, old_rules)
 }
