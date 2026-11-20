@@ -1543,3 +1543,56 @@ fn a_first_link_keeps_the_new_entries_of_a_folder_another_device_renames_out_and
         .unwrap();
     }
 }
+
+#[test]
+fn a_blocked_placement_is_excused_only_while_its_node_still_belongs_at_the_held_name() {
+    let mut device = Device::new(Trees::new("root"));
+    device.ignored.insert(
+        ("root".into(), vec!["ss".into()]),
+        DiskEntry {
+            kind: Kind::Dir,
+            content: None,
+            chunks: Box::default(),
+            original: None,
+        },
+    );
+    let at = |name: &str| ChangeRecord {
+        change: Some(change_record::Change::Node(NodeState {
+            node_id: "e".into(),
+            parent_id: "root".into(),
+            name: name.into(),
+            kind: 1,
+            status: 1,
+            ..Default::default()
+        })),
+    };
+    let (mut effects, mut failed) = (Effects::default(), BTreeMap::new());
+    for name in ["ss", "free"] {
+        device.receive(&[at(name)], false);
+        device.trees.settle(&Default::default());
+        while let Some(record) = (effects.plan(
+            &device.trees,
+            None,
+            &mut device.ids,
+            NOW as u64,
+            BatchLimit::ONE,
+        ))
+        .first()
+        .cloned()
+        {
+            if !fail_on_ignored_name(&mut device, &mut effects, &record, &mut failed) {
+                let identity = device.identity();
+                effects
+                    .done(&mut device.trees, None, &record.effect_id, Some(identity))
+                    .unwrap();
+            }
+        }
+        assert!(name != "ss" || !effects.blocked().is_empty());
+        assert!(
+            (effects.blocked().keys())
+                .all(|id| still_planned_target(&device, &effects, &failed, None, id).is_some()),
+            "{name}: {:?}",
+            effects.blocked()
+        );
+    }
+}

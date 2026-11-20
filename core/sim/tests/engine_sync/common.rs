@@ -6,7 +6,7 @@ use koidrive_engine::classify::{Pending, Trees};
 
 use koidrive_engine::commit::{Commits, Failure, Halt, MAX_OPS, Reconnect};
 
-use koidrive_engine::effects::{Base, BatchLimit, Effect, Effects, Location};
+use koidrive_engine::effects::{Base, BatchLimit, Effect, EffectRecord, Effects, Location};
 
 use koidrive_engine::first_link::PriorSync;
 
@@ -1392,6 +1392,63 @@ fn waits_on_excluded(trees: &Trees, id: &NodeId, waiting: &BTreeSet<NodeId>) -> 
     false
 }
 
+fn fail_on_ignored_name(
+    device: &mut Device,
+    effects: &mut Effects,
+    record: &EffectRecord,
+    failed_on_ignored: &mut BTreeMap<NodeId, (Effect, Shape)>,
+) -> bool {
+    let placed_at = match &record.effect {
+        Effect::CreateDir {
+            at: Location::At { .. },
+        }
+        | Effect::WriteFile {
+            at: Location::At { .. },
+            ..
+        }
+        | Effect::Move {
+            to: Location::At { .. },
+            ..
+        } => record.after.as_ref(),
+        _ => None,
+    };
+    let Some(at) = placed_at.filter(|at| device.disk_name_taken(&at.parent, &[], &at.name)) else {
+        return false;
+    };
+    let target = (record.effect.clone(), at.clone());
+    effects
+        .failed(&mut device.trees, &record.effect_id)
+        .unwrap();
+    failed_on_ignored.insert(record.node.clone(), target);
+    true
+}
+
+fn still_planned_target<'a>(
+    device: &Device,
+    effects: &Effects,
+    failed_on_ignored: &'a BTreeMap<NodeId, (Effect, Shape)>,
+    in_flight: Option<&koidrive_engine::commit::InFlight>,
+    id: &NodeId,
+) -> Option<&'a Shape> {
+    let (failed, at) = failed_on_ignored.get(id)?;
+    if effects.blocked().get(id) != Some(failed) {
+        return None;
+    }
+    let mut trees = device.trees.clone();
+    let mut ids = device.ids.clone();
+    let mut fresh = Effects::default();
+    for _ in 0..=trees.local().len() + trees.remote().len() {
+        let record = (fresh.plan(&trees, in_flight, &mut ids, NOW as u64, BatchLimit::ONE))
+            .first()?
+            .clone();
+        if record.node == *id {
+            return (record.effect == *failed).then_some(at);
+        }
+        fresh.failed(&mut trees, &record.effect_id).ok()?;
+    }
+    None
+}
+
 /// Whether S cannot take `id` at its R position because the S entry of a node that waits still
 /// holds that name. The entry moves only once its node is placed, which the excluded node keeps
 /// from happening.
@@ -2007,6 +2064,7 @@ fn run_ignoring_answering_after(
     let mut sent_since: BTreeSet<NodeId> = BTreeSet::new();
     note_agreements(&device, &mut sent_since, &mut agreed, &mut from_server);
     let mut merged_into: BTreeMap<NodeId, NodeId> = BTreeMap::new();
+    let mut failed_on_ignored: BTreeMap<NodeId, (Effect, Shape)> = BTreeMap::new();
     let mut revived_once: BTreeSet<NodeId> = BTreeSet::new();
     let mut freed: BTreeSet<NodeId> = BTreeSet::new();
     let mut sent_nodes: BTreeSet<NodeId> = BTreeSet::new();
@@ -2103,6 +2161,15 @@ fn run_ignoring_answering_after(
                 .filter(|(id, node)| node.parked && reverted.contains(*id))
                 .count(),
         );
+        failed_on_ignored.retain(|id, (failed, at)| {
+            if effects.blocked().get(id) != Some(failed)
+                || device.disk_name_taken(&at.parent, &[], &at.name)
+            {
+                return true;
+            }
+            effects.unblock(id);
+            false
+        });
         if let Some(record) = effects
             .plan(
                 &device.trees,
@@ -2216,9 +2283,6 @@ fn run_ignoring_answering_after(
                     reload(&device.trees, &commits, &effects, &device.rules)?;
                 prop_assert_eq!(effects.in_flight().first(), Some(&record));
             }
-            if matches!(record.effect, Effect::WriteFile { .. }) {
-                from_server.insert(record.node.clone());
-            }
             if let Effect::RemoveDir { along, .. } = &record.effect {
                 let held = held_on_disk(&device, &record.node, along);
                 if !held.is_empty() {
@@ -2249,6 +2313,12 @@ fn run_ignoring_answering_after(
                     }
                     continue;
                 }
+            }
+            if fail_on_ignored_name(&mut device, &mut effects, &record, &mut failed_on_ignored) {
+                continue;
+            }
+            if matches!(record.effect, Effect::WriteFile { .. }) {
+                from_server.insert(record.node.clone());
             }
             let identity = device.identity();
             effects
@@ -2580,12 +2650,30 @@ fn run_ignoring_answering_after(
             .then(|| id.clone())
         })
         .collect();
+    let failed_here = |id: &NodeId| {
+        still_planned_target(
+            &device,
+            &effects,
+            &failed_on_ignored,
+            commits.in_flight(),
+            id,
+        )
+    };
+    for id in effects.blocked().keys() {
+        prop_assert!(
+            failed_here(id).is_none_or(|at| device.disk_name_taken(&at.parent, &[], &at.name)),
+            "the blocked placement of {} outlived the ignored entry that took its name",
+            id
+        );
+    }
+    let blocked_by_ignored = |id: &NodeId| failed_here(id).is_some();
     let mut waiting = refused_merges.clone();
     loop {
         let more: Vec<NodeId> = (unsettled.iter())
             .filter(|id| {
                 !waiting.contains(*id)
-                    && (waits_on_excluded(&device.trees, id, &waiting)
+                    && (blocked_by_ignored(id)
+                        || waits_on_excluded(&device.trees, id, &waiting)
                         || waits_on_synced(&device.trees, id, &waiting))
             })
             .cloned()
@@ -2601,10 +2689,7 @@ fn run_ignoring_answering_after(
     prop_assert_eq!(unsettled, Vec::<&NodeId>::new());
     prop_assert!(commits.problems().is_empty(), "{:?}", commits.problems());
     prop_assert!(
-        effects
-            .blocked()
-            .keys()
-            .all(|id| refused_merges.contains(id)),
+        (effects.blocked().keys()).all(|id| refused_merges.contains(id) || blocked_by_ignored(id)),
         "{:?}",
         effects.blocked()
     );
