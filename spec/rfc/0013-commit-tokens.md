@@ -50,10 +50,10 @@ A commit names the token at its `base_seq` when it is built, and a resend keeps 
 
 ## 6. Mixed versions
 
-An empty token claims nothing in either direction, so no `Welcome` feature announces this RFC.
+An empty token claims nothing in either direction. A server that implements this RFC lists `commit_tokens` in `Welcome.features`, a required feature (RFC 0034): a client does not sync with a server that lacks it.
 
 - An old client sends no token, and the server skips both checks.
-- A new client of an old server learns tokens from records only, and nothing checks them. Its own results carry no `committed_at_ms`, so they give no token (§5).
+- A new client does not sync with an old server, which lists no `commit_tokens` (RFC 0034 §2).
 - A client upgraded from a store without tokens resumes with an empty token until it applies a record or catches up at its cursor's seq.
 
 ## 7. Cost
