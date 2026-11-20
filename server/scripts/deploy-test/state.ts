@@ -32,6 +32,7 @@ export interface Written {
   linkId: string;
   headSeq: string;
   second: Credentials;
+  packed?: { nodeId: string; sha256: string };
 }
 
 export interface Owned {
@@ -44,6 +45,7 @@ export interface State {
   url?: string;
   owned: Owned;
   traceSampling?: number;
+  features?: string;
   logKey?: string;
   deployments: Deployment[];
   owner?: Credentials;

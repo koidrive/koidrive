@@ -487,6 +487,48 @@ describe("traces", () => {
   });
 });
 
+describe("features", () => {
+  const deployedVars = async (features: string) => {
+    fakePnpm({ install: { createsWorker: false, status: 1 }, deploy: { createsWorker: false, status: 0 } });
+    const deployed = await runTsWith({ KOIDRIVE_FEATURES: features }, "deploy", "HEAD");
+    const copies = readdirSync(join(work, "tmp")).filter((name) => name.startsWith("koidrive-deploy-test-"));
+    expect(copies).toHaveLength(1);
+    const config = JSON.parse(readFileSync(join(work, "tmp", copies[0]!, "wrangler.jsonc"), "utf8")) as { vars?: Record<string, string> };
+    return { output: deployed.output, features: config.vars?.KOIDRIVE_FEATURES };
+  };
+
+  it("sets KOIDRIVE_FEATURES as a plain variable in the deploy copy only", async () => {
+    const deployed = await deployedVars("chunk_packs,-git_tracked");
+    expect(deployed.output).toContain("KOIDRIVE_FEATURES=chunk_packs,-git_tracked");
+    expect(deployed.features).toBe("chunk_packs,-git_tracked");
+    expect(readFileSync(join(server, "wrangler.jsonc"), "utf8")).not.toContain("KOIDRIVE_FEATURES");
+  });
+
+  it("sets no KOIDRIVE_FEATURES when it is empty", async () => {
+    expect((await deployedVars("")).features).toBeUndefined();
+  });
+
+  it("reports whether chunk_packs is on as the server reads the list, last entry winning", async () => {
+    const outputs = join(work, "github-output");
+    fakePnpm({ install: { createsWorker: false, status: 1 }, deploy: { createsWorker: false, status: 0 } });
+    for (const [list, on] of [["chunk_packs", true], ["-chunk_packs,chunk_packs", true], ["chunk_packs,-chunk_packs", false], ["-chunk_packs", false], ["", false]] as const) {
+      writeFileSync(outputs, "");
+      await runTsWith({ KOIDRIVE_FEATURES: list, GITHUB_OUTPUT: outputs }, "deploy", "HEAD");
+      expect([list, readFileSync(outputs, "utf8")]).toEqual([list, `chunk_packs=${on}\n`]);
+    }
+    expect(pnpmCalls()).toContain("install --frozen-lockfile");
+  });
+
+  it("refuses a list that is not feature names before creating anything", async () => {
+    for (const list of ["chunk_packs, git_tracked", "Chunk_Packs", "chunk_packs,", "--chunk_packs"]) {
+      const deployed = await runTsWith({ KOIDRIVE_FEATURES: list }, "deploy", "HEAD");
+      expect([list, deployed.status]).toEqual([list, 1]);
+      expect(deployed.output).toContain("KOIDRIVE_FEATURES must be feature names separated by commas");
+    }
+    expect(mock.requests.filter((request) => request.startsWith("POST "))).toEqual([]);
+  });
+});
+
 describe("a deploy whose upload the API does not list yet", () => {
   it("deploys again with the same tag after a backoff when Wrangler's read after the upload finds no Worker", async () => {
     fakePnpm({ install: { createsWorker: false, status: 0 }, deploy: { createsWorker: true, status: 0, unlistedFirst: 1 } });

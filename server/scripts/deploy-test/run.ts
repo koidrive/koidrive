@@ -31,6 +31,7 @@ import {
   type WorkerKey,
   workerTag,
 } from "./cloudflare.ts";
+import { CHUNK_PACKS, configuredFeatures } from "../../src/features.ts";
 import { readState, type State, testName, writeState } from "./state.ts";
 
 const INSTALL_MS = 5 * 60_000;
@@ -155,9 +156,18 @@ function traceSampling(): number | undefined {
   return rate;
 }
 
-function configure(dir: string, name: string, traces: number | undefined): void {
+function features(): string | undefined {
+  const raw = process.env.KOIDRIVE_FEATURES ?? "";
+  if (raw === "") return undefined;
+  if (!raw.split(",").every((entry) => /^-?[a-z][a-z0-9_]{0,63}$/.test(entry))) {
+    fail("KOIDRIVE_FEATURES must be feature names separated by commas, each with an optional leading -, not " + JSON.stringify(raw));
+  }
+  return raw;
+}
+
+function configure(dir: string, name: string, traces: number | undefined, featureList: string | undefined): void {
   const path = join(dir, "wrangler.jsonc");
-  let config: { name?: string; r2_buckets?: { binding: string; bucket_name?: string }[]; observability?: Record<string, unknown> };
+  let config: { name?: string; r2_buckets?: { binding: string; bucket_name?: string }[]; observability?: Record<string, unknown>; vars?: Record<string, string> };
   try {
     config = JSON.parse(readFileSync(path, "utf8").replace(/^\s*\/\/.*$/gm, ""));
   } catch (error) {
@@ -167,6 +177,7 @@ function configure(dir: string, name: string, traces: number | undefined): void 
   config.name = name;
   bucket.bucket_name = name;
   if (traces !== undefined) config.observability = { ...config.observability, traces: { enabled: true, head_sampling_rate: traces } };
+  if (featureList !== undefined) config.vars = { ...config.vars, KOIDRIVE_FEATURES: featureList };
   writeFileSync(path, JSON.stringify(config, null, 2) + "\n");
 }
 
@@ -195,6 +206,8 @@ async function deploy(account: Account, ref: string): Promise<void> {
   const state = readState();
   const sha = tryGit(["rev-parse", "--verify", "--quiet", ref + "^{commit}"]) ?? fail(JSON.stringify(ref) + " is not a commit in this repository");
   const traces = traceSampling();
+  const featureList = features();
+  output("chunk_packs", String(configuredFeatures(featureList).has(CHUNK_PACKS)));
   const first = state.deployments.length === 0;
   if (first) {
     if (state.owned.workerTag || state.owned.bucketCreationDate) fail("the state file already records resources but no deployment; start a new run");
@@ -217,8 +230,12 @@ async function deploy(account: Account, ref: string): Promise<void> {
 
   const dir = mkdtempSync(join(tmpdir(), "koidrive-deploy-test-"));
   execFileSync("sh", ["-c", 'git archive --format=tar "$1:server" | tar -x -C "$2"', "sh", sha, dir], { cwd: repo, stdio: "inherit" });
-  configure(dir, state.name, traces);
-  console.log("Copied server/ at " + sha + " to " + dir + " as Worker and R2 bucket " + state.name + (traces === undefined ? "" : ", tracing " + traces * 100 + "% of requests"));
+  configure(dir, state.name, traces, featureList);
+  console.log(
+    "Copied server/ at " + sha + " to " + dir + " as Worker and R2 bucket " + state.name +
+      (traces === undefined ? "" : ", tracing " + traces * 100 + "% of requests") +
+      (featureList === undefined ? "" : ", KOIDRIVE_FEATURES=" + featureList),
+  );
 
   await run("pnpm", ["install", "--frozen-lockfile"], dir, INSTALL_MS, withoutSecrets());
   if (first) {
@@ -251,6 +268,7 @@ async function deploy(account: Account, ref: string): Promise<void> {
   console.log("Deployment of " + state.name + " sends all traffic to version " + versionId);
   state.url = url;
   state.traceSampling = traces;
+  state.features = featureList;
   state.deployments.push({ ref, sha, dir, versionId, atMs: Date.now() });
   writeState(state);
 

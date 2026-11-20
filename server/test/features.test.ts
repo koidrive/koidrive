@@ -6,7 +6,7 @@ import { env, exports } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import type { AccountDO } from "../src/account-do";
 import type { SpaceDO } from "../src/space-do";
-import { configuredFeatures, IMPLEMENTED } from "../src/features";
+import { CHUNK_PACKS, configuredFeatures, ON_BY_DEFAULT } from "../src/features";
 import { type ServerInfo, ServerInfoSchema } from "../src/gen/koidrive/v1/auth_pb";
 import worker from "../src/worker";
 import { createSpace, getOwner, Socket } from "./session";
@@ -31,11 +31,11 @@ async function withOlderAccountCode<T>(run: () => Promise<T>): Promise<T> {
 
 describe("RFC 0022 section 3 rule 2: effective features", () => {
   it("lists in ServerInfo exactly the configured features the Account DO implements", async () => {
-    expect((await serverInfo()).features.toSorted()).toEqual([...IMPLEMENTED].sort());
+    expect((await serverInfo()).features.toSorted()).toEqual([...ON_BY_DEFAULT].sort());
     expect((await serverInfo("-chunk_bundles,unknown")).features.toSorted()).toEqual(["commit_tokens", "git_tracked"]);
     expect((await serverInfo("-chunk_bundles, -git_tracked")).features).toEqual(["commit_tokens"]);
     const response = await exports.default.fetch("https://koidrive.test/v1/server");
-    expect(fromBinary(ServerInfoSchema, new Uint8Array(await response.arrayBuffer())).features.toSorted()).toEqual([...IMPLEMENTED].sort());
+    expect(fromBinary(ServerInfoSchema, new Uint8Array(await response.arrayBuffer())).features.toSorted()).toEqual([...ON_BY_DEFAULT].sort());
   });
 
   it("lists none while the Account DO runs older code, while Welcome already lists what the Space DO implements", async () => {
@@ -46,9 +46,31 @@ describe("RFC 0022 section 3 rule 2: effective features", () => {
       expect(info.features).toEqual([]);
       expect(info.setupAttempts).toBe(true);
       const socket = await Socket.connect(spaceId, owner);
-      expect((await socket.start()).features.toSorted()).toEqual([...IMPLEMENTED].sort());
+      expect((await socket.start()).features.toSorted()).toEqual([...ON_BY_DEFAULT].sort());
     });
-    expect((await serverInfo()).features.toSorted()).toEqual([...IMPLEMENTED].sort());
+    expect((await serverInfo()).features.toSorted()).toEqual([...ON_BY_DEFAULT].sort());
+  });
+});
+
+describe("RFC 0032: chunk_packs is off by default", () => {
+  it("is left out of ServerInfo and Welcome unless KOIDRIVE_FEATURES turns it on", async () => {
+    expect((await serverInfo()).features).not.toContain(CHUNK_PACKS);
+    expect((await serverInfo(CHUNK_PACKS)).features.toSorted()).toEqual([...ON_BY_DEFAULT, CHUNK_PACKS].sort());
+    expect((await serverInfo(`${CHUNK_PACKS},-${CHUNK_PACKS}`)).features).not.toContain(CHUNK_PACKS);
+    const owner = await getOwner();
+    const spaceId = await createSpace(owner);
+    const stub = env.SPACE.get(env.SPACE.idFromName(spaceId));
+    const prototype = await runInDurableObject(stub, (instance: SpaceDO) => Object.getPrototypeOf(instance) as { features(): ReadonlySet<string> });
+    const original = prototype.features;
+    try {
+      for (const [variable, listed] of [[undefined, false], [CHUNK_PACKS, true]] as const) {
+        prototype.features = () => configuredFeatures(variable);
+        const socket = await Socket.connect(spaceId, owner);
+        expect((await socket.start()).features.includes(CHUNK_PACKS), String(variable)).toBe(listed);
+      }
+    } finally {
+      prototype.features = original;
+    }
   });
 });
 

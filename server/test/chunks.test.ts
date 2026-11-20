@@ -15,7 +15,9 @@ import { chunkKey } from "../src/space/store";
 import worker from "../src/worker";
 import { countBundledChunks, decodeChunkBundle } from "../src/chunk-bundle";
 import { BadRequest } from "../src/http";
-import { configuredFeatures } from "../src/features";
+import { CHUNK_PACKS, configuredFeatures } from "../src/features";
+import { readPackIndex } from "../src/chunk-pack";
+import type { ObjectStore } from "../src/host";
 import { content, op, storedObjects, targetIncarnation } from "./helpers";
 import { BASE, account, body, getOwner, pairDevice, createSpace, Socket, put, prepared } from "./session";
 
@@ -468,5 +470,193 @@ describe("chunk bundles", () => {
     expect(sent.results.map((result) => result.status)).toEqual(Array(32).fill(200));
     expect(writes).toBe(32);
     expect(peak).toBe(6);
+  });
+
+  describe("written as packs (RFC 0032 section 2)", () => {
+    const packsOn = () => vi.spyOn(SpaceDO.prototype as unknown as { features(): ReadonlySet<string> }, "features").mockReturnValue(configuredFeatures(CHUNK_PACKS));
+    const packing =
+      (bucket: Partial<R2Bucket> = env.BUCKET, features = CHUNK_PACKS) =>
+      (request: Request) =>
+        worker.fetch(request as Parameters<typeof worker.fetch>[0], { ...env, BUCKET: bucket, KOIDRIVE_FEATURES: features } as unknown as Env, {} as ExecutionContext);
+    const unflagged = (url: string) => url.replace("&pack=1", "");
+    const packKeys = async (spaceId: string) => (await env.BUCKET.list({ prefix: `spaces/${spaceId}/packs/` })).objects.map((object) => object.key);
+    const location = (token: string) => {
+      const [version, , packId, offset, packSize] = token.split(".");
+      return { version, packId, offset: Number(offset), packSize: Number(packSize) };
+    };
+    const varied = (n: number, tag: string) => Array.from({ length: n }, (_, i) => `${tag} ${i} ${uuidv7()} ${"x".repeat((i * 37) % 300)}`);
+
+    async function downloaded(socket: Socket, hashes: Uint8Array[]) {
+      const targets = await socket.rpc({ case: "getDownloadTargets", value: { hashes } });
+      if (targets.case !== "downloadTargets") throw new Error("getDownloadTargets failed");
+      const urls = targets.value.targets.map((target) => target.target!.url);
+      const bodies = await Promise.all(urls.map(async (url) => new Uint8Array(await (await exports.default.fetch(url)).arrayBuffer())));
+      return { urls, bodies };
+    }
+
+    it("is off by default: no pack=1 upload target, no chunk_packs in Welcome, and a bundle stores single objects", async () => {
+      const { spaceId, welcome, file, targets, keys } = await planned(...varied(3, "default"));
+      expect(welcome.features).not.toContain(CHUNK_PACKS);
+      expect(targets.map((target) => new URL(target.url).searchParams.has("pack"))).toEqual([false, false, false]);
+      const sent = await sendBundle(spaceId, targets.map((target, i) => ({ target: target.url, data: file.bytes[i]! })));
+      expect(sent.results.map((result) => result.receipt?.token.split(".")[0])).toEqual(["v1", "v1", "v1"]);
+      for (const key of keys) expect(await env.BUCKET.head(key)).not.toBeNull();
+      expect(await packKeys(spaceId)).toEqual([]);
+    });
+
+    it("adds pack=1 to upload targets and lists chunk_packs in Welcome while chunk_packs is configured, and never to download targets", async () => {
+      packsOn();
+      const { spaceId, socket, welcome, file, targets } = await planned(...varied(3, "flagged"));
+      expect(welcome.features).toContain(CHUNK_PACKS);
+      expect(targets.map((target) => new URL(target.url).searchParams.get("pack"))).toEqual(["1", "1", "1"]);
+      const single = await content(`single ${uuidv7()}`);
+      const plan = await socket.rpc({ case: "prepareUpload", value: { chunks: single.content.chunks } });
+      if (plan.case !== "prepareUpload") throw new Error("prepareUpload failed");
+      const response = await put(plan.value.chunks[0]!.target!, single.bytes[0]!);
+      expect(response.status).toBe(200);
+      const singleReceipt = fromBinary(UploadReceiptSchema, new Uint8Array(await response.arrayBuffer()));
+      const sent = await sendBundle(spaceId, targets.map((target, i) => ({ target: target.url, data: file.bytes[i]! })), packing());
+      await socket.commit(0n, [op.create(uuidv7(), spaceId, "packed.txt", file.content), op.create(uuidv7(), spaceId, "single.txt", single.content)], [
+        ...sent.results.map((result) => result.receipt!),
+        singleReceipt,
+      ]);
+      const { urls } = await downloaded(socket, [...file.content.chunks.map((chunk) => chunk.hash), single.content.chunks[0]!.hash]);
+      expect(urls.map((url) => new URL(url).searchParams.get("pack") === "1")).toEqual([false, false, false, false]);
+      expect(urls.map((url) => new URL(url).searchParams.has("inc"))).toEqual([false, false, false, true]);
+    });
+
+    it("writes a flagged bundle of 32 chunks as one pack at the receipts' offsets, a commit accepts them, and each chunk downloads as its own bytes, with chunk_packs on or off", async () => {
+      packsOn();
+      const { spaceId, socket, file, targets, keys } = await planned(...varied(32, "pack"));
+      const writes: string[] = [];
+      const counting = packing({
+        put: (key: string, value: unknown, options: R2PutOptions) => {
+          writes.push(key);
+          return env.BUCKET.put(key, value as ArrayBuffer, options);
+        },
+      } as Partial<R2Bucket>);
+      const sent = await sendBundle(spaceId, targets.map((target, i) => ({ target: target.url, data: file.bytes[i]! })), counting);
+      expect(sent.results.map((result) => result.status)).toEqual(Array(32).fill(200));
+      const [key] = await packKeys(spaceId);
+      expect(writes).toEqual([key]);
+      for (const single of keys) expect(await env.BUCKET.head(single)).toBeNull();
+
+      await socket.commit(0n, [op.create(uuidv7(), spaceId, "packed.bin", file.content)], sent.results.map((result) => result.receipt!));
+      const hashes = file.content.chunks.map((chunk) => chunk.hash);
+      expect((await downloaded(socket, hashes)).bodies.map(toHex)).toEqual(file.bytes.map(toHex));
+      const index = await readPackIndex(env.BUCKET as unknown as ObjectStore, key!);
+      const size = (await env.BUCKET.head(key!))!.size;
+      expect(sent.results.map((result) => location(result.receipt!.token))).toEqual(
+        index.map((entry) => ({ version: "v2", packId: key!.split("/").pop(), offset: entry.offset, packSize: size })),
+      );
+      expect(index.map((entry) => toHex(entry.hash))).toEqual(file.content.chunks.map((chunk) => toHex(chunk.hash)));
+      vi.restoreAllMocks();
+      const reader = await Socket.connect(spaceId, await getOwner());
+      expect((await reader.start()).features).not.toContain(CHUNK_PACKS);
+      expect((await downloaded(reader, hashes)).bodies.map(toHex)).toEqual(file.bytes.map(toHex));
+    });
+
+    it("answers a flagged chunk with a bad ticket 403 and one whose bytes don't match its hash 400, and packs only the others", async () => {
+      packsOn();
+      const { spaceId, file, targets } = await planned(...varied(4, "checked"));
+      const mac = new URL(targets[0]!.url).searchParams.get("ticket")!.split(".")[2]!;
+      const middle = targets[0]!.url.lastIndexOf(mac) + Math.floor(mac.length / 2);
+      const tampered = targets[0]!.url.slice(0, middle) + (targets[0]!.url[middle] === "A" ? "B" : "A") + targets[0]!.url.slice(middle + 1);
+      const wrong = file.bytes[1]!.slice();
+      wrong[0] = wrong[0]! ^ 1;
+      const chunks = [
+        { target: tampered, data: file.bytes[0]! },
+        { target: targets[1]!.url, data: wrong },
+        { target: targets[2]!.url, data: file.bytes[2]! },
+        { target: targets[3]!.url, data: file.bytes[3]! },
+      ];
+      const sent = await sendBundle(spaceId, chunks, packing());
+      expect(sent.results.map((result) => [result.status, result.error?.code ?? Error_Code.UNSPECIFIED, result.receipt?.token.split(".")[0]])).toEqual([
+        [403, Error_Code.FORBIDDEN, undefined],
+        [400, Error_Code.INVALID_ARGUMENT, undefined],
+        [200, Error_Code.UNSPECIFIED, "v2"],
+        [200, Error_Code.UNSPECIFIED, "v2"],
+      ]);
+      const [key] = await packKeys(spaceId);
+      expect((await readPackIndex(env.BUCKET as unknown as ObjectStore, key!)).map((entry) => toHex(entry.hash))).toEqual(file.content.chunks.slice(2).map((chunk) => toHex(chunk.hash)));
+    });
+
+    it("answers every packed chunk with the PUT's retry status when the pack write fails, finds its key taken or arrives corrupted, and leaves unflagged chunks alone", async () => {
+      packsOn();
+      vi.spyOn(console, "error").mockImplementation(() => {});
+      const failures: [string, (key: string, value: ArrayBuffer, options: R2PutOptions) => Promise<unknown>, number, Error_Cause][] = [
+        ["rate limited", () => Promise.reject(new Error("put: 429 too many requests (10058)")), 429, Error_Cause.R2_RATE_LIMITED],
+        ["unavailable", () => Promise.reject(new Error("put: internal error")), 503, Error_Cause.EXCEPTION],
+        ["key taken", async (key, value, options) => (await env.BUCKET.put(key, "another pack"), env.BUCKET.put(key, value, options)), 503, Error_Cause.UNSPECIFIED],
+        ["corrupted in transfer", (key, value, options) => {
+          const corrupted = new Uint8Array(value).slice();
+          corrupted[0] = corrupted[0]! ^ 1;
+          return env.BUCKET.put(key, corrupted, options);
+        }, 503, Error_Cause.R2_ERROR],
+      ];
+      for (const [name, write, status, cause] of failures) {
+        const { spaceId, file, targets, keys } = await planned(...varied(3, name));
+        const bucket = {
+          put: (key: string, value: ArrayBuffer, options: R2PutOptions) => (key.includes("/packs/") ? write(key, value, options) : env.BUCKET.put(key, value, options)),
+        } as Partial<R2Bucket>;
+        const chunks = [
+          { target: targets[0]!.url, data: file.bytes[0]! },
+          { target: unflagged(targets[1]!.url), data: file.bytes[1]! },
+          { target: targets[2]!.url, data: file.bytes[2]! },
+        ];
+        const sent = await sendBundle(spaceId, chunks, packing(bucket));
+        expect([name, sent.results.map((result) => [result.status, result.error?.code, result.error?.cause, result.receipt?.token.split(".")[0]])]).toEqual([
+          name,
+          [
+            [status, Error_Code.RETRY_LATER, cause, undefined],
+            [200, undefined, undefined, "v1"],
+            [status, Error_Code.RETRY_LATER, cause, undefined],
+          ],
+        ]);
+        expect(await env.BUCKET.head(keys[1]!)).not.toBeNull();
+        const stored = await packKeys(spaceId);
+        expect(await Promise.all(stored.map(async (key) => (await env.BUCKET.get(key))!.text()))).toEqual(name === "key taken" ? ["another pack"] : []);
+      }
+    });
+
+    it("stores single objects for a bundle with one flagged chunk or none, and while the Worker has chunk_packs off", async () => {
+      packsOn();
+      const cases: [string, (url: string, i: number) => string, string][] = [
+        ["one flagged", (url, i) => (i === 0 ? url : unflagged(url)), CHUNK_PACKS],
+        ["none flagged", unflagged, CHUNK_PACKS],
+        ["Worker off", (url) => url, ""],
+      ];
+      for (const [name, target, features] of cases) {
+        const { spaceId, file, targets, keys } = await planned(...varied(3, name));
+        const sent = await sendBundle(spaceId, targets.map((each, i) => ({ target: target(each.url, i), data: file.bytes[i]! })), packing(env.BUCKET, features));
+        expect([name, sent.results.map((result) => [result.status, result.receipt?.token.split(".")[0]])]).toEqual([name, Array(3).fill([200, "v1"])]);
+        for (const key of keys) expect(await env.BUCKET.head(key)).not.toBeNull();
+        expect(await packKeys(spaceId)).toEqual([]);
+      }
+    });
+
+    it("writes the pack and the unflagged chunks of one bundle with at most six writes open at once", async () => {
+      packsOn();
+      const { spaceId, file, targets } = await planned(...varied(16, "mixed"));
+      let open = 0;
+      let peak = 0;
+      const writes: string[] = [];
+      const counting = packing({
+        put: async (key: string, value: unknown, options: R2PutOptions) => {
+          writes.push(key);
+          peak = Math.max(peak, ++open);
+          try {
+            await new Promise((resolve) => setTimeout(resolve, 5));
+            return await env.BUCKET.put(key, value as ArrayBuffer, options);
+          } finally {
+            open--;
+          }
+        },
+      } as Partial<R2Bucket>);
+      const sent = await sendBundle(spaceId, targets.map((target, i) => ({ target: i < 8 ? target.url : unflagged(target.url), data: file.bytes[i]! })), counting);
+      expect(sent.results.map((result) => result.receipt?.token.split(".")[0])).toEqual([...Array(8).fill("v2"), ...Array(8).fill("v1")]);
+      expect([writes.filter((key) => key.includes("/packs/")).length, writes.length]).toEqual([1, 9]);
+      expect(peak).toBeLessThanOrEqual(6);
+    });
   });
 });

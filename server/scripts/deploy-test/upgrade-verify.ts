@@ -4,8 +4,8 @@ import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import { ServerInfoSchema, SpaceListSchema } from "../../src/gen/koidrive/v1/auth_pb";
 import { ShareInfoSchema, ShareLinkSchema } from "../../src/gen/koidrive/v1/share_pb";
-import { Device, fileData, op, readBytes, send, Server, sha256, SpaceClient, stats, toHex, uuidv7 } from "./client";
-import { addStats, readState } from "./state.ts";
+import { Device, fileData, op, randomBytes, readBytes, send, Server, sha256, SpaceClient, stats, toHex, uuidv7 } from "./client";
+import { addStats, readState, writeState } from "./state.ts";
 
 const state = readState();
 const written = state.written;
@@ -77,5 +77,20 @@ describe("an upgrade from " + before.sha.slice(0, 12) + " to " + after.sha.slice
       status: 201,
     });
     expect(link.hasPassword).toBe(true);
+  });
+
+  it("writes a bundle as one pack while chunk_packs is on, and reads it back", async ({ skip }) => {
+    const client = new SpaceClient(owner, written.spaceId);
+    if (!(await client.welcome()).features.includes("chunk_packs")) skip("this deployment has chunk_packs off");
+    const packed = await fileData([randomBytes(48 * 1024), randomBytes(16 * 1024), randomBytes(2 * 1024)]);
+    const receipts = await client.uploadBundle(packed);
+    expect(receipts.map((receipt) => receipt.token.split(".")[0])).toEqual(["v2", "v2", "v2"]);
+    expect(new Set(receipts.map((receipt) => receipt.token.split(".")[2])).size).toBe(1);
+    const nodeId = uuidv7();
+    await client.commit([op.create(nodeId, written.spaceId, "packed.bin", packed.content)], receipts);
+    expect(await client.download(packed.content)).toBe(packed.sha256);
+    const updated = readState();
+    updated.written = { ...updated.written!, packed: { nodeId, sha256: packed.sha256 } };
+    writeState(updated);
   });
 });

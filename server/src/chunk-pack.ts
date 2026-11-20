@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+import { create } from "@bufbuild/protobuf";
+import { signPackedReceipt } from "./crypto";
+import { type UploadReceipt, UploadReceiptSchema } from "./gen/koidrive/v1/commit_pb";
 import type { ObjectStore } from "./host";
 import { toHex } from "./ids";
 
@@ -55,6 +58,29 @@ export function encodePack(chunks: readonly PackedChunk[]): Uint8Array {
   view.setUint32(footer + 8, chunks.length, true);
   view.setUint32(footer + 12, bodyBytes, true);
   return out;
+}
+
+export interface PackMember extends PackedChunk {
+  incarnation: string;
+}
+
+export async function sealPack(
+  spaceKey: Uint8Array,
+  spaceId: string,
+  packId: string,
+  members: readonly PackMember[],
+  expiresAtMs: number,
+): Promise<{ bytes: Uint8Array; receipts: UploadReceipt[] }> {
+  const bytes = encodePack(members);
+  const receipts: UploadReceipt[] = [];
+  let offset = 0;
+  for (const { hash, data, incarnation } of members) {
+    const at = { packId, offset, packSize: bytes.length };
+    const token = await signPackedReceipt(spaceKey, { spaceId, hashHex: toHex(hash), incarnation }, data.length, at, expiresAtMs);
+    receipts.push(create(UploadReceiptSchema, { hash, size: data.length, token }));
+    offset += data.length;
+  }
+  return { bytes, receipts };
 }
 
 async function readRange(objects: ObjectStore, key: string, range: { offset: number; length: number } | { suffix: number }) {

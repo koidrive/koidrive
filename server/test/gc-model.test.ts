@@ -45,7 +45,7 @@ type Pause = "head" | "put" | "list" | "retire" | "retirePacks" | "delete";
 type Simple =
   | { t: "prepare"; chunks: number[] }
   | { t: "put"; plan: number; outcome: Outcome }
-  | { t: "bundle"; plans: number[]; outcome: Outcome }
+  | { t: "bundle"; plans: number[]; packed: boolean; outcome: Outcome }
   | { t: "pack"; plans: number[]; outcome: Outcome }
   | { t: "commit"; file: number; receipts: number[]; extra: number[]; dup?: boolean; refused?: boolean }
   | { t: "sync"; file: number; chunks: number[] }
@@ -339,7 +339,8 @@ async function act(world: World, step: Step): Promise<boolean> {
     case "bundle": {
       const chosen = new Map(step.plans.flatMap((i) => pick(world.plans, i) ?? []).map((plan) => [plan.chunk, plan]));
       if (chosen.size === 0) return false;
-      const sent = toBinary(ChunkBundleSchema, create(ChunkBundleSchema, { chunks: [...chosen.values()].map((plan) => ({ target: plan.url, data: chunks[plan.chunk]!.bytes })) }));
+      const target = (url: string) => (step.packed ? url : url.replace("&pack=1", ""));
+      const sent = toBinary(ChunkBundleSchema, create(ChunkBundleSchema, { chunks: [...chosen.values()].map((plan) => ({ target: target(plan.url), data: chunks[plan.chunk]!.bytes })) }));
       r2.put = step.outcome;
       const response = await exports.default
         .fetch(`${BASE}/v1/spaces/${spaceId}/chunks`, { method: "POST", body: sent, headers: { "Content-Type": "application/x-protobuf", "Content-Length": String(sent.length) } })
@@ -771,7 +772,7 @@ const pausePoint = fc.constantFrom<Pause>("head", "put", "list", "retire", "reti
 const simple: fc.Arbitrary<Simple> = fc.oneof(
   { weight: 3, arbitrary: prepare },
   { weight: 6, arbitrary: put },
-  { weight: 1, arbitrary: fc.record({ t: fc.constant("bundle" as const), plans: fc.array(index, { minLength: 1, maxLength: 3 }), outcome }) },
+  { weight: 1, arbitrary: fc.record({ t: fc.constant("bundle" as const), plans: fc.uniqueArray(index, { minLength: 1, maxLength: 4 }), packed: fc.boolean(), outcome }) },
   { weight: 3, arbitrary: pack },
   { weight: 4, arbitrary: commit },
   { weight: 2, arbitrary: fc.record({ t: fc.constant("sync" as const), file: fc.nat({ max: FILES - 1 }), chunks: chunkSet }) },
@@ -842,6 +843,17 @@ const checkAThenRefuse: Step[] = [
   { t: "commit", file: 0, receipts: [], extra: [0, 1], refused: true },
 ];
 const scenarios: Step[][] = [
+  [
+    minute,
+    { t: "prepare", chunks: [0, 1, 2] },
+    { t: "bundle", plans: [0, 1, 2], packed: true, outcome: "lostApplied" },
+    { t: "prepare", chunks: [0, 1, 2] },
+    { t: "bundle", plans: [0, 1, 2], packed: true, outcome: "ok" },
+    { t: "commit", file: 0, receipts: [0, 1, 2], extra: [] },
+    { t: "targets", chunk: 0 },
+    { t: "download", target: 0 },
+    { t: "trash", file: 0 },
+  ],
   [minute, { t: "prepare", chunks: [0] }, { t: "put", plan: 0, outcome: "ok" }, { t: "commit", file: 0, receipts: [0], extra: [], dup: true }, { t: "commit", file: 0, receipts: [], extra: [0] }, { t: "drop", version: 0 }],
   [
     minute,

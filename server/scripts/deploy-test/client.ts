@@ -5,7 +5,7 @@ import { AccessTokenSchema, DeviceCredentialsSchema, PairStartResponseSchema, To
 import { type CommitResult, type Op, OpSchema, type UploadReceipt, UploadReceiptSchema } from "../../src/gen/koidrive/v1/commit_pb";
 import { ClientMessageSchema, RpcRequestSchema, type RpcResponse, RpcResponseSchema, ServerMessageSchema, type Welcome } from "../../src/gen/koidrive/v1/messages_pb";
 import { ChunkRefSchema, type CommitRecord, type Content, ContentSchema, type NodeState } from "../../src/gen/koidrive/v1/model_pb";
-import { ChunkPlan_Action, ErrorSchema } from "../../src/gen/koidrive/v1/rpc_pb";
+import { ChunkBundleResultSchema, ChunkBundleSchema, ChunkPlan_Action, ErrorSchema } from "../../src/gen/koidrive/v1/rpc_pb";
 import { toHex, uuidv7 } from "../../src/ids";
 import type { Credentials, Stats } from "./state.ts";
 
@@ -300,6 +300,27 @@ export class SpaceClient {
       receipts.push(fromBinary(UploadReceiptSchema, await readBytes(response)));
     }
     return { receipts, uploaded: receipts.length };
+  }
+
+  async uploadBundle(file: FileData): Promise<UploadReceipt[]> {
+    const result = await this.rpc({ case: "prepareUpload", value: { chunks: file.content.chunks } });
+    if (result.case !== "prepareUpload") throw new Error("prepareUpload answered " + result.case);
+    const byHash = new Map(file.content.chunks.map((chunk, i) => [toHex(chunk.hash), file.parts[i]!]));
+    const chunks = result.value.chunks.map((plan) => {
+      if (plan.action !== ChunkPlan_Action.UPLOAD || !plan.target) throw new Error("prepareUpload planned action " + plan.action + " for chunk " + toHex(plan.hash));
+      return { target: plan.target.url, data: byHash.get(toHex(plan.hash))! };
+    });
+    const what = "POST /v1/spaces/" + this.spaceId + "/chunks";
+    const response = await send(this.device.server.base + "/v1/spaces/" + this.spaceId + "/chunks", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-protobuf" },
+      body: toBinary(ChunkBundleSchema, create(ChunkBundleSchema, { chunks })),
+    });
+    if (!response.ok) throw await failure(what, response);
+    const results = fromBinary(ChunkBundleResultSchema, await readBytes(response)).results;
+    const failed = results.find((each) => !each.receipt);
+    if (failed) throw new Error(what + " answered " + failed.status + " for chunk " + toHex(failed.hash) + ": " + failed.error?.message);
+    return results.map((each) => each.receipt!);
   }
 
   async commit(ops: Op[], receipts: UploadReceipt[] = []): Promise<CommitResult> {

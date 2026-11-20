@@ -18,7 +18,7 @@ export default defineConfig({
         test: { name: "server", exclude: [...configDefaults.exclude, STORAGE_FULL, GC_MODEL], setupFiles: [SETUP] },
       },
       {
-        plugins: [cloudflareTest({ wrangler: { configPath: "./wrangler.jsonc" }, miniflare: { bindings } })],
+        plugins: [cloudflareTest({ wrangler: { configPath: "./wrangler.jsonc" }, miniflare: { bindings: { ...bindings, KOIDRIVE_FEATURES: "chunk_packs" } } })],
         test: { name: "gc-model", include: [GC_MODEL], setupFiles: [SETUP], provide, sequence: { groupOrder: 1 } },
       },
       {

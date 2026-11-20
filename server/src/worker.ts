@@ -31,12 +31,13 @@ import {
 import { countBundledChunks, decodeChunkBundle, MAX_BUNDLE_CHUNKS } from "./chunk-bundle";
 import { causeOf } from "./cause";
 import { errorText } from "./errors";
-import { CHUNK_BUNDLES, featuresOf } from "./features";
+import { CHUNK_BUNDLES, CHUNK_PACKS, featuresOf } from "./features";
 import type { ObjectStore } from "./host";
 import { BadRequest, errorReply, readMessage, reply, responseOutcome } from "./http";
 import { countedBucket, countedEgress } from "./report/meter";
-import { type ChunkObject, deriveSpaceKey, signChunkGrant, verifyChunkGrant, verifyPackedGet } from "./crypto";
-import { fromHex, isUuidV7 } from "./ids";
+import { type ChunkObject, deriveSpaceKey, sha256, signChunkGrant, verifyChunkGrant, verifyPackedGet } from "./crypto";
+import { fromHex, isUuidV7, toHex, uuidv7 } from "./ids";
+import { sealPack } from "./chunk-pack";
 import { type Capability, policy } from "./policy";
 import { platformFailure } from "./quota";
 import { routeName } from "./routes";
@@ -204,23 +205,66 @@ async function storeChunk(
   body: ReadableStream | Uint8Array | null,
   nowMs: number,
 ): Promise<BundledChunkResult> {
-  const hash = fromHex(object.hashHex);
-  const refuse = (status: number, code: Error_Code, message: string, cause = Error_Cause.UNSPECIFIED) =>
-    create(BundledChunkResultSchema, { hash, status, error: create(ErrorSchema, { code, message, cause }) });
-  if (!(await verifyChunkGrant(secret, "put", object, size, ticket, nowMs))) {
-    return refuse(403, Error_Code.FORBIDDEN, "invalid or expired upload ticket, or a size the ticket does not cover");
-  }
+  const hash = fromHex(object.hashHex)!;
+  if (!(await verifyChunkGrant(secret, "put", object, size, ticket, nowMs))) return refusedTicket(hash);
   try {
     await objects.put(chunkKey(object.spaceId, object.hashHex, object.incarnation), body, { sha256: object.hashHex, onlyIf: { etagDoesNotMatch: "*" } });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error("chunk upload failed", object.spaceId, object.hashHex, errorText(error));
-    if (/checksum/i.test(message)) return refuse(400, Error_Code.INVALID_ARGUMENT, "the body does not match the chunk hash");
-    const cause = causeOf(error);
-    return refuse(cause === Error_Cause.R2_RATE_LIMITED ? 429 : 503, Error_Code.RETRY_LATER, "chunk storage is unavailable; retry the upload", cause);
+    if (/checksum/i.test(message)) return refusedBody(hash);
+    return storageFailed(hash, causeOf(error));
   }
   const token = await signChunkGrant(secret, "receipt", object, size, nowMs + GRANT_MS);
   return create(BundledChunkResultSchema, { hash, status: 200, receipt: create(UploadReceiptSchema, { hash, size, token }) });
+}
+
+function refused(hash: Uint8Array, status: number, code: Error_Code, message: string, cause = Error_Cause.UNSPECIFIED): BundledChunkResult {
+  return create(BundledChunkResultSchema, { hash, status, error: create(ErrorSchema, { code, message, cause }) });
+}
+
+const refusedTicket = (hash: Uint8Array) => refused(hash, 403, Error_Code.FORBIDDEN, "invalid or expired upload ticket, or a size the ticket does not cover");
+const refusedBody = (hash: Uint8Array) => refused(hash, 400, Error_Code.INVALID_ARGUMENT, "the body does not match the chunk hash");
+const storageFailed = (hash: Uint8Array, cause: Error_Cause) =>
+  refused(hash, cause === Error_Cause.R2_RATE_LIMITED ? 429 : 503, Error_Code.RETRY_LATER, "chunk storage is unavailable; retry the upload", cause);
+
+interface BundledUpload {
+  object: ChunkObject;
+  ticket: string;
+  data: Uint8Array;
+  packed: boolean;
+}
+
+async function packRefusal(secret: Uint8Array, { object, ticket, data }: BundledUpload, nowMs: number): Promise<BundledChunkResult | undefined> {
+  const hash = fromHex(object.hashHex)!;
+  if (!(await verifyChunkGrant(secret, "put", object, data.length, ticket, nowMs))) return refusedTicket(hash);
+  if (toHex(await sha256(data)) !== object.hashHex) return refusedBody(hash);
+  return undefined;
+}
+
+async function storePack(objects: ObjectStore, secret: Uint8Array, spaceId: string, members: readonly BundledUpload[], nowMs: number): Promise<BundledChunkResult[]> {
+  const packId = uuidv7(nowMs);
+  const sealed = await sealPack(
+    secret,
+    spaceId,
+    packId,
+    members.map(({ object, data }) => ({ hash: fromHex(object.hashHex)!, data, incarnation: object.incarnation })),
+    nowMs + GRANT_MS,
+  );
+  let cause: Error_Cause | undefined;
+  try {
+    const written = await objects.put(packKey(spaceId, packId), sealed.bytes, { sha256: toHex(await sha256(sealed.bytes)), onlyIf: { etagDoesNotMatch: "*" } });
+    if (written === null) {
+      console.error("chunk pack upload refused: the pack key exists", spaceId, packId);
+      cause = Error_Cause.UNSPECIFIED;
+    }
+  } catch (error) {
+    console.error("chunk pack upload failed", spaceId, packId, errorText(error));
+    cause = causeOf(error);
+  }
+  return sealed.receipts.map((receipt) =>
+    cause === undefined ? create(BundledChunkResultSchema, { hash: receipt.hash, status: 200, receipt }) : storageFailed(receipt.hash, cause),
+  );
 }
 
 const MAX_BUNDLED_CHUNK_BYTES = 1 << 20;
@@ -255,19 +299,36 @@ async function bundle(request: Request, env: Env, objects: ObjectStore, spaceId:
     if (chunk.data.length < 1 || chunk.data.length > MAX_BUNDLED_CHUNK_BYTES) {
       throw new LimitExceeded(`a bundled chunk is 1 to ${MAX_BUNDLED_CHUNK_BYTES} bytes`);
     }
-    return { object: { spaceId, hashHex: path[2]!, incarnation }, ticket: target.searchParams.get("ticket") ?? "", data: chunk.data };
+    const params = target.searchParams;
+    return { object: { spaceId, hashHex: path[2]!, incarnation }, ticket: params.get("ticket") ?? "", data: chunk.data, packed: params.get("pack") === "1" } satisfies BundledUpload;
   });
   const secret = await spaceKey(env, spaceId);
   const nowMs = Date.now();
   const results: BundledChunkResult[] = new Array(uploads.length);
+  const members: number[] = [];
+  if (featuresOf(env).has(CHUNK_PACKS)) {
+    for (const [i, upload] of uploads.entries()) {
+      if (!upload.packed) continue;
+      const refusal = await packRefusal(secret, upload, nowMs);
+      if (refusal) results[i] = refusal;
+      else members.push(i);
+    }
+  }
+  const packed = members.length >= 2 ? members : [];
+  const writes = uploads.flatMap((upload, i) =>
+    results[i] || packed.includes(i) ? [] : [async () => void (results[i] = await storeChunk(objects, secret, upload.object, upload.data.length, upload.ticket, upload.data, nowMs))],
+  );
+  if (packed.length > 0) {
+    writes.unshift(async () => {
+      const stored = await storePack(objects, secret, spaceId, packed.map((i) => uploads[i]!), nowMs);
+      packed.forEach((i, j) => (results[i] = stored[j]!));
+    });
+  }
   let next = 0;
   const writer = async () => {
-    for (let i = next++; i < uploads.length; i = next++) {
-      const { object, ticket, data } = uploads[i]!;
-      results[i] = await storeChunk(objects, secret, object, data.length, ticket, data, nowMs);
-    }
+    for (let i = next++; i < writes.length; i = next++) await writes[i]!();
   };
-  await Promise.all(Array.from({ length: Math.min(BUNDLE_WRITES_AT_ONCE, uploads.length) }, writer));
+  await Promise.all(Array.from({ length: Math.min(BUNDLE_WRITES_AT_ONCE, writes.length) }, writer));
   return reply(request, ChunkBundleResultSchema, create(ChunkBundleResultSchema, { results }));
 }
 

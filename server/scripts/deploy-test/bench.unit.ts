@@ -198,8 +198,9 @@ describe("small-file benchmark", () => {
     expect(child.env).not.toHaveProperty("KOIDRIVE_BENCH_NS");
     expect(cloudflare.graphqlVariables[0]).toMatchObject({ accountTag: "private-cloudflare-account", scriptName: "koidrive-test-1-1", start: "2023-11-14T22:13:20.000Z", end: "2023-11-14T22:14:20.000Z" });
     const summary = readFileSync(join(work, "summary.md"), "utf8");
-    expect(summary).toContain("| bundles | 626 | 627 | 1.23 | 5.68 | 0 |");
-    expect(summary).toContain("| puts | 20000 | 20001 | 0.90 | 2.10 | 0 |");
+    expect(summary).toContain("| bundles | 626 | 627 | 1.23 | 5.68 | 0.18 | 0 |");
+    expect(summary).toContain("| puts | 20000 | 20001 | 0.90 | 2.10 | 2.10 | 0 |");
+    expect(summary).toContain("KOIDRIVE_FEATURES on this deployment: none, so the release defaults apply.");
   });
 
   it.each([
@@ -219,7 +220,7 @@ describe("small-file benchmark", () => {
     cloudflare.graphqlAnswers = [invocations(627), { status: 500, body: { success: false, errors: [{ code: 10000, message: "internal" }] } }];
     const result = await run({ command: "small", env: { CLOUDFLARE_API_BASE_URL: api } });
     expect(result.status).toBe(0);
-    expect(result.output).toContain("| bundles | 626 | 627 | 1.23 | 5.68 | 0 |");
+    expect(result.output).toContain("| bundles | 626 | 627 | 1.23 | 5.68 | 0.18 | 0 |");
     expect(result.output).toContain("Worker CPU unavailable from the puts side on:");
     expect(result.output).not.toContain("| puts |");
   });
@@ -229,7 +230,7 @@ describe("small-file benchmark", () => {
     cloudflare.graphqlAnswers = [invocations(300), { status: 500, body: { success: false, errors: [{ code: 10000, message: "internal" }] } }];
     const result = await run({ command: "small", env: { CLOUDFLARE_API_BASE_URL: api } });
     expect(result.status).toBe(0);
-    expect(result.output).toContain("| bundles | 626 | 300 (partial) | 1.23 | 5.68 | 0 |");
+    expect(result.output).toContain("| bundles | 626 | 300 (partial) | 1.23 | 5.68 | 0.18 | 0 |");
     expect(result.output).toContain("Worker CPU unavailable from the puts side on:");
   });
 
@@ -238,8 +239,8 @@ describe("small-file benchmark", () => {
     cloudflare.graphqlAnswers = [invocations(627), invocations(300, 900, 2100), { status: 500, body: { success: false, errors: [{ code: 10000, message: "internal" }] } }];
     const result = await run({ command: "small", env: { CLOUDFLARE_API_BASE_URL: api } });
     expect(result.status).toBe(0);
-    expect(result.output).toContain("| bundles | 626 | 627 | 1.23 | 5.68 | 0 |");
-    expect(result.output).toContain("| puts | 20000 | 300 (partial) | 0.90 | 2.10 | 0 |");
+    expect(result.output).toContain("| bundles | 626 | 627 | 1.23 | 5.68 | 0.18 | 0 |");
+    expect(result.output).toContain("| puts | 20000 | 300 (partial) | 0.90 | 2.10 | 2.10 | 0 |");
     expect(result.output).toContain("Worker CPU for the puts side is partial:");
   });
 
@@ -248,8 +249,8 @@ describe("small-file benchmark", () => {
     cloudflare.graphqlAnswer = (variables) => (variables.start === "2023-11-14T22:13:20.000Z" ? invocations(625, 1111, 2000) : invocations(20000, 2222, 3000));
     const result = await run({ command: "small", env: { CLOUDFLARE_API_BASE_URL: api, KOIDRIVE_BENCH_ANALYTICS_MS: "2000", KOIDRIVE_BENCH_ANALYTICS_EVERY_MS: "200" } });
     expect(result.status).toBe(0);
-    expect(result.output).toContain("| bundles | 626 | 625 (partial) | 1.11 | 2.00 | 0 |");
-    expect(result.output).toContain("| puts | 20000 | 20000 | 2.22 | 3.00 | 0 |");
+    expect(result.output).toContain("| bundles | 626 | 625 (partial) | 1.11 | 2.00 | 0.06 | 0 |");
+    expect(result.output).toContain("| puts | 20000 | 20000 | 2.22 | 3.00 | 3.00 | 0 |");
     expect(result.output).not.toContain("Worker CPU unavailable");
   });
 
