@@ -2945,3 +2945,40 @@ fn a_folder_the_server_merges_into_a_live_folder_of_its_name_key_is_taken_over_u
         1
     );
 }
+
+#[test]
+fn a_purged_folder_kept_for_an_excluded_file_sends_nothing_after_rename_or_restart() {
+    let mut trees = trees(&[synced("d", dir(ROOT, "d"))]);
+    trees.set_rules(&AT_ROOT, Source::Koiignore, rules("*.txt\n"));
+    trash(&mut trees, "d");
+    trees.remove_remote(&"d".into());
+    trees.settle(&Default::default());
+    let (mut pending, mut ids) = (Effects::default(), IdGen::new(2));
+    let planned = pending.plan(&trees, None, &mut ids, NOW, BatchLimit::ONE);
+    let [record] = planned else {
+        panic!("{planned:?}")
+    };
+    assert!(matches!(record.effect, Effect::RemoveDir { .. }) && record.node == "d");
+    let id = record.effect_id.clone();
+    pending
+        .kept(
+            &mut trees,
+            None,
+            &BTreeMap::new(),
+            &id,
+            &[("c.txt", Some(Kind::File))],
+        )
+        .unwrap();
+
+    let mut restarted = Trees::new(ROOT);
+    restarted.restore(trees.state()).unwrap();
+    place(&mut trees, "d", ROOT, "e");
+    for (mut current, name) in [(trees, "e"), (restarted, "d")] {
+        assert_eq!(ops(&mut current), []);
+        assert_eq!(effects(&mut current), []);
+        assert_eq!(
+            current.local().get(&"d".into()).unwrap().shape,
+            dir(ROOT, name)
+        );
+    }
+}

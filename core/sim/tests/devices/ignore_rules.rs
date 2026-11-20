@@ -166,14 +166,15 @@ fn a_folder_the_server_refuses_waits_to_be_removed_around_the_files_its_rules_ex
     ];
     removes_only_the_refused_folder(
         &converge_excluding(&[vec!["*.txt"], vec![]], &phases).unwrap(),
+        1,
     );
 }
 
-fn removes_only_the_refused_folder(world: &World) {
+fn removes_only_the_refused_folder(world: &World, attempts: usize) {
     let refused = NodeId::from("01a1c2c0-39a0-7cdc-8389-c4663807ce68");
     let ran = &world.folder_effects[0];
     assert!(
-        !ran.is_empty()
+        ran.len() == attempts
             && ran.iter().all(|record| {
                 record.node == refused && matches!(record.effect, Effect::RemoveDir { .. })
             }),
@@ -370,7 +371,7 @@ fn refused_beside_a(last: (usize, Step)) -> Result<World, Failure> {
 
 #[test]
 fn a_folder_deleted_beside_a_refused_folder_of_its_name_in_another_case_is_deleted_everywhere() {
-    removes_only_the_refused_folder(&refused_beside_a((0, delete(0))).unwrap());
+    removes_only_the_refused_folder(&refused_beside_a((0, delete(0))).unwrap(), 2);
 }
 
 #[test]
@@ -379,7 +380,7 @@ fn a_folder_renamed_elsewhere_to_the_case_of_a_refused_folder_beside_it_is_renam
         Check::RemoveLeftOut,
         "device 0 is quiet, but it keeps the folders of [\"01a1c2c0-39a0-7cdc-8389-c4663807ce68\"] parked, which hold entries its rules leave out",
     );
-    removes_only_the_refused_folder(&refused_beside_a((1, rename(0, 0, "A"))).unwrap());
+    removes_only_the_refused_folder(&refused_beside_a((1, rename(0, 0, "A"))).unwrap(), 2);
 }
 
 fn deleted_while_its_rules_leave_a_file_out(during: Vec<(usize, Step)>) -> Result<World, Failure> {
