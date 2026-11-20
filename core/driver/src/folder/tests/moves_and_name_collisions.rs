@@ -1812,7 +1812,10 @@ fn a_vim_save_while_the_first_upload_is_in_flight_keeps_the_new_bytes() {
     a.rest(&mut remote);
     let nodes = server_nodes(&remote);
     assert_eq!(live_names(&remote), ["docs", "report.txt"]);
-    assert_eq!(server_bytes(&remote, &live_id(&nodes, "report.txt")), b"version two");
+    assert_eq!(
+        server_bytes(&remote, &live_id(&nodes, "report.txt")),
+        b"version two"
+    );
     let synced = [("docs/report.txt".to_owned(), "version two".to_owned())];
     assert_eq!(files(&site.root), synced);
 }
@@ -1830,8 +1833,15 @@ fn a_second_save_landing_with_the_first_backup_delete_keeps_the_node() {
         a.rest(&mut remote);
         let nodes = server_nodes(&remote);
         assert_eq!(live_names(&remote), ["docs", "report.txt"]);
-        assert_eq!(server_bytes(&remote, &live_id(&nodes, "report.txt")), b"version three");
-        assert_eq!(live_id(&nodes, "report.txt"), before, "in flight {in_flight}");
+        assert_eq!(
+            server_bytes(&remote, &live_id(&nodes, "report.txt")),
+            b"version three"
+        );
+        assert_eq!(
+            live_id(&nodes, "report.txt"),
+            before,
+            "in flight {in_flight}"
+        );
     }
 }
 
@@ -1845,7 +1855,10 @@ fn a_second_save_after_the_first_was_sent_keeps_the_new_bytes() {
     a.rest(&mut remote);
     let nodes = server_nodes(&remote);
     assert_eq!(live_names(&remote), ["docs", "report.txt"]);
-    assert_eq!(server_bytes(&remote, &live_id(&nodes, "report.txt")), b"version three");
+    assert_eq!(
+        server_bytes(&remote, &live_id(&nodes, "report.txt")),
+        b"version three"
+    );
 }
 
 #[test]
@@ -1858,8 +1871,15 @@ fn a_safe_save_whose_backup_is_deleted_around_the_end_of_the_wait_keeps_the_new_
         fs::remove_file(docs.join("report.txt~")).unwrap();
         a.rest(&mut remote);
         let nodes = server_nodes(&remote);
-        assert_eq!(live_names(&remote), ["docs", "report.txt"], "late {late_ms}");
-        assert_eq!(server_bytes(&remote, &live_id(&nodes, "report.txt")), b"version two");
+        assert_eq!(
+            live_names(&remote),
+            ["docs", "report.txt"],
+            "late {late_ms}"
+        );
+        assert_eq!(
+            server_bytes(&remote, &live_id(&nodes, "report.txt")),
+            b"version two"
+        );
     }
 }
 
@@ -1878,7 +1898,10 @@ fn a_word_save_of_a_temp_file_written_over_three_seconds_keeps_its_node() {
     a.rest(&mut remote);
     let nodes = server_nodes(&remote);
     assert_eq!(live_names(&remote), ["deck.pptx", "docs"]);
-    assert_eq!(server_bytes(&remote, &live_id(&nodes, "deck.pptx")), b"version two, all of it");
+    assert_eq!(
+        server_bytes(&remote, &live_id(&nodes, "deck.pptx")),
+        b"version two, all of it"
+    );
     assert_eq!(live_id(&nodes, "deck.pptx"), before);
 }
 
@@ -1891,8 +1914,14 @@ fn a_safe_save_backup_written_again_within_the_wait_stays_its_own_file() {
     a.rest(&mut remote);
     let nodes = server_nodes(&remote);
     assert_eq!(live_names(&remote), ["docs", "report.txt", "report.txt~"]);
-    assert_eq!(server_bytes(&remote, &live_id(&nodes, "report.txt")), b"version two");
-    assert_eq!(server_bytes(&remote, &live_id(&nodes, "report.txt~")), b"backup recreated");
+    assert_eq!(
+        server_bytes(&remote, &live_id(&nodes, "report.txt")),
+        b"version two"
+    );
+    assert_eq!(
+        server_bytes(&remote, &live_id(&nodes, "report.txt~")),
+        b"backup recreated"
+    );
 }
 
 #[test]
@@ -1908,7 +1937,10 @@ fn a_case_only_rename_then_delete_leaves_the_other_file_alone() {
     a.rest(&mut remote);
     let nodes = server_nodes(&remote);
     assert_eq!(live_names(&remote), ["docs", "report.txt~"]);
-    assert_eq!(server_bytes(&remote, &live_id(&nodes, "report.txt~")), b"notes");
+    assert_eq!(
+        server_bytes(&remote, &live_id(&nodes, "report.txt~")),
+        b"notes"
+    );
 }
 
 #[test]
@@ -1937,7 +1969,10 @@ fn two_word_saves_across_scans_keep_the_node() {
         a.rest(&mut remote);
         let nodes = server_nodes(&remote);
         assert_eq!(live_names(&remote), ["docs", "report.docx"]);
-        assert_eq!(server_bytes(&remote, &live_id(&nodes, "report.docx")), b"version three");
+        assert_eq!(
+            server_bytes(&remote, &live_id(&nodes, "report.docx")),
+            b"version three"
+        );
         assert_eq!(live_id(&nodes, "report.docx"), before, "sending {sending}");
     }
 }
@@ -1968,7 +2003,11 @@ fn a_safe_save_whose_backup_is_deleted_one_scan_later_keeps_its_node() {
             a.rest(&mut remote);
             let nodes = server_nodes(&remote);
             let at = live_id(&nodes, name);
-            assert_eq!(live_names(&remote), ["docs", name], "{shape} sending {sending}");
+            assert_eq!(
+                live_names(&remote),
+                ["docs", name],
+                "{shape} sending {sending}"
+            );
             assert_eq!(server_bytes(&remote, &at), b"version two");
             assert_eq!(at, before, "{shape} sending {sending}: {nodes:?}");
         }
