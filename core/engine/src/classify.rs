@@ -2772,9 +2772,17 @@ impl Trees {
         let mut seen = BTreeSet::new();
         unchanged
             && (self.local_children_placed_or_parked(id)).all(|child| {
-                self.kept_as_discarded_in(child, id) || self.as_the_server_holds(child, &mut seen)
+                self.kept_as_discarded_in(child, id)
+                    || self.held_folder_discarded_in(child, id)
+                    || self.as_the_server_holds(child, &mut seen)
             })
             && self.keeps_the_synced_children(id, &BTreeSet::new(), &mut seen)
+    }
+
+    fn held_folder_discarded_in(&self, id: &NodeId, folder: &NodeId) -> bool {
+        self.r.get(id).is_none()
+            && (self.discarded.get(id)).is_some_and(|shape| shape.parent == *folder)
+            && (self.l.get(id)).is_some_and(|node| node.shape.kind == Kind::Dir)
     }
 
     fn kept_as_discarded_in(&self, id: &NodeId, folder: &NodeId) -> bool {
@@ -3035,8 +3043,10 @@ impl Trees {
         self.forget_reclaims();
         let mut kept = Vec::new();
         for folder in shown.keys() {
+            let in_a_server_folder = self.in_a_server_folder_of_a_held_one(folder, shown);
             for child in self.local_children(folder) {
-                let left_out = self.excluded(child)
+                let left_out = in_a_server_folder
+                    || self.excluded(child)
                     || (self.l.get(child)).is_some_and(|node| node.left_out_when_placed);
                 if !shown.contains_key(child) && left_out {
                     self.server_copy(child, shown, landing, &mut kept);
@@ -3044,6 +3054,26 @@ impl Trees {
             }
         }
         kept
+    }
+
+    fn in_a_server_folder_of_a_held_one(
+        &self,
+        id: &NodeId,
+        shown: &BTreeMap<NodeId, Shape>,
+    ) -> bool {
+        let mut server_folder = false;
+        let mut at = id;
+        for _ in 0..self.l.len() {
+            let Some(node) = self.l.get(at) else {
+                return false;
+            };
+            at = &node.shape.parent;
+            if shown.contains_key(at) {
+                return server_folder;
+            }
+            server_folder |= self.r.get(at).is_some();
+        }
+        false
     }
 
     pub(crate) fn discard_taken(&mut self, taken: Vec<(NodeId, Shape)>) {
