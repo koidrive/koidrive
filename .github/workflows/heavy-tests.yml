@@ -234,15 +234,11 @@ jobs:
       - name: Run parallel or Worker repetitions
         if: env.MODE == 'worker' || env.PARALLEL != '1'
         run: |
-          read -ra pairs <<< "$EXTRA_ENV"
-          for pair in ${pairs[@]+"${pairs[@]}"}; do
-            export "${pair?}"
-          done
           python3 .heavy-harness/scripts/stress-test-servers.py \
             --root "$GITHUB_WORKSPACE" --out "$RUNNER_TEMP/heavy-tests" \
             --executables "$RUNNER_TEMP/heavy-tests-build.json" \
             --mode "$MODE" --crate "$CRATE" --test "$TEST" --filter "$FILTER" \
-            --features "$FEATURES" --cases "$CASES" --ignored "$IGNORED" --release "$RELEASE" \
+            --features "$FEATURES" --cases "$CASES" --ignored "$IGNORED" \
             --repeat "$REPEAT" --parallel "$PARALLEL" --seed "$SEED_BASE"
       - name: Run the tests
         if: env.MODE == 'cargo' && env.PARALLEL == '1'

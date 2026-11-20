@@ -48,7 +48,6 @@ def parse_args(argv=None):
     parser.add_argument("--features", default="")
     parser.add_argument("--cases", default="")
     parser.add_argument("--ignored", choices=("true", "false", ""), default="false")
-    parser.add_argument("--release", choices=("true", "false", ""), default="false")
     parser.add_argument("--repeat", type=int, default=1)
     parser.add_argument("--parallel", type=int, default=1)
     parser.add_argument("--seed", type=int, required=True)
@@ -300,13 +299,12 @@ def main(argv=None):
         rows.append("| " + " | ".join(str(record[key]) for key in
                     ("run", "seed", "result", "exit_code", "passed", "failed", "ignored", "seconds")) + " |")
     green = sum(record["result"] == "pass" for record in records)
-    build = ["cargo", "test", "--locked", "--no-run", *(["--release"] if args.release == "true" else []),
-             "-p", args.crate, *(["--features", args.features] if args.features else []),
+    build = ["cargo", "test", "--locked", "--no-run", "-p", args.crate, *(["--features", args.features] if args.features else []),
              *(["--test", args.test] if args.test else []), "--message-format=json-render-diagnostics"]
     repro = [sys.executable, ".heavy-harness/scripts/stress-test-servers.py", "--root", ".", "--out", "heavy-repro",
              "--executables", "heavy-build.json", "--mode", args.mode, "--crate", args.crate, "--test", args.test, "--filter", args.filter,
              "--features", args.features, "--cases", args.cases, "--ignored", args.ignored,
-             "--release", args.release, "--repeat", str(args.repeat), "--parallel", str(args.parallel), "--seed", str(args.seed)]
+             "--repeat", str(args.repeat), "--parallel", str(args.parallel), "--seed", str(args.seed)]
     rows += ["", f"**{green} of {args.repeat} runs passed.**", "",
              "Cargo tests and web assets are built before repetitions. Each repetition runs the built test executables from their package directories without Cargo, so doc-tests don't run. Worker runs use the target commit's launcher, copied web assets, and a fresh server copy with isolated Wrangler builds and local state.",
              "Parallel runs share the target checkout. Saved regressions are collected after all runs and can affect other repetitions. Replay saved cases before relying on a seed alone.",
