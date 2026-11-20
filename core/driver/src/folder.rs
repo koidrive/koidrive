@@ -1226,7 +1226,7 @@ impl Folder {
             if built.is_some() {
                 break built;
             }
-            tried = Some(owed);
+            tried.get_or_insert_default().extend(owed);
         };
         if let Some(due) = self.engine.deletes_due() {
             let wait = Duration::from_millis(due.saturating_sub(now_ms));
