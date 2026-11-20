@@ -4629,3 +4629,87 @@ fn a_parked_file_goes_home_when_an_excluded_folder_shares_its_server_name_key_wi
         );
     }
 }
+
+#[test]
+fn a_delete_after_a_server_rename_ends_the_exclusion_is_sent_and_one_made_while_excluded_is_not() {
+    for deleted_while_excluded in [false, true] {
+        let mut trees = trees(&[synced("d", dir(ROOT, "d")), synced("g", file("d", "g", 1))]);
+        trees.set_rules(&AT_ROOT, Source::Koiignore, rules("/blocked/\n"));
+        trees.settle(&Default::default());
+        let d = NodeId::from("d");
+        trees.set_remote(
+            d.clone(),
+            RemoteNode {
+                meta_rev: 8,
+                meta_edit_rev: 8,
+                ..remote(dir(ROOT, "blocked"))
+            },
+        );
+        trees.settle(&Default::default());
+        assert!(trees.excluded(&d) && trees.unobserved(&d));
+        if deleted_while_excluded {
+            trees.remove_local(&"g".into());
+            trees.remove_local(&d);
+            trees.settle(&Default::default());
+        }
+        trees.set_remote(
+            d.clone(),
+            RemoteNode {
+                meta_rev: 9,
+                meta_edit_rev: 9,
+                ..remote(dir(ROOT, "d"))
+            },
+        );
+        trees.settle(&Default::default());
+        assert!(!trees.excluded(&d), "{deleted_while_excluded}");
+        if !deleted_while_excluded {
+            assert!(!trees.unobserved(&d));
+            trees.remove_local(&"g".into());
+            trees.remove_local(&d);
+        }
+        let sent = ops(&mut trees);
+        assert_eq!(
+            sent.iter().any(|op| *op == delete("d")),
+            !deleted_while_excluded,
+            "{deleted_while_excluded}: {sent:?}"
+        );
+    }
+}
+
+#[test]
+fn a_copy_the_rules_leave_out_around_a_server_rename_waits_for_a_scan_once_they_let_it_in() {
+    for renamed_back_first in [false, true] {
+        let mut trees = trees(&[synced("d", dir(ROOT, "d")), synced("g", file("d", "g", 1))]);
+        trees.set_rules(&AT_ROOT, Source::Koiignore, rules("/blocked/\n"));
+        trees.settle(&Default::default());
+        let d = NodeId::from("d");
+        let renamed = |rev, name| RemoteNode {
+            meta_rev: rev,
+            meta_edit_rev: rev,
+            ..remote(dir(ROOT, name))
+        };
+        trees.set_remote(d.clone(), renamed(8, "blocked"));
+        trees.settle(&Default::default());
+        if renamed_back_first {
+            trees.set_remote(d.clone(), renamed(9, "d"));
+            trees.settle(&Default::default());
+            assert!(!trees.unobserved(&d));
+        }
+        trees.set_rules(&AT_ROOT, Source::Koiignore, rules("/blocked/\n/d/\n"));
+        trees.settle(&Default::default());
+        trees.set_rules(&AT_ROOT, Source::Koiignore, rules("/blocked/\n"));
+        if !renamed_back_first {
+            trees.set_remote(d.clone(), renamed(9, "d"));
+        }
+        trees.settle(&Default::default());
+        assert!(!trees.excluded(&d), "{renamed_back_first}");
+        assert!(trees.unobserved(&d), "{renamed_back_first}");
+        trees.remove_local(&"g".into());
+        trees.remove_local(&d);
+        let sent = ops(&mut trees);
+        assert!(
+            !sent.iter().any(|op| *op == delete("d")),
+            "{renamed_back_first}: {sent:?}"
+        );
+    }
+}
