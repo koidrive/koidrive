@@ -14,6 +14,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import tomllib
 
 
 WORKERS = {
@@ -23,10 +24,15 @@ WORKERS = {
 
 RECORDER = (
     "import json, os, sys\n"
+    "allowed = set(json.loads(os.environ['STRESS_TEST_ALLOWED']))\n"
+    "environment = {name: value for name, value in os.environ.items()\n"
+    "               if name in allowed or name.startswith('CARGO_')}\n"
     "with open(os.environ['STRESS_TEST_CAPTURE'], 'a') as capture:\n"
     "    capture.write(json.dumps(dict(executable=sys.argv[1], directory=os.getcwd(),\n"
-    "                                  environment=dict(os.environ))) + '\\n')\n"
+    "                                  environment=environment)) + '\\n')\n"
 )
+
+RECORDED = ("CARGO", "LD_LIBRARY_PATH", "DYLD_LIBRARY_PATH", "DYLD_FALLBACK_LIBRARY_PATH")
 
 
 @dataclass
@@ -92,29 +98,36 @@ def cargo_configs(root):
 def capture_tests(args, environment):
     host = re.search(r"^host: (\S+)$", subprocess.check_output(["rustc", "-vV"], text=True), re.M)[1]
     runner = "CARGO_TARGET_" + re.sub(r"[^A-Za-z0-9]", "_", host).upper() + "_RUNNER"
-    configured = [str(path) for path in cargo_configs(args.root) if re.search(r"\brunner\s*=", path.read_text())]
+    configs = list(cargo_configs(args.root))
+    configured = [str(path) for path in configs if re.search(r"\brunner\s*=", path.read_text())]
     if runner in environment or configured:
         raise RuntimeError(f"a Cargo target runner is configured ({runner} or {', '.join(configured)}); "
                            "run the repetitions serially with Cargo instead")
-    recorder = args.out / "record-test"
-    recorder.write_text("#!" + sys.executable + "\n" + RECORDER)
-    recorder.chmod(0o755)
-    capture = args.out / "capture.jsonl"
-    capture.unlink(missing_ok=True)
     command = ["cargo", "test", "--locked", "-p", args.crate, *(["--features", args.features] if args.features else []),
                *(["--test", args.test] if args.test else ["--tests"])]
-    with (args.out / "logs/capture.log").open("w") as log:
-        code = subprocess.call(command, cwd=args.root, stdout=log, stderr=subprocess.STDOUT,
-                               env={**environment, runner: str(recorder), "STRESS_TEST_CAPTURE": str(capture)})
-    records = [json.loads(line) for line in capture.read_text().splitlines()] if capture.exists() else []
+    allowed = {*RECORDED, *(name for path in configs for name in tomllib.loads(path.read_text()).get("env", {}))}
+    with tempfile.TemporaryDirectory(prefix="heavy-capture-") as scratch:
+        recorder = Path(scratch) / "record-test"
+        recorder.write_text("#!" + sys.executable + "\n" + RECORDER)
+        recorder.chmod(0o755)
+        capture = Path(scratch) / "capture.jsonl"
+        with (args.out / "logs/capture.log").open("w") as log:
+            code = subprocess.call(command, cwd=args.root, stdout=log, stderr=subprocess.STDOUT,
+                                   env={**environment, runner: str(recorder), "STRESS_TEST_CAPTURE": str(capture),
+                                        "STRESS_TEST_ALLOWED": json.dumps(sorted(allowed))})
+        records = [json.loads(line) for line in capture.read_text().splitlines()] if capture.exists() else []
     if code or not records:
         raise RuntimeError(f"{shlex.join(command)} exited {code} and ran {len(records)} test executables; "
                            f"see {args.out / 'logs/capture.log'}")
-    return [dict(name=re.sub(r"-[0-9a-f]{16}$", "", Path(record["executable"]).name),
-                 executable=record["executable"], directory=record["directory"],
-                 environment={name: value for name, value in record["environment"].items()
-                              if environment.get(name) != value and name not in (runner, "STRESS_TEST_CAPTURE")})
-            for record in records]
+    tests = []
+    for record in records:
+        given = {name: value for name, value in record["environment"].items()
+                 if environment.get(name) != value and name not in (runner, "STRESS_TEST_CAPTURE")}
+        tests.append(dict(name=re.sub(r"-[0-9a-f]{16}$", "", Path(record["executable"]).name),
+                          executable=record["executable"], directory=record["directory"],
+                          default={name: value for name, value in given.items() if name not in environment},
+                          override={name: value for name, value in given.items() if name in environment}))
+    return tests
 
 
 def test_arguments(args):
@@ -166,7 +179,7 @@ def worker_sandbox(root, destination, crate, tests):
         "for test in tests:\n"
         "    print('     Running ' + test['executable'], flush=True)\n"
         "    status = subprocess.call([test['executable'], *tail], cwd=test['directory'],\n"
-        "                             env={**os.environ, **test['environment']})\n"
+        "                             env={**test['default'], **os.environ, **test['override']})\n"
         "    code = code or status\n"
         "sys.exit(code)\n"
     )
@@ -240,11 +253,12 @@ def save_regressions(root, out):
 
 
 def start_next(run):
-    command, directory, header, environment = run.pending.pop(0)
+    command, directory, header, test = run.pending.pop(0)
     if header:
         run.log.write(header)
         run.log.flush()
-    run.process = subprocess.Popen(command, cwd=directory, env={**run.environment, **environment},
+    run.process = subprocess.Popen(command, cwd=directory,
+                                   env={**test.get("default", {}), **run.environment, **test.get("override", {})},
                                    stdout=run.log, stderr=subprocess.STDOUT, start_new_session=True)
 
 
@@ -270,7 +284,7 @@ def run_tests(args):
                     environment["KOIDRIVE_BATTERY_CASES"] = args.cases
                 try:
                     pending = [([test["executable"], *test_arguments(args)], test["directory"],
-                                f"     Running {test['executable']}\n", test["environment"]) for test in tests]
+                                f"     Running {test['executable']}\n", test) for test in tests]
                     if args.mode == "worker":
                         command = worker_sandbox(args.root, Path(sandbox.name), args.crate, tests)
                         if args.filter:
