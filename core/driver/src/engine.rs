@@ -58,13 +58,15 @@ pub(crate) struct Engine {
     unstored_ctimes: BTreeMap<NodeId, i64>,
     pub local_written_since_load: bool,
     removed_at: BTreeMap<NodeId, u64>,
-    renamed_away: BTreeMap<NodeId, (PathBuf, u64)>,
+    renamed_away: BTreeMap<NodeId, (NodeId, String, u64)>,
     arrived_at: BTreeMap<NodeId, u64>,
+    took_slot: BTreeMap<(NodeId, String), (NodeId, u64)>,
     owed: BTreeSet<NodeId>,
     stored_owed: BTreeSet<NodeId>,
 }
 
 const DELETE_WAIT_MS: u64 = 2_000;
+const SAVE_WINDOW_MS: u64 = 60_000;
 
 /// What applying a batch of the log did.
 #[derive(Debug, PartialEq)]
@@ -931,8 +933,10 @@ impl Engine {
     /// entry L never held stays out.
     pub fn observe(&mut self, changes: &[Observed], now_ms: u64) -> BTreeSet<NodeId> {
         let unscanned = self.unscanned.take();
-        (self.renamed_away).retain(|_, (_, at)| now_ms < at.saturating_add(DELETE_WAIT_MS));
-        (self.arrived_at).retain(|_, at| now_ms < at.saturating_add(2 * DELETE_WAIT_MS));
+        let wait = 2 * DELETE_WAIT_MS;
+        (self.renamed_away).retain(|_, (_, _, at)| now_ms < at.saturating_add(wait));
+        (self.took_slot).retain(|_, (_, at)| now_ms < at.saturating_add(wait));
+        (self.arrived_at).retain(|_, at| now_ms < at.saturating_add(SAVE_WINDOW_MS + wait));
         let mut before: Vec<Option<NodeId>> = changes
             .iter()
             .map(|change| match change {
@@ -1125,20 +1129,6 @@ impl Engine {
                 Observed::Removed { path, .. } | Observed::Missing { path, .. } => {
                     if let Some(id) = before {
                         let missing = matches!(change, Observed::Missing { .. });
-                        if !missing && let Some((from, saved)) = self.saved_over(&id, now_ms) {
-                            self.place(
-                                Some(id),
-                                &from,
-                                EntryKind::File,
-                                saved.identity,
-                                saved.content(),
-                                now_ms,
-                                &moving,
-                                &mut touched,
-                                &mut gone,
-                            );
-                            continue;
-                        }
                         if !missing
                             && (self.trees.local().get(&id))
                                 .is_some_and(|node| node.shape.kind == Kind::File)
@@ -1189,13 +1179,13 @@ impl Engine {
                         );
                     }
                 }
-                Observed::Renamed {
-                    from, to, kind, id, ..
-                } => {
+                Observed::Renamed { to, kind, id, .. } => {
                     if let Some(node) = &before
                         && *kind == EntryKind::File
+                        && let Some(local) = self.trees.local().get(node)
                     {
-                        (self.renamed_away).insert(node.clone(), (from.clone(), now_ms));
+                        let slot = (local.shape.parent.clone(), local.shape.name.clone());
+                        (self.renamed_away).insert(node.clone(), (slot.0, slot.1, now_ms));
                     }
                     let node_kind = match kind {
                         EntryKind::File => Kind::File,
@@ -1228,6 +1218,7 @@ impl Engine {
                         &mut touched,
                         &mut gone,
                     );
+                    self.note_slot(to, now_ms);
                 }
                 Observed::Created {
                     path,
@@ -1284,6 +1275,7 @@ impl Engine {
                     if arrives && let Some(id) = local_at(&self.trees, path) {
                         self.arrived_at.insert(id, now_ms);
                     }
+                    self.note_slot(path, now_ms);
                 }
                 Observed::Modified {
                     path,
@@ -1317,6 +1309,7 @@ impl Engine {
                 }
             }
         }
+        self.continue_saves(now_ms, &moving, &mut touched, &mut gone);
         for id in parked {
             if self.trees.local().get(&id).is_some_and(|node| node.parked) {
                 self.remove(&id, &moving, false, false, &mut touched, &mut gone);
@@ -1365,34 +1358,72 @@ impl Engine {
                     && !self.trees.displaced_local().contains_key(*id)
                     && !sent(id)
             })
-            .or_else(|| {
-                (self.renamed_away.iter())
-                    .filter(|(_, (from, _))| from == path)
-                    .map(|(id, _)| id)
-                    .find(|id| {
-                        self.removed_at.contains_key(*id)
-                            && self.trees.local().get(id).is_none()
-                            && self.trees.synced().live(id).is_some()
-                            && !sent(id)
-                    })
-            })
             .cloned()
     }
 
-    fn saved_over(&self, id: &NodeId, now_ms: u64) -> Option<(PathBuf, LocalNode)> {
-        let (from, renamed) = self.renamed_away.get(id)?;
-        let holder = local_at(&self.trees, from)?;
-        let saved = self.trees.local().get(&holder)?;
-        let arrived = self.arrived_at.get(&holder)?;
-        (now_ms < renamed.saturating_add(DELETE_WAIT_MS)
-            && arrived.saturating_add(DELETE_WAIT_MS) >= *renamed
-            && holder != *id
-            && saved.shape.kind == Kind::File
-            && (self.trees.local().get(id)).is_some_and(|node| node.shape.kind == Kind::File)
-            && !self.trees.ignored_local().contains(&holder)
-            && !self.trees.recorded_local(&holder)
-            && (self.commits.in_flight()).is_none_or(|flight| !flight.creates(&holder)))
-        .then(|| (from.clone(), saved.clone()))
+    fn note_slot(&mut self, path: &Path, now_ms: u64) {
+        let Some(id) = local_at(&self.trees, path) else {
+            return;
+        };
+        let Some(node) = (self.trees.local().get(&id)).filter(|node| node.shape.kind == Kind::File)
+        else {
+            return;
+        };
+        let slot = (node.shape.parent.clone(), node.shape.name.clone());
+        self.took_slot.insert(slot, (id, now_ms));
+    }
+
+    fn continue_saves(
+        &mut self,
+        now_ms: u64,
+        moving: &BTreeSet<NodeId>,
+        touched: &mut BTreeSet<NodeId>,
+        gone: &mut Gone,
+    ) {
+        let sent =
+            |id: &NodeId| (self.commits.in_flight()).is_some_and(|flight| flight.deletes_node(id));
+        let saves: Vec<(NodeId, PathBuf, FileIdentity, Option<Content>)> =
+            (self.renamed_away.iter())
+                .filter_map(|(id, (parent, name, renamed))| {
+                    let removed = *self.removed_at.get(id)?;
+                    let (taker, took) = self.took_slot.get(&(parent.clone(), name.clone()))?;
+                    let arrived = *self.arrived_at.get(taker)?;
+                    let saved = self.trees.local().get(taker)?;
+                    let continues = self.trees.local_child(parent, name) == Some(taker)
+                        && removed < renamed.saturating_add(DELETE_WAIT_MS)
+                        && now_ms < removed.saturating_add(DELETE_WAIT_MS)
+                        && took >= renamed
+                        && arrived.saturating_add(SAVE_WINDOW_MS) >= *renamed
+                        && taker != id
+                        && saved.shape.kind == Kind::File
+                        && self.trees.local().get(id).is_none()
+                        && self.trees.synced().live(id).is_some()
+                        && !sent(id)
+                        && !self.trees.ignored_local().contains(taker)
+                        && !self.trees.recorded_local(taker);
+                    continues.then_some(())?;
+                    Some((
+                        id.clone(),
+                        self.path_of(taker)?,
+                        saved.identity,
+                        saved.content(),
+                    ))
+                })
+                .collect();
+        for (id, path, identity, content) in saves {
+            self.renamed_away.remove(&id);
+            self.place(
+                Some(id),
+                &path,
+                EntryKind::File,
+                identity,
+                content,
+                now_ms,
+                moving,
+                touched,
+                gone,
+            );
+        }
     }
 
     pub fn deferred_deletes(&mut self, now_ms: u64) -> BTreeSet<NodeId> {
@@ -1940,6 +1971,7 @@ impl Stored {
             removed_at: BTreeMap::new(),
             renamed_away: BTreeMap::new(),
             arrived_at: BTreeMap::new(),
+            took_slot: BTreeMap::new(),
             owed: owed.clone(),
             stored_owed: owed,
         }))
@@ -2819,6 +2851,7 @@ mod tests {
             removed_at: BTreeMap::new(),
             renamed_away: BTreeMap::new(),
             arrived_at: BTreeMap::new(),
+            took_slot: BTreeMap::new(),
             owed: BTreeSet::new(),
             stored_owed: BTreeSet::new(),
         };

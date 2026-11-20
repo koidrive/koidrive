@@ -1383,7 +1383,7 @@ fn a_file_renamed_away_keeps_its_node_while_it_exists_or_when_an_older_file_take
         a.rest(&mut remote);
         let nodes = server_nodes(&remote);
         let (report, notes) = (live_id(&nodes, "report.txt"), live_id(&nodes, "notes.txt"));
-        clock::advance_to(clock::instant() + Duration::from_secs(60));
+        clock::advance_to(clock::instant() + Duration::from_secs(600));
         fs::rename(docs.join("report.txt"), docs.join("report.txt~")).unwrap();
         match backup_kept {
             true => fs::write(docs.join("report.txt"), b"version two").unwrap(),
@@ -1408,4 +1408,229 @@ fn a_file_renamed_away_keeps_its_node_while_it_exists_or_when_an_older_file_take
             );
         }
     }
+}
+
+fn safe_save_fixture() -> (Remote, Site, Device, String) {
+    clock::freeze();
+    let mut remote = Remote::new();
+    let (site, mut a) = linked(&mut remote, "a");
+    a.create(&mut remote, &site.root.join("report.docx"), b"version one");
+    a.rest(&mut remote);
+    let before = live_id(&server_nodes(&remote), "report.docx");
+    (remote, site, a, before)
+}
+
+fn safe_save_swap(site: &Site, a: &mut Device) {
+    fs::rename(
+        site.root.join("report.docx"),
+        site.root.join("~WRL0001.tmp"),
+    )
+    .unwrap();
+    a.rescan();
+    a.scan_until(|_| local_holds(site, "~WRL0001.tmp"));
+}
+
+fn safe_save_cleanup(site: &Site, a: &mut Device, remote: &mut Remote) {
+    fs::remove_file(site.root.join("~WRL0001.tmp")).unwrap();
+    a.rescan();
+    a.rest(remote);
+}
+
+fn safe_save_assert(remote: &Remote, before: &str) {
+    let after = live_id(&server_nodes(remote), "report.docx");
+    assert_eq!(server_bytes(remote, &after), b"version two");
+    assert_eq!(after, before, "{:?}", server_nodes(remote));
+}
+
+#[test]
+fn a_safe_save_word_staged_early() {
+    let (mut remote, site, mut a, before) = safe_save_fixture();
+    a.create(&mut remote, &site.root.join("~WRD0000.tmp"), b"version two");
+    a.rest(&mut remote);
+    clock::advance_to(clock::instant() + Duration::from_millis(2001));
+    safe_save_swap(&site, &mut a);
+    fs::rename(
+        site.root.join("~WRD0000.tmp"),
+        site.root.join("report.docx"),
+    )
+    .unwrap();
+    a.rescan();
+    a.scan_until(|_| local_holds(&site, "report.docx"));
+    safe_save_cleanup(&site, &mut a, &mut remote);
+    safe_save_assert(&remote, &before);
+}
+
+#[test]
+fn a_safe_save_word_promotes_temp_after_backup_cleanup() {
+    let (mut remote, site, mut a, before) = safe_save_fixture();
+    a.create(&mut remote, &site.root.join("~WRD0000.tmp"), b"version two");
+    a.rest(&mut remote);
+    safe_save_swap(&site, &mut a);
+    a.rest(&mut remote);
+    fs::remove_file(site.root.join("~WRL0001.tmp")).unwrap();
+    a.rescan();
+    a.scan_until(|_| !local_holds(&site, "~WRL0001.tmp"));
+    assert_eq!(live_id(&server_nodes(&remote), "~WRL0001.tmp"), before);
+    clock::advance_to(clock::instant() + Duration::from_millis(100));
+    fs::rename(
+        site.root.join("~WRD0000.tmp"),
+        site.root.join("report.docx"),
+    )
+    .unwrap();
+    a.rescan();
+    a.scan_until(|_| local_holds(&site, "report.docx"));
+    a.rest(&mut remote);
+    safe_save_assert(&remote, &before);
+}
+
+#[test]
+fn a_safe_save_create_awaiting_reply() {
+    let (mut remote, site, mut a, before) = safe_save_fixture();
+    safe_save_swap(&site, &mut a);
+    a.rest(&mut remote);
+    fs::write(site.root.join("report.docx"), b"version two").unwrap();
+    a.rescan();
+    a.scan_until(|a| !a.work.is_empty());
+    let upload = a.work.pop_front().unwrap();
+    assert!(matches!(upload, Work::Upload(_)));
+    a.perform(upload, &mut remote).unwrap();
+    let Some(Work::Send(create)) = a.work.pop_front() else {
+        panic!("the replacement create is sent");
+    };
+    fs::remove_file(site.root.join("~WRL0001.tmp")).unwrap();
+    a.rescan();
+    a.scan_until(|_| !local_holds(&site, "~WRL0001.tmp"));
+    a.perform(Work::Send(create), &mut remote).unwrap();
+    a.rest(&mut remote);
+    safe_save_assert(&remote, &before);
+}
+
+#[test]
+fn a_safe_save_removal_deadline() {
+    for elapsed in [1999, 2000, 2001] {
+        let (mut remote, site, mut a, before) = safe_save_fixture();
+        safe_save_swap(&site, &mut a);
+        a.rest(&mut remote);
+        a.create(&mut remote, &site.root.join("report.docx"), b"version two");
+        a.rest(&mut remote);
+        let replacement = live_id(&server_nodes(&remote), "report.docx");
+        assert_ne!(before, replacement);
+        clock::advance_to(clock::instant() + Duration::from_millis(elapsed));
+        safe_save_cleanup(&site, &mut a, &mut remote);
+        safe_save_assert(
+            &remote,
+            if elapsed < 2000 {
+                &before
+            } else {
+                &replacement
+            },
+        );
+    }
+}
+
+#[test]
+fn a_safe_save_default_deadline_when_replacement_arrives_last() {
+    let (mut remote, site, mut a, before) = safe_save_fixture();
+    safe_save_swap(&site, &mut a);
+    a.rest(&mut remote);
+    clock::advance_to(clock::instant() + Duration::from_millis(1998));
+    fs::remove_file(site.root.join("~WRL0001.tmp")).unwrap();
+    a.rescan();
+    a.scan_until(|_| !local_holds(&site, "~WRL0001.tmp"));
+    assert_eq!(live_id(&server_nodes(&remote), "~WRL0001.tmp"), before);
+    clock::advance_to(clock::instant() + Duration::from_millis(3));
+    fs::write(site.root.join("report.docx"), b"version two").unwrap();
+    a.rescan();
+    a.scan_until(|_| local_holds(&site, "report.docx"));
+    a.rest(&mut remote);
+    safe_save_assert(&remote, &before);
+}
+
+#[test]
+fn a_safe_save_renamed_replacement_is_not_consumed_by_backup_cleanup() {
+    let (mut remote, site, mut a, before) = safe_save_fixture();
+    safe_save_swap(&site, &mut a);
+    a.rest(&mut remote);
+    a.create(&mut remote, &site.root.join("report.docx"), b"version two");
+    a.rest(&mut remote);
+    let replacement = live_id(&server_nodes(&remote), "report.docx");
+    fs::rename(site.root.join("report.docx"), site.root.join("draft.docx")).unwrap();
+    safe_save_cleanup(&site, &mut a, &mut remote);
+    assert_eq!(
+        remote.names(),
+        ["draft.docx"],
+        "{:?}",
+        server_nodes(&remote)
+    );
+    assert_eq!(
+        live_id(&server_nodes(&remote), "draft.docx"),
+        replacement,
+        "{:?}",
+        server_nodes(&remote)
+    );
+    assert!(
+        !server_nodes(&remote)
+            .into_iter()
+            .any(|(_, id, live)| id == before && live)
+    );
+    assert_eq!(server_bytes(&remote, &replacement), b"version two");
+}
+
+#[test]
+fn a_safe_save_ancestor_move_before_cleanup() {
+    clock::freeze();
+    let mut remote = Remote::new();
+    let (site, mut a) = linked(&mut remote, "a");
+    let docs = site.root.join("docs");
+    let archive = site.root.join("archive");
+    fs::create_dir(&docs).unwrap();
+    a.create(&mut remote, &docs.join("report.docx"), b"version one");
+    a.rest(&mut remote);
+    let before = live_id(&server_nodes(&remote), "report.docx");
+    fs::rename(docs.join("report.docx"), docs.join("~WRL0001.tmp")).unwrap();
+    a.rescan();
+    a.scan_until(|_| local_holds(&site, "~WRL0001.tmp"));
+    a.rest(&mut remote);
+    a.create(&mut remote, &docs.join("report.docx"), b"version two");
+    a.rest(&mut remote);
+    fs::rename(&docs, &archive).unwrap();
+    a.rescan();
+    a.scan_until(|_| local_holds(&site, "archive"));
+    fs::remove_file(archive.join("~WRL0001.tmp")).unwrap();
+    a.rescan();
+    a.rest(&mut remote);
+    assert_eq!(remote.names(), ["archive", "report.docx"]);
+    safe_save_assert(&remote, &before);
+}
+
+#[test]
+fn a_safe_save_atomic_overwrite_with_staged_file() {
+    let (mut remote, site, mut a, before) = safe_save_fixture();
+    a.create(&mut remote, &site.root.join(".save"), b"version two");
+    a.rest(&mut remote);
+    fs::rename(site.root.join(".save"), site.root.join("report.docx")).unwrap();
+    a.rescan();
+    a.rest(&mut remote);
+    assert_eq!(remote.names(), ["report.docx"]);
+    safe_save_assert(&remote, &before);
+}
+
+#[test]
+fn a_safe_save_ignored_lock_file_does_not_break_word_swap() {
+    let (mut remote, site, mut a, before) = safe_save_fixture();
+    a.create(&mut remote, &site.root.join(".koiignore"), b"~$*.docx\n");
+    a.rest(&mut remote);
+    fs::write(site.root.join("~$port.docx"), b"lock owner").unwrap();
+    a.create(&mut remote, &site.root.join("~WRD0000.tmp"), b"version two");
+    safe_save_swap(&site, &mut a);
+    fs::rename(
+        site.root.join("~WRD0000.tmp"),
+        site.root.join("report.docx"),
+    )
+    .unwrap();
+    a.rescan();
+    a.scan_until(|_| local_holds(&site, "report.docx"));
+    safe_save_cleanup(&site, &mut a, &mut remote);
+    assert_eq!(remote.names(), [".koiignore", "report.docx"]);
+    safe_save_assert(&remote, &before);
 }
