@@ -889,6 +889,71 @@ fn keep_rule_walk_reaches_a_deleted_folder(server_took_the_move: bool) -> bool {
 }
 
 #[test]
+fn the_discard_oracle_counts_a_removal_only_in_the_folder_the_user_removed_the_entry_from() {
+    let mut device = Device::new(Trees::new("root"));
+    let change = |id: &str, parent: &str| ChangeRecord {
+        change: Some(change_record::Change::Node(NodeState {
+            node_id: id.into(),
+            parent_id: parent.into(),
+            name: id.into(),
+            kind: 1,
+            status: 1,
+            ..Default::default()
+        })),
+    };
+    device.receive(
+        &[
+            change("x", "root"),
+            change("out", "root"),
+            change("other", "root"),
+            change("d", "x"),
+        ],
+        false,
+    );
+    for (id, ino) in [("x", 1), ("out", 2), ("other", 3), ("d", 4)] {
+        let shape = device.trees.remote().live(&id.into()).unwrap().clone();
+        device.trees.set_synced(id.into(), Some(shape.clone()));
+        device.trees.set_local(
+            id.into(),
+            LocalNode {
+                left_out_when_placed: false,
+                content_from_server: false,
+                shape,
+                identity: identity(ino),
+                parked: false,
+            },
+        );
+    }
+    let id = NodeId::from("d");
+    let x = NodeId::from("x");
+    let mut moved = device.trees.local().get(&id).unwrap().clone();
+    moved.shape.parent = "out".into();
+    device.trees.set_local_changed(id.clone(), moved);
+    device.trees.remove_local(&id);
+    let from = device.trees.state().removed_from[&id].clone();
+    assert_eq!(from, NodeId::from("out"));
+    device.removed_from.insert(id.clone(), from);
+    device.receive(&[change("d", "other")], false);
+    device.trees.set_rules(
+        &[] as &[&str],
+        Source::Koiignore,
+        Some(RuleFile::parse(b"/other/d\n")),
+    );
+    device.trees.listed(&[], Pending::new([["x", "d"]]));
+    device.trees.settle(&Default::default());
+    assert!(device.trees.excluded(&id));
+    assert_eq!(
+        device.trees.remote().live(&id).unwrap().parent,
+        NodeId::from("other")
+    );
+    assert_eq!(acknowledged_shape(&device.trees, &id).unwrap().parent, x);
+    assert!(
+        !removed_by_user_from(&device, &x),
+        "the oracle credits the old parent for a removal in out"
+    );
+}
+
+#[test]
 fn the_keep_rule_walk_stops_at_a_folder_the_users_pending_move_takes_out() {
     assert!(!keep_rule_walk_reaches_a_deleted_folder(false));
 }
