@@ -2559,7 +2559,26 @@ fn run_ignoring_answering_after(
         .map(|(id, _)| id)
         .filter(|id| !outside(id))
         .collect();
-    let mut waiting: BTreeSet<NodeId> = BTreeSet::new();
+    let refused_merges: BTreeSet<NodeId> = (effects.blocked().iter())
+        .filter_map(|(id, effect)| {
+            let Effect::RemoveDir { along, .. } = effect else {
+                return None;
+            };
+            if !commits.aliases().contains_key(id) || !device.on_disk(id) {
+                return None;
+            }
+            let held = held_on_disk(&device, id, along);
+            let folder = local_path(&device.trees, id);
+            (!held.is_empty()
+                && held.iter().all(|(name, kind)| {
+                    let mut entry = folder.clone();
+                    entry.push(name.clone());
+                    kind.is_none_or(|kind| device.trees.ignores(&entry, kind))
+                }))
+            .then(|| id.clone())
+        })
+        .collect();
+    let mut waiting = refused_merges.clone();
     loop {
         let more: Vec<NodeId> = (unsettled.iter())
             .filter(|id| {
@@ -2579,7 +2598,11 @@ fn run_ignoring_answering_after(
         .collect();
     prop_assert_eq!(unsettled, Vec::<&NodeId>::new());
     prop_assert!(commits.problems().is_empty(), "{:?}", commits.problems());
-    prop_assert!(effects.blocked().is_empty(), "{:?}", effects.blocked());
+    prop_assert!(
+        effects.blocked().keys().all(|id| refused_merges.contains(id)),
+        "{:?}",
+        effects.blocked()
+    );
     let renaming = commits.renaming(&device.trees, NOW as u64);
     let reported =
         koidrive_engine::effects::stuck(&device.trees, &effects, commits.in_flight(), &renaming);
