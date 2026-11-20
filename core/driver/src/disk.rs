@@ -1960,10 +1960,21 @@ fn settle(
             Outcome::Failed {
                 reason: Reason::Holds(names),
                 ..
-            } if (engine.effects).keeps(&engine.trees, &record.effect_id, &held(names)) => {
+            } if (engine.effects).keeps(
+                &engine.trees,
+                engine.commits.in_flight(),
+                &record.effect_id,
+                &held(names),
+            ) =>
+            {
                 let held = held(names);
                 (engine.effects)
-                    .kept(&mut engine.trees, &record.effect_id, &held)
+                    .kept(
+                        &mut engine.trees,
+                        engine.commits.in_flight(),
+                        &record.effect_id,
+                        &held,
+                    )
                     .map_err(refused)?;
                 tracing::info!(
                     entries = names.len(),

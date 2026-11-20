@@ -1890,14 +1890,24 @@ impl World {
                 Some(Err(Refused::Overtaken)) => effects.overtaken(trees, &record.effect_id),
                 Some(Err(Refused::NotEmpty))
                     if applies
-                        && effects.keeps(trees, &record.effect_id, &names_and_kinds(&held)) =>
+                        && effects.keeps(
+                            trees,
+                            commits.in_flight(),
+                            &record.effect_id,
+                            &names_and_kinds(&held),
+                        ) =>
                 {
                     note(
                         &mut self.seen,
                         "a folder to remove that holds only excluded entries stays",
                     );
                     self.kept_for_left_out[d].insert(record.node.clone());
-                    effects.kept(trees, &record.effect_id, &names_and_kinds(&held))
+                    effects.kept(
+                        trees,
+                        commits.in_flight(),
+                        &record.effect_id,
+                        &names_and_kinds(&held),
+                    )
                 }
                 _ => effects.failed(trees, &record.effect_id).map(|()| {
                     if !applies {

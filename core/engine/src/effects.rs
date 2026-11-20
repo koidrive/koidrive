@@ -706,11 +706,18 @@ impl Effects {
         Ok(())
     }
 
-    /// Whether the effect in flight removes a folder that R holds trashed and this device syncs no entry of `held`,
+    /// Whether the effect in flight removes a folder that R holds trashed, purged or never held, and that the commit
+    /// in flight does not create, and this device syncs no entry of `held`,
     /// the names and kinds of what the folder holds beside the files it takes along: the rules in force exclude each
     /// file or folder, or L holds it as a node this device leaves out, such as a kept entry, and an entry of no kind,
     /// such as a symlink, is never synced. [`Effects::kept`] then keeps it.
-    pub fn keeps(&self, trees: &Trees, effect_id: &str, held: &[(&str, Option<Kind>)]) -> bool {
+    pub fn keeps(
+        &self,
+        trees: &Trees,
+        in_flight: Option<&InFlight>,
+        effect_id: &str,
+        held: &[(&str, Option<Kind>)],
+    ) -> bool {
         let Some(record) = self.flight(effect_id) else {
             return false;
         };
@@ -718,7 +725,8 @@ impl Effects {
             return false;
         };
         matches!(record.effect, Effect::RemoveDir { .. })
-            && (trees.remote().get(&record.node)).is_some_and(|node| node.trashed)
+            && trees.remote().live(&record.node).is_none()
+            && !in_flight.is_some_and(|flight| flight.creates(&record.node))
             && held.iter().all(|(name, kind)| {
                 let mut entry = folder.clone();
                 entry.push(name);
@@ -734,10 +742,11 @@ impl Effects {
     pub fn kept(
         &mut self,
         trees: &mut Trees,
+        in_flight: Option<&InFlight>,
         effect_id: &str,
         held: &[(&str, Option<Kind>)],
     ) -> Result<(), EffectError> {
-        if !self.keeps(trees, effect_id, held) {
+        if !self.keeps(trees, in_flight, effect_id, held) {
             return Err(EffectError::NotKept(effect_id.to_owned()));
         }
         let record = self.take(effect_id)?;
@@ -1294,7 +1303,8 @@ impl<'a> View<'a> {
     }
 
     fn left_out(&self, folder: &NodeId, id: &NodeId) -> bool {
-        let trashed = |id: &NodeId| (self.trees.remote().get(id)).is_some_and(|remote| remote.trashed);
+        let trashed =
+            |id: &NodeId| (self.trees.remote().get(id)).is_some_and(|remote| remote.trashed);
         let owed = (self.trees.local().get(id).zip(self.trees.synced().live(id)))
             .is_some_and(|(local, synced)| local.shape.same_position(synced))
             && trashed(id);
