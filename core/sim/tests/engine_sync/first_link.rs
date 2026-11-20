@@ -848,20 +848,9 @@ fn a_folder_moved_into_the_discarded_folder_merged_into_it_goes_back_to_its_serv
 }
 
 fn keep_rule_walk_reaches_a_deleted_folder(server_took_the_move: bool) -> bool {
-    let mut device = Device {
-        trees: Trees::new("root"),
-        ids: IdGen::new(7),
-        inos: 0,
-        fresh_dir_names: false,
-        rules: Rules::default(),
-        touched: BTreeSet::new(),
-        acted: BTreeSet::from(["k".into(), "m".into()]),
-        removed_from: BTreeMap::from([("k".into(), "root".into())]),
-        kept_back: BTreeSet::new(),
-        relocated: BTreeMap::new(),
-        ignored: IgnoredDisk::default(),
-        off_disk: BTreeSet::new(),
-    };
+    let mut device = Device::new(Trees::new("root"));
+    device.acted = BTreeSet::from(["k".into(), "m".into()]);
+    device.removed_from = BTreeMap::from([("k".into(), "root".into())]);
     let state = |id: &str, parent: &str| NodeState {
         node_id: id.into(),
         parent_id: parent.into(),
@@ -907,20 +896,9 @@ fn the_keep_rule_walk_passes_a_folder_whose_move_the_server_took_before_moving_i
 }
 
 fn keep_rule_keeps_a_deleted_folder(server_renames_it: bool) -> bool {
-    let mut device = Device {
-        trees: Trees::new("root"),
-        ids: IdGen::new(7),
-        inos: 0,
-        fresh_dir_names: false,
-        rules: Rules::default(),
-        touched: BTreeSet::new(),
-        acted: BTreeSet::from(["k".into()]),
-        removed_from: BTreeMap::from([("k".into(), "root".into())]),
-        kept_back: BTreeSet::new(),
-        relocated: BTreeMap::new(),
-        ignored: IgnoredDisk::default(),
-        off_disk: BTreeSet::new(),
-    };
+    let mut device = Device::new(Trees::new("root"));
+    device.acted = BTreeSet::from(["k".into()]);
+    device.removed_from = BTreeMap::from([("k".into(), "root".into())]);
     let change = |name: &str| ChangeRecord {
         change: Some(change_record::Change::Node(NodeState {
             node_id: "k".into(),
