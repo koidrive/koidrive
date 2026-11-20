@@ -3790,8 +3790,10 @@ impl Trees {
     /// let in leaves S in one group with every node below it whose copy went too, excluded ones included, and the
     /// folders below it the server keeps only for an excluded file, so the group downloads again and no deletion
     /// is sent (section 5.10). A node S holds below them that L holds elsewhere, where the user moved it, goes with
-    /// them together with every node S holds below it, and each of those L holds keeps the shape S held for it, or the one its waiting S update holds, as
-    /// its base ([`Origin::Released`]), so it is not downloaded again. A group leaves whole or stays, and one that stays is tried again at the next
+    /// them together with every node S holds below it through folders L holds. Below a folder L no longer holds, only
+    /// the nodes whose copy went too or that L holds elsewhere go, so a node the user removed there keeps the group
+    /// in S until that removal is sent. Each of those L holds keeps the shape S held for it, or the one its waiting
+    /// S update holds, as its base ([`Origin::Released`]), so it is not downloaded again. A group leaves whole or stays, and one that stays is tried again at the next
     /// settle that changes anything: while the rules are not scanned since a restore, while the rules leave out its
     /// top where S or R holds it, while the rules of a folder above one of its nodes are unknown, while the place
     /// S or R holds for one of its nodes is at or below a [`Pending`] path, or while S cannot drop it. Only the
