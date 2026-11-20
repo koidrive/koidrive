@@ -42,11 +42,12 @@ impl Tx<'_> {
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
             let node = Frozen {
-                parent: row.get(2)?,
+                parent: NodeId::from(row.get::<_, String>(2)?),
                 name: row.get(3)?,
                 taken: row.get(4)?,
             };
-            (frozen.entry(row.get(0)?).or_default()).insert(row.get(1)?, node);
+            (frozen.entry(row.get(0)?).or_default())
+                .insert(NodeId::from(row.get::<_, String>(1)?), node);
         }
         let mut stmt = self.0.prepare_cached(
             "SELECT question_id, asked_at_ms, kind, answer, frozen FROM open_questions
@@ -128,8 +129,8 @@ impl Tx<'_> {
             for (node, below) in question.frozen.iter().flatten() {
                 frozen.execute(params![
                     question.id,
-                    node,
-                    below.parent,
+                    node.to_string(),
+                    below.parent.to_string(),
                     below.name,
                     below.taken
                 ])?;

@@ -1508,11 +1508,11 @@ fn a_discard_keeps_its_folder_off_the_server_when_the_user_empties_a_server_fold
         Source::Koiignore,
         Some(RuleFile::parse(b"ignored\n")),
     );
-    let mut moved = trees.local().get("x").unwrap().clone();
+    let mut moved = trees.local().get(&"x".into()).unwrap().clone();
     moved.shape.parent = "f".into();
     moved.shape.name = "ignored".into();
     trees.set_local_changed("x".into(), moved);
-    let mut renamed = trees.local().get("s").unwrap().clone();
+    let mut renamed = trees.local().get(&"s".into()).unwrap().clone();
     renamed.shape.name = "renamed".into();
     trees.set_local_changed("s".into(), renamed);
     trees.settle(commits.aliases());
@@ -1521,11 +1521,11 @@ fn a_discard_keeps_its_folder_off_the_server_when_the_user_empties_a_server_fold
         [("move", "s".to_owned())]
     );
     assert!(commits.decide(&mut trees, &asked.id, Answer::Discard));
-    let mut out = trees.local().get("d").unwrap().clone();
+    let mut out = trees.local().get(&"d".into()).unwrap().clone();
     out.shape.parent = "o".into();
     trees.set_local_changed("d".into(), out);
-    trees.remove_local("d");
-    trees.remove_local("o");
+    trees.remove_local(&"d".into());
+    trees.remove_local(&"o".into());
     trees.settle(commits.aliases());
     trees.set_rules(&[] as &[&str], Source::Koiignore, None);
     commits
@@ -1538,7 +1538,7 @@ fn a_discard_keeps_its_folder_off_the_server_when_the_user_empties_a_server_fold
             ..Default::default()
         })
         .unwrap();
-    let mut s = trees.remote().get("s").unwrap().clone();
+    let mut s = trees.remote().get(&"s".into()).unwrap().clone();
     s.shape.name = "renamed".into();
     trees.set_remote("s".into(), s);
     assert!(commits.acknowledge(&mut trees, 1));
@@ -1582,21 +1582,21 @@ fn a_discard_answered_after_another_device_changes_a_server_folder_the_rules_lea
         let asked = question(&commits);
         let ignored = Some(RuleFile::parse(b"ignored\n"));
         trees.set_rules(&[] as &[&str], Source::Koiignore, ignored);
-        let mut moved = trees.local().get("x").unwrap().clone();
+        let mut moved = trees.local().get(&"x".into()).unwrap().clone();
         (moved.shape.parent, moved.shape.name) = ("f".into(), "ignored".into());
         trees.set_local_changed("x".into(), moved);
         trees.settle(commits.aliases());
-        let mut remote = trees.remote().get("c").unwrap().clone();
+        let mut remote = trees.remote().get(&"c".into()).unwrap().clone();
         (remote.shape, remote.content_rev, remote.edit_rev) = (shape, 2, 2);
         trees.set_remote(id.into(), remote);
         trees.settle(commits.aliases());
         assert_eq!(drive_until_quiet(&mut commits, &mut trees, &mut ids), []);
         assert!(commits.decide(&mut trees, &asked.id, Answer::Discard));
-        let mut out = trees.local().get("d").unwrap().clone();
+        let mut out = trees.local().get(&"d".into()).unwrap().clone();
         out.shape.parent = "o".into();
         trees.set_local_changed("d".into(), out);
-        trees.remove_local("d");
-        trees.remove_local("o");
+        trees.remove_local(&"d".into());
+        trees.remove_local(&"o".into());
         trees.settle(commits.aliases());
         let mut sent = drive_until_quiet(&mut commits, &mut trees, &mut ids);
         trees.set_rules(&[] as &[&str], Source::Koiignore, None);
@@ -1645,7 +1645,7 @@ fn a_discard_answered_while_a_change_below_a_server_folder_is_in_flight_keeps_it
         match &shape {
             Some(shape) => {
                 let mut sent = local_node(shape.clone(), 77);
-                if let Some(edited) = trees.local().get(id) {
+                if let Some(edited) = trees.local().get(&NodeId::from(id)) {
                     sent = LocalNode {
                         shape: shape.clone(),
                         ..edited.clone()
@@ -1653,14 +1653,14 @@ fn a_discard_answered_while_a_change_below_a_server_folder_is_in_flight_keeps_it
                 }
                 trees.set_local_changed(id.into(), sent);
             }
-            None => trees.remove_local(id),
+            None => trees.remove_local(&NodeId::from(id)),
         }
         trees.settle(commits.aliases());
         assert_eq!(
             ops(&mut commits, &mut trees, &mut ids),
             [(op, id.to_owned())]
         );
-        let mut moved = trees.local().get("x").unwrap().clone();
+        let mut moved = trees.local().get(&"x".into()).unwrap().clone();
         (moved.shape.parent, moved.shape.name) = ("f".into(), "ignored".into());
         trees.set_local_changed("x".into(), moved);
         trees.settle(commits.aliases());
@@ -1677,17 +1677,17 @@ fn a_discard_answered_while_a_change_below_a_server_folder_is_in_flight_keeps_it
             .unwrap();
         match shape {
             Some(shape) => {
-                let mut remote = trees.remote().get("c").unwrap().clone();
+                let mut remote = trees.remote().get(&"c".into()).unwrap().clone();
                 (remote.shape, remote.content_rev) = (shape, 2);
                 trees.set_remote(id.into(), remote);
             }
-            None => trees.remove_remote(id),
+            None => trees.remove_remote(&NodeId::from(id)),
         }
         assert!(commits.acknowledge(&mut trees, 1));
-        let mut out = trees.local().get("d").unwrap().clone();
+        let mut out = trees.local().get(&"d".into()).unwrap().clone();
         out.shape.parent = "o".into();
         trees.set_local_changed("d".into(), out);
-        trees.remove_local("d");
+        trees.remove_local(&"d".into());
         trees.settle(commits.aliases());
         let mut sent = drive_until_quiet(&mut commits, &mut trees, &mut ids);
         trees.set_rules(&[] as &[&str], Source::Koiignore, None);
@@ -1719,7 +1719,7 @@ fn a_discard_answered_while_a_change_to_a_server_folder_it_takes_along_is_in_fli
         let asked = question(&commits);
         let ignored = Some(RuleFile::parse(b"ignored\n"));
         trees.set_rules(&[] as &[&str], Source::Koiignore, ignored);
-        let node = trees.local().get(id).cloned();
+        let node = trees.local().get(&NodeId::from(id)).cloned();
         let node = node.unwrap_or_else(|| local_node(shape.clone(), 90));
         trees.set_local_changed(
             id.into(),
@@ -1733,7 +1733,7 @@ fn a_discard_answered_while_a_change_to_a_server_folder_it_takes_along_is_in_fli
             ops(&mut commits, &mut trees, &mut ids),
             [(op, id.to_owned())]
         );
-        let mut moved = trees.local().get("x").unwrap().clone();
+        let mut moved = trees.local().get(&"x".into()).unwrap().clone();
         moved.shape.parent = "f".into();
         moved.shape.name = "ignored".into();
         trees.set_local_changed("x".into(), moved);
@@ -1751,7 +1751,7 @@ fn a_discard_answered_while_a_change_to_a_server_folder_it_takes_along_is_in_fli
             ..Default::default()
         }))
         .unwrap();
-        let mut remote = trees.remote().get("c").unwrap().clone();
+        let mut remote = trees.remote().get(&"c".into()).unwrap().clone();
         (remote.shape, remote.content_rev, remote.meta_rev) = (shape.clone(), 2, 2);
         trees.set_remote(id.into(), remote);
         assert!(commits.acknowledge(&mut trees, 1));
@@ -1761,7 +1761,7 @@ fn a_discard_answered_while_a_change_to_a_server_folder_it_takes_along_is_in_fli
             [],
             "{op}"
         );
-        let x = (trees.remote().get("x").unwrap().shape.name).clone();
+        let x = (trees.remote().get(&"x".into()).unwrap().shape.name).clone();
         let mut expected = vec![("c".into(), "x".into(), "child".into())];
         if id == "n" {
             expected.push(("n".into(), "x".into(), "n".into()));
@@ -5489,7 +5489,11 @@ mod a_server_file_moved_into_an_asked_folder {
         assert_eq!(again.answer, None);
         assert!(c.decide(&mut t, &again.id, Answer::Discard));
         assert_eq!(settle(&mut c, &mut t, &mut i), []);
-        assert!(t.remote().get(&"sc".into()).is_some_and(|node| !node.trashed));
+        assert!(
+            t.remote()
+                .get(&"sc".into())
+                .is_some_and(|node| !node.trashed)
+        );
         assert_eq!(
             t.local().get(&"sf".into()).map(|node| &node.shape),
             Some(&dir(ROOT, "server"))
@@ -5503,7 +5507,12 @@ mod a_server_file_moved_into_an_asked_folder {
     }
 
     fn on_the_server(t: &mut Trees, id: &str, change: impl FnOnce(&mut RemoteNode)) {
-        let mut node = (t.remote().get(id).or(t.remote().get("sc")).unwrap()).clone();
+        let mut node = (t
+            .remote()
+            .get(&NodeId::from(id))
+            .or(t.remote().get(&"sc".into()))
+            .unwrap())
+        .clone();
         change(&mut node);
         (node.content_rev, node.meta_rev, node.edit_rev) =
             (node.content_rev + 1, node.meta_rev + 1, node.edit_rev + 1);
@@ -5529,8 +5538,8 @@ mod a_server_file_moved_into_an_asked_folder {
     }
 
     fn by_the_user(t: &mut Trees, id: &str, change: impl FnOnce(&mut Shape)) {
-        let mut node =
-            (t.local().get(id).cloned()).unwrap_or_else(|| local_node(file("sf", "n", 7), 90));
+        let mut node = (t.local().get(&NodeId::from(id)).cloned())
+            .unwrap_or_else(|| local_node(file("sf", "n", 7), 90));
         change(&mut node.shape);
         t.set_local_changed(id.into(), node);
         t.settle(&Default::default());
@@ -5558,19 +5567,20 @@ mod a_server_file_moved_into_an_asked_folder {
             |t| on_the_server(t, "sn", |node| node.shape = file("sf", "new", 5)),
             |t| on_the_server(t, "sm", |node| node.shape.parent = "sf".into()),
             |t| on_the_server(t, "sc", |node| node.shape = file("sf", "c", 10)),
-            |t| t.remove_remote("sc"),
+            |t| t.remove_remote(&"sc".into()),
         ];
         for (index, change) in changes.into_iter().enumerate() {
             let (mut c, mut t, mut i, _) = answered();
             change(&mut t);
             let sent = settle(&mut c, &mut t, &mut i);
             nothing_of_f(&sent);
-            assert!(t.local().get("f").is_none(), "{index}: {sent:?}");
+            assert!(t.local().get(&"f".into()).is_none(), "{index}: {sent:?}");
             let remote = t
                 .remote()
-                .live("sf")
+                .live(&"sf".into())
                 .map(|shape| (&shape.parent, &shape.name));
-            let local = (t.local().get("sf")).map(|node| (&node.shape.parent, &node.shape.name));
+            let local =
+                (t.local().get(&"sf".into())).map(|node| (&node.shape.parent, &node.shape.name));
             assert_eq!(local, remote, "{index}: {sent:?}");
         }
     }
@@ -5604,7 +5614,7 @@ mod a_server_file_moved_into_an_asked_folder {
                 panic!("{index}: {:?}", local(&t));
             };
             assert!(again.id != asked && again.answer.is_none(), "{index}");
-            assert!(t.local().get("f").is_some(), "{index}");
+            assert!(t.local().get(&"f".into()).is_some(), "{index}");
         }
     }
 
@@ -5619,7 +5629,10 @@ mod a_server_file_moved_into_an_asked_folder {
         by_the_user(&mut t, "sc", |shape| shape.content = Some(content(5)));
         nothing_of_f(&settle(&mut c, &mut t, &mut i));
         assert!(question(&c).answer.is_none());
-        assert_eq!(t.local().get("sc").unwrap().shape, file("sf", "renamed", 5));
+        assert_eq!(
+            t.local().get(&"sc".into()).unwrap().shape,
+            file("sf", "renamed", 5)
+        );
     }
 
     #[test]
@@ -5628,8 +5641,11 @@ mod a_server_file_moved_into_an_asked_folder {
         let (mut c, mut t, mut i, _) = answered();
         on_the_server(&mut t, "sf", |node| node.trashed = true);
         nothing_of_f(&settle(&mut c, &mut t, &mut i));
-        assert_eq!(t.local().get("sc").unwrap().shape, file("sf", "c", 9));
-        assert_eq!(t.local().get("sf").unwrap().shape.parent, "f");
+        assert_eq!(
+            t.local().get(&"sc".into()).unwrap().shape,
+            file("sf", "c", 9)
+        );
+        assert_eq!(t.local().get(&"sf".into()).unwrap().shape.parent, "f");
     }
 
     #[test]
@@ -5661,8 +5677,8 @@ mod a_server_file_moved_into_an_asked_folder {
             Some(true)
         );
         assert_eq!(settle(&mut c, &mut t, &mut i), []);
-        assert!(t.local().get("f").is_none());
-        assert_eq!(t.local().get("sn").unwrap().shape.parent, "sf");
+        assert!(t.local().get(&"f".into()).is_none());
+        assert_eq!(t.local().get(&"sn".into()).unwrap().shape.parent, "sf");
     }
 }
 

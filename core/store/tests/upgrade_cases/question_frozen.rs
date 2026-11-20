@@ -16,7 +16,7 @@ upgrade_case!(question_frozen, |store| {
         held: Default::default(),
         answer: Some(Answer::Discard),
         shown: Default::default(),
-        frozen: Some(BTreeMap::from([("x".to_owned(), Frozen { parent: "f".into(), name: "x".into(), taken: true })])),
+        frozen: Some(BTreeMap::from([("x".into(), Frozen { parent: "f".into(), name: "x".into(), taken: true })])),
     });
     store
         .transaction(|tx| tx.update_engine_state(&before, &after))

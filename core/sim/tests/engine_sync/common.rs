@@ -1261,10 +1261,10 @@ fn server_copy(
 
 fn taken_along(
     device: &Device,
-    shown: &BTreeMap<String, koidrive_engine::tree::Shape>,
-    (from_server, placed_left_out): (&BTreeSet<String>, &BTreeSet<String>),
-    discarded: &BTreeMap<String, koidrive_engine::tree::Shape>,
-) -> BTreeMap<String, koidrive_engine::tree::Shape> {
+    shown: &BTreeMap<NodeId, koidrive_engine::tree::Shape>,
+    (from_server, placed_left_out): (&BTreeSet<NodeId>, &BTreeSet<NodeId>),
+    discarded: &BTreeMap<NodeId, koidrive_engine::tree::Shape>,
+) -> BTreeMap<NodeId, koidrive_engine::tree::Shape> {
     let mut taken = BTreeMap::new();
     for folder in shown.keys() {
         for child in device.trees.local_children(folder) {
@@ -1280,10 +1280,10 @@ fn taken_along(
 
 fn only_server_copies_below(
     device: &Device,
-    folder: &str,
-    shown: &BTreeMap<String, koidrive_engine::tree::Shape>,
-    (from_server, placed_left_out): (&BTreeSet<String>, &BTreeSet<String>),
-    discarded: &BTreeMap<String, koidrive_engine::tree::Shape>,
+    folder: &NodeId,
+    shown: &BTreeMap<NodeId, koidrive_engine::tree::Shape>,
+    (from_server, placed_left_out): (&BTreeSet<NodeId>, &BTreeSet<NodeId>),
+    discarded: &BTreeMap<NodeId, koidrive_engine::tree::Shape>,
 ) -> bool {
     let sets = (from_server, placed_left_out);
     (device.trees.local_children(folder)).all(|child| match shown.get(child) {
@@ -1536,8 +1536,9 @@ fn acted_below(
 fn kept_by_r7(device: &Device, entry: &NodeId) -> bool {
     let trees = &device.trees;
     let server_changed = |node: &NodeId| {
-        (acknowledged_shape(trees, node))
-            .is_some_and(|agreed| (trees.remote().live(node)).is_some_and(|remote| !remote.same(agreed)))
+        (acknowledged_shape(trees, node)).is_some_and(|agreed| {
+            (trees.remote().live(node)).is_some_and(|remote| !remote.same(agreed))
+        })
     };
     let moved_by_the_user = |node: &NodeId| {
         (trees.local().get(node)).is_some_and(|local| {
@@ -1547,7 +1548,10 @@ fn kept_by_r7(device: &Device, entry: &NodeId) -> bool {
         })
     };
     let below_in_r = |node: &NodeId| {
-        let mut current = trees.remote().live(node).map(|remote| remote.parent.clone());
+        let mut current = trees
+            .remote()
+            .live(node)
+            .map(|remote| remote.parent.clone());
         for _ in 0..=trees.remote().len() {
             match current {
                 Some(at) if at == *entry => return true,
@@ -1912,7 +1916,14 @@ fn run_ignoring_answering_after(
                 "{} is the user's again after the Discard, but the effects remove it",
                 record.node
             );
-            placement_check(&device, &record, &kept_with, &placed, &revived, &merged_into)?;
+            placement_check(
+                &device,
+                &record,
+                &kept_with,
+                &placed,
+                &revived,
+                &merged_into,
+            )?;
             if let Some(local) = (device.trees.local().get(&record.node))
                 .filter(|local| local.parked || device.trees.ignored(&record.node))
             {

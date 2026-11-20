@@ -1,13 +1,21 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use super::*;
+use koidrive_engine::tree::NodeId;
 
-fn frozen(id: &str, parent: &str, taken: bool) -> (String, Frozen) {
+fn frozen(id: &str, parent: &str, taken: bool) -> (NodeId, Frozen) {
     let (parent, name) = (parent.into(), id.into());
-    (id.into(), Frozen { parent, name, taken })
+    (
+        id.into(),
+        Frozen {
+            parent,
+            name,
+            taken,
+        },
+    )
 }
 
-fn first_link_discard(id: &str, frozen: Option<BTreeMap<String, Frozen>>) -> Question {
+fn first_link_discard(id: &str, frozen: Option<BTreeMap<NodeId, Frozen>>) -> Question {
     Question {
         id: id.into(),
         asked_at_ms: 11,
@@ -47,7 +55,13 @@ fn a_store_from_before_discards_froze_what_was_below_leaves_the_build_to_decide(
     let mut after = before.clone();
     after.commits.questions = vec![
         first_link_discard("older", None),
-        first_link_discard("frozen", Some(BTreeMap::from([frozen("x", "f", true), frozen("o", "f", false)]))),
+        first_link_discard(
+            "frozen",
+            Some(BTreeMap::from([
+                frozen("x", "f", true),
+                frozen("o", "f", false),
+            ])),
+        ),
         first_link_discard("nothing", Some(BTreeMap::new())),
     ];
     store
@@ -65,9 +79,14 @@ fn a_store_from_before_discards_froze_what_was_below_leaves_the_build_to_decide(
     drop(store);
     let rows: u64 = Connection::open(&path)
         .unwrap()
-        .query_row("SELECT COUNT(*) FROM open_question_frozen", [], |row| row.get(0))
+        .query_row("SELECT COUNT(*) FROM open_question_frozen", [], |row| {
+            row.get(0)
+        })
         .unwrap();
     assert_eq!(rows, 0);
     let mut store = Store::open(&path).unwrap();
-    assert_eq!(store.transaction(|tx| tx.engine_state()).unwrap(), asked_again);
+    assert_eq!(
+        store.transaction(|tx| tx.engine_state()).unwrap(),
+        asked_again
+    );
 }

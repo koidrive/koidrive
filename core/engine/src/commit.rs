@@ -539,13 +539,15 @@ impl Commits {
         for op in (flight.commit.ops.iter()).filter_map(|op| op.op.as_ref()) {
             match op {
                 op::Op::CreateFile(create) => {
-                    (landing.contents).insert(NodeId::from(&create.node_id), create.content.clone());
+                    (landing.contents)
+                        .insert(NodeId::from(&create.node_id), create.content.clone());
                 }
                 op::Op::CreateDir(create) => {
                     landing.contents.insert(NodeId::from(&create.node_id), None);
                 }
                 op::Op::UpdateContent(update) => {
-                    (landing.contents).insert(NodeId::from(&update.node_id), update.content.clone());
+                    (landing.contents)
+                        .insert(NodeId::from(&update.node_id), update.content.clone());
                 }
                 op::Op::Delete(delete) => {
                     landing.deleted.insert(NodeId::from(&delete.node_id));
