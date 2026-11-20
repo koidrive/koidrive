@@ -909,20 +909,16 @@ impl Engine {
     }
 
     /// Holds what L, S or R places at or below each of `paths` until the next call ([`Trees::await_scan`]). A
-    /// path where no tree places a node holds nothing.
+    /// path holds from its first component that is not a UTF-8 name.
     pub fn await_scan<'a>(&mut self, paths: impl IntoIterator<Item = &'a PathBuf>) {
-        let nodes = (paths.into_iter())
-            .filter_map(|path| {
-                (path.components())
-                    .map(|component| match component {
-                        Component::Normal(name) => name.to_str(),
-                        _ => None,
-                    })
-                    .collect::<Option<Vec<&str>>>()
-            })
-            .flat_map(|names| self.trees.placed_at(&names))
-            .collect();
-        self.trees.await_scan(nodes);
+        self.trees.await_scan(paths.into_iter().map(|path| {
+            (path.components())
+                .map_while(|component| match component {
+                    Component::Normal(name) => name.to_str().map(str::to_owned),
+                    _ => None,
+                })
+                .collect()
+        }));
     }
 
     pub fn sees_unobserved(&self, listed: &[PathBuf], pending: &Pending) -> bool {

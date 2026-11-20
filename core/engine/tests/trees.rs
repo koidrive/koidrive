@@ -1389,9 +1389,21 @@ fn a_node_that_awaits_a_scan_holds_itself_and_what_l_s_or_r_places_below_it() {
     trees.set_remote("logs".into(), remote(dir(ROOT, "logs")));
     trees.set_remote("new".into(), remote(file("logs", "new.log", 2)));
     let busy = ["logs", "app", "new"].map(NodeId::from);
-    trees.await_scan(std::collections::BTreeSet::from([NodeId::from("logs")]));
+    trees.await_scan([vec!["Logs".to_owned()]]);
     assert!(busy.iter().all(|id| trees.held(id)));
     assert!(!trees.held(&NodeId::from("notes")));
-    trees.await_scan(std::collections::BTreeSet::new());
+    trees.await_scan([]);
     assert!(!busy.iter().any(|id| trees.held(id)));
+}
+
+#[test]
+fn a_path_that_awaits_a_scan_holds_what_r_places_there_later_and_nothing_else() {
+    let mut trees = Trees::new(ROOT);
+    trees.set_local("notes".into(), local(file(ROOT, "notes.txt", 1), 1));
+    trees.await_scan([vec!["logs".to_owned()]]);
+    assert!(!trees.held(&NodeId::from("notes")));
+    trees.set_remote("logs".into(), remote(dir(ROOT, "logs")));
+    trees.set_remote("new".into(), remote(file("logs", "new.log", 2)));
+    assert!(trees.held(&NodeId::from("logs")) && trees.held(&NodeId::from("new")));
+    assert!(!trees.held(&NodeId::from("notes")));
 }

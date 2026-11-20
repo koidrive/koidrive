@@ -145,6 +145,26 @@ fn excluded(matcher: &Matcher, path: &[&str], kinds: &[Kind]) -> bool {
     })
 }
 
+fn placed_keys<N: Node>(tree: &Tree<N>, id: &NodeId) -> Option<Vec<String>> {
+    let held = |id: &NodeId| {
+        (tree.get(id))
+            .filter(|node| node.is_live() && node.is_placed())
+            .map(|node| node.shape())
+    };
+    let mut keys = Vec::new();
+    let mut current = id;
+    for _ in 0..=tree.len() {
+        if *current == tree.root {
+            keys.reverse();
+            return Some(keys);
+        }
+        let shape = held(current)?;
+        keys.push(name_key(&shape.name));
+        current = &shape.parent;
+    }
+    None
+}
+
 pub(crate) fn path<'a, N: Node>(tree: &'a Tree<N>, id: &NodeId) -> Option<(Vec<&'a str>, Kind)> {
     let held = |id: &NodeId| tree.get(id).filter(|node| node.is_live());
     let shape = held(id)?.shape();
@@ -683,7 +703,7 @@ pub struct Trees {
     release_due: bool,
     pending: Unsettled,
     held_for_scan: BTreeSet<NodeId>,
-    awaiting_scan: BTreeSet<NodeId>,
+    awaiting_scan: BTreeSet<Vec<String>>,
 }
 
 /// Equal when R, L, S and the state the store keeps are equal. What the trees track only until the
@@ -1082,31 +1102,6 @@ impl Trees {
         }))
         .filter(|id| self.l.get(id).is_some_and(|node| node.shape.name == name))
         .last()
-    }
-
-    /// The nodes that L, S or R places at the path of `names` below the root, each by exact name: the root for no names.
-    pub fn placed_at(&self, names: &[&str]) -> BTreeSet<NodeId> {
-        let walk = |child: &dyn Fn(&NodeId, &str) -> Option<NodeId>| {
-            (names.iter()).try_fold(self.l.root.clone(), |parent, name| child(&parent, name))
-        };
-        let named =
-            |shape: Option<&Shape>, name: &str| shape.is_some_and(|shape| shape.name == name);
-        [
-            walk(&|parent, name| self.local_child(parent, name).cloned()),
-            walk(&|parent, name| {
-                (self.s_names.holders(parent, name))
-                    .find(|id| named(self.s.live(id), name))
-                    .cloned()
-            }),
-            walk(&|parent, name| {
-                (self.r_names.holders(parent, name))
-                    .find(|id| named(self.r.live(id), name))
-                    .cloned()
-            }),
-        ]
-        .into_iter()
-        .flatten()
-        .collect()
     }
 
     /// A node of L, placed or parked, with `identity`: the greatest ID when several have it.
@@ -2483,25 +2478,31 @@ impl Trees {
         self.asked.contains(id) || self.vanished(id) || self.below_unknown_rules(id)
     }
 
-    /// Sets the nodes whose place on disk a scan must report before anything is planned at or below them, as after
-    /// an effect that changed which rules apply there or an upload that found the disk changed. Replaces the nodes
-    /// an earlier call set.
-    pub fn await_scan(&mut self, nodes: BTreeSet<NodeId>) {
-        if nodes == self.awaiting_scan {
+    /// Sets the paths, each a list of names below the root, that a scan must report before anything L, S or R places
+    /// at or below them is planned, as after an effect that changed which rules apply there or an upload that found
+    /// the disk changed. Names compare by `name_key`. Replaces the paths an earlier call set.
+    pub fn await_scan(&mut self, paths: impl IntoIterator<Item = Vec<String>>) {
+        let paths: BTreeSet<Vec<String>> = (paths.into_iter())
+            .map(|names| names.iter().map(|name| name_key(name)).collect())
+            .collect();
+        if paths == self.awaiting_scan {
             return;
         }
         self.forget_reclaims();
-        self.relink |= !self.awaiting_scan.is_subset(&nodes);
-        self.awaiting_scan = nodes;
+        self.relink |= !self.awaiting_scan.is_subset(&paths);
+        self.awaiting_scan = paths;
     }
 
     fn awaits_scan(&self, id: &NodeId) -> bool {
-        let nodes = &self.awaiting_scan;
-        !nodes.is_empty()
-            && (nodes.contains(id)
-                || below(&self.l, id, nodes)
-                || below(&self.s, id, nodes)
-                || below(&self.r, id, nodes))
+        !self.awaiting_scan.is_empty()
+            && [
+                placed_keys(&self.l, id),
+                placed_keys(&self.s, id),
+                placed_keys(&self.r, id),
+            ]
+            .into_iter()
+            .flatten()
+            .any(|keys| (self.awaiting_scan.iter()).any(|held| keys.starts_with(held)))
     }
 
     fn below_unknown_rules(&self, id: &NodeId) -> bool {
