@@ -1665,3 +1665,180 @@ fn a_copy_of_a_resend_beside_another_devices_later_edit_is_no_change_of_this_dev
     assert!(state.resends.contains(&NodeId::from(&create.node_id)));
     assert!(!state.local_changes.contains(&NodeId::from(&create.node_id)));
 }
+
+#[test]
+fn a_resend_to_a_place_its_rules_exclude_on_the_server_is_created_where_l_holds_it() {
+    for renamed in [false, true] {
+        let folder = if renamed { "p" } else { "blocked" };
+        let mut trees = trees(&[
+            synced("b", dir(ROOT, folder)),
+            synced("f", file(ROOT, "f", 1)),
+        ]);
+        if renamed {
+            trees.set_remote("b".into(), remote_at(dir(ROOT, "blocked"), 2));
+        }
+        trees.set_rules(
+            &[] as &[&str],
+            koidrive_engine::ignore::Source::Koiignore,
+            Some(koidrive_engine::ignore::RuleFile::parse(b"/blocked/\n")),
+        );
+        trees.set_remote("f".into(), remote_at(file("b", "f", 1), 3));
+        trees.settle(&Default::default());
+        assert!(trees.excluded(&"f".into()), "{renamed}");
+        let synced = trees.taken_from_others(|_| false);
+        trees.remove_remote(&"f".into());
+        trees.forget_lost(
+            Vec::new(),
+            Vec::new(),
+            synced,
+            Vec::new(),
+            Vec::new(),
+            Default::default(),
+            &Default::default(),
+            0,
+            0,
+        );
+        trees.settle(&Default::default());
+        assert!(
+            trees.state().lost_positions.contains_key(&"f".into()),
+            "{renamed}"
+        );
+        assert!(!trees.excluded(&"f".into()), "{renamed}");
+        let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+        let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
+        let created: Vec<(String, String, String)> = (ops(&commit).into_iter())
+            .filter_map(|op| match op {
+                op::Op::CreateFile(create) => Some((create.node_id, create.parent_id, create.name)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            created,
+            [("f".into(), ROOT.into(), "f".into())],
+            "{renamed}"
+        );
+    }
+}
+
+#[test]
+fn a_resend_is_judged_at_the_path_the_commit_gives_the_folders_above_it() {
+    use std::collections::BTreeSet;
+    let cases = [
+        (
+            "parent lost, name excluded",
+            vec![synced("d", dir(ROOT, "d")), synced("f", file("d", "f", 1))],
+            vec![("f", file("d", "f.log", 1))],
+            &b"*.log\n"[..],
+            vec![],
+            vec![("d", ROOT, "d"), ("f", "d", "f")],
+        ),
+        (
+            "parent lost, path excluded",
+            vec![synced("p", dir(ROOT, "p")), synced("f", file(ROOT, "f", 1))],
+            vec![("f", file("p", "f", 1))],
+            &b"/p/f\n"[..],
+            vec![],
+            vec![("p", ROOT, "p"), ("f", ROOT, "f")],
+        ),
+        (
+            "two parents lost",
+            vec![
+                synced("a", dir(ROOT, "a")),
+                synced("b", dir("a", "b")),
+                synced("f", file("b", "f", 1)),
+            ],
+            vec![("f", file("b", "f.log", 1))],
+            &b"*.log\n"[..],
+            vec![],
+            vec![("a", ROOT, "a"), ("b", "a", "b"), ("f", "b", "f")],
+        ),
+        (
+            "parent sent where L holds it",
+            vec![
+                synced("x", dir(ROOT, "blocked")),
+                synced("d", dir(ROOT, "d")),
+                synced("f", file("d", "f", 1)),
+            ],
+            vec![("d", dir("x", "d")), ("f", file("d", "g", 1))],
+            &b"/blocked/\n"[..],
+            vec![],
+            vec![("d", ROOT, "d"), ("f", "d", "g")],
+        ),
+        (
+            "parent's lost name excluded",
+            vec![synced("d", dir(ROOT, "d")), synced("f", file("d", "f", 1))],
+            vec![("d", dir(ROOT, "d.log")), ("f", file("d", "g", 1))],
+            &b"*.log\n"[..],
+            vec![],
+            vec![("d", ROOT, "d"), ("f", "d", "g")],
+        ),
+        (
+            "parent renamed here in the same commit",
+            vec![synced("q", dir(ROOT, "q")), synced("f", file("q", "f", 1))],
+            vec![("f", file("q", "x", 1))],
+            &b"/r/x\n"[..],
+            vec![("q", dir(ROOT, "r"))],
+            vec![("f", "q", "f")],
+        ),
+        (
+            "grandparent renamed here in the same commit",
+            vec![
+                synced("a", dir(ROOT, "a")),
+                synced("q", dir("a", "q")),
+                synced("f", file("q", "f", 1)),
+            ],
+            vec![("f", file("q", "x", 1))],
+            &b"/r/q/x\n"[..],
+            vec![("a", dir(ROOT, "r"))],
+            vec![("f", "q", "f")],
+        ),
+    ];
+    for (case, nodes, moved, rules, here, expected) in cases {
+        let mut trees = trees(&nodes);
+        trees.set_rules(
+            &[] as &[&str],
+            koidrive_engine::ignore::Source::Koiignore,
+            Some(koidrive_engine::ignore::RuleFile::parse(rules)),
+        );
+        for (id, shape) in &moved {
+            trees.set_remote((*id).into(), remote_at(shape.clone(), 2));
+        }
+        trees.settle(&Default::default());
+        let synced = trees.taken_from_others(|_| false);
+        for (id, ..) in &expected {
+            trees.remove_remote(&(*id).into());
+        }
+        trees.forget_lost(
+            Vec::new(),
+            Vec::new(),
+            synced,
+            Vec::new(),
+            Vec::new(),
+            Default::default(),
+            &Default::default(),
+            0,
+            0,
+        );
+        for (id, shape) in here {
+            trees.set_local(id.into(), local(shape, 101));
+        }
+        trees.settle(&Default::default());
+        assert!(
+            trees.state().lost_positions.contains_key(&"f".into()),
+            "{case}"
+        );
+        let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+        let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
+        let created: BTreeSet<(String, String, String)> = (ops(&commit).into_iter())
+            .filter_map(|op| match op {
+                op::Op::CreateDir(create) => Some((create.node_id, create.parent_id, create.name)),
+                op::Op::CreateFile(create) => Some((create.node_id, create.parent_id, create.name)),
+                _ => None,
+            })
+            .collect();
+        let expected: BTreeSet<(String, String, String)> = (expected.iter())
+            .map(|(id, parent, name)| ((*id).into(), (*parent).into(), (*name).into()))
+            .collect();
+        assert_eq!(created, expected, "{case}");
+    }
+}
