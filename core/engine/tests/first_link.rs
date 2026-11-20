@@ -2643,6 +2643,153 @@ fn a_discarded_folder_that_holds_an_entry_the_rules_leave_out_keeps_its_name_and
     assert!(trees.work().is_empty(), "{:?}", trees.work());
 }
 
+fn discarded_around_an_entry_l_does_not_know(
+    server: &[(&str, Shape)],
+    parked: bool,
+    restart: bool,
+) -> (Commits, Trees, Effects, IdGen) {
+    let mut trees = trees(
+        &[
+            ("l-dir", dir(ROOT, "C.TXT")),
+            ("l-f", file("l-dir", "C.TXT", 1)),
+        ],
+        server,
+    );
+    let with_rules = |mut trees: Trees| {
+        let root: [&str; 0] = [];
+        trees.set_rules(&root, Source::Koiignore, Some(RuleFile::parse(b"a\n")));
+        trees
+    };
+    trees = with_rules(trees);
+    let mut commits = Commits::default();
+    let mut ids = IdGen::new(7);
+    commits.first_link(&mut trees, &mut ids, NOW, PriorSync::Shown);
+    trees.settle(commits.aliases());
+    assert!(commits.decide(&mut trees, &question(&commits).id, Answer::Discard));
+    if parked {
+        let parked = LocalNode {
+            parked: true,
+            ..trees.local().get(&"l-dir".into()).unwrap().clone()
+        };
+        trees.set_local("l-dir".into(), parked);
+    }
+    if restart {
+        trees = with_rules(restarted(&trees));
+        commits = Commits::from_state(commits.state()).unwrap();
+    }
+    let mut effects = Effects::default();
+    let held = [("a", Some(Kind::Dir))];
+    let mut done = Vec::new();
+    for ino in 100..140 {
+        trees.settle(commits.aliases());
+        assert_eq!(ops(&mut commits, &mut trees, &mut ids), [], "{done:?}");
+        let Some(record) = effects
+            .plan(&trees, commits.in_flight(), &mut ids, NOW, BatchLimit::ONE)
+            .first()
+            .cloned()
+        else {
+            return (commits, trees, effects, ids);
+        };
+        if record.node == "l-dir" && matches!(record.effect, Effect::RemoveDir { .. }) {
+            effects
+                .kept(
+                    &mut trees,
+                    None,
+                    commits.aliases(),
+                    &record.effect_id,
+                    &held,
+                )
+                .unwrap();
+            if restart {
+                trees = with_rules(restarted(&trees));
+            }
+        } else {
+            let identity = FileIdentity {
+                ino,
+                birth_ns: Some(0),
+                handle: None,
+            };
+            effects
+                .done(
+                    &mut trees,
+                    commits.in_flight(),
+                    &record.effect_id,
+                    Some(identity),
+                )
+                .unwrap();
+        }
+        done.push((record.node, record.effect));
+    }
+    panic!("the effects do not settle: {done:?}");
+}
+
+#[test]
+fn a_discarded_folder_holding_an_entry_l_does_not_know_stays_in_place_and_holds_the_server_folder_of_its_name()
+ {
+    for (parked, restart) in [(false, false), (false, true), (true, false), (true, true)] {
+        let (mut commits, mut trees, mut effects, mut ids) =
+            discarded_around_an_entry_l_does_not_know(
+                &[
+                    ("r-dir", dir(ROOT, "c.txt")),
+                    ("r-ss", file("r-dir", "ss", 2)),
+                ],
+                parked,
+                restart,
+            );
+        assert_eq!(
+            local(&trees),
+            [("l-dir".into(), ROOT.into(), "C.TXT".into())],
+            "{parked} {restart}"
+        );
+        assert!(!trees.local().get(&"l-dir".into()).unwrap().parked);
+        assert_eq!(
+            stuck(&trees, &effects, commits.in_flight(), &Default::default()),
+            [
+                ("r-dir".into(), Stuck::HeldBy("l-dir".into())),
+                ("r-ss".into(), Stuck::Behind("r-dir".into())),
+            ]
+            .into(),
+            "{parked} {restart}"
+        );
+        let root: [&str; 0] = [];
+        trees.set_rules(&root, Source::Koiignore, None);
+        trees.set_local_changed("l-a".into(), local_node(dir("l-dir", "a"), 50));
+        run_effects(&mut effects, &mut commits, &mut trees, &mut ids, 300);
+        assert_eq!(
+            local(&trees),
+            [
+                ("l-a".into(), "r-dir".into(), "a".into()),
+                ("r-dir".into(), ROOT.into(), "c.txt".into()),
+                ("r-ss".into(), "r-dir".into(), "ss".into()),
+            ],
+            "{parked} {restart}"
+        );
+        assert!(question(&commits).shown.contains_key(&"l-a".into()));
+    }
+}
+
+#[test]
+fn a_discarded_folder_holding_an_entry_l_does_not_know_stays_beside_a_server_folder_of_another_name()
+ {
+    for restart in [false, true] {
+        let (commits, trees, effects, _) = discarded_around_an_entry_l_does_not_know(
+            &[("r-dir", dir(ROOT, "b")), ("r-ss", file("r-dir", "ss", 2))],
+            false,
+            restart,
+        );
+        assert_eq!(
+            local(&trees),
+            [
+                ("l-dir".into(), ROOT.into(), "C.TXT".into()),
+                ("r-dir".into(), ROOT.into(), "b".into()),
+                ("r-ss".into(), "r-dir".into(), "ss".into()),
+            ],
+            "{restart}"
+        );
+        assert!(stuck(&trees, &effects, commits.in_flight(), &Default::default()).is_empty());
+    }
+}
+
 #[test]
 fn a_deep_discarded_folder_goes_to_the_local_trash_folder_by_folder() {
     let ids: Vec<String> = (0..24).map(|depth| format!("l-{depth}")).collect();
