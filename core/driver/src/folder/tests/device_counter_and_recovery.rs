@@ -291,7 +291,15 @@ fn trashed_bytes(root: &Path) -> Vec<Vec<u8>> {
 
 fn reclaims_only_when_due(site: &Site, a: &mut Device, remote: &mut Remote) {
     let (sent, served) = (a.sent.len(), remote.tree());
-    let cutoff = SystemTime::now() + Duration::from_secs(7 * 24 * 60 * 60);
+    let index = site.root.join(koidrive_fs::PRIVATE_DIR).join("trash.json");
+    let index: serde_json::Value = serde_json::from_slice(&fs::read(index).unwrap()).unwrap();
+    let [trashed_s] = (index["entries"].as_object().unwrap().values())
+        .map(|entry| entry["trashed_s"].as_u64().unwrap())
+        .collect::<Vec<_>>()[..]
+    else {
+        panic!("one trash entry: {index}");
+    };
+    let cutoff = UNIX_EPOCH + Duration::from_secs(trashed_s + 7 * 24 * 60 * 60);
     let minute = Duration::from_secs(60);
     let early = a.folder.disk.reclaim_trash(cutoff - minute, u64::MAX);
     let early = early.unwrap();
