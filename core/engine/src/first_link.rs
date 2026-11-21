@@ -12,7 +12,7 @@ use crate::classify::Trees;
 use crate::commit::{rekey, set_synced_together};
 use crate::ids::IdGen;
 use crate::names::{name_key, nfc, same_name};
-use crate::question::{Held, Question, QuestionKind, RecoveryCause, RecoveryGroup};
+use crate::question::{Answer, Held, Question, QuestionKind, RecoveryCause, RecoveryGroup};
 use crate::tree::{
     ContentKey, FileIdentity, Kind, Node, NodeId, RemoteNode, Shape, Tree, same, same_content,
 };
@@ -816,7 +816,8 @@ pub(crate) fn asks(question: &Question) -> bool {
 /// The question about the local entries `tops` and what is below them, as L holds them now, or none
 /// when L holds none of them. An entry inside another's subtree is one of its members, and one the
 /// user moved out of its folder is an item of its own. The question is
-/// `asked`, with its answer, when it would hold the same nodes with the same shapes, and a new one
+/// `asked`, with its answer, when it would hold the same nodes with the same shapes
+/// ([`Shape::same_untouched`]) and the user changed none of them since its answer, and a new one
 /// otherwise, so that an answer acts on what the person saw.
 pub(crate) fn ask(
     trees: &Trees,
@@ -827,7 +828,16 @@ pub(crate) fn ask(
     now_ms: u64,
 ) -> Option<Question> {
     let (held, shown) = held_now(trees, tops)?;
-    if let Some(asked) = asked.filter(|asked| asked.held == held && asked.shown == shown) {
+    let untouched = |asked: &Question| {
+        asked.held == held
+            && asked.shown.len() == shown.len()
+            && (asked.shown.iter().zip(&shown)).all(|((id, was), (now_id, now))| {
+                id == now_id
+                    && was.same_untouched(now)
+                    && (asked.answer != Some(Answer::Discard) || !trees.discard_changed(id))
+            })
+    };
+    if let Some(asked) = asked.filter(|asked| untouched(asked)) {
         return Some(asked.clone());
     }
     Some(Question {

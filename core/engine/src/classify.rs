@@ -698,6 +698,7 @@ pub struct Trees {
     unknown_rules: CountedSet<NodeId>,
     /// The local entries the open questions hold ([`Trees::set_asked`]).
     asked: BTreeSet<NodeId>,
+    answered: BTreeSet<NodeId>,
     /// Dirty nodes marked since the last settle, the only ones whose class can have changed.
     unsettled: BTreeSet<NodeId>,
     relink: bool,
@@ -822,6 +823,7 @@ impl Trees {
             rules_known: true,
             unknown_rules: CountedSet::default(),
             asked: BTreeSet::new(),
+            answered: BTreeSet::new(),
             unsettled: BTreeSet::new(),
             relink: false,
             unwatched: BTreeSet::new(),
@@ -2109,6 +2111,9 @@ impl Trees {
             return;
         };
         content.mtime_ns = mtime_ns;
+        if self.discard_watches(id) {
+            self.discard_changed.insert(id.clone());
+        }
         self.l.insert(id.clone(), node);
         self.mark(id);
     }
@@ -2258,10 +2263,10 @@ impl Trees {
         {
             return;
         }
-        if self.discarded.contains_key(&id)
-            && self.r.get(&id).is_none()
-            && (self.l.get(&id))
-                .is_some_and(|old| old.parked == node.parked && old.shape != node.shape)
+        if self.discard_watches(&id)
+            && (self.l.get(&id)).is_some_and(|old| {
+                old.parked == node.parked && !old.shape.same_untouched(&node.shape)
+            })
         {
             self.discard_changed.insert(id.clone());
         }
@@ -2368,6 +2373,9 @@ impl Trees {
     /// rules let sync and that the device observes is recorded with the folder L held it in
     /// ([`TreesState::removed_from`]); an unobserved one downloads again (section 5.10).
     pub fn remove_local(&mut self, id: &NodeId) {
+        if self.discard_watches(id) && self.l.get(id).is_some() {
+            self.discard_changed.insert(id.clone());
+        }
         let left_out = self.excluded(id) && self.ignored_in_remote(id);
         let unobserved = self.unobserved.contains(id) || self.left_out_by_new_rules(id);
         let removed =
@@ -2582,11 +2590,29 @@ impl Trees {
     }
 
     /// Sets the local entries R does not hold that the open questions hold (the commit planner's
-    /// questions), which stay on disk as they are until the person answers.
-    pub fn set_asked(&mut self, asked: BTreeSet<NodeId>) {
+    /// questions), which stay on disk as they are until the person answers, and those of them a
+    /// Discard answer holds, which a change of the user keeps from the local trash.
+    pub fn set_asked(&mut self, asked: BTreeSet<NodeId>, answered: BTreeSet<NodeId>) {
         self.forget_reclaims();
         self.relink |= !self.asked.is_subset(&asked);
         self.asked = asked;
+        self.answered = answered;
+    }
+
+    pub(crate) fn discard_answered(&mut self, ids: impl IntoIterator<Item = NodeId>) {
+        self.forget_reclaims();
+        for id in ids {
+            self.discard_changed.remove(&id);
+            self.answered.insert(id);
+        }
+    }
+
+    pub(crate) fn discard_changed(&self, id: &NodeId) -> bool {
+        self.discard_changed.contains(id)
+    }
+
+    fn discard_watches(&self, id: &NodeId) -> bool {
+        (self.discarded.contains_key(id) || self.answered.contains(id)) && self.r.get(id).is_none()
     }
 
     /// Whether the node is set aside ([`Trees::set_aside`]), or L, S or R places it at or below a node that awaits a
@@ -3116,11 +3142,11 @@ impl Trees {
 
     pub(crate) fn rekey_discarded(&mut self, from: &NodeId, to: &NodeId) {
         self.forget_reclaims();
+        if self.discard_changed.remove(from) {
+            self.discard_changed.insert(to.to_owned());
+        }
         if let Some(shape) = self.discarded.remove(from) {
             self.unsort(to);
-            if self.discard_changed.remove(from) {
-                self.discard_changed.insert(to.to_owned());
-            }
             self.discarded.insert(to.to_owned(), shape);
         }
         let children: Vec<NodeId> = self.discarded.children(from).cloned().collect();
@@ -3147,7 +3173,6 @@ impl Trees {
             }
             if let (None, Some(shape)) = (self.r.get(&id), shown.get(&id)) {
                 self.unsort(&id);
-                self.discard_changed.remove(&id);
                 self.discarded.insert(id, shape.clone());
             }
         }
@@ -3202,7 +3227,6 @@ impl Trees {
             }
         }
         for (id, shape) in taken {
-            self.discard_changed.remove(&id);
             self.discarded.insert(id, shape);
         }
     }
@@ -7834,8 +7858,8 @@ impl Trees {
 
     /// What changed in [`Trees::state`] since the last call, for the store to write.
     pub fn take_changes(&mut self) -> TreesChanges {
-        let discarded = &self.discarded;
-        self.discard_changed.retain(|id| discarded.contains_key(id));
+        let (discarded, answered) = (&self.discarded, &self.answered);
+        (self.discard_changed).retain(|id| discarded.contains_key(id) || answered.contains(id));
         let Self {
             r,
             place_ids: _,
@@ -7902,6 +7926,7 @@ impl Trees {
             rules_known: _,
             unknown_rules: _,
             asked: _,
+            answered: _,
             unsettled: _,
             relink: _,
             unwatched: _,

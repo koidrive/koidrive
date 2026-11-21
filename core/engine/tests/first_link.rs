@@ -8601,3 +8601,81 @@ fn a_first_link_discard_asks_once_about_an_entry_the_user_changed_after_a_rewind
     assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
     asked_once(&commits);
 }
+
+#[test]
+fn a_first_link_discard_compares_names_in_their_composed_form() {
+    for (name, trashed) in [("cafe", false), ("cafe\u{301}", true)] {
+        let mut trees = trees(
+            &[("l", file(ROOT, "café", 1))],
+            &[("r", file(ROOT, "Café", 2))],
+        );
+        let (mut commits, mut ids) = (Commits::default(), IdGen::new(7));
+        commits.first_link(&mut trees, &mut ids, NOW, PriorSync::Shown);
+        trees.settle(commits.aliases());
+        assert!(commits.decide(&mut trees, &question(&commits).id, Answer::Discard));
+        assert!(ops(&mut commits, &mut trees, &mut ids).is_empty());
+        for spelled in [name, "café"] {
+            let mut local = trees.local().get(&"l".into()).unwrap().clone();
+            local.shape.name = spelled.into();
+            trees.set_local_changed("l".into(), local);
+            trees.settle(commits.aliases());
+        }
+        let done = run_effects(
+            &mut Effects::default(),
+            &mut commits,
+            &mut trees,
+            &mut ids,
+            100,
+        );
+        let removed =
+            (done.iter()).any(|(id, e)| id == "l" && matches!(e, Effect::RemoveFile { .. }));
+        assert_eq!(
+            removed,
+            trashed,
+            "{name:?}: {done:?}; {:?}",
+            commits.questions()
+        );
+    }
+}
+
+#[test]
+fn a_first_link_discard_counts_changes_from_its_answer_not_from_its_record() {
+    for answered_first in [false, true] {
+        let mut trees = trees(
+            &[("l", file(ROOT, "mine", 1))],
+            &[("r", file(ROOT, "server", 2))],
+        );
+        let (mut commits, mut ids) = (Commits::default(), IdGen::new(7));
+        commits.first_link(&mut trees, &mut ids, NOW, PriorSync::Shown);
+        trees.settle(commits.aliases());
+        if answered_first {
+            assert!(commits.decide(&mut trees, &question(&commits).id, Answer::Discard));
+        }
+        for digest in [3, 1] {
+            let mut local = trees.local().get(&"l".into()).unwrap().clone();
+            local.shape.content = Some(content(digest));
+            trees.set_local_changed("l".into(), local);
+            trees.settle(commits.aliases());
+            trees = restarted(&trees);
+            commits = Commits::from_state(commits.state()).unwrap();
+        }
+        if !answered_first {
+            assert!(commits.decide(&mut trees, &question(&commits).id, Answer::Discard));
+        }
+        let done = run_effects(
+            &mut Effects::default(),
+            &mut commits,
+            &mut trees,
+            &mut ids,
+            100,
+        );
+        let kept = (trees.local().get(&"l".into()))
+            .is_some_and(|node| node.shape.same(&file(ROOT, "mine", 1)));
+        assert_eq!(
+            kept,
+            answered_first,
+            "{answered_first}: {done:?}; {:?}",
+            commits.questions()
+        );
+    }
+}

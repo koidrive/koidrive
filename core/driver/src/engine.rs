@@ -5538,4 +5538,83 @@ mod tests {
         );
         assert!(engine.trees.displaced_local().contains_key(&file));
     }
+
+    fn discarded_by_first_link(path: &str, size: u64) -> (tempfile::TempDir, Engine, NodeId) {
+        let (dir, mut state) = mapper();
+        state.observe(&[created(path, ino(7), false, size)], 1);
+        state.trees.rules_scanned();
+        let id = holding(&state, path).unwrap().0;
+        let shown = koidrive_engine::first_link::PriorSync::Shown;
+        (state.commits).first_link(&mut state.trees, &mut state.ids, 2, shown);
+        let question = state.commits.questions()[0].id.clone();
+        assert!(
+            state
+                .commits
+                .decide(&mut state.trees, &question, engine::Answer::Discard)
+        );
+        assert!(
+            state
+                .commits
+                .build(&mut state.trees, &mut state.ids, 3, "h", "me", 1)
+                .is_none()
+        );
+        assert!(state.trees.state().discarded.contains_key(&id));
+        (dir, state, id)
+    }
+
+    fn trashes(state: &mut Engine) -> Vec<NodeId> {
+        state.trees.settle(state.commits.aliases());
+        let planned = (state.effects).plan(
+            &state.trees,
+            state.commits.in_flight(),
+            &mut state.ids,
+            5,
+            BatchLimit::ONE,
+        );
+        (planned.iter())
+            .filter(|e| matches!(e.effect, Effect::RemoveFile { .. }))
+            .map(|e| e.node.clone())
+            .collect()
+    }
+
+    #[test]
+    fn a_first_link_discard_counts_a_same_byte_rewrite_with_a_new_mtime_as_a_write() {
+        for (inode, mtime_ns, trashed) in
+            [(7, 0, true), (7, 1_000_000, false), (8, 1_000_000, false)]
+        {
+            let (_dir, mut state, id) = discarded_by_first_link("mine", 9);
+            let content = Content {
+                mtime_ns,
+                ..bytes(9)
+            };
+            state.observe(
+                &[Observed::Modified {
+                    path: "mine".into(),
+                    id: ino(inode),
+                    linked: false,
+                    content: Some(content),
+                    marked_node: None,
+                }],
+                4,
+            );
+            assert_eq!(
+                trashes(&mut state).contains(&id),
+                trashed,
+                "mtime {mtime_ns}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_file_the_user_deletes_and_creates_again_after_a_first_link_discard_stays() {
+        let (_dir, mut state, id) = discarded_by_first_link("mine", 9);
+        let removed = Observed::Removed {
+            path: "mine".into(),
+            kind: EntryKind::File,
+        };
+        state.observe(&[removed], 4);
+        state.observe(&[created("mine", ino(7), false, 9)], 5);
+        assert_eq!(holding(&state, "mine").unwrap().0, id);
+        assert!(!trashes(&mut state).contains(&id));
+    }
 }
