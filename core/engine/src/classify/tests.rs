@@ -1818,3 +1818,100 @@ fn a_missed_node_stays_in_l_without_a_name_until_a_scan_places_it_or_its_questio
     }
     assert!(trees.local().get(&f).is_none());
 }
+
+#[test]
+fn a_reverted_file_returning_from_displacement_can_move_to_a_new_place() {
+    let mut trees = ancestry_tree();
+    let f = NodeId::from("f");
+    let mut remote = ancestry_remote(1, "held", &["foreign-base"]);
+    remote.shape.name = "server".into();
+    trees.set_remote(f.clone(), remote);
+    trees.revert(f.clone());
+    trees.ignore_local(&f);
+    trees.displace_local(&f);
+    let mut found = trees.local_entry(&f).unwrap().clone();
+    found.shape.name = "returned".into();
+    trees.set_local_changed(f.clone(), found);
+    trees.settle(&Default::default());
+    assert!(!trees.reverted().contains(&f));
+}
+
+#[test]
+fn a_displaced_folder_returning_at_a_new_place_rechecks_its_unobserved_children() {
+    let mut trees = Trees::new("root");
+    let folder = NodeId::from("folder");
+    let child = NodeId::from("child");
+    let original = kept_local(&"root".into(), "before", Kind::Dir, 2);
+    trees.set_local(folder.clone(), original.clone());
+    trees.set_remote(folder.clone(), remote(original.shape.clone()));
+    trees.set_synced(folder.clone(), Some(original.shape.clone()));
+    let file = Shape {
+        parent: folder.clone(),
+        ..ancestry_file(1)
+    };
+    trees.set_remote(child.clone(), remote(file.clone()));
+    trees.set_synced(child.clone(), Some(file));
+    trees.set_unobserved(child);
+    trees.ignore_local(&folder);
+    trees.displace_local(&folder);
+    let mut found = original;
+    found.shape.name = "after".into();
+    trees.set_local_changed(folder.clone(), found);
+    assert!(trees.awaits_relisting(&folder));
+}
+
+#[test]
+fn a_displaced_edit_keeps_its_acknowledged_content_when_the_server_changes() {
+    let mut trees = ancestry_tree();
+    let f = NodeId::from("f");
+    ancestry_write(&mut trees, 2);
+    trees.ignore_local(&f);
+    trees.displace_local(&f);
+    trees.set_remote(f.clone(), ancestry_remote(3, "server-edit", &["held"]));
+    trees.settle(&Default::default());
+    assert_eq!(trees.synced().get(&f), Some(&ancestry_file(1)));
+    assert_eq!(trees.local_entry(&f).unwrap().shape, ancestry_file(2));
+}
+
+#[test]
+fn a_placed_child_finds_a_recorded_holder_through_displaced_ancestors() {
+    let mut trees = Trees::new("root");
+    let top = NodeId::from("top");
+    let middle = NodeId::from("middle");
+    let child = NodeId::from("child");
+    trees.set_local(top.clone(), kept_local(&"root".into(), "top", Kind::Dir, 2));
+    trees.set_local(middle.clone(), kept_local(&top, "middle", Kind::Dir, 3));
+    trees.set_local(child.clone(), kept_local(&middle, "child", Kind::Dir, 4));
+    trees.ignore_local(&top);
+    trees.displace_local(&middle);
+    trees.displace_local(&top);
+    assert!(trees.recorded_local(&child));
+}
+
+#[test]
+fn a_displaced_file_keeps_its_edit_history_when_it_returns_edited() {
+    let mut trees = ancestry_tree();
+    let f = NodeId::from("f");
+    trees.set_remote(f.clone(), ancestry_remote(3, "unheld", &["unrelated"]));
+    ancestry_write(&mut trees, 2);
+    assert_eq!(trees.edit_bases(&f), ["held", "foreign-base"]);
+    trees.ignore_local(&f);
+    trees.displace_local(&f);
+    let mut found = trees.local_entry(&f).unwrap().clone();
+    found.shape = ancestry_file(4);
+    trees.set_local_changed(f.clone(), found);
+    assert_eq!(trees.edit_bases(&f), ["held", "foreign-base"]);
+}
+
+#[test]
+fn a_displaced_file_notifies_watchers_that_its_path_changed() {
+    let mut trees = ancestry_tree();
+    let f = NodeId::from("f");
+    let mut local = trees.local().get(&f).unwrap().clone();
+    local.shape.name = "other".into();
+    trees.set_local(f.clone(), local);
+    assert!(trees.take_moved());
+    trees.ignore_local(&f);
+    trees.displace_local(&f);
+    assert!(trees.take_moved());
+}

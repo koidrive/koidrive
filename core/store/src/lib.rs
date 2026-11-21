@@ -70,10 +70,12 @@ pub mod migrations {
     include!(concat!(env!("OUT_DIR"), "/migrations.rs"));
 
     pub fn register_functions(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
+        use std::fmt::Write;
+
         use koidrive_engine::classify::temp_name;
         use koidrive_engine::names::same_name;
         use koidrive_engine::tree::{ContentKey, same_content};
-        use koidrive_proto::v1::{Content, VersionInfo};
+        use koidrive_proto::v1::{Commit, Content, NodeKind, VersionInfo, op};
         use prost::Message;
         use rusqlite::functions::FunctionFlags;
 
@@ -115,6 +117,42 @@ pub mod migrations {
                 return Ok(None);
             }
             Ok(Some(content.encode_to_vec()))
+        })?;
+        conn.create_scalar_function("in_flight_creates", 1, flags, |ctx| {
+            let commit = Commit::decode(ctx.get::<Vec<u8>>(0)?.as_slice())
+                .map_err(|error| rusqlite::Error::UserFunctionError(Box::new(error)))?;
+            let creates: Vec<_> = commit
+                .ops
+                .into_iter()
+                .filter_map(|entry| {
+                    let (id, parent, name, kind, content) = match entry.op? {
+                        op::Op::CreateDir(create) => (
+                            create.node_id,
+                            create.parent_id,
+                            create.name,
+                            NodeKind::Dir,
+                            None,
+                        ),
+                        op::Op::CreateFile(create) => (
+                            create.node_id,
+                            create.parent_id,
+                            create.name,
+                            NodeKind::File,
+                            Some(create.content?.encode_to_vec()),
+                        ),
+                        _ => return None,
+                    };
+                    let content = content.map(|bytes| {
+                        let mut encoded = String::with_capacity(bytes.len() * 2);
+                        for byte in bytes {
+                            write!(encoded, "{byte:02x}").unwrap();
+                        }
+                        encoded
+                    });
+                    Some(serde_json::json!([id, parent, name, kind as i32, content]))
+                })
+                .collect();
+            Ok(serde_json::Value::Array(creates).to_string())
         })
     }
 

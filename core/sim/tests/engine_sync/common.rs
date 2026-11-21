@@ -130,11 +130,43 @@ fn upload(space: &mut SpaceDo, session: &Session, ops: &[Op]) -> Vec<UploadRecei
 
 /// The versions of a node, newest first, as an app lists them.
 fn versions(space: &SpaceDo, node_id: &str) -> Vec<VersionInfo> {
-    let request = ListVersions {
+    let mut request = ListVersions {
         node_id: node_id.to_owned(),
         ..Default::default()
     };
-    space.list_versions(&request).unwrap().versions
+    let mut all = Vec::new();
+    loop {
+        let page = space.list_versions(&request).unwrap();
+        all.extend(page.versions);
+        if page.next_cursor.is_empty() {
+            return all;
+        }
+        request.cursor = page.next_cursor;
+    }
+}
+
+#[test]
+fn a_versions_lookup_can_find_a_copy_older_than_one_page() {
+    let mut space = SpaceDo::new(1, NOW);
+    let mut ids = IdGen::new(2);
+    let mut edit = Action {
+        kind: 1,
+        target: 0,
+        parent: 0,
+        name: 0,
+        text: 0,
+    };
+    remote_action(&mut space, &mut ids, 1, &edit);
+    let node = nodes_with(&space, 1, Some(2)).pop().unwrap();
+    let original = versions(&space, &node)[0].version_id.clone();
+    edit.kind = 2;
+    for text in 1..=101 {
+        edit.text = text;
+        remote_action(&mut space, &mut ids, 1, &edit);
+    }
+    let all = versions(&space, &node);
+    assert_eq!(all.len(), 102);
+    assert_eq!(all.last().unwrap().version_id, original);
 }
 
 /// The server's nodes with this status (1 live, 2 trashed) and, when given, this kind (1 folder,

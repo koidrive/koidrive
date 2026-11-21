@@ -3446,6 +3446,39 @@ fn a_local_node_keeps_its_placement_and_where_its_bytes_came_from_across_a_reope
 }
 
 #[test]
+fn a_readmission_parent_cannot_be_written_before_its_local_node() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.db");
+    let mut store = Store::open(&path).unwrap();
+    let mut state = EngineState::default();
+    state
+        .trees
+        .readmitted_from
+        .insert("file".into(), "displaced".into());
+    let result = store.transaction(|tx| {
+        tx.set_engine_state(&state)?;
+        tx.put_local_node(&placed("file", 9, false, false))
+    });
+    assert!(matches!(result, Err(Error::InvalidEngineState(_))));
+    store
+        .transaction(|tx| {
+            tx.put_local_node(&placed("file", 9, false, false))?;
+            tx.set_engine_state(&state)
+        })
+        .unwrap();
+    drop(store);
+    assert_eq!(
+        Store::open(&path)
+            .unwrap()
+            .transaction(|tx| tx.engine_state())
+            .unwrap()
+            .trees
+            .readmitted_from,
+        state.trees.readmitted_from
+    );
+}
+
+#[test]
 fn an_emptied_database_is_refused_and_left_empty() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("state.db");

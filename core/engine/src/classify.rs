@@ -2161,19 +2161,41 @@ impl Trees {
         {
             self.readmitted_from.remove(&id);
         }
-        if let Some(old) = self.displaced_nodes.remove(&id) {
-            if old.identity == node.identity && self.displaced.contains_key(&old.shape.parent) {
+        let displaced = self.displaced_nodes.remove(&id);
+        let returning = displaced
+            .as_ref()
+            .filter(|old| old.identity == node.identity);
+        if let Some(old) = returning {
+            if self.displaced.contains_key(&old.shape.parent) {
                 self.readmitted_from
                     .insert(id.clone(), old.shape.parent.clone());
             }
+            if old.is_placed()
+                && node.is_placed()
+                && !old.shape.same_position(&node.shape)
+                && !self
+                    .r
+                    .live(&id)
+                    .is_some_and(|remote| node.shape.same_position(remote))
+            {
+                self.end_revert(&id);
+            }
+        }
+        if let Some(old) = &displaced {
             self.l_displaced.remove(&id, &old.shape);
             self.forget_identity(&id, &old.identity);
             self.displaced_changed.insert(id.clone());
         }
         let content_changed = !matches!(
-            (self.l.get(&id).and_then(|old| old.shape.content.as_ref()), node.shape.content.as_ref()),
+            (
+                self.l.get(&id).or(returning).and_then(|old| old.shape.content.as_ref()),
+                node.shape.content.as_ref()
+            ),
             (Some(old), Some(new)) if same_content(old, new)
         );
+        if !content_changed && let Some(old) = returning {
+            node.content_from_server = old.content_from_server;
+        }
         if content_changed {
             self.content_provenance
                 .update(&id, &self.r, false, |provenance| {
@@ -2318,15 +2340,19 @@ impl Trees {
         {
             return;
         }
+        let before = self.l.get(&id).or_else(|| {
+            self.displaced_nodes
+                .get(&id)
+                .filter(|old| old.identity == node.identity)
+        });
         let relist = node.shape.kind == Kind::Dir
             && node.is_placed()
             && !self.unobserved.is_empty()
-            && (self.l.get(&id))
-                .is_some_and(|old| old.is_placed() && !old.shape.same_position(&node.shape));
+            && before.is_some_and(|old| old.is_placed() && !old.shape.same_position(&node.shape));
         if relist {
             self.relist.insert(id.clone());
         }
-        let edit = self.l.get(&id).filter(|old| {
+        let edit = before.filter(|old| {
             matches!((&old.shape.content, &node.shape.content),
                 (Some(old), Some(new)) if !same_content(old, new))
         });
@@ -2345,7 +2371,7 @@ impl Trees {
         });
         let placed = node.is_placed()
             && (self.l.get(&id)).is_none_or(|old| !old.shape.same_position(&node.shape));
-        let rewritten = (self.l.get(&id)).is_some_and(|old| {
+        let rewritten = before.is_some_and(|old| {
             !old.identity.same(&node.identity)
                 || !matches!(
                     (&old.shape.content, &node.shape.content),
@@ -3689,7 +3715,7 @@ impl Trees {
     /// Whether [`Trees::ignore_local`] recorded the node, or a folder L holds it under.
     pub fn recorded_local(&self, id: &NodeId) -> bool {
         let mut above = id;
-        for _ in 0..=self.l.len() {
+        for _ in 0..=self.l.len() + self.displaced_nodes.len() {
             if self.outside.contains(above) {
                 return true;
             }
@@ -3744,6 +3770,7 @@ impl Trees {
         self.displaced.insert(id.to_owned(), node.identity);
         self.displaced_nodes.insert(id.to_owned(), node);
         self.displaced_changed.insert(id.to_owned());
+        self.moved = true;
         self.mark(id);
     }
 
@@ -6635,11 +6662,23 @@ impl Trees {
             .then(|| self.base_at_a_place_the_server_gave(id))
             .flatten();
         let synced = synced.or(given.as_ref());
-        let local = match self.displaced_nodes.contains_key(id) && !self.missing.contains(id) {
-            true => self.r.live(id),
-            false => self.l.live(id),
+        let remote = self.r.live(id);
+        let projected;
+        let local = match self
+            .displaced_nodes
+            .get(id)
+            .filter(|_| !self.missing.contains(id))
+        {
+            Some(displaced) => {
+                projected = remote.map(|shape| Shape {
+                    content: displaced.shape.content,
+                    ..shape.clone()
+                });
+                projected.as_ref()
+            }
+            None => self.l.live(id),
         };
-        let class = classify(local, synced, self.r.live(id));
+        let class = classify(local, synced, remote);
         if class == Class::Remote && self.unsent_creates.contains(id) {
             return Class::Concurrent;
         }

@@ -1058,10 +1058,13 @@ impl Tx<'_> {
             "UPDATE local_nodes SET prior_displaced_parent = ?2 WHERE node_id = ?1",
         )?;
         for (node, from) in readmitted_from {
-            parent.execute(params![
+            let changed = parent.execute(params![
                 node.to_string(),
                 from.as_ref().map(ToString::to_string)
             ])?;
+            if from.is_some() && changed == 0 {
+                return Err(invalid(format!("readmitted node {node} has no local row")));
+            }
         }
         self.write_set(
             missing,

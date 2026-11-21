@@ -1002,11 +1002,18 @@ impl Engine {
                 }
                 Observed::Renamed {
                     from,
+                    to,
                     id,
                     linked,
                     kind,
                     ..
-                } => self.resolve(from, *kind, &file_identity(*id), *linked, None),
+                } => self.resolve(
+                    from,
+                    *kind,
+                    &file_identity(*id),
+                    *linked,
+                    copy_volume(self, to, *id, *linked),
+                ),
                 Observed::Created { .. }
                 | Observed::Modified { .. }
                 | Observed::Reidentified { .. }
@@ -1214,8 +1221,12 @@ impl Engine {
                     if let Some((node, local)) = outside {
                         let identity = file_identity(*id);
                         let at = self.trees.found_local().get(&node).cloned();
+                        let volume = at
+                            .as_deref()
+                            .and_then(|at| copy_volume(self, at, *id, false));
                         self.trees
                             .set_local(node.clone(), LocalNode { identity, ..local });
+                        self.note_placed_copy(&node, volume);
                         self.trees.ignore_local(&node);
                         if let Some(at) = at {
                             self.trees.find_local(&node, at);
@@ -1262,7 +1273,7 @@ impl Engine {
                     let identity = file_identity(*id);
                     let content = before
                         .as_ref()
-                        .and_then(|id| self.trees.local().get(id))
+                        .and_then(|id| self.trees.local_entry(id))
                         .and_then(LocalNode::content);
                     self.place(
                         before,
@@ -1747,15 +1758,16 @@ impl Engine {
                     .is_some_and(|node| node.identity.same(identity))
             })
             .or_else(|| {
-                if linked {
-                    return None;
-                }
-                self.trees
-                    .locals_with_identity(identity)
-                    .rev()
-                    .filter(|node| self.trees.local().get(node).is_some())
-                    .filter(|node| holds_kind(&self.trees, node, kind))
-                    .find(|node| same_volume(&self.trees, &self.mounts, node, path))
+                let placed = (!linked).then(|| {
+                    self.trees
+                        .locals_with_identity(identity)
+                        .rev()
+                        .filter(|node| self.trees.local().get(node).is_some())
+                        .filter(|node| holds_kind(&self.trees, node, kind))
+                        .find(|node| same_volume(&self.trees, &self.mounts, node, path))
+                });
+                placed
+                    .flatten()
                     .or_else(|| self.displaced_at(volume, kind, identity, linked))
                     .cloned()
             })
@@ -1938,7 +1950,9 @@ impl Engine {
                 self.trees.restamp_local(id, content.mtime_ns);
             }
             if let Some(id) = &node {
-                self.note_placed_copy(id, volume);
+                if volume.is_some() {
+                    self.note_placed_copy(id, volume);
+                }
                 if let Some(old) =
                     readmitted.filter(|old| !linked && kind == Kind::File && old != id)
                 {
@@ -1992,8 +2006,7 @@ impl Engine {
         let left = (self.trees.recorded_local(&id))
             .then(|| {
                 self.trees
-                    .local()
-                    .get(&id)
+                    .local_entry(&id)
                     .map(|node| node.shape.parent.clone())
             })
             .flatten();
@@ -6066,6 +6079,134 @@ mod tests {
                 "{case}"
             );
         }
+    }
+
+    #[test]
+    fn a_linked_displaced_file_is_readmitted_when_its_content_arrives_later() {
+        let (_dir, mut engine) = mapper();
+        let file = FileId::stored(2, Some(10), Some(20));
+        engine.observe(&[created("old", file, false, 7)], 0);
+        let old = local_at(&engine.trees, Path::new("old")).unwrap();
+        synced_everywhere(&mut engine);
+        engine.trees.ignore_local(&old);
+        engine.trees.displace_local(&old);
+        engine.observe(
+            &[Observed::Created {
+                path: "new".into(),
+                kind: EntryKind::File,
+                id: file,
+                linked: true,
+                content: None,
+                marked_node: None,
+            }],
+            1,
+        );
+        assert!(local_at(&engine.trees, Path::new("new")).is_none());
+        engine.observe(
+            &[Observed::Modified {
+                path: "new".into(),
+                id: file,
+                linked: true,
+                content: Some(bytes(7)),
+                marked_node: None,
+            }],
+            2,
+        );
+        assert_eq!(local_at(&engine.trees, Path::new("new")), Some(old));
+        assert!(engine.trees.displaced_local().is_empty());
+    }
+
+    #[test]
+    fn the_last_displaced_child_leaving_a_lost_folder_releases_the_folder() {
+        let (_dir, mut engine) = mapper();
+        let contents = FileId::stored(3, Some(10), Some(20));
+        engine.observe(
+            &[
+                Observed::Created {
+                    path: "old-folder".into(),
+                    kind: EntryKind::Dir,
+                    id: FileId::stored(2, Some(10), Some(10)),
+                    linked: false,
+                    content: None,
+                    marked_node: None,
+                },
+                created("old-folder/file", contents, false, 7),
+            ],
+            0,
+        );
+        synced_everywhere(&mut engine);
+        let folder = local_at(&engine.trees, Path::new("old-folder")).unwrap();
+        let file = local_at(&engine.trees, Path::new("old-folder/file")).unwrap();
+        engine.trees.keep_lost_local(&folder);
+        engine.trees.displace_local(&file);
+        engine.observe(&[created("new", contents, false, 7)], 1);
+        assert_eq!(local_at(&engine.trees, Path::new("new")), Some(file));
+        assert!(engine.trees.local().get(&folder).is_none());
+    }
+
+    #[test]
+    fn a_verified_replacement_of_an_ignored_copy_can_return_under_its_own_id() {
+        let (_dir, mut engine) = mapper();
+        let original = FileId::stored(2, Some(10), Some(20));
+        let replacement = FileId::stored(3, Some(11), Some(21));
+        engine.observe(&[created("old", original, false, 7)], 0);
+        synced_everywhere(&mut engine);
+        let old = local_at(&engine.trees, Path::new("old")).unwrap();
+        engine.trees.ignore_local(&old);
+        engine.trees.find_local(&old, "ignored/old".into());
+        let volume = engine.root_volume.unwrap();
+        engine.observe_verified(
+            &[Observed::Reidentified {
+                path: "old".into(),
+                id: replacement,
+            }],
+            1,
+            &|path, at_volume, id, linked| {
+                path == Path::new("ignored/old")
+                    && at_volume == volume
+                    && id == replacement
+                    && !linked
+            },
+        );
+        assert_eq!(
+            engine.trees.local_entry(&old).unwrap().identity,
+            file_identity(replacement)
+        );
+        engine.trees.displace_local(&old);
+        engine.observe(&[created("new", replacement, false, 8)], 2);
+        assert_eq!(local_at(&engine.trees, Path::new("new")), Some(old));
+    }
+
+    #[test]
+    fn an_unchanged_copy_keeps_its_proof_when_one_observation_cannot_verify_it() {
+        let (_dir, mut engine) = mapper();
+        let file = FileId::stored(2, Some(10), Some(20));
+        engine.observe(&[created("old", file, false, 7)], 0);
+        synced_everywhere(&mut engine);
+        let old = local_at(&engine.trees, Path::new("old")).unwrap();
+        engine.observe_verified(&[created("old", file, false, 7)], 1, &|_, _, _, _| false);
+        engine.trees.ignore_local(&old);
+        engine.trees.displace_local(&old);
+        engine.observe(&[created("new", file, false, 7)], 2);
+        assert_eq!(local_at(&engine.trees, Path::new("new")), Some(old));
+    }
+
+    #[test]
+    fn a_verified_rename_readmits_a_displaced_copy_without_a_second_read() {
+        let (_dir, mut engine) = mapper();
+        let file = FileId::stored(2, Some(10), Some(20));
+        engine.observe(&[created("old", file, false, 7)], 0);
+        synced_everywhere(&mut engine);
+        let old = local_at(&engine.trees, Path::new("old")).unwrap();
+        engine.trees.ignore_local(&old);
+        engine.trees.find_local(&old, "ignored/old".into());
+        engine.trees.displace_local(&old);
+        engine.observe(&[renamed("ignored/old", "new", file, false)], 1);
+        assert_eq!(
+            holding(&engine, "new").map(|(id, _, size)| (id, size)),
+            Some((old, 7))
+        );
+        assert!(engine.trees.displaced_local().is_empty());
     }
 
     #[test]

@@ -21,6 +21,23 @@ SELECT recorded.node_id,
    AND (synced.node_id IS NOT NULL OR remote.node_id IS NOT NULL)
    AND NOT EXISTS (SELECT 1 FROM local_nodes WHERE local_nodes.node_id = recorded.node_id);
 
+CREATE TEMP TABLE displaced_pending_create AS
+SELECT value ->> 0 AS node_id,
+       value ->> 1 AS parent_id,
+       value ->> 2 AS name,
+       value ->> 3 AS kind,
+       unhex(value ->> 4) AS content
+  FROM commit_in_flight, json_each(in_flight_creates(commit_message))
+ WHERE NOT EXISTS (SELECT 1 FROM remote_nodes WHERE remote_nodes.node_id = value ->> 0);
+
+INSERT INTO local_nodes (node_id, parent_id, name, kind, content, ino, ino_high, birth_ns, parked, handle)
+SELECT recorded.node_id, pending.parent_id, pending.name, pending.kind, pending.content,
+       recorded.ino, recorded.ino_high, recorded.birth_ns, 0, recorded.handle
+  FROM recorded_nodes AS recorded
+  JOIN displaced_pending_create AS pending USING (node_id)
+ WHERE recorded.displaced = 1
+   AND NOT EXISTS (SELECT 1 FROM local_nodes WHERE local_nodes.node_id = recorded.node_id);
+
 DELETE FROM recorded_nodes
  WHERE displaced = 1
    AND NOT EXISTS (SELECT 1 FROM local_nodes WHERE local_nodes.node_id = recorded_nodes.node_id);
@@ -44,7 +61,11 @@ CREATE TABLE recorded_nodes_by_kind (
     CHECK ((displaced = 1) = (ino IS NOT NULL)),
     CHECK (ino IS NOT NULL OR birth_ns IS NULL)
 ) STRICT, WITHOUT ROWID;
-INSERT INTO recorded_nodes_by_kind (node_id, displaced, ino, birth_ns, ino_high, lost, handle, found)
-SELECT node_id, displaced, ino, birth_ns, ino_high, lost, handle, found FROM recorded_nodes;
+INSERT INTO recorded_nodes_by_kind (node_id, displaced, ino, birth_ns, ino_high, lost, handle, found, awaiting_create)
+SELECT node_id, displaced, ino, birth_ns, ino_high, lost, handle, found,
+       displaced = 1 AND EXISTS (
+           SELECT 1 FROM displaced_pending_create AS pending WHERE pending.node_id = recorded_nodes.node_id)
+  FROM recorded_nodes;
 DROP TABLE recorded_nodes;
 ALTER TABLE recorded_nodes_by_kind RENAME TO recorded_nodes;
+DROP TABLE displaced_pending_create;
