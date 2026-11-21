@@ -539,6 +539,17 @@ struct Placement {
     by_other: bool,
     order: u64,
     from: Vec<NodeId>,
+    to: Vec<NodeId>,
+}
+
+fn ancestors(trees: &Trees, parent: Option<NodeId>) -> Vec<NodeId> {
+    let mut chain = Vec::new();
+    let mut above = parent;
+    while let Some(at) = above.filter(|at| !chain.contains(at)) {
+        above = trees.remote().live(&at).map(|remote| remote.parent.clone());
+        chain.push(at);
+    }
+    chain
 }
 
 #[derive(Clone, Debug, Default)]
@@ -717,16 +728,7 @@ impl Device {
                     .map(|remote| remote.parent.clone()),
                 _ => None,
             };
-            let mut from = Vec::new();
-            let mut above = parent_before.clone();
-            while let Some(at) = above.filter(|at| !from.contains(at)) {
-                above = self
-                    .trees
-                    .remote()
-                    .live(&at)
-                    .map(|remote| remote.parent.clone());
-                from.push(at);
-            }
+            let from = ancestors(&self.trees, parent_before.clone());
             apply(&mut self.trees, std::slice::from_ref(change));
             if let Some(change_record::Change::Purged(purged)) = &change.change {
                 self.acted.remove(&NodeId::from(&purged.node_id));
@@ -740,11 +742,14 @@ impl Device {
                 continue;
             };
             if parent_before.as_ref() != Some(&remote.parent) {
+                let users_move = (self.relocated.get(&node))
+                    .is_some_and(|moved| remote.same_position(&moved.to));
                 self.placements += 1;
                 (self.placed.entry(node.clone()).or_default()).push(Placement {
-                    by_other: !answered,
+                    by_other: !answered && !users_move,
                     order: self.placements,
                     from,
+                    to: ancestors(&self.trees, Some(remote.parent.clone())),
                 });
             }
             let Some(moved) = self.relocated.get_mut(&node) else {
@@ -2121,10 +2126,13 @@ fn acted_below(
                 .split_last()
                 .filter(|(last, _)| last.order > *since)
             {
-                Some((last, earlier)) if !last.by_other && last.from.contains(id) => {
+                Some((last, earlier))
+                    if !last.by_other && last.from.contains(id) && last.to.contains(id) =>
+                {
                     parent = last.from.first().cloned();
                     placements = earlier;
                 }
+                Some((last, _)) if !last.by_other && !last.to.contains(id) => placements = &[],
                 Some((last, _)) => return last.by_other,
                 None => {
                     let Some(next) = parent.filter(|next| seen.insert(next.clone())) else {
