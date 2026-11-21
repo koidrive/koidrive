@@ -2836,8 +2836,13 @@ fn a_save_continuation_does_not_take_a_file_the_server_forgot_through_an_unsynce
     }
 }
 #[test]
-fn a_file_moved_over_another_waits_with_the_bulk_delete_that_holds_the_others_delete() {
-    for restart in [false, true] {
+fn a_file_moved_over_another_waits_for_the_answer_to_a_bulk_delete_that_holds_the_other() {
+    for (given, restart) in [
+        (Answer::Delete, false),
+        (Answer::Delete, true),
+        (Answer::Restore, false),
+        (Answer::Restore, true),
+    ] {
         let mut remote = Remote::new();
         let (site, mut a) = linked(&mut remote, "a");
         for s in 0..4 {
@@ -2882,7 +2887,7 @@ fn a_file_moved_over_another_waits_with_the_bulk_delete_that_holds_the_others_de
             drop(a);
             a = restarted(&site, &mut remote);
         }
-        answer(&site, Answer::Delete);
+        answer(&site, given);
         let step = a.folder.requested();
         a.take(step).unwrap();
         a.run(&mut remote);
@@ -2891,11 +2896,20 @@ fn a_file_moved_over_another_waits_with_the_bulk_delete_that_holds_the_others_de
             a.run(&mut remote);
         }
         let after = server_nodes(&remote);
-        assert_eq!(
-            fs::read(site.root.join("x")).unwrap(),
-            b"kept",
-            "{restart} {after:?}"
-        );
+        let on_disk = |name: &str| fs::read(site.root.join(name)).unwrap();
+        if given == Answer::Restore {
+            assert_eq!(live_id(&after, "x"), x, "{restart} {after:?}");
+            assert_eq!(server_bytes(&remote, &x), b"other", "{restart}");
+            assert_eq!(on_disk("x"), b"other", "{restart}");
+            let (name, moved, _) = (after.iter())
+                .find(|node| node.2 && node.0.starts_with("x (conflict from "))
+                .unwrap_or_else(|| panic!("{restart} {after:?}"));
+            assert_eq!(*moved, f, "{restart} {after:?}");
+            assert_eq!(server_bytes(&remote, &f), b"kept", "{restart}");
+            assert_eq!(on_disk(name), b"kept", "{restart}");
+            continue;
+        }
+        assert_eq!(on_disk("x"), b"kept", "{restart} {after:?}");
         assert_eq!(live_id(&after, "x"), f, "{restart} {after:?}");
         assert_eq!(server_bytes(&remote, &f), b"kept", "{restart}");
         let live: Vec<&str> = (after.iter())
@@ -2908,4 +2922,70 @@ fn a_file_moved_over_another_waits_with_the_bulk_delete_that_holds_the_others_de
             "{restart} {after:?}"
         );
     }
+}
+
+#[test]
+fn a_file_moved_over_another_waits_for_the_answer_to_a_question_about_the_others_disappearance() {
+    let mut remote = Remote::new();
+    let (site, mut a) = linked(&mut remote, "a");
+    a.create(&mut remote, &site.root.join(".koiignore"), b"ignored/\n");
+    a.create(&mut remote, &site.root.join("f"), b"kept");
+    a.create(&mut remote, &site.root.join("x"), b"other");
+    a.settle();
+    a.run(&mut remote);
+    let before = server_nodes(&remote);
+    let (f, x) = (live_id(&before, "f"), live_id(&before, "x"));
+    fs::create_dir(site.root.join("ignored")).unwrap();
+    fs::rename(site.root.join("x"), site.root.join("ignored/x")).unwrap();
+    observe(
+        &mut a,
+        vec![Observed::Missing {
+            path: "x".into(),
+            kind: EntryKind::File,
+        }],
+    );
+    a.run(&mut remote);
+    drop(a);
+    a = restarted(&site, &mut remote);
+    a.settle();
+    a.run(&mut remote);
+    let id = a.observer.snapshot().entries[Path::new("f")].id;
+    fs::rename(site.root.join("f"), site.root.join("x")).unwrap();
+    observe(
+        &mut a,
+        vec![Observed::Renamed {
+            from: "f".into(),
+            to: "x".into(),
+            kind: EntryKind::File,
+            id,
+            linked: false,
+        }],
+    );
+    for _ in 0..3 {
+        a.settle();
+        a.run(&mut remote);
+    }
+    let asked = server_nodes(&remote);
+    assert_eq!(live_id(&asked, "x"), x, "{asked:?}");
+    assert!(
+        !asked.iter().any(|node| node.0.starts_with("x (")),
+        "{asked:?}"
+    );
+    let question = answer(&site, Answer::Delete);
+    assert_eq!(
+        question.kind,
+        crate::question::QuestionKind::AmbiguousDisappearance
+    );
+    let step = a.folder.requested();
+    a.take(step).unwrap();
+    a.run(&mut remote);
+    for _ in 0..3 {
+        a.settle();
+        a.run(&mut remote);
+    }
+    let after = server_nodes(&remote);
+    assert_eq!(live_id(&after, "x"), f, "{after:?}");
+    assert_eq!(server_bytes(&remote, &f), b"kept");
+    assert_eq!(fs::read(site.root.join("x")).unwrap(), b"kept");
+    assert!(after.iter().any(|node| node.1 == x && !node.2), "{after:?}");
 }

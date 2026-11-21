@@ -33,12 +33,11 @@ The engine persists, in the store transaction of the commit or hold that changes
 - The guard counts every deletion planning could make when a commit is built, not only those that fit in that commit, so a removal larger than one commit is asked about before any of it is sent.
 - When the deletions would cross a threshold, the engine holds all of them and emits `AskUser`. Everything else keeps syncing: other local changes, downloads and remote deletions.
 - Held nodes are excluded from planning. They are absent locally and stay present in R. A held node that changes remotely leaves the held set and is downloaded again, as the keep rule would do.
-- A held node keeps its name in R, so a local move or create onto that name waits for the answer instead of taking a conflict name. After Delete, the delete is sent before the move.
 - Deletions planned while a question is open join the held set, and a new question replaces the old one, so an answer always refers to the set the user saw. A held set that shrinks is replaced by a new question too, also when the rest no longer crosses a threshold. The question ends only when nothing is left. A question whose held set does not change stays open until answered, also after its window ends.
 
 ### Open questions
 
-The guard's question is one of the engine's open questions, and every hold that waits for the person uses the same record. Each open question has an ID, the time it was asked, a kind (`QuestionKind`), and the items it holds: each topmost node with the nodes below it that the answer applies to and their revisions in R, or none for a node R does not hold. The store keeps every open question with its items. No commit carries an op for a node that an open question holds, and an answer is routed by the question's kind.
+The guard's question is one of the engine's open questions, and every hold that waits for the person uses the same record. Each open question has an ID, the time it was asked, a kind (`QuestionKind`), and the items it holds: each topmost node with the nodes below it that the answer applies to and their revisions in R, or none for a node R does not hold. The store keeps every open question with its items. No commit carries an op for a node that an open question holds, and an answer is routed by the question's kind. A node an open question holds keeps its name in R, so a local move or create onto that name waits for the answer instead of taking a conflict name: an answer that deletes the node sends the delete before the move, and one that keeps it lets the move take a conflict name as any clash does.
 
 ### Answers
 
