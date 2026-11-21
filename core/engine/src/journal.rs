@@ -1087,13 +1087,14 @@ impl Journal {
             .map(Flight::sent),
             _ => None,
         };
-        if let Some(mut row) = moved {
+        let held_at = (target.to_owned(), field);
+        if let Some(mut row) = moved.filter(|_| self.rows.get(&held_at).is_none()) {
             row.state = RowState::Held {
                 held_as: sent,
                 version_id,
             };
             row.time_ms = at_ms;
-            self.rows.insert((target.to_owned(), field), row);
+            self.rows.insert(held_at, row);
         }
         self.push_history(target, field, sent, at_ms, true);
     }

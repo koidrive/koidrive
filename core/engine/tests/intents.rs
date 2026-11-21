@@ -2480,3 +2480,53 @@ fn a_backfilled_delete_sees_a_child_under_the_folder_its_waiting_update_moved_it
             .any(|e| e.node == "f" && matches!(&e.value, Some(Value::Place(p)) if p.parent == "b"))
     );
 }
+#[test]
+fn a_late_conflict_copy_keeps_the_row_of_an_edit_made_on_the_copy() {
+    for features in [&[][..], &["field_intents"][..]] {
+        let mut trees = Trees::new(ROOT, &IdGen::new(0));
+        synced(&mut trees, "f", file(ROOT, "a", 1), 1);
+        trees.set_local_changed("f".into(), local(file(ROOT, "a", 2)));
+        let commit = build(&mut trees, features, 1_700);
+        let copy = file(ROOT, "a (copy)", 2);
+        synced(&mut trees, "copy", copy.clone(), 4);
+        trees.set_local_changed("copy".into(), local(file(ROOT, "a (copy)", 3)));
+        let edit = sent(&trees, "copy", Field::Content);
+        let result = proto::OpResult {
+            node_id: "copy".into(),
+            ..outcome(op_result::Code::ConflictCopy)
+        };
+        let state = node_state("copy", &copy, 4, None);
+        trees.record_results(&commit, &answered(vec![result], vec![state]));
+        let row = trees.journal_row(&"copy".into(), Field::Content).unwrap();
+        assert_eq!(
+            (row.intent, &row.state),
+            (edit, &RowState::Local { flight: None }),
+            "{features:?}"
+        );
+    }
+}
+
+#[test]
+fn a_superseded_replay_held_on_another_node_keeps_that_nodes_edit() {
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
+    synced(&mut trees, "f", file(ROOT, "a", 1), 1);
+    trees.set_local_changed("f".into(), local(file(ROOT, "a", 2)));
+    let commit = build(&mut trees, &["field_intents"], 1_700);
+    let replayed = sent(&trees, "f", Field::Content);
+    let copy = file(ROOT, "a (copy)", 2);
+    synced(&mut trees, "copy", copy.clone(), 4);
+    trees.set_local_changed("copy".into(), local(file(ROOT, "a (copy)", 3)));
+    let edit = sent(&trees, "copy", Field::Content);
+    let reported = proto::FieldIntents {
+        content: Some(wire(replayed, 1_900)),
+        ..Default::default()
+    };
+    let state = node_state("copy", &copy, 4, Some(reported));
+    let superseded = proto::OpResult {
+        node_id: "copy".into(),
+        ..outcome(op_result::Code::Superseded)
+    };
+    trees.record_results(&commit, &answered(vec![superseded], vec![state]));
+    let row = trees.journal_row(&"copy".into(), Field::Content).unwrap();
+    assert_eq!(row.intent, edit);
+}
