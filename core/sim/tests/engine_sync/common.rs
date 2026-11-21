@@ -534,6 +534,13 @@ fn ruling() -> impl Strategy<Value = Ruling> {
 
 /// The rules as the disk and the configuration hold them. They are not part of the stored
 /// state, so the device reads them again after every restart.
+#[derive(Clone, Debug, Default)]
+struct Rules {
+    file: Vec<&'static str>,
+    exclude: Vec<&'static str>,
+    include: Vec<&'static str>,
+}
+
 fn ancestors(trees: &Trees, parent: Option<NodeId>) -> Vec<NodeId> {
     let mut chain = Vec::new();
     let mut above = parent;
@@ -542,13 +549,6 @@ fn ancestors(trees: &Trees, parent: Option<NodeId>) -> Vec<NodeId> {
         chain.push(at);
     }
     chain
-}
-
-#[derive(Clone, Debug, Default)]
-struct Rules {
-    file: Vec<&'static str>,
-    exclude: Vec<&'static str>,
-    include: Vec<&'static str>,
 }
 
 impl Rules {
