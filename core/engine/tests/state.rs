@@ -97,6 +97,10 @@ fn trees_state() -> TreesState {
         born_as_temp: Default::default(),
         discard_members: [("c".into(), "b".into())].into(),
         left_out_by_server: ["b".into()].into(),
+        discard_stays: [("a".into(), "b".into())].into(),
+        discard_answered: ["b".into()].into(),
+        first_link_held: [("d".into(), "b".into())].into(),
+        first_link_open: [("b".into(), true)].into(),
         parked_as: [("b".into(), "c".into())].into(),
         waiting: [(
             "a".into(),

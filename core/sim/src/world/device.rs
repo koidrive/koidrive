@@ -107,36 +107,37 @@ impl Engine {
 
     /// Applies change records to R, as the receiving side does for records in seq order.
     pub fn apply(&mut self, changes: &[ChangeRecord], made: Option<&str>) -> Result<(), Failure> {
-        for change in changes {
-            match &change.change {
-                Some(change_record::Change::Node(state))
-                    if state.node_id != self.trees.remote().root =>
-                {
-                    let (id, node) = RemoteNode::from_state(state).map_err(|error| {
-                        Failure::Broken(format!("unreadable node state: {error:?}"))
-                    })?;
-                    if made.is_some_and(|commit_id| self.commits.answers_in_flight(commit_id, &id))
+        let commits = &self.commits;
+        self.trees.apply_batch(|trees| {
+            for change in changes {
+                match &change.change {
+                    Some(change_record::Change::Node(state))
+                        if state.node_id != trees.remote().root =>
                     {
-                        self.trees.set_remote_answered_here(id.clone(), node);
-                    } else if made
-                        .is_some_and(|commit_id| self.commits.edits_in_flight(commit_id, &id))
-                    {
-                        self.trees.set_remote_edited_here(id.clone(), node);
-                    } else if made.is_some() {
-                        self.trees.set_remote_made_here(id.clone(), node);
-                    } else {
-                        self.trees.set_remote(id.clone(), node);
+                        let (id, node) = RemoteNode::from_state(state).map_err(|error| {
+                            Failure::Broken(format!("unreadable node state: {error:?}"))
+                        })?;
+                        if made.is_some_and(|commit_id| commits.answers_in_flight(commit_id, &id)) {
+                            trees.set_remote_answered_here(id.clone(), node);
+                        } else if made
+                            .is_some_and(|commit_id| commits.edits_in_flight(commit_id, &id))
+                        {
+                            trees.set_remote_edited_here(id.clone(), node);
+                        } else if made.is_some() {
+                            trees.set_remote_made_here(id.clone(), node);
+                        } else {
+                            trees.set_remote(id.clone(), node);
+                        }
+                        trees.set_remote_place_id(&id, RemoteNode::place_id(state));
                     }
-                    self.trees
-                        .set_remote_place_id(&id, RemoteNode::place_id(state));
+                    Some(change_record::Change::Purged(purged)) => {
+                        trees.remove_remote(&NodeId::from(&purged.node_id))
+                    }
+                    _ => {}
                 }
-                Some(change_record::Change::Purged(purged)) => {
-                    self.trees.remove_remote(&NodeId::from(&purged.node_id))
-                }
-                _ => {}
             }
-        }
-        Ok(())
+            Ok(())
+        })
     }
 
     /// A full rescan: L takes the disk as it is. An entry keeps the node whose file identity it

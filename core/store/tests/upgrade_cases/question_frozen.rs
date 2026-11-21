@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 upgrade_case!(question_frozen, |store| {
-    use koidrive_engine::question::{Answer, Frozen, Question, QuestionKind, RecoveryGroup};
+    use koidrive_engine::question::{
+        Answer, Frozen, FrozenAnswer, Question, QuestionKind, RecoveryGroup,
+    };
     use std::collections::BTreeMap;
     let before = store.transaction(|tx| tx.engine_state()).unwrap();
     let mut after = before.clone();
@@ -16,7 +18,10 @@ upgrade_case!(question_frozen, |store| {
         held: Default::default(),
         answer: Some(Answer::Discard),
         shown: Default::default(),
-        frozen: Some(BTreeMap::from([("x".into(), Frozen { parent: "f".into(), name: "x".into(), taken: true })])),
+        frozen: Some(FrozenAnswer {
+            below: BTreeMap::from([("x".into(), Frozen { parent: "f".into(), name: "x".into(), taken: true, member_of: Some("x".into()) })]),
+            whole: true,
+        }),
     });
     store
         .transaction(|tx| tx.update_engine_state(&before, &after))

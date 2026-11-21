@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 upgrade_case!(unread_folders, |store| {
-    use koidrive_engine::question::{Answer, Frozen, Question, QuestionKind, RecoveryGroup};
+    use koidrive_engine::question::{
+        Answer, Frozen, FrozenAnswer, Question, QuestionKind, RecoveryGroup,
+    };
     store
         .transaction(|tx| {
             assert_eq!(tx.unread_folders()?, None);
@@ -26,14 +28,18 @@ upgrade_case!(unread_folders, |store| {
                 held: Default::default(),
                 answer: Some(Answer::Discard),
                 shown: Default::default(),
-                frozen: Some(std::collections::BTreeMap::from([(
-                    "x".into(),
-                    Frozen {
-                        parent: "f".into(),
-                        name: "x".into(),
-                        taken: true,
-                    },
-                )])),
+                frozen: Some(FrozenAnswer {
+                    below: std::collections::BTreeMap::from([(
+                        "x".into(),
+                        Frozen {
+                            parent: "f".into(),
+                            name: "x".into(),
+                            taken: true,
+                            member_of: None,
+                        },
+                    )]),
+                    whole: true,
+                }),
             });
             state.trees.past_positions.insert(
                 "upgraded".into(),

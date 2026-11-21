@@ -458,6 +458,43 @@ impl Tx<'_> {
                 NodeId::from(row.get::<_, String>(1)?),
             );
         }
+        let mut stmt = self
+            .0
+            .prepare_cached("SELECT node_id, folder_id FROM discard_stays")?;
+        let mut rows = stmt.query([])?;
+        while let Some(row) = next_row!(rows, abandoned) {
+            state.trees.discard_stays.insert((
+                NodeId::from(row.get::<_, String>(0)?),
+                NodeId::from(row.get::<_, String>(1)?),
+            ));
+        }
+        let mut stmt = self
+            .0
+            .prepare_cached("SELECT folder_id FROM discard_answered")?;
+        let mut rows = stmt.query([])?;
+        while let Some(row) = next_row!(rows, abandoned) {
+            (state.trees.discard_answered).insert(NodeId::from(row.get::<_, String>(0)?));
+        }
+        let mut stmt = self
+            .0
+            .prepare_cached("SELECT node_id, parent_id FROM first_link_held")?;
+        let mut rows = stmt.query([])?;
+        while let Some(row) = next_row!(rows, abandoned) {
+            state.trees.first_link_held.insert(
+                NodeId::from(row.get::<_, String>(0)?),
+                NodeId::from(row.get::<_, String>(1)?),
+            );
+        }
+        let mut stmt = self
+            .0
+            .prepare_cached("SELECT node_id, asked FROM first_link_open")?;
+        let mut rows = stmt.query([])?;
+        while let Some(row) = next_row!(rows, abandoned) {
+            state.trees.first_link_open.insert(
+                NodeId::from(row.get::<_, String>(0)?),
+                row.get::<_, bool>(1)?,
+            );
+        }
         let mut stmt = self.0.prepare_cached("SELECT node_id FROM unobserved")?;
         let mut rows = stmt.query([])?;
         while let Some(row) = next_row!(rows, abandoned) {
@@ -836,6 +873,10 @@ impl Tx<'_> {
             born_as_temp,
             discard_members,
             left_out_by_server,
+            discard_stays,
+            discard_answered,
+            first_link_held,
+            first_link_open,
             parked_as,
             waiting,
             watched,
@@ -1095,6 +1136,36 @@ impl Tx<'_> {
             "DELETE FROM discard_members WHERE node_id = ?1",
             "INSERT OR REPLACE INTO discard_members (node_id, folder_id) VALUES (?1, ?2)",
             |put, node, folder| put.execute(params![node, folder.to_string()]),
+        )?;
+        let mut remove = self
+            .0
+            .prepare_cached("DELETE FROM discard_stays WHERE node_id = ?1 AND folder_id = ?2")?;
+        let mut put = self.0.prepare_cached(
+            "INSERT OR IGNORE INTO discard_stays (node_id, folder_id) VALUES (?1, ?2)",
+        )?;
+        for ((node, folder), held) in discard_stays {
+            let (node, folder) = (node.to_string(), folder.to_string());
+            match held {
+                true => put.execute(params![node, folder])?,
+                false => remove.execute(params![node, folder])?,
+            };
+        }
+        self.write_set(
+            discard_answered,
+            "DELETE FROM discard_answered WHERE folder_id = ?1",
+            "INSERT OR IGNORE INTO discard_answered (folder_id) VALUES (?1)",
+        )?;
+        self.write_node_map(
+            first_link_held,
+            "DELETE FROM first_link_held WHERE node_id = ?1",
+            "INSERT OR REPLACE INTO first_link_held (node_id, parent_id) VALUES (?1, ?2)",
+            |put, node, parent| put.execute(params![node, parent.to_string()]),
+        )?;
+        self.write_node_map(
+            first_link_open,
+            "DELETE FROM first_link_open WHERE node_id = ?1",
+            "INSERT OR REPLACE INTO first_link_open (node_id, asked) VALUES (?1, ?2)",
+            |put, node, asked| put.execute(params![node, asked]),
         )?;
         self.write_set(
             left_out_by_server,

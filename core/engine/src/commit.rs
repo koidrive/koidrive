@@ -958,6 +958,8 @@ impl Commits {
         };
         self.published.extend(first_link::below(trees, &sent));
         if let Some(question) = first_link::ask(trees, held, None, None, ids, now_ms) {
+            let asked_before = self.questions.iter().any(first_link::asks);
+            trees.record_stays_while_asked(question.shown.keys().cloned(), asked_before);
             self.questions.get_mut().push(question);
         }
         self.hold(trees);
@@ -1342,9 +1344,11 @@ impl Commits {
                     if question.answer == Some(Answer::Discard) {
                         let landing = self.landing();
                         let taken = match &question.frozen {
-                            Some(frozen) => {
-                                trees.frozen_server_entries(&question.shown, frozen, &landing)
-                            }
+                            Some(frozen) => trees.frozen_server_entries(
+                                &question.shown,
+                                &frozen.below,
+                                &landing,
+                            ),
                             None => Some(trees.server_entries_below(&question.shown, &landing)),
                         };
                         let Some(taken) = taken else {
@@ -1363,7 +1367,7 @@ impl Commits {
                         };
                         let shown: BTreeSet<NodeId> = question.shown.keys().cloned().collect();
                         trees.discard(shown.iter().cloned(), &question.shown);
-                        trees.discard_taken(taken);
+                        trees.discard_taken(taken, question.frozen.as_ref());
                         let updates = (question.shown.into_iter())
                             .map(|(id, shape)| (id, Some(shape)))
                             .collect();
@@ -1388,6 +1392,8 @@ impl Commits {
                 }
             }
         }
+        trees
+            .keep_answered((self.questions.iter()).filter_map(|question| question.frozen.as_ref()));
         self.hold(trees);
         trees.reclaim(|id| published_in.contains(id));
         left
@@ -1537,6 +1543,7 @@ impl Commits {
             question.shown.keys().chain(held.into_iter().flatten())
         });
         trees.set_asked(shown.cloned().collect());
+        trees.set_first_link_asked(self.questions.iter().any(first_link::asks));
     }
 
     fn given_up_files(&self, trees: &Trees) -> u64 {
@@ -1736,6 +1743,10 @@ impl Commits {
         if let Some(question) =
             first_link::ask(trees, discardable, None, cause.as_ref(), ids, now_ms)
         {
+            if cause.is_none() {
+                let asked_before = self.questions.iter().any(first_link::asks);
+                trees.record_stays_while_asked(question.shown.keys().cloned(), asked_before);
+            }
             self.questions.get_mut().push(question);
             self.hold(trees);
         }
@@ -2533,6 +2544,53 @@ impl Commits {
                 _ => None,
             })
             .collect();
+        let mut given: BTreeMap<NodeId, NodeId> = BTreeMap::new();
+        let mut sent_parents: BTreeMap<NodeId, NodeId> = BTreeMap::new();
+        let mut placements = Vec::new();
+        for (op, outcome) in flight.commit.ops.iter().zip(&result.results) {
+            use op_result::Code;
+            let code = Code::try_from(outcome.code).unwrap_or(Code::Unspecified);
+            let Some(sent) = op.op.as_ref().filter(|_| {
+                matches!(
+                    code,
+                    Code::Applied | Code::AppliedRenamed | Code::MergedInto
+                )
+            }) else {
+                continue;
+            };
+            let parent = match sent {
+                op::Op::CreateDir(create) => Some(&create.parent_id),
+                op::Op::CreateFile(create) => Some(&create.parent_id),
+                op::Op::Move(moved) => Some(&moved.new_parent_id),
+                op::Op::Restore(restore) => {
+                    Some(&restore.target_parent_id).filter(|parent| !parent.is_empty())
+                }
+                op::Op::UpdateContent(_) | op::Op::Delete(_) | op::Op::MarkGitTracked(_) => {
+                    continue;
+                }
+            }
+            .map(|parent| {
+                let parent = NodeId::from(parent);
+                given.get(&parent).cloned().unwrap_or(parent)
+            });
+            let node = op_node(sent);
+            let placed = match outcome.node_id.is_empty() {
+                true => node.clone(),
+                false => NodeId::from(&outcome.node_id),
+            };
+            if placed != node {
+                given.insert(node, placed.clone());
+            }
+            if let Some(parent) = &parent {
+                sent_parents.insert(placed.clone(), parent.clone());
+            }
+            if code != Code::MergedInto {
+                placements.push((placed, parent));
+            }
+        }
+        for (placed, parent) in placements {
+            trees.record_placed_here(&placed, parent, &sent_parents, result.seq);
+        }
         for (index, (op, outcome)) in flight.commit.ops.iter().zip(&result.results).enumerate() {
             use op_result::Code;
             let code = Code::try_from(outcome.code).unwrap_or(Code::Unspecified);

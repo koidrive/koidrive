@@ -557,33 +557,36 @@ impl Engine {
         let made_here = self
             .commits
             .own_record(at.seq, &at.commit_id, at.committed_at_ms);
-        for change in changes {
-            match &change.change {
-                Some(change_record::Change::Node(state)) => {
-                    tx.put_remote_node(state)?;
-                    if state.node_id != self.trees.remote().root {
-                        let (id, node) = remote_node(state)?;
-                        if made_here && self.commits.answers_in_flight(&at.commit_id, &id) {
-                            self.trees.set_remote_answered_here(id.clone(), node);
-                        } else if made_here && self.commits.edits_in_flight(&at.commit_id, &id) {
-                            self.trees.set_remote_edited_here(id.clone(), node);
-                        } else if made_here {
-                            self.trees.set_remote_made_here(id.clone(), node);
-                        } else {
-                            self.trees.set_remote(id.clone(), node);
+        let commits = &self.commits;
+        self.trees.apply_batch(|trees| {
+            for change in changes {
+                match &change.change {
+                    Some(change_record::Change::Node(state)) => {
+                        tx.put_remote_node(state)?;
+                        if state.node_id != trees.remote().root {
+                            let (id, node) = remote_node(state)?;
+                            if made_here && commits.answers_in_flight(&at.commit_id, &id) {
+                                trees.set_remote_answered_here(id.clone(), node);
+                            } else if made_here && commits.edits_in_flight(&at.commit_id, &id) {
+                                trees.set_remote_edited_here(id.clone(), node);
+                            } else if made_here {
+                                trees.set_remote_made_here(id.clone(), node);
+                            } else {
+                                trees.set_remote(id.clone(), node);
+                            }
+                            trees.set_remote_place_id(&id, RemoteNode::place_id(state));
                         }
-                        self.trees
-                            .set_remote_place_id(&id, RemoteNode::place_id(state));
                     }
-                }
-                Some(change_record::Change::Purged(purged)) => {
-                    tx.remove_remote_node(&purged.node_id)?;
-                    self.trees.remove_remote(&NodeId::from(&purged.node_id));
-                }
-                Some(change_record::Change::Space(_) | change_record::Change::Member(_)) | None => {
+                    Some(change_record::Change::Purged(purged)) => {
+                        tx.remove_remote_node(&purged.node_id)?;
+                        trees.remove_remote(&NodeId::from(&purged.node_id));
+                    }
+                    Some(change_record::Change::Space(_) | change_record::Change::Member(_))
+                    | None => {}
                 }
             }
-        }
+            Ok::<_, Stop>(())
+        })?;
         cursor.last_seq = at.seq;
         cursor.commit_id = at.commit_id;
         cursor.committed_at_ms = at.committed_at_ms;

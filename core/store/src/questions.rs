@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use koidrive_engine::guard::{Counted, GuardState, RemoteDeletion, Trash};
-use koidrive_engine::question::{Answer, Frozen, Held, Limit, Question, QuestionKind, Revisions};
+use koidrive_engine::question::{
+    Answer, Frozen, FrozenAnswer, Held, Limit, Question, QuestionKind, Revisions,
+};
 use koidrive_engine::state::GuardChanges;
 use koidrive_engine::tree::{NodeId, Shape};
 use rusqlite::{Row, params};
@@ -45,20 +47,27 @@ impl Tx<'_> {
         }
         let mut frozen: BTreeMap<String, BTreeMap<NodeId, Frozen>> = BTreeMap::new();
         let mut stmt = self.0.prepare_cached(
-            "SELECT question_id, node_id, parent_id, name, taken FROM open_question_frozen",
+            "SELECT question_id, node_id, parent_id, name, taken, member, member_of
+             FROM open_question_frozen",
         )?;
         let mut rows = stmt.query([])?;
-        while let Some(row) = rows.next()? {
+        let mut unowned = BTreeSet::new();
+        while let Some(row) = next_row!(rows, abandoned) {
+            let member_of = row.get::<_, Option<String>>(6)?.map(NodeId::from);
+            if row.get::<_, bool>(5)? && member_of.is_none() {
+                unowned.insert(row.get::<_, String>(0)?);
+            }
             let node = Frozen {
                 parent: NodeId::from(row.get::<_, String>(2)?),
                 name: row.get(3)?,
                 taken: row.get(4)?,
+                member_of,
             };
             (frozen.entry(row.get(0)?).or_default())
                 .insert(NodeId::from(row.get::<_, String>(1)?), node);
         }
         let mut stmt = self.0.prepare_cached(
-            "SELECT question_id, asked_at_ms, kind, answer, frozen FROM open_questions
+            "SELECT question_id, asked_at_ms, kind, answer, frozen, frozen_whole FROM open_questions
              ORDER BY position",
         )?;
         let mut rows = stmt.query([])?;
@@ -76,10 +85,14 @@ impl Tx<'_> {
                 .transpose()
                 .map_err(Error::InvalidEngineState)?;
             let is_frozen: bool = row.get(4)?;
+            let whole: bool = row.get(5)?;
             questions.push(Question {
                 held: held.remove(&id).unwrap_or_default(),
                 shown: shown.remove(&id).unwrap_or_default(),
-                frozen: is_frozen.then(|| frozen.remove(&id).unwrap_or_default()),
+                frozen: is_frozen.then(|| FrozenAnswer {
+                    below: frozen.remove(&id).unwrap_or_default(),
+                    whole: whole && !unowned.contains(&id),
+                }),
                 id,
                 asked_at_ms: row.get(1)?,
                 kind,
@@ -105,12 +118,14 @@ impl Tx<'_> {
             self.0.execute(&format!("DELETE FROM {table}"), [])?;
         }
         let mut stmt = self.0.prepare_cached(
-            "INSERT INTO open_questions (question_id, position, asked_at_ms, kind, answer, frozen)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            "INSERT INTO open_questions
+             (question_id, position, asked_at_ms, kind, answer, frozen, frozen_whole)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
         )?;
         let mut frozen = self.0.prepare_cached(
-            "INSERT INTO open_question_frozen (question_id, node_id, parent_id, name, taken)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
+            "INSERT INTO open_question_frozen
+             (question_id, node_id, parent_id, name, taken, member, member_of)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
         )?;
         let mut items = self.0.prepare_cached(
             "INSERT INTO open_question_items (question_id, top_id, files) VALUES (?1, ?2, ?3)",
@@ -132,14 +147,17 @@ impl Tx<'_> {
                 kind,
                 question.answer.map(Answer::as_str),
                 question.frozen.is_some(),
+                question.frozen.as_ref().is_some_and(|frozen| frozen.whole),
             ])?;
-            for (node, below) in question.frozen.iter().flatten() {
+            for (node, below) in question.frozen.iter().flat_map(|frozen| &frozen.below) {
                 frozen.execute(params![
                     question.id,
                     node.to_string(),
                     below.parent.to_string(),
                     below.name,
-                    below.taken
+                    below.taken,
+                    below.member_of.is_some(),
+                    below.member_of.as_ref().map(NodeId::to_string)
                 ])?;
             }
             for (top, item) in &question.held {

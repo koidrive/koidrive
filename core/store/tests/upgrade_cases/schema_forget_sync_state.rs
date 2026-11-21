@@ -44,12 +44,28 @@ upgrade_case!(schema_forget_sync_state, |store| {
         tx.set_id_generator(&7u64.to_le_bytes())
     })
     .unwrap();
-    rusqlite::Connection::open(&path)
-        .unwrap()
-        .execute("INSERT INTO discard_members VALUES ('n', 'f')", [])
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    for table in ["discard_members", "first_link_held"] {
+        conn.execute(&format!("INSERT INTO {table} VALUES ('n', 'f')"), [])
+            .unwrap();
+    }
+    conn.execute("INSERT INTO discard_stays VALUES ('n', 'f')", [])
         .unwrap();
+    conn.execute("INSERT INTO discard_answered VALUES ('f')", [])
+        .unwrap();
+    conn.execute("INSERT INTO first_link_open VALUES ('f', 1)", [])
+        .unwrap();
+    drop(conn);
     let before = rows(&path);
-    assert!(before.contains(&("discard_members".into(), 1)), "{before:?}");
+    for table in [
+        "discard_members",
+        "discard_stays",
+        "discard_answered",
+        "first_link_held",
+        "first_link_open",
+    ] {
+        assert!(before.contains(&(table.into(), 1)), "{table}: {before:?}");
+    }
     copy.transaction(|tx| tx.forget_sync_state()).unwrap();
     copy.transaction(|tx| {
         assert_eq!(tx.root_tokens()?, tokens);
@@ -74,8 +90,8 @@ upgrade_case!(schema_forget_sync_state, |store| {
     ];
     let forgotten = "answer_moves answered_rules born_as_temp commit_in_flight commit_in_flight_delete_members commit_in_flight_deletes \
          commit_in_flight_restore_members commit_in_flight_restore_owners commit_slot_given_up commit_slots commit_state content_provenance cycle_reverted \
-         discard_members discarded_nodes dropped_edits edited_here effect_state effects_in_flight engine_state failed_effects \
-         forgotten_shapes given_up guard_confirmed guard_confirmed_limits guard_confirmed_members guard_ledger \
+         discard_answered discard_members discard_stays discarded_nodes dropped_edits edited_here effect_state effects_in_flight engine_state failed_effects \
+         first_link_held first_link_open forgotten_shapes given_up guard_confirmed guard_confirmed_limits guard_confirmed_members guard_ledger \
          guard_remote guard_remote_dismissed kept_entries kept_folders kept_nodes kept_originals left_out_by_server local_changes local_nodes lost_creates \
          lost_positions lost_shapes missing_nodes moved_here names_left_out node_maps node_sets open_question_items open_question_members owed_deletes \
          open_question_shapes open_question_frozen open_questions past_positions pending_finishes published_nodes questions \
