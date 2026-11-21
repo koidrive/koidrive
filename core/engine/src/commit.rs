@@ -1839,6 +1839,12 @@ impl Commits {
             }
         }
         let answers = released.iter().flat_map(Question::holds).cloned().collect();
+        let unanswered = self
+            .questions
+            .iter()
+            .flat_map(Question::holds)
+            .cloned()
+            .collect();
         if released.is_empty() {
             self.answer_moves.clear();
         }
@@ -1907,6 +1913,7 @@ impl Commits {
                     &restores,
                     &self.split_restores,
                     &answers,
+                    &unanswered,
                     &self.answer_moves,
                     device_id,
                 )
@@ -4707,6 +4714,7 @@ fn plan(
     restores: &BTreeMap<RestoreId, RestoreIntent>,
     splits: &TrackedMap<RestoreId, SplitRestore>,
     answers: &BTreeSet<NodeId>,
+    unanswered: &BTreeSet<NodeId>,
     answer_moves: &TrackedSet<NodeId>,
     device_id: &str,
 ) -> (Planned, bool, BTreeMap<NodeId, NodeId>) {
@@ -5544,6 +5552,7 @@ fn plan(
                 || matches!(want, Want::Move { id, .. } if asides.contains(id))
                 || (scratch.name_holders(want)).any(|holder| {
                     scratch.owed.contains(holder)
+                        || unanswered.contains(holder)
                         || held.iter().any(|id| scratch.inside(holder, id))
                         || matches!(want, Want::Move { .. })
                             && (!scratch.stalled || emitted > 0)
