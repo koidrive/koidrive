@@ -2588,3 +2588,22 @@ fn a_superseded_replay_held_on_another_node_keeps_that_nodes_edit() {
     let row = trees.journal_row(&"copy".into(), Field::Content).unwrap();
     assert_eq!(row.intent, edit);
 }
+
+#[test]
+fn an_edit_back_to_a_value_whose_commit_the_server_lost_goes_out_as_a_replay_at_its_first_time() {
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
+    synced(&mut trees, "f", file(ROOT, "a", 1), 1);
+    trees.set_local_changed("f".into(), local(file(ROOT, "a", 2)));
+    build(&mut trees, &["field_intents"], 1_700);
+    let edit = sent(&trees, "f", Field::Content);
+    trees.set_local_changed("f".into(), local(file(ROOT, "a", 3)));
+    let (none, merged) = (Default::default(), Default::default());
+    trees.forget_lost(vec![], vec![], vec![], vec![], vec![], none, &merged, 0, 0);
+    trees.set_local_changed("f".into(), local(file(ROOT, "a", 2)));
+    let commit = build(&mut trees, &["field_intents"], 1_800);
+    let intent = commit.ops[0].intent.as_ref().unwrap();
+    assert_eq!(
+        (&intent.id, intent.replay, intent.applied_at_ms),
+        (&edit.as_bytes().to_vec(), true, 1_700)
+    );
+}

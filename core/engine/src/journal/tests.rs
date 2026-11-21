@@ -631,3 +631,19 @@ fn an_absent_node_lapses_at_its_deadline_and_not_before() {
     restored.set_clock(ABSENT_FOR_MS as u64);
     assert!(restored.state(whole).absent.is_empty());
 }
+
+#[test]
+fn a_return_to_a_value_whose_commit_the_server_lost_sends_it_as_a_replay() {
+    let mut journal = Journal::new(&IdGen::new(0));
+    let n = NodeId::from("n");
+    let b = journal.user_change(&n, content(1), WireBase::None, None);
+    journal.send(&n, Field::Content, 12);
+    journal.user_change(&n, content(2), WireBase::None, None);
+    journal.lose();
+    assert_eq!(journal.user_change(&n, content(1), WireBase::None, None), b);
+    let row = journal.row(&n, Field::Content).unwrap();
+    assert_eq!(
+        (&row.state, row.replay, row.time_ms),
+        (&RowState::Sent, true, 12)
+    );
+}

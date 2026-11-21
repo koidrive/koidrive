@@ -1280,11 +1280,20 @@ impl Journal {
 
     pub fn lose(&mut self) {
         let keys: Vec<RowKey> = (self.rows.iter())
-            .filter(|(_, row)| !row.replay && !matches!(row.state, RowState::Local { .. }))
+            .filter(|(_, row)| match &row.state {
+                RowState::Local { flight } => flight.as_ref().is_some_and(|flight| !flight.replay),
+                RowState::Sent | RowState::Held { .. } => !row.replay,
+            })
             .map(|(key, _)| key.clone())
             .collect();
         for key in keys {
-            self.rows.update(&key, |row| row.replay = true);
+            self.rows.update(&key, |row| match &mut row.state {
+                RowState::Local {
+                    flight: Some(flight),
+                } => flight.replay = true,
+                RowState::Local { flight: None } => {}
+                RowState::Sent | RowState::Held { .. } => row.replay = true,
+            });
         }
     }
 
