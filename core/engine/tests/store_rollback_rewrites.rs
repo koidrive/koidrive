@@ -48,11 +48,16 @@ fn version(shape: Shape, version_id: &str, made_over: &[&str], rev: u64) -> Remo
 }
 
 fn rolled_back_under_a_later_edit(on_disk_at: i64) -> (Trees, Commits, IdGen) {
+    let later = version(file(5, 0), "v5", &["v4"], 2);
+    rolled_back(file(4, on_disk_at), file(4, WRITTEN_AT), later)
+}
+
+fn rolled_back(local: Shape, synced: Shape, later: RemoteNode) -> (Trees, Commits, IdGen) {
     let mut trees = Trees::new(ROOT);
     let local = LocalNode {
         left_out_when_placed: false,
         content_from_server: false,
-        shape: file(4, on_disk_at),
+        shape: local,
         identity: FileIdentity {
             ino: 1,
             birth_ns: Some(0),
@@ -62,11 +67,11 @@ fn rolled_back_under_a_later_edit(on_disk_at: i64) -> (Trees, Commits, IdGen) {
         chunks: Box::default(),
     };
     trees.set_local("n".into(), local);
-    trees.set_synced("n".into(), Some(file(4, WRITTEN_AT)));
-    trees.set_remote("n".into(), version(file(4, WRITTEN_AT), "v4", &[], 1));
+    trees.set_synced("n".into(), Some(synced.clone()));
+    trees.set_remote("n".into(), version(synced, "v4", &[], 1));
     trees.rules_scanned();
     trees.settle(&Default::default());
-    trees.set_remote("n".into(), version(file(5, 0), "v5", &["v4"], 2));
+    trees.set_remote("n".into(), later);
     trees.settle(&Default::default());
     let mut commits = Commits::default();
     let mut ids = IdGen::new(7);
@@ -159,4 +164,95 @@ fn a_file_whose_time_only_lost_precision_after_a_store_rollback_follows_the_late
             .build(&mut trees, &mut ids, NOW, "new", "me", 1)
             .is_none()
     );
+}
+
+fn trashed(node: RemoteNode) -> RemoteNode {
+    RemoteNode {
+        trashed: true,
+        ..node
+    }
+}
+
+#[test]
+fn a_file_another_device_trashed_with_the_bytes_l_holds_follows_the_trash_after_a_store_rollback() {
+    let later = trashed(version(file(5, 0), "v5", &["v4"], 2));
+    let (mut trees, mut commits, mut ids) = rolled_back(file(5, WRITTEN_AT), file(4, 0), later);
+    assert!(commits.questions().is_empty(), "{:?}", commits.questions());
+    let done = effects(&mut trees, &mut ids);
+    assert!(
+        matches!(&done[..], [(node, Effect::RemoveFile { .. })] if node == "n"),
+        "{done:?}"
+    );
+    assert!(
+        commits
+            .build(&mut trees, &mut ids, NOW, "new", "me", 1)
+            .is_none()
+    );
+}
+
+#[test]
+fn a_file_held_as_changed_follows_another_devices_trash_of_the_bytes_l_holds_after_a_store_rollback()
+ {
+    let later = version(file(6, 0), "v6", &["v4"], 2);
+    let (mut trees, mut commits, mut ids) = rolled_back(file(5, WRITTEN_AT), file(4, 0), later);
+    assert_eq!(commits.questions().len(), 1, "{:?}", commits.questions());
+    trees.set_remote("n".into(), trashed(version(file(5, 0), "v5", &["v6"], 3)));
+    trees.settle(commits.aliases());
+    assert!(
+        commits
+            .build(&mut trees, &mut ids, NOW, "new", "me", 1)
+            .is_none()
+    );
+    assert!(commits.questions().is_empty(), "{:?}", commits.questions());
+    let done = effects(&mut trees, &mut ids);
+    assert!(
+        matches!(&done[..], [(node, Effect::RemoveFile { .. })] if node == "n"),
+        "{done:?}"
+    );
+    assert!(
+        commits
+            .build(&mut trees, &mut ids, NOW, "new", "me", 1)
+            .is_none()
+    );
+}
+
+#[test]
+fn a_folder_another_device_renamed_and_trashed_follows_the_trash_after_a_store_rollback() {
+    let folder = |name: &str| Shape {
+        parent: ROOT.into(),
+        name: name.into(),
+        kind: Kind::Dir,
+        content: None,
+    };
+    let later = trashed(version(folder("b"), "v5", &["v4"], 2));
+    let (mut trees, mut commits, mut ids) = rolled_back(folder("b"), folder("a"), later);
+    assert!(commits.questions().is_empty(), "{:?}", commits.questions());
+    let done = effects(&mut trees, &mut ids);
+    assert!(
+        matches!(&done[..], [(node, Effect::RemoveDir { .. })] if node == "n"),
+        "{done:?}"
+    );
+    assert!(
+        commits
+            .build(&mut trees, &mut ids, NOW, "new", "me", 1)
+            .is_none()
+    );
+}
+
+#[test]
+fn a_file_another_device_trashed_with_other_bytes_than_l_holds_is_asked_about_after_a_store_rollback()
+ {
+    let later = trashed(version(file(5, 0), "v5", &["v4"], 2));
+    let (mut trees, commits, mut ids) = rolled_back(file(6, WRITTEN_AT), file(4, 0), later);
+    let [question] = commits.questions() else {
+        panic!("{:?}", commits.questions());
+    };
+    assert!(matches!(
+        question.kind,
+        QuestionKind::Recovery {
+            group: RecoveryGroup::ChangedOnThisDevice,
+            ..
+        }
+    ));
+    assert!(effects(&mut trees, &mut ids).is_empty());
 }
