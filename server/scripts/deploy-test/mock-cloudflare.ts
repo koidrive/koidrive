@@ -4,27 +4,44 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 
 export interface MockWorker {
   id: string;
+  createdOn: string;
   versions: { id: string; tag?: string }[];
 }
 
 export interface MockBucket {
   creationDate: string;
   objects: Map<string, number>;
+  lifecycle?: unknown;
+}
+
+export interface MockRunAttempt {
+  path: string;
+  status: string;
+  run_started_at: string;
+  updated_at: string;
 }
 
 export class MockCloudflare {
   readonly workers = new Map<string, MockWorker>();
   readonly buckets = new Map<string, MockBucket>();
-  readonly namespaces: { id: string; class: string; script: string }[] = [];
   readonly requests: string[] = [];
   createBucketStatus = 200;
   claimStatus = 200;
   versionsStatus = 200;
-  bucketJobStatuses: string[] = ["COMPLETED"];
-  bucketJobCreateStatus = 200;
   bucketDeleteFailures = 0;
-  bucketJobLeftovers: string[] = [];
-  readonly bucketJobBodies: unknown[] = [];
+  workerDeleteKeepsNamespaces = false;
+  failingWorkerCall?: "GET" | "DELETE";
+  bucketListStatus = 200;
+  bucketListCursors: string[] = [];
+  private bucketListPages = 0;
+  readonly unnamedListings: Record<string, unknown>[] = [];
+  readonly namespaces: { id: string; class: string; script?: string | null }[] = [];
+  readonly runAttempts = new Map<string, MockRunAttempt>();
+  githubStatus = 200;
+  githubDelayMs = 0;
+  workerListDelayMs = 0;
+  readonly stalledBodies: string[] = [];
+  readonly hiddenWorkers = new Set<string>();
   readonly claimCode = "ZQ7K-M2XR-9WPD";
   readonly logs: { script: string; timestamp: number; message?: string; path?: string; visibleFrom?: number }[] = [];
   readonly queryDryFlags: unknown[] = [];
@@ -58,7 +75,7 @@ export class MockCloudflare {
   }
 
   addWorker(name: string, id: string = crypto.randomUUID(), tag?: string): MockWorker {
-    const worker = { id, versions: [{ id: crypto.randomUUID(), tag }] };
+    const worker = { id, createdOn: new Date().toISOString(), versions: [{ id: crypto.randomUUID(), tag }] };
     this.workers.set(name, worker);
     this.namespaces.push({ id: id + "-account", class: "AccountDO", script: name }, { id: id + "-space", class: "SpaceDO", script: name });
     return worker;
@@ -82,9 +99,12 @@ export class MockCloudflare {
     request.on("end", () => {
       const send = (status: number, value: unknown) => {
         response.writeHead(status, { "Content-Type": "application/json" });
-        response.end(JSON.stringify(value));
+        const text = JSON.stringify(value);
+        if (!this.stalledBodies.some((stalled) => path.includes(stalled))) return void response.end(text);
+        response.write(text.slice(0, 1));
+        setTimeout(() => response.end(text.slice(1)), 30_000);
       };
-      const ok = (result: unknown) => send(200, { success: true, errors: [], messages: [], result });
+      const ok = (result: unknown, cursor = "") => send(200, { success: true, errors: [], messages: [], result, ...(cursor ? { result_info: { cursor } } : {}) });
       const missing = () => send(404, { success: false, errors: [{ code: 10007, message: "not found" }], messages: [], result: null });
       let match: RegExpExecArray | null;
 
@@ -126,16 +146,38 @@ export class MockCloudflare {
         const answer = this.graphqlAnswers.length > 1 ? this.graphqlAnswers.shift()! : this.graphqlAnswers[0];
         return answer ? send(answer.status, answer.body) : missing();
       }
+      if ((match = /^\/github\/repos\/koidrive\/koidrive\/actions\/runs\/(\d+)\/attempts\/(\d+)$/.exec(path)) && method === "GET") {
+        const attempt = this.runAttempts.get(Number(match[1]) + "/" + Number(match[2]));
+        setTimeout(() => {
+          if (this.githubStatus !== 200) send(this.githubStatus, { message: "Server Error" });
+          else if (attempt) send(200, attempt);
+          else send(404, { message: "Not Found" });
+        }, this.githubDelayMs);
+        return;
+      }
       const api = /^\/client\/v4\/accounts\/[^/]+(\/.*)$/.exec(path)?.[1];
       if (!api) return missing();
+      if (/^\/workers\/(workers|scripts)\/[^/]+$/.test(api) && method === this.failingWorkerCall) {
+        return send(500, { success: false, errors: [{ code: 10013, message: "internal error" }], messages: [], result: null });
+      }
       if ((match = /^\/workers\/workers\/([^/]+)$/.exec(api)) && method === "GET") {
         const worker = this.workers.get(match[1]!);
         return worker ? ok({ id: worker.id, name: match[1], created_on: new Date().toISOString() }) : missing();
       }
+      if (api === "/workers/scripts" && method === "GET") {
+        if (this.workerListDelayMs > 0) return void setTimeout(() => send(200, { success: true, errors: [], messages: [], result: [] }), this.workerListDelayMs);
+        return ok([...this.unnamedListings, ...[...this.workers].filter(([name]) => !this.hiddenWorkers.has(name)).map(([name, worker]) => ({ id: name, created_on: worker.createdOn }))]);
+      }
       if ((match = /^\/workers\/scripts\/([^/]+)$/.exec(api)) && method === "DELETE") {
         if (!this.workers.delete(match[1]!)) return missing();
         const name = match[1];
-        for (let i = this.namespaces.length - 1; i >= 0; i--) if (this.namespaces[i]!.script === name) this.namespaces.splice(i, 1);
+        if (!this.workerDeleteKeepsNamespaces) for (let i = this.namespaces.length - 1; i >= 0; i--) if (this.namespaces[i]!.script === name) this.namespaces.splice(i, 1);
+        return ok(null);
+      }
+      if ((match = /^\/workers\/durable_objects\/namespaces\/([^/]+)$/.exec(api)) && method === "DELETE") {
+        const at = this.namespaces.findIndex((namespace) => namespace.id === match![1]);
+        if (at < 0) return missing();
+        this.namespaces.splice(at, 1);
         return ok(null);
       }
       if ((match = /^\/workers\/scripts\/([^/]+)\/versions$/.exec(api)) && method === "GET") {
@@ -172,6 +214,19 @@ export class MockCloudflare {
       if (api === "/workers/durable_objects/namespaces" && method === "GET") {
         return send(200, { success: true, errors: [], messages: [], result: this.namespaces, result_info: { page: 1, total_pages: 1 } });
       }
+      if (api === "/r2/buckets" && method === "GET") {
+        if (this.bucketListStatus !== 200) return send(this.bucketListStatus, { success: false, errors: [{ code: 10000, message: "Authentication error" }], messages: [], result: null });
+        const contains = new URL(request.url ?? "/", this.url).searchParams.get("name_contains") ?? "";
+        const named = [...this.buckets].filter(([name]) => name.includes(contains)).map(([name, bucket]) => ({ name, ...(bucket.creationDate ? { creation_date: bucket.creationDate } : {}) }));
+        const cursor = this.bucketListCursors[this.bucketListPages++ % Math.max(1, this.bucketListCursors.length)] ?? "";
+        return ok({ buckets: [...this.unnamedListings, ...named] }, cursor);
+      }
+      if ((match = /^\/r2\/buckets\/([^/]+)\/lifecycle$/.exec(api)) && method === "PUT") {
+        const bucket = this.buckets.get(match[1]!);
+        if (!bucket) return missing();
+        bucket.lifecycle = JSON.parse(body);
+        return ok({});
+      }
       if (api === "/r2/buckets" && method === "POST") {
         const { name } = JSON.parse(body) as { name: string };
         if (this.createBucketStatus === 409) {
@@ -202,21 +257,6 @@ export class MockCloudflare {
         const objects = [...bucket.objects].map(([key, size]) => ({ key, size }));
         const next = cursor + 1000;
         return send(200, { success: true, errors: [], messages: [], result: objects.slice(cursor, next), result_info: { is_truncated: next < objects.length, cursor: next < objects.length ? String(next) : "" } });
-      }
-      if ((match = /^\/r2\/buckets\/([^/]+)\/jobs(?:\/empty-1)?$/.exec(api)) && (method === "POST" || method === "GET")) {
-        const bucket = this.buckets.get(match[1]!);
-        if (!bucket) return missing();
-        if (method === "POST") {
-          this.bucketJobBodies.push(JSON.parse(body));
-          if (this.bucketJobCreateStatus !== 200) return send(this.bucketJobCreateStatus, { success: false, errors: [{ code: 10001, message: "job creation failed" }] });
-        }
-        const status = this.bucketJobStatuses.length > 1 ? this.bucketJobStatuses.shift() : this.bucketJobStatuses[0];
-        const deletedObjects = status === "COMPLETED" ? bucket.objects.size : 0;
-        if (status === "COMPLETED") {
-          bucket.objects.clear();
-          for (const key of this.bucketJobLeftovers) bucket.objects.set(key, 10);
-        }
-        return ok({ id: "empty-1", jobType: "prefixDelete", status, prefixDelete: { prefix: "", deletedObjects }, startTime: new Date().toISOString() });
       }
       if ((match = /^\/r2\/buckets\/([^/]+)\/objects\/(.+)$/.exec(api)) && method === "DELETE") {
         const bucket = this.buckets.get(match[1]!);

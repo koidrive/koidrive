@@ -76,12 +76,13 @@ The Worker of a first-sync run traces 5% of requests (`KOIDRIVE_TRACE_SAMPLING`,
 Every run uses one name, `koidrive-test-<run id>-<run attempt>`, for its Worker and its R2 bucket.
 
 1. **Trust check.** A job without secrets refuses the run unless it started from `main` of `koidrive/koidrive` for a commit on `main`, and the `deploy-test` environment is [protected](#set-up-the-protected-environment). Only then does the job with the secrets wait for approval.
-2. **Preflight.** If a Worker or a bucket already has the run's name, the run stops before creating anything.
-3. **Deploy.** The run copies the tracked files of `server/`, sets the Worker and bucket names in `wrangler.jsonc` as an owner does before a Wrangler deploy, creates the bucket, and runs `pnpm run deploy` with a random `--tag`. The tag marks the Worker as this run's even if the deploy fails after the upload. The run then waits until the new version takes all traffic and `/v1/server` answers.
-4. **Claim.** The run requests a random path and queries Workers Logs until that request shows up, sending the request again on every query for up to 10 minutes, which proves the token can read this Worker's logs. Then it opens `/setup`, reads the claim code from the log and redeems it. The run never prints the code.
-5. **Test**, in the chosen mode.
-6. **Teardown**, whatever happened before. It deletes the Worker, and with it the Worker's Durable Objects, only if a version carries the run's tag. It deletes the bucket only if its creation date is the one the run recorded. It fails the job if anything it created is left, or if something with the run's name was not its own.
-7. **Usage summary**, in the log and on the summary page: the test client's requests and bytes, what R2 held at teardown, and Worker, Durable Object and R2 figures from the Analytics API. Those figures can lag by several minutes, and the Durable Object storage figure covers the whole test account.
+2. **Sweep.** A job of its own, approved together with the deploy job, deletes the Workers, Durable Object namespaces and R2 buckets that earlier runs left behind. It acts only on a `koidrive-test-<run id>-<attempt>` name whose run attempt, read from the GitHub API, belongs to the deploy test or the load test of this repository, has finished, and was running when the Worker or bucket was created. A namespace carries its Worker's name and no creation time, so the sweep deletes a namespace once that name's run attempt has finished and a lookup confirms its Worker is gone. The sweep spends at most a minute on each of Workers, buckets and namespaces, and leaves the rest to the next run. A bucket that still holds objects gets the lifecycle rule and waits for a later sweep. The log warns about each `koidrive-test-` resource the sweep left alone. The sweep job has its own 10-minute limit and takes no time from the test. A sweep error fails that job without failing the run, and the next run's sweep tries again.
+3. **Preflight.** If a Worker or a bucket already has the run's name, the run stops before creating anything.
+4. **Deploy.** The run copies the tracked files of `server/`, sets the Worker and bucket names in `wrangler.jsonc` as an owner does before a Wrangler deploy, creates the bucket with a [lifecycle rule](https://developers.cloudflare.com/r2/buckets/object-lifecycles/) that deletes each object a day after its upload, and runs `pnpm run deploy` with a random `--tag`. The tag marks the Worker as this run's even if the deploy fails after the upload. The run then waits until the new version takes all traffic and `/v1/server` answers.
+5. **Claim.** The run requests a random path and queries Workers Logs until that request shows up, sending the request again on every query for up to 10 minutes, which proves the token can read this Worker's logs. Then it opens `/setup`, reads the claim code from the log and redeems it. The run never prints the code.
+6. **Test**, in the chosen mode.
+7. **Teardown**, whatever happened before. It deletes the Worker, and with it the Worker's Durable Objects, only if a version carries the run's tag. It then deletes any Durable Object namespace of the Worker's name that outlived it. It touches the bucket only if its creation date is the one the run recorded. A bucket that fits in one listing page (1,000 objects) is emptied and deleted. A larger one is left to its lifecycle rule, which R2 applies within about a day, and a later run's sweep deletes it once it is empty. Teardown fails the job if the Worker is left, or if something with the run's name was not its own.
+8. **Usage summary**, in the log and on the summary page: the test client's requests and bytes, what R2 held at teardown, and Worker, Durable Object and R2 figures from the Analytics API. Those figures can lag by several minutes, and the Durable Object storage figure covers the whole test account.
 
 ## When a run fails
 
@@ -98,7 +99,7 @@ The failing step's log names the cause. The common ones:
 
 ### If teardown fails
 
-The job names what is left. Delete the run's own leftovers by hand: the Worker `koidrive-test-<run id>-<attempt>` under **Workers & Pages**, which removes its Durable Objects, then empty and delete the R2 bucket of the same name. A cancelled run still tears down, because the step's condition is `always()` ([workflow cancellation](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-cancellation)). A force-cancelled run ([force cancel](https://docs.github.com/en/rest/actions/workflow-runs#force-cancel-a-workflow-run)) or a dead runner skips teardown, so check for `koidrive-test-` Workers and buckets afterwards.
+The job names what is left. The sweep of the next deploy test or load test deletes the run's own Worker and bucket, so they need no cleanup by hand. A cancelled run still tears down, because the step's condition is `always()` ([workflow cancellation](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-cancellation)). A force-cancelled run ([force cancel](https://docs.github.com/en/rest/actions/workflow-runs#force-cancel-a-workflow-run)) or a dead runner skips teardown, and the next run's sweep deletes what it left. Anything the sweep warns it left alone is not provably a run's own: check it in the dashboard before you delete it.
 
 ## Set up the test account
 
@@ -133,9 +134,9 @@ Create a custom token (**Manage account**, **Account API tokens**, **Create Toke
 
 | Permission | API name | Used to |
 |---|---|---|
-| Account, Workers Scripts, Edit | Workers Scripts Write | Deploy the Worker and its Durable Object classes, read its versions and deployments, list its Durable Object namespaces, and delete it |
+| Account, Workers Scripts, Edit | Workers Scripts Write | Deploy the Worker and its Durable Object classes, read its versions and deployments, list Workers and Durable Object namespaces, and delete Workers and namespaces |
 | Account, Workers Observability, Edit | Workers Observability Write | [Query Workers Logs](https://developers.cloudflare.com/api/resources/workers/subresources/observability/subresources/telemetry/methods/query/) for the claim code |
-| Account, Workers R2 Storage, Edit | Workers R2 Storage Write | Create the bucket and read its creation date, list, read, write and delete its objects, and delete it |
+| Account, Workers R2 Storage, Edit | Workers R2 Storage Write | Create, list and delete buckets, set their lifecycle rules, and list, read, write and delete their objects |
 | Account, Account Analytics, Read | Account Analytics Read | Read the usage summary's figures and `bench-small`'s Worker CPU. Without it they show as unavailable |
 
 Anyone with this token can deploy, read and delete every Worker and bucket in the account. Use an account that holds nothing else of value, give the token an expiry date, and roll it if a run log ever shows it.

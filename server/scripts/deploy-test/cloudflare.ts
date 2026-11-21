@@ -17,7 +17,7 @@ export interface R2Object {
 export interface Namespace {
   id: string;
   class: string;
-  script: string;
+  script?: string;
 }
 
 export class ApiError extends Error {
@@ -78,7 +78,7 @@ function keyPath(key: string): string {
   return key.split("/").map(encodeURIComponent).join("/");
 }
 
-async function send(account: Account, method: string, path: string, init: { body?: unknown; allowMissing?: boolean; deadline?: Deadline; retry?: boolean } = {}): Promise<Response | undefined> {
+async function send(account: Account, method: string, path: string, init: { body?: unknown; allowMissing?: boolean; deadline?: Deadline } = {}): Promise<Response | undefined> {
   const what = method + " " + path.split("?")[0];
   for (let attempt = 1; ; attempt++) {
     const remaining = init.deadline === undefined ? REQUEST_MS : init.deadline.atMs - Date.now();
@@ -93,7 +93,7 @@ async function send(account: Account, method: string, path: string, init: { body
       });
     } catch (error) {
       if (init.deadline && Date.now() >= init.deadline.atMs) throw new DeadlineError(init.deadline.what);
-      if (init.retry === false || attempt >= ATTEMPTS) throw new ApiError(what + " failed: " + (error instanceof Error ? error.message : String(error)), 0);
+      if (attempt >= ATTEMPTS) throw new ApiError(what + " failed: " + (error instanceof Error ? error.message : String(error)), 0);
       await sleep(Math.max(0, Math.min(2000 * attempt, init.deadline === undefined ? Infinity : init.deadline.atMs - Date.now())));
       continue;
     }
@@ -102,7 +102,7 @@ async function send(account: Account, method: string, path: string, init: { body
       await response.body?.cancel();
       return undefined;
     }
-    if ((response.status === 429 || response.status >= 500) && init.retry !== false && attempt < ATTEMPTS) {
+    if ((response.status === 429 || response.status >= 500) && attempt < ATTEMPTS) {
       await response.body?.cancel();
       await sleep(Math.max(0, Math.min(2000 * attempt, init.deadline === undefined ? Infinity : init.deadline.atMs - Date.now())));
       continue;
@@ -141,6 +141,37 @@ export async function createBucket(account: Account, name: string): Promise<void
   await call(account, "POST", `/accounts/${account.id}/r2/buckets`, { name });
 }
 
+export interface Bucket {
+  name: string;
+  creationDate?: string;
+}
+
+export async function listBuckets(account: Account, prefix: string, deadline?: Deadline): Promise<Bucket[]> {
+  const buckets = new Map<string, Bucket>();
+  const seen = new Set<string>();
+  let cursor = "";
+  for (;;) {
+    const query = new URLSearchParams({ name_contains: prefix, per_page: "1000", ...(cursor ? { cursor } : {}) });
+    const page = await call<{ buckets?: { name?: unknown; creation_date?: unknown }[] }>(account, "GET", `/accounts/${account.id}/r2/buckets?${query}`, undefined, deadline);
+    for (const bucket of page.result?.buckets ?? []) {
+      if (typeof bucket.name === "string" && bucket.name.startsWith(prefix)) buckets.set(bucket.name, { name: bucket.name, creationDate: typeof bucket.creation_date === "string" ? bucket.creation_date : undefined });
+    }
+    const next = page.result_info?.cursor ?? "";
+    if (!next || (page.result?.buckets ?? []).length === 0) return [...buckets.values()];
+    if (seen.has(next)) throw new ApiError("the R2 bucket list repeated the cursor " + next + ", so it cannot be read in full", 200);
+    seen.add(next);
+    cursor = next;
+  }
+}
+
+export const EXPIRY_SECONDS = 24 * 60 * 60;
+
+export async function expireAllObjects(account: Account, bucket: string, deadline?: Deadline): Promise<void> {
+  const condition = { type: "Age", maxAge: EXPIRY_SECONDS };
+  const rule = { id: "koidrive-test-expiry", enabled: true, conditions: { prefix: "" }, deleteObjectsTransition: { condition }, abortMultipartUploadsTransition: { condition } };
+  await call(account, "PUT", `/accounts/${account.id}/r2/buckets/${bucket}/lifecycle`, { rules: [rule] }, deadline);
+}
+
 export async function getBucket(account: Account, name: string): Promise<{ creationDate: string } | undefined> {
   const response = await send(account, "GET", `/accounts/${account.id}/r2/buckets/${name}`, { allowMissing: true });
   if (!response) return undefined;
@@ -149,10 +180,10 @@ export async function getBucket(account: Account, name: string): Promise<{ creat
   return { creationDate: bucket.creation_date };
 }
 
-export async function getWorker(account: Account, name: string): Promise<{ id: string } | undefined> {
-  const response = await send(account, "GET", `/accounts/${account.id}/workers/workers/${name}`, { allowMissing: true });
+export async function getWorker(account: Account, name: string, deadline?: Deadline): Promise<{ id: string } | undefined> {
+  const response = await send(account, "GET", `/accounts/${account.id}/workers/workers/${name}`, { allowMissing: true, deadline });
   if (!response) return undefined;
-  const worker = ((await response.json()) as Envelope<{ id?: string }>).result;
+  const worker = (await json<Envelope<{ id?: string }>>(response, deadline)).result;
   if (!worker?.id) throw new ApiError("GET /accounts/{id}/workers/workers/" + name + " returned no id", 200);
   return { id: worker.id };
 }
@@ -176,48 +207,25 @@ export async function workerTag(account: Account, name: string, tag: string): Pr
   return found ?? "unlisted";
 }
 
+export async function listObjectPage(account: Account, bucket: string, prefix = "", cursor = ""): Promise<{ objects: R2Object[]; next?: string } | undefined> {
+  const query = new URLSearchParams({ per_page: "1000", ...(prefix ? { prefix } : {}), ...(cursor ? { cursor } : {}) });
+  const response = await send(account, "GET", `/accounts/${account.id}/r2/buckets/${bucket}/objects?${query}`, { allowMissing: true });
+  if (!response) return undefined;
+  const page = (await response.json()) as Envelope<{ key: string; size: number }[]>;
+  const objects = (page.result ?? []).map((object) => ({ key: object.key, size: Number(object.size) }));
+  const next = page.result_info?.is_truncated ? page.result_info.cursor : undefined;
+  return next ? { objects, next } : { objects };
+}
+
 export async function listObjects(account: Account, bucket: string, prefix = ""): Promise<R2Object[] | undefined> {
   const objects: R2Object[] = [];
   let cursor = "";
   for (;;) {
-    const query = new URLSearchParams({ per_page: "1000", ...(prefix ? { prefix } : {}), ...(cursor ? { cursor } : {}) });
-    const response = await send(account, "GET", `/accounts/${account.id}/r2/buckets/${bucket}/objects?${query}`, { allowMissing: true });
-    if (!response) return undefined;
-    const page = (await response.json()) as Envelope<{ key: string; size: number }[]>;
-    for (const object of page.result ?? []) objects.push({ key: object.key, size: Number(object.size) });
-    cursor = page.result_info?.cursor ?? "";
-    if (!page.result_info?.is_truncated || !cursor) return objects;
-  }
-}
-
-function bucketJob(value: unknown): { id: string; status: "ENQUEUED" | "RUNNING" | "COMPLETED" | "FAILED" | "CANCELLED" } {
-  if (!value || typeof value !== "object" || !("result" in value) || !value.result || typeof value.result !== "object") {
-    throw new ApiError("bucket-emptying job returned an invalid response", 200);
-  }
-  const job = value.result;
-  if (!("id" in job) || typeof job.id !== "string" || !job.id || !("status" in job)) {
-    throw new ApiError("bucket-emptying job returned no id or status", 200);
-  }
-  const status = job.status;
-  if (status !== "ENQUEUED" && status !== "RUNNING" && status !== "COMPLETED" && status !== "FAILED" && status !== "CANCELLED") {
-    throw new ApiError("bucket-emptying job returned an unknown status", 200);
-  }
-  return { id: job.id, status };
-}
-
-export async function emptyBucket(account: Account, bucket: string): Promise<void> {
-  const path = `/accounts/${account.id}/r2/buckets/${bucket}/jobs`;
-  const deadline = { atMs: Date.now() + 6 * 60_000, what: "bucket-emptying job exceeded its six-minute deadline" };
-  const created = await send(account, "POST", path, { body: { jobType: "prefixDelete", prefix: "" }, deadline, retry: false });
-  let job = bucketJob(await json(created!, deadline));
-  const id = job.id;
-  while (job.status !== "COMPLETED") {
-    if (job.status === "FAILED" || job.status === "CANCELLED") throw new ApiError("bucket-emptying job " + job.status, 200);
-    const remaining = deadline.atMs - Date.now();
-    if (remaining <= 0) throw new DeadlineError(deadline.what);
-    await sleep(Math.min(5000, remaining));
-    const response = await send(account, "GET", path + "/" + encodeURIComponent(id), { deadline });
-    job = bucketJob(await json(response!, deadline));
+    const page = await listObjectPage(account, bucket, prefix, cursor);
+    if (!page) return undefined;
+    objects.push(...page.objects);
+    if (!page.next) return objects;
+    cursor = page.next;
   }
 }
 
@@ -230,22 +238,38 @@ export async function deleteObject(account: Account, bucket: string, key: string
   await send(account, "DELETE", `/accounts/${account.id}/r2/buckets/${bucket}/objects/${keyPath(key)}`, { allowMissing: true });
 }
 
-export async function deleteBucket(account: Account, bucket: string): Promise<boolean> {
-  return (await send(account, "DELETE", `/accounts/${account.id}/r2/buckets/${bucket}`, { allowMissing: true })) !== undefined;
+export async function deleteBucket(account: Account, bucket: string, deadline?: Deadline): Promise<boolean> {
+  return (await send(account, "DELETE", `/accounts/${account.id}/r2/buckets/${bucket}`, { allowMissing: true, deadline })) !== undefined;
 }
 
 /** With force, Cloudflare also deletes the Durable Object namespaces it implements. */
-export async function deleteWorker(account: Account, name: string): Promise<boolean> {
-  return (await send(account, "DELETE", `/accounts/${account.id}/workers/scripts/${name}?force=true`, { allowMissing: true })) !== undefined;
+export async function deleteWorker(account: Account, name: string, deadline?: Deadline): Promise<boolean> {
+  return (await send(account, "DELETE", `/accounts/${account.id}/workers/scripts/${name}?force=true`, { allowMissing: true, deadline })) !== undefined;
+}
+
+export async function listNamespaces(account: Account, deadline?: Deadline): Promise<Namespace[]> {
+  const found: Namespace[] = [];
+  for (let page = 1; ; page++) {
+    const listed = await call<{ id?: unknown; class?: unknown; script?: unknown }[]>(account, "GET", `/accounts/${account.id}/workers/durable_objects/namespaces?per_page=1000&page=${page}`, undefined, deadline);
+    for (const namespace of listed.result ?? []) {
+      if (typeof namespace.id !== "string" || typeof namespace.class !== "string") continue;
+      found.push({ id: namespace.id, class: namespace.class, ...(typeof namespace.script === "string" ? { script: namespace.script } : {}) });
+    }
+    if (!listed.result_info?.total_pages || page >= listed.result_info.total_pages) return found;
+  }
 }
 
 export async function namespacesOf(account: Account, script: string): Promise<Namespace[]> {
-  const found: Namespace[] = [];
-  for (let page = 1; ; page++) {
-    const listed = await call<Namespace[]>(account, "GET", `/accounts/${account.id}/workers/durable_objects/namespaces?per_page=1000&page=${page}`);
-    found.push(...(listed.result ?? []).filter((namespace) => namespace.script === script));
-    if (!listed.result_info?.total_pages || page >= listed.result_info.total_pages) return found;
-  }
+  return (await listNamespaces(account)).filter((namespace) => namespace.script === script);
+}
+
+export async function deleteNamespace(account: Account, id: string, deadline?: Deadline): Promise<boolean> {
+  return (await send(account, "DELETE", `/accounts/${account.id}/workers/durable_objects/namespaces/${id}`, { allowMissing: true, deadline })) !== undefined;
+}
+
+export async function listWorkers(account: Account, deadline?: Deadline): Promise<{ name: string; createdOn?: string }[]> {
+  const scripts = await call<{ id?: unknown; created_on?: unknown }[]>(account, "GET", `/accounts/${account.id}/workers/scripts`, undefined, deadline);
+  return (scripts.result ?? []).flatMap((script) => (typeof script.id === "string" ? [{ name: script.id, createdOn: typeof script.created_on === "string" ? script.created_on : undefined }] : []));
 }
 
 export const WORKER_KEYS = ["$metadata.service", "$workers.scriptName"] as const;

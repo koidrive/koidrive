@@ -1,6 +1,6 @@
 # Load testing a deploy on a real account
 
-The **Load test** workflow ([`load-test.yml`](../.github/workflows/load-test.yml)) measures how many commits per second one space takes before its latency rises, and whether more spaces add commits per second or share one limit. It deploys `server/` from `main` to the test account under a throwaway name, commits to it from up to 400 paired devices in steps of rising load, reads what the Durable Objects did from the Analytics API, and deletes everything again. It uses the [deploy test](deploy-test.md)'s protected `deploy-test` environment, secrets, trust checks, deploy, claim and teardown.
+The **Load test** workflow ([`load-test.yml`](../.github/workflows/load-test.yml)) measures how many commits per second one space takes before its latency rises, and whether more spaces add commits per second or share one limit. It deploys `server/` from `main` to the test account under a throwaway name, commits to it from up to 400 paired devices in steps of rising load, reads what the Durable Objects did from the Analytics API, and deletes everything again. It uses the [deploy test](deploy-test.md)'s protected `deploy-test` environment, secrets, trust checks, sweep, deploy, claim and teardown.
 
 To run it, check that the account is on Workers Paid, start the workflow from `main`, and approve it on the run page:
 
