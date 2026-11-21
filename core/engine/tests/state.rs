@@ -15,7 +15,7 @@ use koidrive_engine::question::{
 use koidrive_engine::restore::{Outcome, Rejection, Resolved, RestoreIntent, SplitRestore};
 use koidrive_engine::state::{
     Agreed, CommitsState, EffectsState, FinishOrigin, GivenUp, KeptEntries, LostPosition,
-    MovedHere, PendingFinish, RenamedOver, StateError, SyncedPosition, TreesState,
+    MovedHere, PendingFinish, RenamedOver, StateError, SyncedPosition, TempBirth, TreesState,
 };
 use koidrive_engine::tree::{
     Content, ContentKey, FileIdentity, Kind, LocalNode, RemoteNode, Shape, TreeError,
@@ -93,6 +93,7 @@ fn trees_state() -> TreesState {
         reverted: ["a".into()].into(),
         cycle_reverted: ["a".into()].into(),
         unobserved: ["b".into()].into(),
+        born_as_temp: Default::default(),
         discard_members: [("c".into(), "b".into())].into(),
         left_out_by_server: ["b".into()].into(),
         parked_as: [("b".into(), "c".into())].into(),
@@ -589,6 +590,24 @@ fn trees_restore_a_valid_state_and_refuse_each_broken_one() {
                 state.unsearched.insert("a".into());
             }),
             StateError::UnsearchedNotDirty("a".into()),
+        ),
+        (
+            "a folder born as a temporary file",
+            trees(),
+            broken(trees_state(), |state| {
+                state.born_as_temp.insert("a".into(), TempBirth::Seen);
+            }),
+            StateError::NotBornAsTemp("a".into()),
+        ),
+        (
+            "a node born as a temporary file that L does not hold",
+            trees(),
+            broken(trees_state(), |state| {
+                state
+                    .born_as_temp
+                    .insert("absent".into(), TempBirth::Upgraded);
+            }),
+            StateError::NotBornAsTemp("absent".into()),
         ),
         (
             "a parked name for a placed node",

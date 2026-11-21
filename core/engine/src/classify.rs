@@ -5,7 +5,7 @@
 use std::borrow::Cow;
 use std::cell::{Cell, OnceCell, RefCell};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use koidrive_ignore::{Scope, Source, Status};
 use siphasher::sip::SipHasher13;
@@ -18,7 +18,7 @@ use crate::question::Frozen;
 use crate::state::{
     Agreed, ContentProvenance, ContentValue, ContentVersion, FinishOrigin, KeptCause, KeptEntries,
     KeptRules, KeptRulesFile, LostPosition, MoveHistory, MovePosition, MovedHere, PendingFinish,
-    RenamedOver, StateError, SyncedPosition, TreesChanges, TreesState, made_over,
+    RenamedOver, StateError, SyncedPosition, TempBirth, TreesChanges, TreesState, made_over,
 };
 use crate::tracked::{TrackedMap, TrackedSet};
 use crate::tree::{
@@ -601,6 +601,11 @@ impl Unsettled {
     }
 }
 
+/// Whether `name` is the name of a temporary file: its extension is `tmp` in any case.
+pub fn temp_name(name: &str) -> bool {
+    (Path::new(name).extension()).is_some_and(|extension| extension.eq_ignore_ascii_case("tmp"))
+}
+
 /// R, L and S of one space, and the nodes whose entries changed since they were last found in sync.
 /// Every mutation goes through these methods, so a change in any tree marks its node dirty, and
 /// [`Trees::settle`] and the planner look only at what changed.
@@ -626,6 +631,7 @@ pub struct Trees {
     reverted: TrackedSet<NodeId>,
     cycle_reverted: TrackedSet<NodeId>,
     unobserved: TrackedSet<NodeId>,
+    born_as_temp: TrackedMap<NodeId, TempBirth>,
     discard_members: TrackedMap<NodeId, NodeId>,
     left_out_by_server: TrackedSet<NodeId>,
     rules_changed: BTreeSet<Vec<String>>,
@@ -768,6 +774,7 @@ impl Trees {
             reverted: TrackedSet::default(),
             cycle_reverted: TrackedSet::default(),
             unobserved: TrackedSet::default(),
+            born_as_temp: TrackedMap::default(),
             discard_members: TrackedMap::default(),
             left_out_by_server: TrackedSet::default(),
             rules_changed: BTreeSet::new(),
@@ -2217,7 +2224,11 @@ impl Trees {
             Some(old) => repositioned(&old.shape, &node.shape) || old.parked != node.parked,
             None => (self.s.get(&id)).is_some_and(|synced| repositioned(synced, &node.shape)),
         };
+        let temp = temp_name(&node.shape.name);
         self.l.insert(id.clone(), node);
+        if !temp {
+            self.born_as_temp.remove(&id);
+        }
         self.copy_back(&id);
         self.count_held_trash(&id, true);
         self.note_position(&id);
@@ -2460,6 +2471,7 @@ impl Trees {
         self.unsent_marks.remove(id);
         self.kept_folders.remove(id);
         self.kept_entries.remove(id);
+        self.born_as_temp.remove(id);
         if let Some(old) = self.l.remove(id) {
             self.moved |= (self.s.get(id)).is_some_and(|synced| repositioned(synced, &old.shape));
             if self.unobserved.contains(id) {
@@ -4460,6 +4472,24 @@ impl Trees {
     /// copy at an included position.
     pub fn unobserved(&self, id: &NodeId) -> bool {
         self.unobserved.contains(id)
+    }
+
+    /// How this device knows the node was born at a temporary file name, if L has held it only at such names since
+    /// ([`TreesState::born_as_temp`]).
+    pub fn born_as_temp(&self, id: &NodeId) -> Option<TempBirth> {
+        self.born_as_temp.get(id).copied()
+    }
+
+    /// Records that this device found `id`, which L holds as a file at a temporary file name, first there as a new file.
+    pub fn mark_born_as_temp(&mut self, id: NodeId) {
+        if self.held_as_temp_file(&id) {
+            self.born_as_temp.insert(id, TempBirth::Seen);
+        }
+    }
+
+    fn held_as_temp_file(&self, id: &NodeId) -> bool {
+        (self.l.get(id))
+            .is_some_and(|node| node.shape.kind == Kind::File && temp_name(&node.shape.name))
     }
 
     /// The nodes recorded by [`Trees::ignore_local`] that no observation has placed or removed
@@ -7747,6 +7777,13 @@ impl Trees {
                 .all(|id| self.unobserved.contains(id)),
             "a node left out by the server that is not unobserved"
         );
+        debug_assert_eq!(
+            (self.born_as_temp.keys())
+                .find(|id| !self.held_as_temp_file(id))
+                .cloned(),
+            None,
+            "a node born as a temporary file that L does not hold as a file at a temporary file name"
+        );
         self.r.check(Names::ByKey).map_err(|e| ('R', e))?;
         self.s.check(Names::ByKey).map_err(|e| ('S', e))?;
         self.l.check(Names::Exact).map_err(|e| ('L', e))
@@ -7760,6 +7797,7 @@ impl Trees {
             reverted: self.reverted.to_set(),
             cycle_reverted: self.cycle_reverted.to_set(),
             unobserved: self.unobserved.to_set(),
+            born_as_temp: self.born_as_temp.to_map(),
             discard_members: self.discard_members.to_map(),
             left_out_by_server: self.left_out_by_server.to_set(),
             parked_as: self.parked_as.to_map(),
@@ -7817,6 +7855,7 @@ impl Trees {
             reverted,
             cycle_reverted,
             unobserved,
+            born_as_temp,
             discard_members,
             left_out_by_server,
             rules_changed: _,
@@ -7904,6 +7943,7 @@ impl Trees {
             reverted: reverted.take_changes(),
             cycle_reverted: cycle_reverted.take_changes(),
             unobserved: unobserved.take_changes(),
+            born_as_temp: born_as_temp.take_changes(),
             discard_members: discard_members.take_changes(),
             left_out_by_server: left_out_by_server.take_changes(),
             parked_as: parked_as.take_changes(),
@@ -8140,6 +8180,12 @@ impl Trees {
         {
             return Err(StateError::NotLostCreate(id.clone()));
         }
+        if let Some(id) = (state.born_as_temp.keys())
+            .take_while(|_| go_on())
+            .find(|id| !self.held_as_temp_file(id))
+        {
+            return Err(StateError::NotBornAsTemp((*id).clone()));
+        }
         if gave_up.get() || abandoned() {
             return Ok(None);
         }
@@ -8149,6 +8195,7 @@ impl Trees {
             reverted,
             cycle_reverted,
             unobserved,
+            born_as_temp,
             discard_members,
             left_out_by_server,
             parked_as,
@@ -8200,6 +8247,7 @@ impl Trees {
         self.reverted = reverted.into();
         self.cycle_reverted = cycle_reverted.into();
         self.unobserved = unobserved.into();
+        self.born_as_temp = born_as_temp.into();
         self.discard_members = discard_members.into();
         self.left_out_by_server = left_out_by_server.into();
         self.copies_gone = (self.unobserved.iter())

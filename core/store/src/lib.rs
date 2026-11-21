@@ -69,6 +69,7 @@ pub mod migrations {
     include!(concat!(env!("OUT_DIR"), "/migrations.rs"));
 
     pub fn register_functions(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
+        use koidrive_engine::classify::temp_name;
         use koidrive_engine::names::same_name;
         use koidrive_engine::tree::{ContentKey, same_content};
         use koidrive_proto::v1::Content;
@@ -78,6 +79,9 @@ pub mod migrations {
         conn.create_scalar_function("last_write_ns", 0, flags, |_| Ok(None::<i64>))?;
         conn.create_scalar_function("same_name", 2, flags, |ctx| {
             Ok(same_name(&ctx.get::<String>(0)?, &ctx.get::<String>(1)?))
+        })?;
+        conn.create_scalar_function("temp_name", 1, flags, |ctx| {
+            Ok(temp_name(&ctx.get::<String>(0)?))
         })?;
         conn.create_scalar_function("same_content", 2, flags, |ctx| {
             let content = |at| {

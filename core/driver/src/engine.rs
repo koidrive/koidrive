@@ -13,13 +13,14 @@ use std::hash::BuildHasher;
 use std::ops::ControlFlow;
 use std::path::{Component, Path, PathBuf};
 
-use koidrive_engine::classify::{CHECK_EVERY, Pending, Trees};
+use koidrive_engine::classify::{CHECK_EVERY, Pending, Trees, temp_name};
 use koidrive_engine::commit::{Base, Commits, Halt};
 use koidrive_engine::effects::Effects;
 use koidrive_engine::first_link::Log;
 use koidrive_engine::ids::{IdGen, unix_ms};
 use koidrive_engine::question as engine;
 use koidrive_engine::restore::RestoreIntent;
+use koidrive_engine::state::TempBirth;
 use koidrive_engine::tree::{
     Content, ContentKey, DigestTooLong, FileIdentity, Kind, LocalNode, Names, Node, NodeId,
     RemoteNode, Shape, Tree, same_content,
@@ -1184,6 +1185,7 @@ impl Engine {
                             EntryKind::Dir,
                             file_identity(*id),
                             None,
+                            None,
                             now_ms,
                             &moving,
                             &mut touched,
@@ -1218,6 +1220,7 @@ impl Engine {
                         *kind,
                         identity,
                         content,
+                        None,
                         now_ms,
                         &moving,
                         &mut touched,
@@ -1270,6 +1273,7 @@ impl Engine {
                         *kind,
                         identity,
                         content.clone(),
+                        marked_node.as_deref(),
                         now_ms,
                         &moving,
                         &mut touched,
@@ -1300,6 +1304,7 @@ impl Engine {
                         EntryKind::File,
                         identity,
                         Some(content.clone()),
+                        marked_node.as_deref(),
                         now_ms,
                         &moving,
                         &mut touched,
@@ -1422,6 +1427,7 @@ impl Engine {
                 EntryKind::File,
                 identity,
                 content,
+                None,
                 now_ms,
                 moving,
                 touched,
@@ -1643,6 +1649,7 @@ impl Engine {
         kind: EntryKind,
         identity: FileIdentity,
         content: Option<Content>,
+        mark: Option<&str>,
         now_ms: u64,
         moving: &BTreeSet<NodeId>,
         touched: &mut BTreeSet<NodeId>,
@@ -1758,17 +1765,19 @@ impl Engine {
             let slot = (shape.parent.clone(), shape.name.clone());
             let held = (self.took_slot.get(&slot)).is_some_and(|(taker, _, _)| *taker == id);
             if let Some(from) = moved {
-                let tmp = |name: &str| {
-                    (Path::new(name).extension())
-                        .is_some_and(|extension| extension.eq_ignore_ascii_case("tmp"))
-                };
-                let own_identity = self.trees.synced().get(&id).is_some()
-                    || self.trees.remote().get(&id).is_some()
-                    || (self.commits.in_flight())
-                        .and_then(|flight| flight.created_file_name(&id))
-                        .is_some_and(|born| !tmp(born));
-                self.took_slot
-                    .insert(slot, (id.clone(), now_ms, tmp(&from.1) && !own_identity));
+                let temp = temp_name(&from.1)
+                    && match self.trees.born_as_temp(&id) {
+                        Some(TempBirth::Seen) => true,
+                        Some(TempBirth::Upgraded) => {
+                            self.trees.synced().get(&id).is_none()
+                                && self.trees.remote().get(&id).is_none()
+                                && !(self.commits.in_flight())
+                                    .and_then(|flight| flight.created_file_name(&id))
+                                    .is_some_and(|born| !temp_name(born))
+                        }
+                        None => false,
+                    };
+                self.took_slot.insert(slot, (id.clone(), now_ms, temp));
                 self.renamed_away
                     .insert(id.clone(), (from.0, from.1, now_ms, None));
                 self.backup_gone.remove(&id);
@@ -1777,6 +1786,12 @@ impl Engine {
                 self.took_slot.insert(slot, (id.clone(), now_ms, new_entry));
             }
         }
+        let born = given.is_none()
+            && mark.is_none_or(|mark| {
+                (self.trees.local().get(&NodeId::from(mark)))
+                    .is_some_and(|node| node.identity.same(&identity))
+            })
+            && self.trees.local().get(&id).is_none();
         self.trees.set_local_changed(
             id.clone(),
             LocalNode {
@@ -1788,6 +1803,9 @@ impl Engine {
                 chunks,
             },
         );
+        if born {
+            self.trees.mark_born_as_temp(id.clone());
+        }
         touched.insert(id);
         let mut above = left;
         while let Some(folder) = above.filter(|folder| {
