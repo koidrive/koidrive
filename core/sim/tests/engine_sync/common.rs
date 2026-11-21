@@ -646,13 +646,7 @@ impl Device {
     ) {
         let folders: Vec<&NodeId> = folders.into_iter().collect();
         let mut on_server = self.on_server();
-        let own_since = |id: &NodeId, folder: &NodeId, after: u64| {
-            (self.stays.get(id).and_then(|stays| stays.get(folder)))
-                .is_some_and(|(by_other, at)| !by_other && *at > after)
-        };
-        for (id, _) in (self.last_other.iter()).filter(|(id, at)| {
-            *at > answered_at && (folders.iter()).any(|f| !own_since(id, f, **at))
-        }) {
+        for (id, _) in (self.last_other.iter()).filter(|(_, at)| *at > answered_at) {
             match at_answer.get(id) {
                 Some(parent) => on_server.insert(id.clone(), parent.clone()),
                 None => on_server.remove(id),
@@ -733,7 +727,7 @@ impl Device {
             let users_origin = (self.relocated.get(&node))
                 .filter(|moved| remote.same_position(&moved.to))
                 .map(|moved| moved.origin.clone());
-            let by_other = !answered;
+            let by_other = !answered && users_origin.is_none();
             let from = users_origin.unwrap_or(from);
             let now = ancestors(&self.trees, Some(remote.parent.clone()));
             let entered: Vec<NodeId> = (now.iter())
