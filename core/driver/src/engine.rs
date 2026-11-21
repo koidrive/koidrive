@@ -830,6 +830,23 @@ impl Engine {
         tracked: Vec<(PathBuf, Vec<String>)>,
         all: bool,
     ) {
+        if all && self.trees.rules_known() {
+            let mut listed = self.trees.ignore().clone();
+            listed.clear_rules();
+            for RulesChange { dir, source, rules } in &rules {
+                if let Some(dir) = names(dir) {
+                    listed.set_rules(&dir, *source, rules.clone(), std::iter::empty());
+                }
+            }
+            for (tree, paths) in &tracked {
+                if let Some(tree) = names(tree) {
+                    listed.set_tracked(&tree, paths);
+                }
+            }
+            if listed == *self.trees.ignore() {
+                return;
+            }
+        }
         let changed = all || !rules.is_empty();
         self.unscanned = (changed || !tracked.is_empty()).then(|| {
             (self.trees.local().iter())
@@ -4168,6 +4185,48 @@ mod tests {
         assert!(engine.trees.excluded(&log_id), "no rules file changed");
         engine.rules(Vec::new(), Vec::new(), true);
         assert!(!engine.trees.excluded(&log_id), "no rules file is left");
+    }
+
+    #[test]
+    fn a_batch_that_lists_the_rules_files_the_trees_hold_plans_nothing_again() {
+        let costs = [100, 1_000].map(|files| {
+            let (_dir, mut engine) = mapper();
+            let log = || RulesChange {
+                dir: "proj".into(),
+                source: koidrive_fs::Source::Koiignore,
+                rules: Some(koidrive_engine::ignore::RuleFile::parse(b"*.log\n")),
+            };
+            engine.rules(vec![log()], Vec::new(), true);
+            let proj = Observed::Created {
+                path: "proj".into(),
+                kind: EntryKind::Dir,
+                id: ino(1),
+                linked: false,
+                content: None,
+                marked_node: None,
+            };
+            let observed: Vec<Observed> = std::iter::once(proj)
+                .chain((0..files).map(|f| created(&format!("proj/{f}.txt"), ino(f + 2), false, 1)))
+                .collect();
+            engine.observe(&observed, 0);
+            engine.trees.settle(engine.commits.aliases());
+            engine.trees.take_rescope();
+            let before = crate::counting::allocations();
+            engine.rules(vec![log()], Vec::new(), true);
+            engine.trees.settle(engine.commits.aliases());
+            let cost = crate::counting::allocations() - before;
+            assert!(
+                engine.trees.take_rescope() == Default::default(),
+                "nothing is placed again"
+            );
+            cost
+        });
+        assert!(
+            costs[1] <= costs[0],
+            "the same rules again cost {} allocations at 1000 files and {} at 100",
+            costs[1],
+            costs[0]
+        );
     }
 
     #[test]
