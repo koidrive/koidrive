@@ -186,7 +186,15 @@ jobs:
             exit 0
           fi
           if [ -n "$run" ]; then
-            gh run download "$run" --repo "$GITHUB_REPOSITORY" --pattern 'coverage-map-*' --dir "$RUNNER_TEMP/coverage-map"
+            for attempt in 1 2; do
+              rm -rf "$RUNNER_TEMP/coverage-map" && mkdir "$RUNNER_TEMP/coverage-map"
+              if timeout 60 gh run download "$run" --repo "$GITHUB_REPOSITORY" --pattern 'coverage-map-*' --dir "$RUNNER_TEMP/coverage-map"; then break; fi
+              if [ "$attempt" = 2 ]; then
+                echo "::warning::Downloading the coverage map of run $run failed twice (see the errors above), so the shadow selection keeps every test."
+                jq -n '{map: null, everything: "downloading the newest coverage map failed", changed: [], skipped: []}' > "$RUNNER_TEMP/test-selection/selection.json"
+                exit 0
+              fi
+            done
           fi
           map="$(find "$RUNNER_TEMP/coverage-map" -name coverage-map.json | head -n 1)"
           env -u GITHUB_STEP_SUMMARY scripts/ci-select/target/debug/ci-select .github/ci-select.toml "$RUNNER_TEMP/base" . "$RUNNER_TEMP/changed" \
@@ -412,10 +420,17 @@ jobs:
       - uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519 # v2.90.5
         with:
           tool: cargo-nextest@0.9.152
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
+      - id: download_rust_tests_try
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        timeout-minutes: 2
+        continue-on-error: true
+        with: &download-rust-tests
           name: rust-tests-${{ env.OS }}
           path: ${{ runner.temp }}/rust-tests
+      - if: steps.download_rust_tests_try.outcome == 'failure'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        timeout-minutes: 2
+        with: *download-rust-tests
       - name: Extract the test archive and wait until it is on disk
         run: |
           cargo nextest list --archive-file "$RUNNER_TEMP/rust-tests/archive.tar.zst" --extract-to "$GITHUB_WORKSPACE" --extract-overwrite --list-type binaries-only > /dev/null
@@ -475,10 +490,17 @@ jobs:
       - uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519 # v2.90.5
         with:
           tool: cargo-nextest@0.9.152
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
+      - id: download_rust_tests_try
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        timeout-minutes: 2
+        continue-on-error: true
+        with: &download-rust-tests-2
           name: rust-tests-${{ env.OS }}
           path: ${{ runner.temp }}/rust-tests
+      - if: steps.download_rust_tests_try.outcome == 'failure'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        timeout-minutes: 2
+        with: *download-rust-tests-2
       - name: Extract the test archive and wait until it is on disk
         run: |
           cargo nextest list --archive-file "$RUNNER_TEMP/rust-tests/archive.tar.zst" --extract-to "$GITHUB_WORKSPACE" --extract-overwrite --list-type binaries-only > /dev/null
@@ -589,43 +611,71 @@ jobs:
     needs: [changes, rust-build-linux, rust-build-macos, rust-tests-linux, rust-tests-macos]
     if: ${{ !cancelled() && needs.changes.outputs.site_only != 'true' && needs.changes.outputs.rust_archive == 'true' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - id: junit
+      - id: junit_try
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        timeout-minutes: 2
         continue-on-error: true
-        with:
+        with: &junit
           pattern: rust-junit-*
           path: ${{ runner.temp }}/junit
           merge-multiple: true
-      - id: inventory_linux
+      - id: junit
+        if: steps.junit_try.outcome == 'failure'
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        timeout-minutes: 2
         continue-on-error: true
-        with:
+        with: *junit
+      - id: inventory_linux_try
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        timeout-minutes: 2
+        continue-on-error: true
+        with: &inventory-linux
           name: rust-test-inventory-ubuntu-latest
           path: ${{ runner.temp }}/inventory/rust-test-inventory-ubuntu-latest
-      - id: selection
+      - id: inventory_linux
+        if: steps.inventory_linux_try.outcome == 'failure'
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        timeout-minutes: 2
         continue-on-error: true
-        with:
+        with: *inventory-linux
+      - id: selection_try
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        timeout-minutes: 2
+        continue-on-error: true
+        with: &selection
           name: rust-test-selection
           path: ${{ runner.temp }}/test-selection
-      - id: inventory_macos
+      - id: selection
+        if: steps.selection_try.outcome == 'failure'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        timeout-minutes: 2
+        continue-on-error: true
+        with: *selection
+      - id: inventory_macos_try
         if: needs.changes.outputs.rust_macos == 'true'
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        timeout-minutes: 2
         continue-on-error: true
-        with:
+        with: &inventory-macos
           name: rust-test-inventory-macos
           path: ${{ runner.temp }}/inventory/rust-test-inventory-macos
+      - id: inventory_macos
+        if: steps.inventory_macos_try.outcome == 'failure'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        timeout-minutes: 2
+        continue-on-error: true
+        with: *inventory-macos
       - name: Check that the shards ran every test once, and report timings and flaky tests
         env:
           RUST_MACOS: ${{ needs.changes.outputs.rust_macos }}
-          JUNIT_DOWNLOAD: ${{ steps.junit.outcome }}
-          INVENTORY_LINUX: ${{ steps.inventory_linux.outcome }}
-          INVENTORY_MACOS: ${{ steps.inventory_macos.outcome }}
+          JUNIT_DOWNLOAD: ${{ steps.junit_try.outcome == 'success' && 'success' || steps.junit.outcome }}
+          INVENTORY_LINUX: ${{ steps.inventory_linux_try.outcome == 'success' && 'success' || steps.inventory_linux.outcome }}
+          INVENTORY_MACOS: ${{ steps.inventory_macos_try.outcome == 'success' && 'success' || steps.inventory_macos.outcome }}
           EVENT: ${{ github.event_name }}
         run: |
           status=0

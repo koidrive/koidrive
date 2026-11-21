@@ -658,10 +658,18 @@ jobs:
         with:
           node-version: 24
       - name: Download the koi builds
+        id: download_first_sync_koi_try
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
+        timeout-minutes: 2
+        continue-on-error: true
+        with: &download-first-sync-koi
           pattern: first-sync-koi-*
           path: ${{ runner.temp }}/koidrive-first-sync/bin
+      - name: Download the koi builds again
+        if: steps.download_first_sync_koi_try.outcome == 'failure'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        timeout-minutes: 2
+        with: *download-first-sync-koi
       - name: Check the free disk space
         run: node scripts/deploy-test/first-sync.ts disk
       - name: Generate the tree

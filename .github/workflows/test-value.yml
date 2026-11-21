@@ -146,10 +146,17 @@ jobs:
         with:
           tool: cargo-nextest@0.9.152
           fallback: none
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
+      - id: download_test_value_plan_try
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        timeout-minutes: 2
+        continue-on-error: true
+        with: &download-test-value-plan
           name: test-value-plan
           path: ${{ env.OUT }}
+      - if: steps.download_test_value_plan_try.outcome == 'failure'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        timeout-minutes: 2
+        with: *download-test-value-plan
       - name: Run every mutant of the shard against the sample's tests
         run: |
           python3 scripts/test-value.py run --sample "$SAMPLE" --mutants "$OUT/mutants.json" \
@@ -175,11 +182,18 @@ jobs:
         with:
           ref: ${{ needs.plan.outputs.sha }}
           persist-credentials: false
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
+      - id: download_test_value_try
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        timeout-minutes: 2
+        continue-on-error: true
+        with: &download-test-value
           pattern: test-value-*
           path: ${{ env.OUT }}
           merge-multiple: true
+      - if: steps.download_test_value_try.outcome == 'failure'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        timeout-minutes: 2
+        with: *download-test-value
       - name: Count each test's kills and unique kills
         run: |
           python3 scripts/test-value.py report --sample "$SAMPLE" --slow "$SLOW" --runs "$OUT" --out "$OUT/report"
