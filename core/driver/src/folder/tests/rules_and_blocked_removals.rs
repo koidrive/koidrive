@@ -3237,3 +3237,87 @@ fn a_delete_after_another_device_renames_a_folder_back_out_of_a_path_the_rules_e
     b.run(&mut remote);
     assert_eq!(remote.names(), ["h.txt", "other"]);
 }
+
+#[test]
+fn an_edited_file_below_a_folder_a_new_folder_takes_over_keeps_that_folder_only_when_the_user_moved_it()
+ {
+    for (below, renamed) in [("", false), ("", true), ("sub/", false), ("sub/", true)] {
+        let mut remote = Remote::new();
+        let (source, mut a) = linked(&mut remote, "other");
+        fs::create_dir_all(source.root.join(format!("ss/{below}"))).unwrap();
+        fs::create_dir_all(source.root.join("parent")).unwrap();
+        let file = format!("ss/{below}remote.txt");
+        a.create(&mut remote, &source.root.join(&file), b"server");
+        a.rest(&mut remote);
+        let mut expected = remote.tree();
+        let holder = expected["ss"].clone();
+        let parent = expected.remove("parent").unwrap();
+        expected.insert("ss/parent".to_owned(), parent);
+        let sync = SyncRules {
+            exclude: vec!["*.log".into()],
+            ..SyncRules::default()
+        };
+        let site = Site::new(&remote, "me");
+        let mut b = site.start_with(&sync);
+        b.connect(&remote);
+        b.rest(&mut remote);
+        drop(b);
+
+        fs::rename(site.root.join("ss"), site.root.join("parent/holder")).unwrap();
+        fs::create_dir(site.root.join("ss")).unwrap();
+        fs::write(site.root.join("ss/kept.log"), b"local only").unwrap();
+        fs::rename(source.root.join("parent"), source.root.join("ss/parent")).unwrap();
+        a.rest(&mut remote);
+        let mut b = site.start_with(&sync);
+        b.connect(&remote);
+        b.rest(&mut remote);
+        assert_eq!(
+            b.folder.view().merged_folders,
+            [koidrive_fs::ItemPath::from("ss")]
+        );
+        drop(b);
+
+        fs::rename(site.root.join("parent"), site.root.join("ss/parent")).unwrap();
+        let edited = site
+            .root
+            .join(format!("ss/parent/holder/{below}remote.txt"));
+        fs::write(&edited, b"my local edit").unwrap();
+        let (top, to) = match below {
+            "" => ("remote.txt", "renamed.txt"),
+            _ => ("sub", "renamed"),
+        };
+        let (from, into) = (format!("ss/{top}"), format!("ss/parent/holder/{to}"));
+        let at = match renamed {
+            true => file.replacen(&from, &into, 1),
+            false => file.clone(),
+        };
+        if renamed {
+            fs::rename(
+                site.root.join("ss/parent/holder").join(top),
+                site.root.join(&into),
+            )
+            .unwrap();
+            expected = (expected.into_iter())
+                .map(|(path, id)| (path.replacen(&from, &into, 1), id))
+                .collect();
+        }
+        let mut b = site.start_with(&sync);
+        b.connect(&remote);
+        b.rest(&mut remote);
+        let mut tree = remote.tree();
+        if renamed {
+            assert_ne!(tree.remove("ss/parent/holder").unwrap(), holder);
+            assert_eq!(names(&site.root.join("ss/parent/holder")), [to]);
+        } else {
+            assert_eq!(names(&site.root.join("ss/parent")), Vec::<String>::new());
+        }
+        assert_eq!(tree, expected);
+        assert_eq!(fs::read(site.root.join(at)).unwrap(), b"my local edit");
+        assert_eq!(
+            fs::read(site.root.join("ss/kept.log")).unwrap(),
+            b"local only"
+        );
+        assert!(b.folder.view().merged_folders.is_empty());
+        assert_eq!(b.folder.view().problem, None);
+    }
+}

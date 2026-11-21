@@ -1601,6 +1601,7 @@ struct Ran {
     /// The questions the run answered.
     asked: usize,
     conflicts: usize,
+    on_disk: Vec<String>,
     space: SpaceDo,
 }
 
@@ -3395,6 +3396,26 @@ fn run_ignoring_answering_after(
         conflicts: (commits.questions().iter())
             .filter(|question| matches!(question.kind, QuestionKind::Conflict { .. }))
             .count(),
+        on_disk: {
+            let local = device.trees.local();
+            let mut paths: Vec<String> = (local.iter())
+                .filter(|(_, node)| !node.parked)
+                .map(|(_, node)| {
+                    let mut path = node.shape.name.clone();
+                    let mut parent = &node.shape.parent;
+                    for _ in 0..local.len() {
+                        let Some(above) = local.get(parent) else {
+                            break;
+                        };
+                        path = format!("{}/{path}", above.shape.name);
+                        parent = &above.shape.parent;
+                    }
+                    path
+                })
+                .collect();
+            paths.sort();
+            paths
+        },
         space,
     })
 }

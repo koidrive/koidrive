@@ -914,7 +914,7 @@ cases = ["{1:064}"]
               for case in listed),
             *((keeps, changed_nothing, listed[0][:12] + "0" * 52, []) for listed in (q_cases, v_cases, f_cases)),
             (keeps, changed_nothing, other, []),
-            (settles, no_convergence, n812f, [("O", "GUN-1450", [n812f])]),
+            (settles, no_convergence, n812f, []),
             (settles, no_convergence, other, []),
         ]:
             with self.subTest(test=test, message=message[:40], case=case[:12]):

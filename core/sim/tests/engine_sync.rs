@@ -76,18 +76,7 @@ proptest! {
         ),
         rulings in prop::collection::vec(ruling(), 0..4),
     ) {
-        run_ignoring(
-            &[vec![act(1, 0, 0, 0, 0)], seed].concat(),
-            &[vec![act(0, 0, 0, 6, 0)], local].concat(),
-            &[vec![act(3, moved, 0, 6, 0)], remote].concat(),
-            MAX_OPS,
-            false,
-            &during,
-            Cut::None,
-            &[vec![Ruling::Exclude(vec!["ss/"])], rulings].concat(),
-            Answer::Delete,
-            None,
-        )?;
+        onto_a_left_out_folder(&seed, &local, &remote, moved, &during, &rulings)?;
     }
 }
 

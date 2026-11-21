@@ -1713,8 +1713,21 @@ impl Trees {
             .cloned()
             .collect();
         let changed: Vec<NodeId> = released.iter().filter(|id| lacking(id)).cloned().collect();
+        let moves_out = |id: &NodeId| {
+            let (Some(local), Some(remote)) = (self.l.get(id), self.r.live(id)) else {
+                return false;
+            };
+            remote.parent != local.shape.parent
+                && !self.unsent_moves.contains(id)
+                && (self.acknowledged(id)).is_some_and(|synced| synced.same_position(&local.shape))
+        };
         let holding: BTreeSet<NodeId> = (released.iter())
-            .flat_map(|id| self.local_chain(id).skip(1))
+            .flat_map(|id| {
+                let mut followed = false;
+                (self.local_chain(id))
+                    .take_while(move |node| !std::mem::replace(&mut followed, moves_out(node)))
+                    .skip(1)
+            })
             .cloned()
             .collect();
         let mut folders: Vec<NodeId> = (holding.into_iter())
