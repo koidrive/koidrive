@@ -689,6 +689,11 @@ impl Commits {
                         .remote_holders_of_key(&local.shape.parent, &name_key(&local.shape.name)))
                     .find_map(|holder| Some((holder, trees.remote().live(holder)?.kind)));
                     let to = match holder {
+                        None if (trees.local_holders(&local.shape.parent, &local.shape.name))
+                            .any(|other| !residue.0.contains_key(other)) =>
+                        {
+                            return None;
+                        }
                         None => None,
                         Some((_, Kind::File)) => return None,
                         Some((holder, Kind::Dir)) => {
@@ -733,7 +738,7 @@ impl Commits {
                                     if !node.parked
                                         && synced.is_some_and(|synced| {
                                             synced.parent == node.shape.parent
-                                                && synced.name == node.shape.name
+                                                && same_name(&synced.name, &node.shape.name)
                                         })
                                         && below_merged(node)
                                         && takes_over() =>
@@ -744,7 +749,7 @@ impl Commits {
                                     if !node.parked
                                         && synced.is_some_and(|synced| {
                                             synced.parent != node.shape.parent
-                                                || synced.name != node.shape.name
+                                                || !same_name(&synced.name, &node.shape.name)
                                         })
                                         && (node.shape.parent != local.shape.parent
                                             || name_key(&node.shape.name)

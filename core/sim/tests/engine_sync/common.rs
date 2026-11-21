@@ -1179,7 +1179,7 @@ impl Device {
     fn follow_rekeys(&mut self) {
         let local = self.trees.local();
         let rekeyed: BTreeMap<NodeId, NodeId> = (self.anchors.iter())
-            .filter(|(id, _)| local.get(id).is_none())
+            .filter(|(id, identity)| local.get(id).is_none_or(|node| node.identity != **identity))
             .filter_map(|(id, identity)| {
                 Some((
                     id.clone(),
@@ -3267,6 +3267,41 @@ fn a_merged_folder_is_held_by_its_key_holder_or_its_alias_under_a_merged_parent(
     assert!(!holds("merged", "other"));
     assert!(holds("inner", "gone"));
     assert!(!holds("inner", "other"));
+}
+
+#[test]
+fn an_ignored_entry_follows_its_folder_when_another_folder_takes_the_folders_id() {
+    let root = NodeId::from("root");
+    let folder = |ino: u64| LocalNode {
+        left_out_when_placed: false,
+        content_from_server: false,
+        shape: Shape {
+            parent: root.clone(),
+            name: "ss".into(),
+            kind: Kind::Dir,
+            content: None,
+        },
+        identity: identity(ino),
+        parked: false,
+        chunks: Box::default(),
+    };
+    let mut device = Device::new(Trees::new(root.clone()));
+    device.trees.set_local("live".into(), folder(1));
+    device.ignored.insert(
+        ("live".into(), vec!["c.txt".into()]),
+        DiskEntry {
+            kind: Kind::File,
+            content: None,
+            chunks: Box::default(),
+            original: None,
+        },
+    );
+    device.follow_rekeys();
+    device.trees.set_local("copy".into(), folder(1));
+    device.trees.set_local("live".into(), folder(2));
+    device.follow_rekeys();
+    let anchors: Vec<&NodeId> = device.ignored.keys().map(|(anchor, _)| anchor).collect();
+    assert_eq!(anchors, [&NodeId::from("copy")]);
 }
 
 fn held_on_disk(
