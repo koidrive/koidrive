@@ -1,3 +1,4 @@
-175
+239
 # A first-link Discard must keep an entry the user changed after the answer, also after a change back to the shown bytes or name, while the rules leave it out, before any commit, without rules, and after a rewind. Each of those paths has its own engine test with restarts (file write-back, file move-back, folder rename-back, excluded child in a reclaimed folder, rewind), and the new discard_changed table needs its migration test and upgrade case.
 # What counts as a change has two sides at each boundary, and each test runs both: a normalization-only re-spelling against a real rename, a write-back before the answer against one after it and before the record, and in the driver an unchanged re-observation against a same-byte rewrite with a new modification time in place or by atomic save, plus a delete and re-create at the same path, which the driver gives the same node.
+# Two more tests hold the answer itself: a normalization-only re-spelling before a Discard keeps the answer frozen when a server folder later moves in, and a mark taken after the answer and before its record survives checkpoints.
