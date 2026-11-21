@@ -3469,3 +3469,90 @@ fn a_refused_folder_rename_does_not_adopt_into_a_stale_ignored_destination() {
         );
     }
 }
+
+
+#[test]
+fn a_refused_folder_rename_out_of_a_removed_folder_keeps_every_node_inside_it() {
+    for restart in [false, true] {
+        clock::freeze();
+        let mut remote = Remote::new();
+        let (site, mut a) = linked(&mut remote, "a");
+        fs::create_dir_all(site.root.join("outer/docs/sub")).unwrap();
+        fs::create_dir(site.root.join("other")).unwrap();
+        a.create(
+            &mut remote,
+            &site.root.join("outer/docs/report.docx"),
+            b"report",
+        );
+        a.create(
+            &mut remote,
+            &site.root.join("outer/docs/sub/deep.docx"),
+            b"deep",
+        );
+        a.rest(&mut remote);
+        let before = server_nodes(&remote);
+        let id = |name| live_id(&before, name);
+        fs::create_dir(site.root.join("archive")).unwrap();
+        for name in ["report.docx", "sub"] {
+            fs::rename(
+                site.root.join("outer/docs").join(name),
+                site.root.join("archive").join(name),
+            )
+            .unwrap();
+        }
+        fs::remove_dir_all(site.root.join("outer")).unwrap();
+        let archive = fs::File::open(site.root.join("archive")).unwrap();
+        observe(
+            &mut a,
+            vec![
+                Observed::Removed {
+                    path: "outer".into(),
+                    kind: EntryKind::Dir,
+                },
+                Observed::Renamed {
+                    from: "outer/docs".into(),
+                    to: "archive".into(),
+                    kind: EntryKind::Dir,
+                    id: koidrive_fs::id_of(archive.as_fd()).unwrap(),
+                    linked: false,
+                    marked_node: Some(id("other")),
+                },
+            ],
+        );
+        if restart {
+            drop(a);
+            a = restarted(&site, &mut remote);
+        }
+        a.rescan();
+        a.settle();
+        a.rest(&mut remote);
+        let after = server_nodes(&remote);
+        for name in ["report.docx", "sub", "deep.docx", "other"] {
+            assert_eq!(live_id(&after, name), id(name), "{name} {restart} {after:?}");
+        }
+        assert_eq!(server_bytes(&remote, &id("deep.docx")), b"deep");
+        let trashed: Vec<&str> = (after.iter())
+            .filter(|node| !node.2)
+            .map(|node| node.0.as_str())
+            .collect();
+        assert_eq!(trashed, ["docs", "outer"], "{restart} {after:?}");
+    }
+}
+
+#[test]
+fn a_folder_that_takes_a_saved_name_for_a_while_ends_the_save() {
+    let (mut remote, site, mut a, before) = safe_save_fixture();
+    safe_save_swap(&site, &mut a);
+    fs::create_dir(site.root.join("report.docx")).unwrap();
+    a.rescan();
+    a.scan_until(|_| local_holds(&site, "report.docx"));
+    fs::remove_dir(site.root.join("report.docx")).unwrap();
+    fs::write(site.root.join("report.docx"), b"version two").unwrap();
+    a.rescan();
+    a.settle();
+    safe_save_cleanup(&site, &mut a, &mut remote);
+    let after = live_id(&server_nodes(&remote), "report.docx");
+    assert_eq!(server_bytes(&remote, &after), b"version two");
+    assert_ne!(after, before, "{:?}", server_nodes(&remote));
+}
+

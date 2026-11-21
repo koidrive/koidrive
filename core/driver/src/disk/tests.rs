@@ -3879,7 +3879,9 @@ fn a_download_seen_before_its_effect_is_recorded_does_not_delete_the_file_it_mov
     let stamp = running.disk.sections().stamp();
     while running.step(&server).is_some() {}
     assert_eq!(fs::read(folder.root.join("report.txt")).unwrap(), REMOTE);
-    let echo = observe_until(&mut watching, stamp, |seen| !seen.is_empty());
+    let echo = observe_until(&mut watching, stamp, |seen| {
+        (seen.iter()).any(|change| super::paths(change).any(|path| path == Path::new("report.txt")))
+    });
     running
         .disk
         .observed(echo, &mut running.engine, &mut running.store)

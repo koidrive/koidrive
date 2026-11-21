@@ -1312,7 +1312,7 @@ mod tests {
         done: impl Fn(&[Observed]) -> bool,
     ) -> (Vec<Observed>, Observation) {
         let mut seen = Vec::new();
-        loop {
+        for _ in 0..120 {
             if let Some(observation) = observer.observe(Duration::from_millis(500)).unwrap() {
                 seen.extend(observation.changes.iter().cloned());
                 if done(&seen) {
@@ -1320,6 +1320,7 @@ mod tests {
                 }
             }
         }
+        panic!("the awaited change within a minute: {seen:?}");
     }
 
     #[test]

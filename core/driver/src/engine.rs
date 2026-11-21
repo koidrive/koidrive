@@ -62,6 +62,7 @@ pub(crate) struct Engine {
     renamed_away: BTreeMap<NodeId, (NodeId, String, u64, Option<u64>)>,
     occupants: BTreeMap<(NodeId, String), Vec<Occupant>>,
     backup_gone: BTreeMap<NodeId, bool>,
+    reread: Vec<PathBuf>,
     owed: BTreeSet<NodeId>,
     stored_owed: BTreeSet<NodeId>,
 }
@@ -944,7 +945,10 @@ impl Engine {
 
     pub fn relist(&mut self) -> Vec<PathBuf> {
         let folders = self.trees.take_relist();
-        folders.iter().filter_map(|id| self.path_of(id)).collect()
+        let reread = std::mem::take(&mut self.reread);
+        (folders.iter().filter_map(|id| self.path_of(id)))
+            .chain(reread)
+            .collect()
     }
 
     /// Holds what L, S or R places at or below each of `paths` until the next call ([`Trees::await_scan`]). A
@@ -1120,17 +1124,19 @@ impl Engine {
         let mut arrivals = vec![0; changes.len()];
         let mut unblocks: Vec<Vec<(usize, bool)>> = vec![Vec::new(); changes.len()];
         for (at, change) in changes.iter().enumerate() {
-            let firsts = match change {
+            let firsts: Vec<(Option<&usize>, bool)> = match change {
                 Observed::Created { path, .. } | Observed::Renamed { to: path, .. } => {
-                    [(folder(path), true), (leaving.get(path.as_path()), false)]
+                    vec![(folder(path), true), (leaving.get(path.as_path()), false)]
                 }
                 Observed::Modified { path, .. } => {
-                    [(folder(path), true), (arrival.get(path.as_path()), true)]
+                    vec![(folder(path), true), (arrival.get(path.as_path()), true)]
                 }
-                Observed::Reidentified { path, .. } => [(folder(path), true), (None, false)],
-                Observed::Removed { .. } | Observed::Missing { .. } | Observed::Found { .. } => {
-                    [(None, false), (None, false)]
-                }
+                Observed::Reidentified { path, .. } => vec![(folder(path), true)],
+                Observed::Removed { path, .. } | Observed::Missing { path, .. } => (leaving.iter())
+                    .filter(|(from, _)| from.starts_with(path) && *from != path)
+                    .map(|(_, first)| (Some(first), false))
+                    .collect(),
+                Observed::Found { .. } => Vec::new(),
             };
             for (first, arrives) in firsts {
                 let Some(&first) = first.filter(|&&first| first != at) else {
@@ -1284,6 +1290,7 @@ impl Engine {
                 } => {
                     let identity = file_identity(*id);
                     let mark = marked_node.as_deref().map(NodeId::from);
+                    let refused = resolved[at].is_err();
                     let refused_folder = match &resolved[at] {
                         Err(held)
                             if !moving.contains(held)
@@ -1344,6 +1351,9 @@ impl Engine {
                             &mut gone,
                         )
                     };
+                    if refused && placed.is_none() && *kind == EntryKind::File {
+                        self.reread.push(to.clone());
+                    }
                     let Some(held) = refused_folder else { continue };
                     let Some(folder) = placed.filter(|folder| {
                         *folder != held
@@ -2129,6 +2139,16 @@ impl Engine {
             if temp_name(name) && !may_become(mark, &id) {
                 self.trees.forget_born_as_temp(&id);
             }
+        } else if let Some(occupants) =
+            (self.occupants).get_mut(&(shape.parent.clone(), shape.name.clone()))
+        {
+            occupants.push(Occupant {
+                at: now_ms,
+                node: Some(id.clone()),
+                identity,
+                admitted: false,
+                mark: mark.cloned(),
+            });
         }
         let born = given.is_none()
             && mark.is_none_or(|mark| {
@@ -2424,6 +2444,7 @@ impl Stored {
             renamed_away: BTreeMap::new(),
             occupants: BTreeMap::new(),
             backup_gone: BTreeMap::new(),
+            reread: Vec::new(),
             owed: owed.clone(),
             stored_owed: owed,
         }))
@@ -3356,6 +3377,7 @@ mod tests {
             renamed_away: BTreeMap::new(),
             occupants: BTreeMap::new(),
             backup_gone: BTreeMap::new(),
+            reread: Vec::new(),
             owed: BTreeSet::new(),
             stored_owed: BTreeSet::new(),
         };
@@ -4813,6 +4835,28 @@ mod tests {
             Some(Path::new("archive/report.txt")),
             "successful placement must adopt the child",
         );
+        assert_eq!(engine.trees.check(), Ok(()));
+    }
+
+    #[test]
+    fn a_refused_file_rename_asks_for_a_read_of_where_it_arrives() {
+        let (_dir, mut engine) = mapper();
+        let (report, draft) = saved_report(&mut engine);
+        engine.relist();
+        let moved = Observed::Renamed {
+            from: "docs/draft.txt".into(),
+            to: "docs/notes.txt".into(),
+            kind: EntryKind::File,
+            id: ino(9),
+            linked: false,
+            marked_node: Some(report.to_string()),
+        };
+        engine.observe(&[moved], 1_000);
+        assert!(holding(&engine, "docs/notes.txt").is_none());
+        assert_eq!(engine.relist(), [PathBuf::from("docs/notes.txt")]);
+        engine.observe(&[marked("docs/notes.txt", 9, &report.to_string())], 1_100);
+        let (notes, ..) = holding(&engine, "docs/notes.txt").unwrap();
+        assert!(![report, draft].contains(&notes));
         assert_eq!(engine.trees.check(), Ok(()));
     }
 
