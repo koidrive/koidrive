@@ -47,11 +47,11 @@ pub(crate) fn group(
         Some(waiting) => waiting.shape.as_ref(),
         None => trees.synced().live(id),
     };
-    if agreed(trees, id).is_some() {
-        return None;
-    }
     let remote = trees.remote().get(id);
     let live = trees.remote().live(id);
+    if (live.is_some() || synced.is_some()) && agreed(trees, id).is_some() {
+        return None;
+    }
     let server_lost_it = || {
         cause.is_some_and(|cause| cause.trigger == RecoveryTrigger::StoreRolledBack)
             && trees.made_over_remote(id)

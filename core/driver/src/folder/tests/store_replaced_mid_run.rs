@@ -244,3 +244,84 @@ fn a_store_from_before_the_write_stamp_syncs_without_a_reload() {
         .unwrap();
     assert!(stamp > 0, "{stamp}");
 }
+
+#[test]
+fn an_answer_given_while_the_folder_runs_is_taken_with_no_reload_and_a_scan_that_finds_nothing_writes_nothing()
+ {
+    let mut remote = Remote::new();
+    let (site, mut a) = with_a_held_folder(&mut remote);
+    answer(&site, Answer::Restore);
+    let step = a.folder.requested();
+    let taken = a.take(step);
+    assert!(taken.is_ok(), "{taken:?}");
+    a.rest(&mut remote);
+    assert_eq!(names(&site.root.join("d")).len(), 15);
+    assert_eq!(a.folder.view().questions, 0);
+    assert_eq!(a.folder.view().problem, None);
+    a.settle();
+    a.rest(&mut remote);
+
+    let watcher = rusqlite::Connection::open(&site.db).unwrap();
+    let written = || -> (i64, u64) {
+        let version = (watcher.query_row("PRAGMA data_version", [], |row| row.get(0))).unwrap();
+        let stamp =
+            (watcher.query_row("SELECT stamp FROM write_stamp", [], |row| row.get(0))).unwrap();
+        (version, stamp)
+    };
+    let before = written();
+    a.settle();
+    a.rest(&mut remote);
+    assert!(
+        a.sent
+            .iter()
+            .all(|commit| !kinds(commit).contains(&"delete"))
+    );
+    assert_eq!(written(), before, "the scan wrote to the store");
+}
+
+#[test]
+fn a_second_store_put_back_at_the_stamp_the_reloaded_folder_reached_reloads_it_again() {
+    let mut remote = Remote::new();
+    let (site, mut a) = linked(&mut remote, "a");
+    let (other, mut b) = linked(&mut remote, "b");
+    fs::write(other.root.join("f.txt"), b"A").unwrap();
+    sync(&mut remote, (&site, &mut a), (&other, &mut b));
+    let x = site.db.with_extension("x");
+    copy_store_while_open(&site.db, &x);
+    let ys: Vec<PathBuf> = (1..=8)
+        .map(|writes| {
+            let folder = &mut a.folder;
+            (folder.store)
+                .transaction(|tx| folder.engine.checkpoint(tx))
+                .unwrap();
+            let y = site.db.with_extension(format!("y{writes}"));
+            copy_store_while_open(&site.db, &y);
+            y
+        })
+        .collect();
+    copy_store_while_open(&x, &site.db);
+    drop(a);
+
+    let mut a = site.start();
+    let stamp = |db: &Path| -> u64 {
+        (rusqlite::Connection::open(db).unwrap())
+            .query_row("SELECT stamp FROM write_stamp", [], |row| row.get(0))
+            .unwrap()
+    };
+    b.create(&mut remote, &other.root.join("g.txt"), b"g");
+    a.compares_store = false;
+    for y in &ys {
+        copy_store_while_open(y, &site.db);
+        let copied = site.stored().cursor;
+        let welcome = remote.space.welcome(&a.caller);
+        let pulled =
+            (a.event(Event::Connected(welcome))).and_then(|()| a.resume(&remote, a.since()));
+        assert!(
+            matches!(&pulled, Err(stop @ Stop::Store(koidrive_store::Error::Replaced)) if stop.remedy() == crate::status::Remedy::Root),
+            "{y:?}: {pulled:?}"
+        );
+        assert_eq!(site.stored().cursor, copied, "{y:?}");
+        assert_eq!(stamp(&site.db), stamp(y), "{y:?}");
+    }
+    assert_eq!(names(&site.root), ["f.txt"]);
+}

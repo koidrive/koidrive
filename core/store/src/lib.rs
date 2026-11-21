@@ -393,14 +393,21 @@ impl Store {
         let unchanged = tx.0.total_changes();
         let value = f(&tx)?;
         let advanced = match self.stamp {
-            Some(stamp) if tx.0.total_changes() != unchanged => {
+            Some(_) if tx.0.total_changes() != unchanged => {
+                let fresh = loop {
+                    let drawn =
+                        getrandom::u64().expect("the operating system provides random bytes") >> 1;
+                    if drawn != 0 {
+                        break drawn;
+                    }
+                };
                 (tx.0)
                     .execute(
                         "INSERT OR REPLACE INTO write_stamp (id, stamp) VALUES (1, ?1)",
-                        [stamp + 1],
+                        [fresh],
                     )
                     .map_err(Error::from)?;
-                Some(stamp + 1)
+                Some(fresh)
             }
             stamp => stamp,
         };
@@ -409,10 +416,10 @@ impl Store {
         Ok(value)
     }
 
-    /// Makes every later [`Store::transaction`] on this connection that writes advance the store's write stamp from
-    /// `stamp`, the one the caller read with the state it holds ([`Tx::write_stamp`]). A transaction that finds another
-    /// stamp than the one this connection last wrote refuses with [`Error::Replaced`] and writes nothing: another file
-    /// took the database's place, or another connection that stamps its writes wrote to it.
+    /// Makes every later [`Store::transaction`] on this connection that writes replace the store's write stamp with a
+    /// fresh random one, starting from `stamp`, the one the caller read with the state it holds ([`Tx::write_stamp`]). A
+    /// transaction that finds another stamp than the one this connection last wrote refuses with [`Error::Replaced`] and
+    /// writes nothing: another file took the database's place, or another connection that stamps its writes wrote to it.
     pub fn stamp_writes(&mut self, stamp: u64) {
         self.stamp = Some(stamp);
     }
@@ -523,12 +530,20 @@ pub struct Tx<'a>(rusqlite::Transaction<'a>);
 impl Tx<'_> {
     /// The store's write stamp ([`Store::stamp_writes`]), 0 before any connection that stamps its writes wrote.
     pub fn write_stamp(&self) -> Result<u64> {
-        Ok((self.0)
+        let stamp = (self.0)
             .query_row("SELECT stamp FROM write_stamp WHERE id = 1", [], |row| {
                 row.get(0)
             })
-            .optional()?
-            .unwrap_or_default())
+            .optional();
+        match stamp {
+            Ok(stamp) => Ok(stamp.unwrap_or_default()),
+            Err(rusqlite::Error::SqliteFailure(_, Some(message)))
+                if message == "no such table: write_stamp" =>
+            {
+                Err(Error::Replaced)
+            }
+            Err(error) => Err(error.into()),
+        }
     }
 
     pub fn cursor(&self) -> Result<Option<Cursor>> {
