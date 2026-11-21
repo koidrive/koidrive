@@ -1377,7 +1377,8 @@ impl Trees {
                 self.replaced_versions.remove(&id);
             }
         }
-        self.place_remote(id, node, false);
+        self.place_remote(id.clone(), node, false);
+        self.settle_synced_intents(&id);
     }
 
     fn place_remote(&mut self, id: NodeId, node: RemoteNode, made_here: bool) {
