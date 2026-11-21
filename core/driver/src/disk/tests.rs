@@ -204,8 +204,9 @@ fn a_same_byte_save_before_a_removal_does_not_delete_the_restored_file() {
             .disk
             .apply(staged, &mut running.engine, &mut running.store)
             .unwrap()),
-        Settled::Done
+        Settled::Failed("L changed since it was planned".into())
     );
+    assert_eq!(fs::read(&path).unwrap(), SYNCED);
     let engine = &mut running.engine;
     let commit = engine
         .commits
