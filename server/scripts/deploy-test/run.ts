@@ -787,7 +787,11 @@ async function sweep(account: Account): Promise<void> {
     if (error instanceof DeadlineError) unfinished = true;
     else say("::warning::The sweep could not check for leftovers the lists left out, " + what + ": " + reason(error));
   };
-  const recent = await finishedRunNames(repository, deadline, unchecked);
+  let readsFailed = 0;
+  const recent = await finishedRunNames(repository, deadline, (what, error) => {
+    if (!(error instanceof DeadlineError)) readsFailed++;
+    unchecked(what, error);
+  });
   if (recent && (testWorkers || buckets)) {
     const listedWorkers = new Set(testWorkers?.map((worker) => worker.name));
     const listedBuckets = new Set(buckets?.map((bucket) => bucket.name));
@@ -815,7 +819,7 @@ async function sweep(account: Account): Promise<void> {
       if (testWorkers && !listedWorkers.has(name)) await lookUp("Worker " + name, () => getWorker(account, name, deadline));
       if (buckets && !listedBuckets.has(name)) await lookUp("R2 bucket " + name, () => getBucket(account, name, deadline));
     }
-    say("The sweep looked up the Worker and R2 bucket of " + checked + " test run attempts that finished in the last " + LOOKBACK_DAYS + " days and that the lists did not show: " + found + " exist, " + lookupsFailed + " lookups failed");
+    say("The sweep looked up the Worker and R2 bucket of " + checked + " test run attempts that finished in the last " + LOOKBACK_DAYS + " days and that the lists did not show: " + found + " exist, " + lookupsFailed + " lookups failed, " + readsFailed + " GitHub reads failed");
   }
 
   for (const item of leftAlone) say("::warning::The sweep left alone " + item);

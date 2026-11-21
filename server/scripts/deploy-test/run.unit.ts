@@ -232,7 +232,7 @@ describe("sweep", () => {
       "The sweep listed 1 Workers named koidrive-test-*: koidrive-test-7-1",
       "The sweep listed 2 R2 buckets named koidrive-test-*: koidrive-test-7-1, koidrive-test-8-2",
       "The sweep listed 3 Durable Object namespaces, 2 of them with no Worker name and 0 with no id or class",
-      "The sweep looked up the Worker and R2 bucket of 2 test run attempts that finished in the last 14 days and that the lists did not show: 0 exist, 0 lookups failed",
+      "The sweep looked up the Worker and R2 bucket of 2 test run attempts that finished in the last 14 days and that the lists did not show: 0 exist, 0 lookups failed, 0 GitHub reads failed",
       "::warning::The sweep left alone the Durable Object namespace AccountDO (an id that is not 32 hex digits), because the API names no Worker for it",
       "::warning::The sweep left alone the Durable Object namespace SpaceDO (an id that is not 32 hex digits), because the API names no Worker for it",
     ]);
@@ -473,7 +473,10 @@ describe("sweep", () => {
   it.each([
     ["cannot read an earlier attempt", () => (mock.githubStatus = 500), "reading run 7 attempt 1: GitHub returned HTTP 500 for run 7 attempt 1"],
     ["has no record of an earlier attempt", () => {}, "reading run 7 attempt 1: GitHub returned HTTP 404 for run 7 attempt 1"],
-    ["has no load-test workflow", () => (mock.missingWorkflow = "load-test.yml"), "listing the finished load-test.yml runs: GitHub returned HTTP 404 for the finished load-test.yml runs"],
+    ["has no load-test workflow", () => {
+      mock.missingWorkflow = "load-test.yml";
+      mock.runAttempts.set("7/1", attempt(Date.now() - HOUR, Date.now() + HOUR));
+    }, "listing the finished load-test.yml runs: GitHub returned HTTP 404 for the finished load-test.yml runs"],
   ])("keeps the attempts it confirmed and warns when GitHub %s", async (_, breakIt, warning) => {
     mock.runAttempts.set("7/2", attempt(Date.now() - HOUR, Date.now() + HOUR));
     mock.addBucket("koidrive-test-7-2");
@@ -483,6 +486,7 @@ describe("sweep", () => {
     expect(status).toBe(0);
     expect(output).toContain("::warning::The sweep could not check for leftovers the lists left out, " + warning);
     expect(output).toContain("::warning::The sweep left alone the R2 bucket koidrive-test-7-2, which exists although its list left it out");
+    expect(output).toContain(": 1 exist, 0 lookups failed, 1 GitHub reads failed");
     expect(mock.deletes()).toEqual([]);
   });
 
