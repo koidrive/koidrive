@@ -45,8 +45,10 @@ mutation unknown-resend $C 's/            _ => Failure::Halted\(Halt::Policy \{ 
 mutation parked-name $L 's/self\.parked_as\.get\(id\)\.unwrap_or\(id\)/{ let _ = \&self.parked_as; id }/' unit
 mutation rekey-park-as $C 's/        trees\.park_as\(to\.to_owned\(\), parked_name\);\n//' unit
 mutation digest-dedupe $E 's/    let changed = remote_only\(trees, id\)\n/    let changed = trees.local().get(id).is_some_and(|node| {\n        let digest = |node: \&LocalNode| node.shape.content.map(|content| content.manifest_digest().to_vec());\n        let twin = |(other, twin): (\&NodeId, \&LocalNode)| other < id \&\& digest(twin) == digest(node);\n        digest(node).is_some() \&\& trees.synced().live(id).is_none() \&\& trees.remote().live(id).is_none() \&\& trees.local().iter().any(twin)\n    }) || remote_only(trees, id)\n/' devices
-mutation nested-copy-synced $C 's/synced\.push\(\(copy\.clone\(\), trees\.synced\(\)\.get\(&holder\)\.cloned\(\)\)\);/synced.push((copy.clone(), None));/' devices
+mutation nested-copy-synced $C 's/synced\.push\(\(copy\.clone\(\), copy_shape\)\);/synced.push((copy.clone(), None));/' devices
 mutation residue-local-holder $C 's/\n                        None if held_by_a_synced_entry\(\) => return None,//' devices
 mutation residue-holder-syncs $C 's/!residue\.0\.contains_key\(other\) && !trees\.excluded\(other\)/!residue.0.contains_key(other)/' devices
 mutation residue-moved-holder $C 's/\n                                        && !held_by_a_synced_entry\(\)\n/\n/' devices
 mutation residue-reverted-holder $C 's/\n                                        && !trees\.reverted\(\)\.contains\(holder\) =>/ =>/' prop
+mutation residue-reverted-takeover $C 's/\(trees\.reverted\(\)\.contains\(holder\)\n\s+\|\| synced\.is_some_and\(/(synced.is_some_and(/' prop
+mutation residue-reverted-copy-folds $C 's/true => Some\(nested\.shape\.clone\(\)\),/true => trees.synced().get(\&holder).cloned(),/' prop

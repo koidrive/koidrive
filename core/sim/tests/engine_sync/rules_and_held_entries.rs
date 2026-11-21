@@ -333,7 +333,8 @@ fn a_local_delete_keeps_a_recorded_entry_and_the_folders_above_it_as_the_driver_
         device.trees.set_synced(id.into(), Some(shape.clone()));
         device.trees.set_remote(
             id.into(),
-            RemoteNode { made_over: Vec::new(),
+            RemoteNode {
+                made_over: Vec::new(),
                 shape,
                 trashed: false,
                 content_rev: 1,
@@ -421,7 +422,8 @@ fn a_server_entry_below_a_folder_moved_out_of_what_the_rules_include_here_is_lef
 }
 
 #[test]
-fn a_folder_deleted_here_that_another_device_renamed_comes_back_once_nothing_excluded_is_left_in_it() {
+fn a_folder_deleted_here_that_another_device_renamed_comes_back_once_nothing_excluded_is_left_in_it()
+ {
     let seed = [act(0, 0, 0, 6, 0)];
     let local = [act(4, 0, 0, 0, 0)];
     let remote = [act(1, 0, 1, 3, 0)];
@@ -433,7 +435,19 @@ fn a_folder_deleted_here_that_another_device_renamed_comes_back_once_nothing_exc
     ];
     let rulings = [Ruling::Exclude(vec!["*.txt"])];
     for cut in CUTS {
-        let ran = run_ignoring(&seed, &local, &remote, MAX_OPS, false, &during, cut, &rulings, Answer::Delete, None).unwrap();
+        let ran = run_ignoring(
+            &seed,
+            &local,
+            &remote,
+            MAX_OPS,
+            false,
+            &during,
+            cut,
+            &rulings,
+            Answer::Delete,
+            None,
+        )
+        .unwrap();
         let root = ran.space.space_id().to_owned();
         let folders: Vec<_> = (ran.space.nodes().into_iter())
             .filter(|n| n.node_id != root && n.kind == 1 && n.status == 1)
@@ -460,7 +474,19 @@ fn a_file_deleted_here_with_its_kept_folder_comes_back_after_another_device_rena
         Ruling::Exclude(vec![]),
     ];
     for cut in CUTS {
-        let ran = run_ignoring(&seed, &local, &[], MAX_OPS, false, &during, cut, &rulings, Answer::Delete, None).unwrap();
+        let ran = run_ignoring(
+            &seed,
+            &local,
+            &[],
+            MAX_OPS,
+            false,
+            &during,
+            cut,
+            &rulings,
+            Answer::Delete,
+            None,
+        )
+        .unwrap();
         let root = ran.space.space_id().to_owned();
         let mut live: Vec<_> = (ran.space.nodes().into_iter())
             .filter(|n| n.node_id != root && n.status == 1)
@@ -476,7 +502,8 @@ fn a_file_deleted_here_with_its_kept_folder_comes_back_after_another_device_rena
 }
 
 #[test]
-fn an_edit_after_another_device_purges_a_file_in_a_server_folder_in_a_discarded_folder_keeps_the_folder() {
+fn an_edit_after_another_device_purges_a_file_in_a_server_folder_in_a_discarded_folder_keeps_the_folder()
+ {
     let seed = [act(0, 0, 0, 0, 0), act(1, 0, 1, 2, 0)];
     let local = [act(0, 0, 0, 6, 0)];
     let during = [
@@ -529,10 +556,19 @@ fn a_server_folder_moved_into_a_discarded_folder_out_of_a_folder_deleted_here_se
     let during = [
         (false, vec![act(0, 0, 18303126742269488846, 0, 0)]),
         (false, vec![act(0, 0, 15497506449051316537, 0, 0)]),
-        (true, vec![act(8, 4965594241967384804, 8623223411207746126, 0, 0)]),
+        (
+            true,
+            vec![act(8, 4965594241967384804, 8623223411207746126, 0, 0)],
+        ),
         (true, vec![act(4, 9813782166594930651, 23, 4, 3)]),
-        (false, vec![act(7, 7278376959139293227, 13730584698140342588, 1, 3)]),
-        (true, vec![act(9, 13181647493508412243, 6311867364256608202, 4, 1)]),
+        (
+            false,
+            vec![act(7, 7278376959139293227, 13730584698140342588, 1, 3)],
+        ),
+        (
+            true,
+            vec![act(9, 13181647493508412243, 6311867364256608202, 4, 1)],
+        ),
     ];
     let rulings = [
         Ruling::File(vec![]),
@@ -2298,19 +2334,28 @@ fn onto_a_left_out_folder(
     )
 }
 
-fn live_on_the_server(space: &SpaceDo) -> Vec<String> {
+fn on_the_server(space: &SpaceDo) -> Vec<String> {
     let root = space.space_id().to_owned();
     let nodes = space.nodes();
-    let name = |id: &str| (nodes.iter()).find(|node| node.node_id == id && id != root);
-    let mut live: Vec<String> = (nodes.iter())
-        .filter(|node| node.status == 1 && node.node_id != root)
-        .map(|node| match name(&node.parent_id) {
-            Some(parent) => format!("{}/{}", parent.name, node.name),
-            None => node.name.clone(),
+    let mut paths: Vec<String> = (nodes.iter())
+        .filter(|node| node.node_id != root)
+        .map(|node| {
+            let mut path = node.name.clone();
+            let mut parent = &node.parent_id;
+            while let Some(above) =
+                (nodes.iter()).find(|above| above.node_id == *parent && *parent != root)
+            {
+                path = format!("{}/{path}", above.name);
+                parent = &above.parent_id;
+            }
+            match node.status == 1 {
+                true => path,
+                false => format!("{path} (trashed)"),
+            }
         })
         .collect();
-    live.sort();
-    live
+    paths.sort();
+    paths
 }
 
 fn a_folder_moved_into_a_folder_inside_it_on_the_server(
@@ -2344,7 +2389,7 @@ fn a_folder_moved_into_a_folder_inside_it_on_the_server(
 fn a_new_folder_merged_into_a_folder_whose_local_move_closes_a_cycle_stays_merged() {
     let ran = a_folder_moved_into_a_folder_inside_it_on_the_server(&[], &[]);
     assert_eq!(
-        live_on_the_server(&ran.space),
+        on_the_server(&ran.space),
         [
             "A (conflict from other 2026-11-09 2)",
             "a (conflict from other 2026-11-09 3)",
@@ -2363,15 +2408,15 @@ fn a_new_folder_merged_into_a_folder_with_a_cycle_uploads_once_another_device_en
         &[],
     );
     assert_eq!(
-        live_on_the_server(&ran.space),
+        on_the_server(&ran.space),
         [
             "A (conflict from other 2026-11-09 2)",
             "a (conflict from other 2026-11-09 3)",
             "b",
             "b/ß",
+            "b/ß/C.TXT",
             "c.txt",
             "ss",
-            "ß/C.TXT",
         ]
     );
 }
@@ -2383,7 +2428,7 @@ fn a_new_folder_merged_into_a_folder_with_a_cycle_empties_into_it_once_its_entri
         &[Ruling::File(vec![])],
     );
     assert_eq!(
-        live_on_the_server(&ran.space),
+        on_the_server(&ran.space),
         [
             "A (conflict from other 2026-11-09 2)",
             "a (conflict from other 2026-11-09 3)",
@@ -2437,8 +2482,8 @@ fn a_folder_moved_into_a_folder_merged_into_another(
 fn a_new_folder_merged_into_a_folder_inside_another_merged_folder_stays_merged() {
     let ran = a_folder_moved_into_a_folder_merged_into_another(&[], &[]);
     assert_eq!(
-        live_on_the_server(&ran.space),
-        ["C.TXT", "C.TXT/a", "a", "a/ß", "ss", "ss/b", "ss/ss"]
+        on_the_server(&ran.space),
+        ["C.TXT", "C.TXT/a", "C.TXT/a/ß", "a", "ss", "ss/b", "ss/ss"]
     );
 }
 
@@ -2450,9 +2495,87 @@ fn a_folder_merged_inside_a_merged_folder_empties_into_its_holder_once_its_entri
         &[kept.clone(), kept, Ruling::Exclude(vec![])],
     );
     assert_eq!(
-        live_on_the_server(&ran.space),
+        on_the_server(&ran.space),
         [
-            "C.TXT", "C.TXT/a", "a/a", "a/ß", "b/C.TXT", "ss", "ss/b", "ss/ss"
+            "C.TXT",
+            "C.TXT/a",
+            "C.TXT/a/a",
+            "C.TXT/a/ß",
+            "ss",
+            "ss/b",
+            "ss/b/C.TXT",
+            "ss/ss"
         ]
     );
+}
+
+fn the_cycle_moved_into_the_new_folder() -> Action {
+    act(3, 12515707553879184671, 3724418154487832398, 0, 0)
+}
+
+#[test]
+fn a_new_folder_merged_into_a_folder_with_a_cycle_takes_it_over_once_the_user_moves_the_cycle_into_it()
+ {
+    let ran = a_folder_moved_into_a_folder_inside_it_on_the_server(
+        &[(true, vec![the_cycle_moved_into_the_new_folder()])],
+        &[],
+    );
+    let tree = [
+        "A (conflict from other 2026-11-09 2)",
+        "a (conflict from other 2026-11-09 3)",
+        "c.txt",
+        "ss",
+        "ss/C.TXT",
+        "ss/a",
+    ];
+    assert_eq!(on_the_server(&ran.space), tree);
+    assert_eq!(ran.on_disk, [tree[0], tree[1], tree[2], tree[3], tree[5]]);
+}
+
+#[test]
+fn a_folder_a_new_folder_merged_into_it_takes_over_settles_whatever_the_user_moves_next() {
+    for target in 0..10 {
+        for name in [2, 5] {
+            a_folder_moved_into_a_folder_inside_it_on_the_server(
+                &[
+                    (true, vec![the_cycle_moved_into_the_new_folder()]),
+                    (true, vec![act(3, target, 0, name, 0)]),
+                ],
+                &[],
+            );
+        }
+    }
+}
+
+fn a_folder_another_device_moves_out_of_a_folder_moved_into_a_new_folder(
+    entries: &[Action],
+    moved: usize,
+    target: usize,
+) -> Ran {
+    let seed = [
+        &[act(0, 0, 0, 0, 0), act(0, 0, 806812601142602045, 0, 0)],
+        entries,
+    ]
+    .concat();
+    let steps = [(
+        true,
+        vec![
+            act(3, target, 1797422729715264269, 0, 0),
+            act(0, 0, 17492392242052885097, 3, 0),
+        ],
+    )];
+    let rulings = [Ruling::Exclude(vec!["c.txt"])];
+    onto_a_left_out_folder(&seed, &[], &[], moved, &steps, &rulings).unwrap()
+}
+
+#[test]
+fn the_entries_of_a_nested_copy_move_up_into_the_new_folder_that_takes_its_folder_over() {
+    let ran = a_folder_another_device_moves_out_of_a_folder_moved_into_a_new_folder(
+        &[act(1, 0, 1, 2, 0)],
+        2,
+        4,
+    );
+    let tree = ["a", "ss", "ss/a", "ss/b"];
+    assert_eq!(on_the_server(&ran.space), tree);
+    assert_eq!(ran.on_disk, tree);
 }

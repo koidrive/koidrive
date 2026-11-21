@@ -668,7 +668,7 @@ impl Commits {
         &self.aliases
     }
 
-    /// Settles each folder of `residue` against the live node of the server that holds its name key now (filesystem §5.10). With none, or a folder this device's user moved away in a move the server takes, the folder gets a new ID and uploads as a new folder. A move that leaves the folder reverted (state model §2.6) does not count as moving it away. With a folder this device never synced, while every other folder of this device at the key is merged too, the merged folder whose name is the live folder's takes its ID, otherwise one whose name differs from it only in Unicode normalization, otherwise any of them, and among equals the one with the lowest ID. Otherwise, and while its parent is still merged, the folder stays merged.
+    /// Settles each folder of `residue` against the live node of the server that holds its name key now (filesystem §5.10). With none, or a folder this device's user moved away in a move the server takes, the folder gets a new ID and uploads as a new folder. A move that leaves the folder reverted (state model §2.6) does not count as moving it away. When the live folder's copy sits below the merged folder, unmoved or put there by a reverted move, the merged folder takes the live folder's ID and the entries of the copy move up into it. With a folder this device never synced, while every other folder of this device at the key is merged too, the merged folder whose name is the live folder's takes its ID, otherwise one whose name differs from it only in Unicode normalization, otherwise any of them, and among equals the one with the lowest ID. Otherwise, and while its parent is still merged, the folder stays merged.
     pub fn settle_merge_residue(
         &mut self,
         trees: &mut Trees,
@@ -736,10 +736,11 @@ impl Commits {
                                 None if synced.is_none() && takes_over() => Some(holder.clone()),
                                 Some(node)
                                     if !node.parked
-                                        && synced.is_some_and(|synced| {
-                                            synced.parent == node.shape.parent
-                                                && same_name(&synced.name, &node.shape.name)
-                                        })
+                                        && (trees.reverted().contains(holder)
+                                            || synced.is_some_and(|synced| {
+                                                synced.parent == node.shape.parent
+                                                    && same_name(&synced.name, &node.shape.name)
+                                            }))
                                         && below_merged(node)
                                         && takes_over() =>
                                 {
@@ -772,9 +773,13 @@ impl Commits {
             match to {
                 Some(holder) => {
                     let mut synced = vec![(holder.clone(), Some(shape))];
-                    if trees.local().get(&holder).is_some() {
+                    if let Some(nested) = trees.local().get(&holder) {
                         let copy = NodeId::from(ids.uuid_v7(now_ms));
-                        synced.push((copy.clone(), trees.synced().get(&holder).cloned()));
+                        let copy_shape = match trees.reverted().contains(&holder) {
+                            true => Some(nested.shape.clone()),
+                            false => trees.synced().get(&holder).cloned(),
+                        };
+                        synced.push((copy.clone(), copy_shape));
                         rekey(trees, &holder, &copy);
                         synced.extend((trees.local_children(&copy)).filter_map(|child| {
                             let shape = (trees.synced().get(child))
