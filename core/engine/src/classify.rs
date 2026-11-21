@@ -2803,6 +2803,14 @@ impl Trees {
     }
 
     fn left_as_discarded(&self, id: &NodeId) -> bool {
+        self.left_as_discarded_within(id, &mut BTreeSet::new())
+    }
+
+    fn left_as_discarded_within<'a>(
+        &'a self,
+        id: &'a NodeId,
+        judged: &mut BTreeSet<&'a NodeId>,
+    ) -> bool {
         if self.r.get(id).is_none() {
             return true;
         }
@@ -2812,7 +2820,7 @@ impl Trees {
         let mut seen = BTreeSet::new();
         unchanged
             && (self.local_children_placed_or_parked(id)).all(|child| {
-                self.kept_as_discarded_in(child, id)
+                self.kept_as_discarded_in(child, id, judged)
                     || self.held_folder_discarded_in(child, id)
                     || self.held(child)
                     || self.as_the_server_holds(child, &mut seen)
@@ -2858,19 +2866,27 @@ impl Trees {
         false
     }
 
-    fn kept_as_discarded_in(&self, id: &NodeId, folder: &NodeId) -> bool {
+    fn kept_as_discarded_in<'a>(
+        &'a self,
+        id: &'a NodeId,
+        folder: &NodeId,
+        judged: &mut BTreeSet<&'a NodeId>,
+    ) -> bool {
         if !(self.discarded.get(id)).is_some_and(|shape| shape.parent == *folder) {
             return false;
         }
+        if !judged.insert(id) {
+            return true;
+        }
         if self.r.get(id).is_some() {
-            return self.left_as_discarded(id);
+            return self.left_as_discarded_within(id, judged);
         }
         let unchanged = (self.l.get(id)).is_some_and(|local| {
             (self.discarded.get(id)).is_some_and(|shape| local.shape.same(shape))
         });
         unchanged
             && (self.local_children_placed_or_parked(id))
-                .all(|child| self.kept_as_discarded_in(child, id))
+                .all(|child| self.kept_as_discarded_in(child, id, judged))
     }
 
     fn as_the_server_holds<'a>(&'a self, id: &'a NodeId, seen: &mut BTreeSet<&'a NodeId>) -> bool {
@@ -3330,7 +3346,7 @@ impl Trees {
                 self.keeps_the_synced_children(id, &landing.deleted, &mut BTreeSet::new())
                     && children.into_iter().all(|child| {
                         shown.contains_key(child)
-                            || self.kept_as_discarded_in(child, id)
+                            || self.kept_as_discarded_in(child, id, &mut BTreeSet::new())
                             || self.held_folder_discarded_in(child, id)
                             || self.server_copy(child, shown, landing, kept)
                     })
@@ -4549,7 +4565,7 @@ impl Trees {
                         let folder = &local.shape.parent;
                         self.r.get(folder).is_none()
                             && self.discarded.contains_key(folder)
-                            && self.kept_as_discarded_in(id, folder)
+                            && self.kept_as_discarded_in(id, folder, &mut BTreeSet::new())
                     })
             })
     }
