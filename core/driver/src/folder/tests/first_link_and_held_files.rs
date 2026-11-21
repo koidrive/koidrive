@@ -1113,7 +1113,14 @@ fn take_requested(b: &mut Device) {
 
 #[test]
 fn a_restart_at_any_step_between_a_rules_files_discard_and_its_judgment_uploads_nothing_unasked() {
-    for (stop, upgraded) in [(0, false), (1, false), (1, true), (2, false), (3, false)] {
+    for (stop, upgraded, gone) in [
+        (0, false, false),
+        (1, false, false),
+        (1, true, false),
+        (1, false, true),
+        (2, false, false),
+        (3, false, false),
+    ] {
         let (mut remote, site, mut b) =
             with_a_held_rules_file(&[("README.md", "synced")], &[], true);
         answer(&site, Answer::Discard);
@@ -1125,6 +1132,9 @@ fn a_restart_at_any_step_between_a_rules_files_discard_and_its_judgment_uploads_
             let mut state = store.transaction(|tx| tx.engine_state()).unwrap();
             state.trees.answered_rules.clear();
             store.transaction(|tx| tx.set_engine_state(&state)).unwrap();
+        }
+        if gone {
+            fs::remove_file(site.root.join("app/.koiignore")).unwrap();
         }
         if stop >= 2 {
             b.run(&mut remote);
@@ -1211,19 +1221,35 @@ fn an_answered_rules_record_ends_when_its_folder_goes_or_its_rules_file_comes_ba
             assert!(server_paths(&remote).contains(&"app/.env".to_owned()));
         }
     }
-    assert_eq!(recorded, [1, 1, 1, 0, 0]);
+    assert_eq!(recorded, [1, 1, 1, 1, 0]);
 }
 
 #[test]
 fn a_rules_download_that_fails_or_cannot_land_lets_no_commit_send_what_the_discarded_rules_left_out()
  {
     use std::os::unix::fs::PermissionsExt;
-    for mode in ["unavailable", "denied", "taken"] {
+    let modes = [
+        ("unavailable", false),
+        ("denied", false),
+        ("taken", false),
+        ("unavailable", true),
+    ];
+    for (mode, upgraded) in modes {
         let server = [("README.md", "synced"), (".koiignore", "*.log\n")];
         let (mut remote, site, mut b) = with_a_held_rules_file(&server, &[], true);
         let (app, moved) = (site.root.join("app"), site.root.join("app2"));
         answer(&site, Answer::Discard);
         take_requested(&mut b);
+        if upgraded {
+            drop(b);
+            let mut store = Store::open(&site.db).unwrap();
+            let mut state = store.transaction(|tx| tx.engine_state()).unwrap();
+            state.trees.answered_rules.clear();
+            store.transaction(|tx| tx.set_engine_state(&state)).unwrap();
+            b = site.start();
+            b.connect(&remote);
+            b.scan_until(|device| device.folder.scanned);
+        }
         let (mut blocked, mut failures) = (false, BTreeSet::new());
         for step in 0..40 {
             if mode == "unavailable" && step == 20 {

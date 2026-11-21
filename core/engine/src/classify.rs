@@ -3216,7 +3216,8 @@ impl Trees {
             }
             if let (None, Some(shape)) = (self.r.get(&id), shown.get(&id)) {
                 self.unsort(&id);
-                self.discarded.insert(id, shape.clone());
+                self.discarded.insert(id.clone(), shape.clone());
+                self.record_discarded_rules(&id);
             }
         }
     }
