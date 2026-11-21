@@ -2275,3 +2275,176 @@ fn renaming_an_entry_the_user_moved_in_from_a_folder_another_device_then_brings_
     renames_after_sync(&mut device, "e", "s");
     assert!(acted_below(&device, &s, &kept, &discarded));
 }
+
+fn onto_a_left_out_folder(
+    seed: &[Action],
+    local: &[Action],
+    remote: &[Action],
+    moved: usize,
+    during: &[(bool, Vec<Action>)],
+    rulings: &[Ruling],
+) -> Result<Ran, TestCaseError> {
+    run_ignoring(
+        &[&[act(1, 0, 0, 0, 0)], seed].concat(),
+        &[&[act(0, 0, 0, 6, 0)], local].concat(),
+        &[&[act(3, moved, 0, 6, 0)], remote].concat(),
+        MAX_OPS,
+        false,
+        during,
+        Cut::None,
+        &[&[Ruling::Exclude(vec!["ss/"])], rulings].concat(),
+        Answer::Delete,
+        None,
+    )
+}
+
+fn live_on_the_server(space: &SpaceDo) -> Vec<String> {
+    let root = space.space_id().to_owned();
+    let nodes = space.nodes();
+    let name = |id: &str| (nodes.iter()).find(|node| node.node_id == id && id != root);
+    let mut live: Vec<String> = (nodes.iter())
+        .filter(|node| node.status == 1 && node.node_id != root)
+        .map(|node| match name(&node.parent_id) {
+            Some(parent) => format!("{}/{}", parent.name, node.name),
+            None => node.name.clone(),
+        })
+        .collect();
+    live.sort();
+    live
+}
+
+fn a_folder_moved_into_a_folder_inside_it_on_the_server(
+    during: &[(bool, Vec<Action>)],
+    rulings: &[Ruling],
+) -> Ran {
+    let seed = [act(0, 0, 0, 1, 0), act(0, 0, 0, 1, 0), act(0, 0, 0, 2, 0)];
+    let remote = [act(1, 0, 0, 3, 0), act(0, 0, 0, 0, 0)];
+    let mut steps = vec![
+        (false, vec![act(3, 9553181018674330745, 1, 1, 0), act(3, 0, 0, 3, 0)]),
+        (false, vec![act(3, 0, 1, 4, 0)]),
+        (true, vec![act(0, 0, 2, 4, 0), act(3, 0, 4297477585250542481, 5, 0)]),
+    ];
+    steps.extend_from_slice(during);
+    let mut ruled = vec![
+        Ruling::Exclude(vec![]),
+        Ruling::File(vec!["ss/"]),
+        Ruling::File(vec!["c.txt"]),
+    ];
+    ruled.extend_from_slice(rulings);
+    onto_a_left_out_folder(&seed, &[], &remote, 1, &steps, &ruled).unwrap()
+}
+
+#[test]
+fn a_new_folder_merged_into_a_folder_whose_local_move_closes_a_cycle_stays_merged() {
+    let ran = a_folder_moved_into_a_folder_inside_it_on_the_server(&[], &[]);
+    assert_eq!(
+        live_on_the_server(&ran.space),
+        [
+            "A (conflict from other 2026-11-09 2)",
+            "a (conflict from other 2026-11-09 3)",
+            "c.txt",
+            "ss",
+            "ss/A",
+            "ss/C.TXT",
+        ]
+    );
+}
+
+#[test]
+fn a_new_folder_merged_into_a_folder_with_a_cycle_uploads_once_another_device_ends_the_cycle() {
+    let ran = a_folder_moved_into_a_folder_inside_it_on_the_server(
+        &[(false, vec![act(3, 5, 0, 2, 0)])],
+        &[],
+    );
+    assert_eq!(
+        live_on_the_server(&ran.space),
+        [
+            "A (conflict from other 2026-11-09 2)",
+            "a (conflict from other 2026-11-09 3)",
+            "b",
+            "b/ß",
+            "c.txt",
+            "ss",
+            "ß/C.TXT",
+        ]
+    );
+}
+
+#[test]
+fn a_new_folder_merged_into_a_folder_with_a_cycle_empties_into_it_once_the_rules_let_its_entries_in() {
+    let ran = a_folder_moved_into_a_folder_inside_it_on_the_server(
+        &[(true, vec![])],
+        &[Ruling::File(vec![])],
+    );
+    assert_eq!(
+        live_on_the_server(&ran.space),
+        [
+            "A (conflict from other 2026-11-09 2)",
+            "a (conflict from other 2026-11-09 3)",
+            "c.txt",
+            "ss",
+            "ss/A",
+            "ss/C (conflict from me 2026-11-09).TXT",
+            "ss/C.TXT",
+        ]
+    );
+}
+
+fn a_folder_moved_into_a_folder_merged_into_another(
+    during: &[(bool, Vec<Action>)],
+    rulings: &[Ruling],
+) -> Ran {
+    let seed = [
+        act(0, 0, 0, 4, 0),
+        act(0, 0, 0, 2, 0),
+        act(0, 0, 2, 0, 0),
+        act(0, 0, 1, 5, 0),
+        act(0, 0, 2, 5, 0),
+    ];
+    let mut steps = vec![
+        (true, vec![act(0, 0, 0, 6, 0)]),
+        (true, vec![act(0, 0, 2, 0, 0)]),
+        (
+            true,
+            vec![
+                act(0, 0, 12330265154623477269, 2, 0),
+                act(3, 1, 16887158201771922658, 2, 0),
+            ],
+        ),
+        (true, vec![act(3, 0, 2024537367886542668, 4, 0)]),
+    ];
+    steps.extend_from_slice(during);
+    let mut ruled = vec![Ruling::Exclude(vec!["ss/"]), Ruling::Exclude(vec!["c.txt"])];
+    ruled.extend_from_slice(rulings);
+    onto_a_left_out_folder(
+        &seed,
+        &[act(1, 0, 10390611251760751516, 6, 0)],
+        &[act(2, 0, 0, 4, 0)],
+        11323417318718431276,
+        &steps,
+        &ruled,
+    )
+    .unwrap()
+}
+
+#[test]
+fn a_new_folder_merged_into_a_folder_inside_another_merged_folder_stays_merged() {
+    let ran = a_folder_moved_into_a_folder_merged_into_another(&[], &[]);
+    assert_eq!(
+        live_on_the_server(&ran.space),
+        ["C.TXT", "C.TXT/a", "a", "a/ß", "ss", "ss/b", "ss/ss"]
+    );
+}
+
+#[test]
+fn a_new_folder_merged_into_a_folder_inside_another_merged_folder_empties_into_it_once_the_rules_let_its_entries_in() {
+    let kept = Ruling::Exclude(vec!["c.txt"]);
+    let ran = a_folder_moved_into_a_folder_merged_into_another(
+        &[(true, vec![])],
+        &[kept.clone(), kept, Ruling::Exclude(vec![])],
+    );
+    assert_eq!(
+        live_on_the_server(&ran.space),
+        ["C.TXT", "C.TXT/a", "a/a", "a/ß", "b/C.TXT", "ss", "ss/b", "ss/ss"]
+    );
+}
