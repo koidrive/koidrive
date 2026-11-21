@@ -1749,6 +1749,13 @@ fn a_discard_judges_an_entry_taken_out_by_the_place_the_server_last_took_its_mov
             NodeId::from(acknowledged)
         );
         assert_eq!(what_the_user_did_below(&device, &folder), after);
+        device.receive(
+            &[ChangeRecord {
+                change: Some(change_record::Change::Node(state(acknowledged, "b"))),
+            }],
+            true,
+        );
+        assert_eq!(what_the_user_did_below(&device, &folder), after);
     }
 }
 

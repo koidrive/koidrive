@@ -810,7 +810,7 @@ impl Device {
                     moved.left.drain(..=at);
                     self.left_from.insert(node.clone(), moved.left[0].1.clone());
                     self.placed_elsewhere.remove(&node);
-                } else {
+                } else if !remote.same_position(&moved.from) {
                     self.placed_elsewhere.insert(node.clone());
                 }
                 moved.from = remote;
