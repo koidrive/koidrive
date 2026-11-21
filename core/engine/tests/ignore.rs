@@ -3750,3 +3750,33 @@ fn a_removal_planned_for_a_file_another_device_moved_out_of_the_rules_is_not_tak
     trees.settle(&Default::default());
     assert!(!record.applies(&trees, None));
 }
+
+#[test]
+fn a_removal_planned_for_a_moved_file_is_not_taken_once_a_rule_excludes_the_copy_and_the_server_trashes_it()
+ {
+    let mut trees = trees(&[
+        synced("a", file(ROOT, "a.txt", 1)),
+        incoming("build", dir(ROOT, "build")),
+    ]);
+    trees.set_rules(&AT_ROOT, Source::Koiignore, rules("/build/\n"));
+    move_remote(&mut trees, "a", "build");
+    trees.settle(&Default::default());
+    let mut planner = Effects::default();
+    let [record] = planner.plan(&trees, None, &mut IdGen::new(2), NOW, BatchLimit::ONE) else {
+        panic!("stage the local removal");
+    };
+    let record = record.clone();
+    assert!(
+        matches!(&record.effect, Effect::RemoveFile { .. }),
+        "{record:?}"
+    );
+
+    trees.set_rules(&AT_ROOT, Source::Koiignore, rules("/a.txt\n/build/\n"));
+    trees.settle(&Default::default());
+    assert!(!record.applies(&trees, None));
+    trash(&mut trees, "a");
+    trees.settle(&Default::default());
+    assert!(trees.excluded(&"a".into()));
+    assert!(trees.remote().live(&"a".into()).is_none());
+    assert!(!record.applies(&trees, None));
+}

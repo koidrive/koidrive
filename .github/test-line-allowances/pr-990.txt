@@ -1,4 +1,5 @@
-571
+682
 # Engine and driver: a file another device moves or renames where the rules leave it out here goes to the local trash only while its copy is unchanged at S's place, and a folder, a changed copy, a copy the rules exclude where it sits, and a file whose server place is still S's stay. No earlier test covers a remote move whose effect is a removal.
 # Engine: this device's own move of the file, in flight, served before its result, or carried across a restart, keeps the copy, and so does a server loss that drops an acknowledged move. Each is a separate path into the state where R and S differ.
 # Engine and driver: a removal planned for such a file is dropped when the rule that excluded the server's place goes, when the server restores the file, or when another device moves it back before the removal runs. These are the apply-time cases, and each needs its own setup of the trees between planning and applying.
+# Engine and driver: a removal planned for such a file is dropped when a rule added here excludes the copy where it sits and the server then trashes the file, since the server's trash of an excluded node leaves its copy alone.

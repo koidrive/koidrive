@@ -1351,7 +1351,8 @@ impl<'a> View<'a> {
             let left_behind = self.trees.left_behind(&record.node)
                 && !in_flight.is_some_and(|flight| flight.positions(&record.node));
             if matches!(record.effect, Effect::RemoveFile { .. })
-                && self.trees.remote().live(&record.node).is_some()
+                && (self.trees.remote().live(&record.node).is_some()
+                    || self.trees.excluded(&record.node))
                 && !left_behind
                 && !self.trees.trashed_while_parked(&record.node)
             {

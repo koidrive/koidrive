@@ -2906,3 +2906,65 @@ fn a_file_another_device_moves_back_before_its_removal_runs_stays() {
         (Some(b"keep".to_vec()), Vec::<Vec<u8>>::new()),
     );
 }
+
+#[test]
+fn a_copy_a_rule_added_here_excludes_stays_when_the_server_trashes_it_before_its_removal_runs() {
+    let mut remote = Remote::new();
+    let (site_a, mut a) = linked(&mut remote, "a");
+    fs::create_dir(site_a.root.join("archive")).unwrap();
+    a.create(&mut remote, &site_a.root.join("archive/old.txt"), b"old");
+    a.create(&mut remote, &site_a.root.join("keep.txt"), b"keep");
+    let sync = SyncRules {
+        exclude: vec!["archive/".into()],
+        ..SyncRules::default()
+    };
+    let site = Site::new(&remote, "b");
+    let mut b = site.start_with(&sync);
+    b.connect(&remote);
+    b.scan_until(|b| b.folder.scanned);
+    b.run(&mut remote);
+    b.settle();
+    let keep = site.root.join("keep.txt");
+    assert_eq!(fs::read(&keep).unwrap(), b"keep");
+
+    fs::rename(
+        site_a.root.join("keep.txt"),
+        site_a.root.join("archive/keep.txt"),
+    )
+    .unwrap();
+    a.scan_until(|a| !a.work.is_empty());
+    a.run(&mut remote);
+    b.pull(&remote);
+    let Some(stage @ Work::Stage(_)) = b.work.pop_front() else {
+        panic!("the remote move must plan a local removal");
+    };
+    let id = NodeId::from(live_id(&server_nodes(&remote), "keep.txt"));
+    fs::write(site.root.join(".koiignore"), b"/keep.txt\n").unwrap();
+    b.scan_until(|b| b.folder.engine.trees.ignores(&["keep.txt"], Kind::File));
+    fs::remove_file(site_a.root.join("archive/keep.txt")).unwrap();
+    a.scan_until(|a| !a.work.is_empty());
+    a.run(&mut remote);
+    b.pull(&remote);
+    let trees = &b.folder.engine.trees;
+    assert!(trees.excluded(&id));
+    assert!(trees.remote().get(&id).is_some_and(|node| node.trashed));
+    assert_eq!(fs::read(&keep).unwrap(), b"keep");
+    b.perform(stage, &mut remote).unwrap();
+
+    let trash: Vec<_> = trashed(&site.root)
+        .into_iter()
+        .map(|name| {
+            fs::read(
+                site.root
+                    .join(koidrive_fs::PRIVATE_DIR)
+                    .join("trash")
+                    .join(name),
+            )
+            .unwrap()
+        })
+        .collect();
+    assert_eq!(
+        (fs::read(&keep).ok(), trash),
+        (Some(b"keep".to_vec()), Vec::<Vec<u8>>::new()),
+    );
+}
