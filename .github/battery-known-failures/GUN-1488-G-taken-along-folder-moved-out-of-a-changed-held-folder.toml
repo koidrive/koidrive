@@ -4,7 +4,10 @@ tests = ["a_first_link_discard_keeps_a_folder_the_user_changes_after_the_server_
 message = '''<id> is where the user put it in a folder that is the user's again, but the effects move it out at \S+\.rs:<line>\.'''
 examples = [
     "01a1c2c0-39a0-7c9f-92dd-37ded7172a70 is where the user put it in a folder that is the user's again, but the effects move it out at core/sim/tests/engine_sync/common.rs:2033.",
+    "01a1c2c0-39a0-7122-aa2f-19dfbfa03020 is where the user put it in a folder that is the user's again, but the effects move it out at core/sim/tests/engine_sync/common.rs:2088.",
 ]
 cases = [
     "0f98bb5b7d4aa1f3d48ea62fa430762bb8141ef2eb9d629510c19c6263b9811e",
+    "329b941236ab518d326690b0c6d9f7fd122aa921c4ac534e37b7a04b962360d0",
+    "9c20c6efb5bbc681774b615291fe13d51624119bbde40d11b37c9022b8e3af14",
 ]
