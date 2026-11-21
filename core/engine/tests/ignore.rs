@@ -3666,3 +3666,87 @@ fn a_remote_change_below_a_folder_moved_into_an_ignored_folder_here_plans_no_rem
         assert_eq!(done, [], "{moved}: {done:?}");
     }
 }
+
+#[test]
+fn a_file_this_device_moved_back_before_its_own_move_was_served_stays() {
+    let mut trees = trees(&[
+        synced("a", file(ROOT, "a.txt", 1)),
+        synced("c", dir(ROOT, "c")),
+    ]);
+    trees.set_rules(&AT_ROOT, Source::Koiignore, None);
+    rename_here(&mut trees, "a", "c", "a.txt");
+    trees.settle(&Default::default());
+    let mut commits = Commits::default();
+    let commit_id = commits
+        .build(&mut trees, &mut IdGen::new(1), NOW, HISTORY, "me", 7)
+        .unwrap()
+        .commit_id
+        .clone();
+    rename_here(&mut trees, "a", ROOT, "a.txt");
+    trees.set_rules(&AT_ROOT, Source::Koiignore, rules("/c/\n"));
+    move_remote(&mut trees, "a", "c");
+    let seq = trees.remote().get(&"a".into()).unwrap().meta_rev;
+    assert!(commits.own_record(seq, &commit_id, 0));
+    commits.acknowledge(&mut trees, seq);
+    assert!(commits.in_flight().is_some(), "the result has not arrived");
+    let done = effects_with(&mut trees, commits.in_flight());
+    assert!(!nodes(&done).contains(&"a"), "{done:?}");
+}
+
+#[test]
+fn a_file_this_device_moved_back_while_its_own_move_is_in_flight_stays() {
+    let mut trees = trees(&[
+        synced("a", file(ROOT, "a.txt", 1)),
+        synced("c", dir(ROOT, "c")),
+    ]);
+    rename_here(&mut trees, "a", "c", "a.txt");
+    trees.settle(&Default::default());
+    let mut commits = Commits::default();
+    commits
+        .build(&mut trees, &mut IdGen::new(1), NOW, HISTORY, "me", 7)
+        .unwrap();
+    rename_here(&mut trees, "a", ROOT, "a.txt");
+    trees.set_rules(&AT_ROOT, Source::Koiignore, rules("/c/\n"));
+    let mut node = trees.remote().get(&NodeId::from("a")).unwrap().clone();
+    node.shape.parent = "c".into();
+    node.meta_rev += 1;
+    trees.set_remote_made_here("a".into(), node);
+    let done = effects_with(&mut trees, commits.in_flight());
+    assert!(!nodes(&done).contains(&"a"), "{done:?}");
+
+    let mut trees = restarted(&trees);
+    trees.set_rules(&AT_ROOT, Source::Koiignore, rules("/c/\n"));
+    trees.rules_scanned();
+    let done = effects_with(&mut trees, commits.in_flight());
+    assert!(!nodes(&done).contains(&"a"), "after a restart: {done:?}");
+    assert_eq!(
+        trees.local().get(&"a".into()).unwrap().shape,
+        file(ROOT, "a.txt", 1)
+    );
+}
+
+#[test]
+fn a_removal_planned_for_a_file_another_device_moved_out_of_the_rules_is_not_taken_once_the_rule_goes()
+ {
+    let mut trees = trees(&[
+        synced("a", file(ROOT, "a.txt", 1)),
+        incoming("build", dir(ROOT, "build")),
+    ]);
+    trees.set_rules(&AT_ROOT, Source::Koiignore, rules("/build/\n"));
+    move_remote(&mut trees, "a", "build");
+    trees.settle(&Default::default());
+    let mut planner = Effects::default();
+    let records = planner.plan(&trees, None, &mut IdGen::new(2), NOW, BatchLimit::ONE);
+    let [record] = records else {
+        panic!("{records:?}");
+    };
+    assert!(
+        matches!(&record.effect, Effect::RemoveFile { .. }),
+        "{record:?}"
+    );
+    assert!(record.applies(&trees, None));
+
+    trees.set_rules(&AT_ROOT, Source::Koiignore, None);
+    trees.settle(&Default::default());
+    assert!(!record.applies(&trees, None));
+}

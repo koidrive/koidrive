@@ -479,7 +479,11 @@ impl Effects {
             if chosen.len() >= limit.effects {
                 break;
             }
-            if !candidate(trees, id) || trees.held(id) || (!gates.is_empty() && gated(id)) {
+            if !candidate(trees, id)
+                || trees.held(id)
+                || (!gates.is_empty() && gated(id))
+                || (trees.left_behind(id) && in_flight.is_some_and(|flight| flight.positions(id)))
+            {
                 continue;
             }
             match view.step(id) {
@@ -1344,9 +1348,11 @@ impl<'a> View<'a> {
             return false;
         }
         let Some(after) = &record.after else {
-            if self.trees.remote().live(&record.node).is_some()
-                && self.trees.excluded(&record.node)
-                && !self.trees.left_behind(&record.node)
+            let left_behind = self.trees.left_behind(&record.node)
+                && !in_flight.is_some_and(|flight| flight.positions(&record.node));
+            if matches!(record.effect, Effect::RemoveFile { .. })
+                && self.trees.remote().live(&record.node).is_some()
+                && !left_behind
                 && !self.trees.trashed_while_parked(&record.node)
             {
                 return false;
