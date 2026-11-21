@@ -172,6 +172,10 @@ fn main() -> ExitCode {
         agent_log,
         (!json && !verbose && output::concise(&command)).then_some(command.as_str()),
     );
+    let daemon_run = matches!(command_args, Command::Daemon { .. });
+    if daemon_run {
+        daemon::limit_malloc_arenas();
+    }
     let runtime = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -182,7 +186,6 @@ fn main() -> ExitCode {
             return finish(&command, json, verbose, Err(error), Vec::new());
         }
     };
-    let daemon_run = matches!(command_args, Command::Daemon { .. });
     let pending_paths = paths.clone();
     let telemetry_paths = paths.clone();
     let telemetry = telemetry_of(&command_args);

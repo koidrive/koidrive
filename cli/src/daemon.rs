@@ -83,6 +83,14 @@ pub(crate) async fn daemon(paths: Paths, json: bool) -> Result<Done, CliError> {
     Ok(Done::printed())
 }
 
+#[cfg(target_env = "gnu")]
+pub(crate) fn limit_malloc_arenas() {
+    unsafe { libc::mallopt(libc::M_ARENA_MAX, 2) };
+}
+
+#[cfg(not(target_env = "gnu"))]
+pub(crate) fn limit_malloc_arenas() {}
+
 pub(crate) async fn daemon_driver(paths: Paths) -> Result<Driver, DriverError> {
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
     loop {
@@ -124,5 +132,54 @@ async fn folder_states(
             };
             let _ = writeln!(io::stdout(), "{}", event.line());
         }
+    }
+}
+
+#[cfg(all(test, target_env = "gnu"))]
+mod tests {
+    use std::process::Command;
+    use std::sync::Barrier;
+
+    const CHILD: &str = "KOIDRIVE_TEST_ARENA_CHILD";
+    const THREADS: usize = 16;
+
+    #[test]
+    fn the_daemon_allocates_from_at_most_two_malloc_arenas() {
+        if std::env::var_os(CHILD).is_some() {
+            super::limit_malloc_arenas();
+            let barrier = Barrier::new(THREADS);
+            std::thread::scope(|scope| {
+                for _ in 0..THREADS {
+                    scope.spawn(|| {
+                        barrier.wait();
+                        let blocks: Vec<Vec<u8>> =
+                            (0..1_000).map(|size| vec![1; 64 + size]).collect();
+                        barrier.wait();
+                        drop(blocks);
+                    });
+                }
+            });
+            unsafe { libc::malloc_stats() };
+            return;
+        }
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "daemon::tests::the_daemon_allocates_from_at_most_two_malloc_arenas",
+                "--test-threads=1",
+            ])
+            .env(CHILD, "1")
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(output.status.success(), "{stderr}");
+        let arenas = stderr
+            .lines()
+            .filter(|line| line.starts_with("Arena "))
+            .count();
+        assert!(
+            (1..=2).contains(&arenas),
+            "{arenas} arenas after {THREADS} threads allocated at once:\n{stderr}"
+        );
     }
 }
