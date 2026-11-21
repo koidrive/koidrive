@@ -17,13 +17,10 @@ jobs:
       matrix:
         include:
           - code: head
-            ref: e94ea6cc8e318b24171458637fb8cdda23e0f7d1
+            ref: 075e074c76e6ca1f7983414a0e60a27a5b972363
             tests: >-
               python3 scripts/test-stress-test-servers.py StressTests.test_worker_timeout_kills_nested_process_groups StressTests.test_timeout_kills_processes &&
               python3 scripts/test-worker-launchers.py WorkerLaunchers.test_a_stop_signal_stops_the_tests_and_never_cuts_cleanup_short
-          - code: base
-            ref: aa4bd248f4944c68128589962dbf6e18ffe383b1
-            tests: python3 scripts/test-stress-test-servers.py StressTests.test_worker_timeout_kills_nested_process_groups StressTests.test_timeout_kills_processes
     runs-on: ubuntu-latest
     timeout-minutes: 90
     permissions:
