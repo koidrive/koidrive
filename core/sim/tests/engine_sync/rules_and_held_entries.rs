@@ -2320,9 +2320,15 @@ fn a_folder_moved_into_a_folder_inside_it_on_the_server(
     let seed = [act(0, 0, 0, 1, 0), act(0, 0, 0, 1, 0), act(0, 0, 0, 2, 0)];
     let remote = [act(1, 0, 0, 3, 0), act(0, 0, 0, 0, 0)];
     let mut steps = vec![
-        (false, vec![act(3, 9553181018674330745, 1, 1, 0), act(3, 0, 0, 3, 0)]),
+        (
+            false,
+            vec![act(3, 9553181018674330745, 1, 1, 0), act(3, 0, 0, 3, 0)],
+        ),
         (false, vec![act(3, 0, 1, 4, 0)]),
-        (true, vec![act(0, 0, 2, 4, 0), act(3, 0, 4297477585250542481, 5, 0)]),
+        (
+            true,
+            vec![act(0, 0, 2, 4, 0), act(3, 0, 4297477585250542481, 5, 0)],
+        ),
     ];
     steps.extend_from_slice(during);
     let mut ruled = vec![
@@ -2371,7 +2377,7 @@ fn a_new_folder_merged_into_a_folder_with_a_cycle_uploads_once_another_device_en
 }
 
 #[test]
-fn a_new_folder_merged_into_a_folder_with_a_cycle_empties_into_it_once_the_rules_let_its_entries_in() {
+fn a_new_folder_merged_into_a_folder_with_a_cycle_empties_into_it_once_its_entries_are_let_in() {
     let ran = a_folder_moved_into_a_folder_inside_it_on_the_server(
         &[(true, vec![])],
         &[Ruling::File(vec![])],
@@ -2437,7 +2443,7 @@ fn a_new_folder_merged_into_a_folder_inside_another_merged_folder_stays_merged()
 }
 
 #[test]
-fn a_new_folder_merged_into_a_folder_inside_another_merged_folder_empties_into_it_once_the_rules_let_its_entries_in() {
+fn a_folder_merged_inside_a_merged_folder_empties_into_its_holder_once_its_entries_are_let_in() {
     let kept = Ruling::Exclude(vec!["c.txt"]);
     let ran = a_folder_moved_into_a_folder_merged_into_another(
         &[(true, vec![])],
@@ -2445,6 +2451,8 @@ fn a_new_folder_merged_into_a_folder_inside_another_merged_folder_empties_into_i
     );
     assert_eq!(
         live_on_the_server(&ran.space),
-        ["C.TXT", "C.TXT/a", "a/a", "a/ß", "b/C.TXT", "ss", "ss/b", "ss/ss"]
+        [
+            "C.TXT", "C.TXT/a", "a/a", "a/ß", "b/C.TXT", "ss", "ss/b", "ss/ss"
+        ]
     );
 }
