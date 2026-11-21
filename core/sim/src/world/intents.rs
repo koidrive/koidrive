@@ -207,7 +207,7 @@ impl Intent {
     }
 
     pub(super) fn copies(&self) -> bool {
-        self.kind == "copy" || self.kind == PUBLISH
+        self.kind == "copy" || self.kind == PUBLISH || self.kind == KEEP
     }
 }
 
