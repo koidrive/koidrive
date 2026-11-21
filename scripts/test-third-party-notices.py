@@ -164,6 +164,24 @@ class Copyrights(unittest.TestCase):
         notices.resolve(component, [crate.dir])
         self.assertEqual(component.texts, [bare_mit, "Copyright notices in the sources of demo 1.0.0:\n\nCopyright (c) 2019 Someone Else */\nCopyright 2016 lazy-static.rs Developers"])
 
+    def test_copyright_statements_without_a_year_or_with_a_circled_c_are_found(self):
+        crate = Crate(self, {"src/lib.rs": "\n".join([
+            "// Copyright ⓒ 2015-2016 Kevin B. Knapp and clap-rs contributors.",
+            "// Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.",
+            " * Copyright Stephan Mueller <smueller@chronox.de>, 2013 - 2025",
+            "// Modifications copyright Amazon.com, Inc. or its affiliates.",
+            "// Redistributions of source code must retain the above copyright notice,",
+            "// No copyright assignment is required to contribute.",
+            "// Copyright notices and licence texts follow.",
+            "pub use self::__MDItem::kMDItemCopyright;",
+        ])})
+        self.assertEqual(notices.source_copyrights(crate.dir), [
+            "Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.",
+            "Copyright Stephan Mueller <smueller@chronox.de>, 2013 - 2025",
+            "Copyright ⓒ 2015-2016 Kevin B. Knapp and clap-rs contributors.",
+            "Modifications copyright Amazon.com, Inc. or its affiliates.",
+        ])
+
     def test_copyright_lines_already_in_the_licence_text_are_not_repeated(self):
         crate = Crate(self, {"LICENSE": MIT, "src/lib.rs": "// Copyright (c) 2020 Someone\n"})
         component = crate.component("MIT")
@@ -219,6 +237,16 @@ class CommittedFile(unittest.TestCase):
         self.assertEqual(numbers, set(range(1, max(numbers) + 1)))
         for number in numbers:
             self.assertIn(f"\nText {number}: ", text)
+
+    def test_source_attributions_of_linked_crates_ship(self):
+        text = notices.NOTICES.read_text(encoding="utf-8")
+        for crate, attribution in [
+            ("clap 4.6.7", "Copyright ⓒ 2015-2016 Kevin B. Knapp and [`clap-rs` contributors]"),
+            ("lazy_static 1.5.1", "Copyright 2016 lazy-static.rs Developers"),
+            ("aws-lc-rs 1.19.0", "Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved."),
+        ]:
+            block = text.split(f"Copyright notices in the sources of {crate}:\n", 1)[1].split("-" * 72, 1)[0]
+            self.assertIn(attribution, block)
 
 
 if __name__ == "__main__":

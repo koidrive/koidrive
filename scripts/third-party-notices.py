@@ -42,7 +42,13 @@ NOTICE_MARKERS = {
 PREFERENCE = ("MIT", "ISC", "BSD-2-Clause", "BSD-3-Clause", "Apache-2.0", "Unicode-3.0")
 LICENCE_FILE = re.compile(r"^(LICEN[CS]E|COPYING|COPYRIGHT|UNLICENSE)", re.IGNORECASE)
 EXTRA_NOTICE_FILE = re.compile(r"^NOTICE|THIRD[-_]?PARTY", re.IGNORECASE)
-COPYRIGHT_LINE = re.compile(r"copyright\s*(?:\(c\)|©|\d{4})", re.IGNORECASE)
+COPYRIGHT_SIGN = r"(?:\(c\)|[©ⓒⒸ])"
+COPYRIGHT_ANYWHERE = re.compile(rf"copyright\s*:?\s*(?:{COPYRIGHT_SIGN}|\d{{4}})|{COPYRIGHT_SIGN}\s*\d{{4}}", re.IGNORECASE)
+COPYRIGHT_STATEMENT = re.compile(
+    rf"^(?:(?:portions|parts|modifications)\s+)?(?:copyright\b|{COPYRIGHT_SIGN})\s*{COPYRIGHT_SIGN}?\s*[:-]?\s*"
+    r"(?!(?:notices?|holders?|owners?|and|law|laws|on|assignment|violation|statement|licen[cs]e|to|of|in|is|are|for|by|the|or|with|you)\b)\w",
+    re.IGNORECASE,
+)
 NEEDS_COPYRIGHT = {"MIT", "ISC", "BSD-2-Clause", "BSD-3-Clause"}
 UNSHIPPED_DIRS = {"tests", "benches", "examples", "target", ".git"}
 COMPILED_SOURCES = (".c", ".cc", ".cpp", ".cxx", ".s", ".S", ".asm", ".m", ".mm")
@@ -204,7 +210,7 @@ def licence_texts(component, licences, searched):
 
 
 def uncommented(line):
-    return re.sub(r"^\s*(?:/\*+|//[/!]?|\*+/?|#+|--)\s?", "", line).rstrip()
+    return re.sub(r"^\s*(?:/\*+|//[/!]?|\*+/?|#+|--|;+|@)\s?", "", line).rstrip()
 
 
 def source_copyrights(directory):
@@ -221,7 +227,10 @@ def source_copyrights(directory):
                 lines = path.read_text(encoding="utf-8").splitlines()
             except (UnicodeDecodeError, OSError):
                 continue
-            found.update(" ".join(uncommented(line).split()) for line in lines if COPYRIGHT_LINE.search(line))
+            for line in lines:
+                text = " ".join(uncommented(line).split())
+                if COPYRIGHT_ANYWHERE.search(text) or COPYRIGHT_STATEMENT.search(text):
+                    found.add(text)
     return sorted(found)
 
 
