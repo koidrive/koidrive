@@ -1839,9 +1839,14 @@ impl Commits {
             }
         }
         let answers = released.iter().flat_map(Question::holds).cloned().collect();
-        let unanswered = self
-            .questions
-            .iter()
+        let held_deletions = (self.questions.iter())
+            .filter(|question| {
+                question.answer.is_none()
+                    && matches!(
+                        question.kind,
+                        QuestionKind::MassDelete { .. } | QuestionKind::AmbiguousDisappearance
+                    )
+            })
             .flat_map(Question::holds)
             .cloned()
             .collect();
@@ -1913,7 +1918,7 @@ impl Commits {
                     &restores,
                     &self.split_restores,
                     &answers,
-                    &unanswered,
+                    &held_deletions,
                     &self.answer_moves,
                     device_id,
                 )
@@ -4714,7 +4719,7 @@ fn plan(
     restores: &BTreeMap<RestoreId, RestoreIntent>,
     splits: &TrackedMap<RestoreId, SplitRestore>,
     answers: &BTreeSet<NodeId>,
-    unanswered: &BTreeSet<NodeId>,
+    held_deletions: &BTreeSet<NodeId>,
     answer_moves: &TrackedSet<NodeId>,
     device_id: &str,
 ) -> (Planned, bool, BTreeMap<NodeId, NodeId>) {
@@ -5552,7 +5557,7 @@ fn plan(
                 || matches!(want, Want::Move { id, .. } if asides.contains(id))
                 || (scratch.name_holders(want)).any(|holder| {
                     scratch.owed.contains(holder)
-                        || unanswered.contains(holder)
+                        || held_deletions.contains(holder)
                         || held.iter().any(|id| scratch.inside(holder, id))
                         || matches!(want, Want::Move { .. })
                             && (!scratch.stalled || emitted > 0)
