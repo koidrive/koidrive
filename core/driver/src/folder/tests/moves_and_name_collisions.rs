@@ -2127,9 +2127,16 @@ fn a_save_continuation_does_not_take_a_displaced_file_brought_back_to_the_saved_
         a.create(&mut remote, &site.root.join("notes.docx"), b"notes");
         a.rest(&mut remote);
         let nodes = server_nodes(&remote);
-        let (report, notes) = (live_id(&nodes, "report.docx"), live_id(&nodes, "notes.docx"));
+        let (report, notes) = (
+            live_id(&nodes, "report.docx"),
+            live_id(&nodes, "notes.docx"),
+        );
         fs::create_dir(site.root.join("dist")).unwrap();
-        fs::rename(site.root.join("notes.docx"), site.root.join("dist/notes.docx")).unwrap();
+        fs::rename(
+            site.root.join("notes.docx"),
+            site.root.join("dist/notes.docx"),
+        )
+        .unwrap();
         a.settle();
         a.rest(&mut remote);
         fs::write(site.root.join("notes.docx"), b"new notes").unwrap();
@@ -2140,7 +2147,10 @@ fn a_save_continuation_does_not_take_a_displaced_file_brought_back_to_the_saved_
             a = restarted(&site, &mut remote);
         }
         let node = NodeId::from(notes.as_str());
-        assert!(a.folder.engine.trees.displaced_local().contains_key(&node), "{case}");
+        assert!(
+            a.folder.engine.trees.displaced_local().contains_key(&node),
+            "{case}"
+        );
 
         safe_save_swap(&site, &mut a);
         a.rest(&mut remote);
@@ -2153,7 +2163,11 @@ fn a_save_continuation_does_not_take_a_displaced_file_brought_back_to_the_saved_
         }
         safe_save_cleanup(&site, &mut a, &mut remote);
         let nodes = server_nodes(&remote);
-        assert_eq!(server_bytes(&remote, &report), b"report", "{case} {nodes:?}");
+        assert_eq!(
+            server_bytes(&remote, &report),
+            b"report",
+            "{case} {nodes:?}"
+        );
         assert_eq!(live_id(&nodes, "report.docx"), notes, "{case} {nodes:?}");
         assert_eq!(server_bytes(&remote, &notes), b"notes", "{case} {nodes:?}");
     }
