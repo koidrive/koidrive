@@ -3237,3 +3237,75 @@ fn a_delete_after_another_device_renames_a_folder_back_out_of_a_path_the_rules_e
     b.run(&mut remote);
     assert_eq!(remote.names(), ["h.txt", "other"]);
 }
+
+#[test]
+fn an_edited_file_below_a_folder_a_new_folder_takes_over_keeps_that_folder_only_when_the_user_moved_it()
+ {
+    for renamed in [false, true] {
+        let mut remote = Remote::new();
+        let (source, mut a) = linked(&mut remote, "other");
+        fs::create_dir_all(source.root.join("ss")).unwrap();
+        fs::create_dir_all(source.root.join("parent")).unwrap();
+        a.create(&mut remote, &source.root.join("ss/remote.txt"), b"server");
+        a.rest(&mut remote);
+        let holder = remote.tree()["ss"].clone();
+        let parent = remote.tree()["parent"].clone();
+        let file = remote.tree()["ss/remote.txt"].clone();
+        let sync = SyncRules {
+            exclude: vec!["*.log".into()],
+            ..SyncRules::default()
+        };
+        let site = Site::new(&remote, "me");
+        let mut b = site.start_with(&sync);
+        b.connect(&remote);
+        b.rest(&mut remote);
+        drop(b);
+
+        fs::rename(site.root.join("ss"), site.root.join("parent/holder")).unwrap();
+        fs::create_dir(site.root.join("ss")).unwrap();
+        fs::write(site.root.join("ss/kept.log"), b"local only").unwrap();
+        fs::rename(source.root.join("parent"), source.root.join("ss/parent")).unwrap();
+        a.rest(&mut remote);
+        let mut b = site.start_with(&sync);
+        b.connect(&remote);
+        b.rest(&mut remote);
+        assert_eq!(
+            b.folder.view().merged_folders,
+            [koidrive_fs::ItemPath::from("ss")]
+        );
+        drop(b);
+
+        fs::rename(site.root.join("parent"), site.root.join("ss/parent")).unwrap();
+        let edited = site.root.join("ss/parent/holder/remote.txt");
+        fs::write(&edited, b"my local edit").unwrap();
+        let at = match renamed {
+            true => "ss/parent/holder/renamed.txt",
+            false => "ss/remote.txt",
+        };
+        if renamed {
+            fs::rename(&edited, site.root.join(at)).unwrap();
+        }
+        let mut b = site.start_with(&sync);
+        b.connect(&remote);
+        b.rest(&mut remote);
+        let mut tree = remote.tree();
+        if renamed {
+            assert_ne!(tree.remove("ss/parent/holder").unwrap(), holder);
+            assert_eq!(names(&site.root.join("ss/parent/holder")), ["renamed.txt"]);
+        } else {
+            assert_eq!(names(&site.root.join("ss/parent")), Vec::<String>::new());
+        }
+        let expected = [("ss", holder), ("ss/parent", parent), (at, file)];
+        assert_eq!(
+            tree,
+            expected.map(|(path, id)| (path.to_owned(), id)).into()
+        );
+        assert_eq!(fs::read(site.root.join(at)).unwrap(), b"my local edit");
+        assert_eq!(
+            fs::read(site.root.join("ss/kept.log")).unwrap(),
+            b"local only"
+        );
+        assert!(b.folder.view().merged_folders.is_empty());
+        assert_eq!(b.folder.view().problem, None);
+    }
+}
