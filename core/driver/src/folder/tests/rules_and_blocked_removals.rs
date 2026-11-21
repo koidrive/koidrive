@@ -516,6 +516,40 @@ fn a_remote_delete_of_a_folder_holding_an_entry_l_does_not_know_keeps_the_folder
 }
 
 #[test]
+fn a_folder_another_device_moves_where_the_rules_leave_it_out_here_stays_with_its_files() {
+    let mut remote = Remote::new();
+    let (site_a, mut a) = linked(&mut remote, "a");
+    fs::create_dir(site_a.root.join("held")).unwrap();
+    fs::create_dir(site_a.root.join("archive")).unwrap();
+    a.create(&mut remote, &site_a.root.join("held/a.txt"), b"synced");
+    a.create(&mut remote, &site_a.root.join("archive/old.txt"), b"old");
+    let sync = SyncRules {
+        include: Vec::new(),
+        exclude: vec!["archive/".into()],
+        ..SyncRules::default()
+    };
+    let site = Site::new(&remote, "b");
+    let mut b = site.start_with(&sync);
+    b.connect(&remote);
+    b.scan_until(|b| b.folder.scanned);
+    b.run(&mut remote);
+    b.settle();
+    assert_eq!(fs::read(site.root.join("held/a.txt")).unwrap(), b"synced");
+
+    fs::rename(site_a.root.join("held"), site_a.root.join("archive/held")).unwrap();
+    a.scan_until(|a| !a.work.is_empty());
+    a.run(&mut remote);
+    b.pull(&remote);
+    b.run(&mut remote);
+    b.settle();
+    assert!(b.run(&mut remote).is_empty());
+    assert_eq!(fs::read(site.root.join("held/a.txt")).unwrap(), b"synced");
+    assert!(trashed(&site.root).is_empty());
+    assert!(b.sent.is_empty(), "{:?}", b.sent);
+    assert_eq!(b.folder.view().problem, None);
+}
+
+#[test]
 fn a_remote_delete_of_a_folder_whose_subfolder_holds_an_entry_l_does_not_know_keeps_both_folders() {
     let mut remote = Remote::new();
     let (site_a, mut a) = linked(&mut remote, "a");
@@ -771,11 +805,9 @@ fn a_folder_to_remove_that_holds_a_file_an_excluded_entry_keeps_out_lets_the_fol
     assert!(site.root.join("q/x").is_dir());
 }
 
-/// Device `b` excludes `skip/`. Device `a` moves the file `foo` to `skip/foo`, then makes a folder `foo` with the file
-/// `foo/child` in it. On `b` the excluded file keeps the name `foo`, so the folder can't be created and the file in it
-/// can't be written. The folder is up to date, and its problem names both and the entry that holds the name.
 #[test]
-fn a_file_in_a_folder_an_excluded_entry_keeps_out_is_named_with_it() {
+fn a_file_another_device_moves_where_the_rules_leave_it_out_here_frees_its_name_for_a_folder_made_there()
+ {
     let mut remote = Remote::new();
     let (site_a, mut a) = linked(&mut remote, "a");
     a.create(&mut remote, &site_a.root.join("foo"), b"kept on b");
@@ -805,19 +837,14 @@ fn a_file_in_a_folder_an_excluded_entry_keeps_out_is_named_with_it() {
     assert!(b.run(&mut remote).is_empty());
 
     let view = b.folder.view();
+    assert_eq!((view.state, view.problem), (FolderState::UpToDate, None));
     assert_eq!(
-        (view.state, view.problem),
-        (
-            FolderState::UpToDate,
-            Some(
-                "2 items could not be synced: \"foo\" (its name here is taken by \"foo\", which this device's rules \
-                 exclude), \"foo/child\" (waits for \"foo\", whose name here is taken by an entry this device's rules \
-                 exclude); run koi folder restart once they are fixed"
-                    .into()
-            )
-        )
+        fs::read(site.root.join("foo/child")).unwrap(),
+        b"written on a"
     );
-    assert_eq!(fs::read(site.root.join("foo")).unwrap(), b"kept on b");
+    assert_eq!(trashed(&site.root).len(), 1);
+    assert!(b.sent.is_empty(), "{:?}", b.sent);
+    assert_eq!(remote.names(), ["child", "foo", "foo", "skip"]);
 }
 
 #[test]
@@ -2756,5 +2783,188 @@ fn deleted_while_stopped_next_to_a_folder_that_stays_unreadable(upgraded: bool) 
             .iter()
             .any(|(name, _, live)| name == "report.docx" && *live),
         "{nodes:?}"
+    );
+}
+
+#[test]
+fn a_copy_a_rule_added_here_excludes_where_it_sits_after_its_removal_was_planned_stays() {
+    let mut remote = Remote::new();
+    let (site_a, mut a) = linked(&mut remote, "a");
+    fs::create_dir(site_a.root.join("archive")).unwrap();
+    a.create(&mut remote, &site_a.root.join("archive/old.txt"), b"old");
+    a.create(&mut remote, &site_a.root.join("keep.txt"), b"keep");
+    let sync = SyncRules {
+        exclude: vec!["archive/".into()],
+        ..SyncRules::default()
+    };
+    let site = Site::new(&remote, "b");
+    let mut b = site.start_with(&sync);
+    b.connect(&remote);
+    b.scan_until(|b| b.folder.scanned);
+    b.run(&mut remote);
+    b.settle();
+    let keep = site.root.join("keep.txt");
+    assert_eq!(fs::read(&keep).unwrap(), b"keep");
+
+    fs::rename(
+        site_a.root.join("keep.txt"),
+        site_a.root.join("archive/keep.txt"),
+    )
+    .unwrap();
+    a.scan_until(|a| !a.work.is_empty());
+    a.run(&mut remote);
+    b.pull(&remote);
+    let Some(stage @ Work::Stage(_)) = b.work.pop_front() else {
+        panic!("the remote move must plan a local removal");
+    };
+    fs::write(site.root.join(".koiignore"), b"/keep.txt\n").unwrap();
+    b.scan_until(|b| b.folder.engine.trees.ignores(&["keep.txt"], Kind::File));
+    assert_eq!(fs::read(&keep).unwrap(), b"keep");
+    b.perform(stage, &mut remote).unwrap();
+
+    let trash: Vec<_> = trashed(&site.root)
+        .into_iter()
+        .map(|name| {
+            fs::read(
+                site.root
+                    .join(koidrive_fs::PRIVATE_DIR)
+                    .join("trash")
+                    .join(name),
+            )
+            .unwrap()
+        })
+        .collect();
+    assert_eq!(
+        (fs::read(&keep).ok(), trash),
+        (Some(b"keep".to_vec()), Vec::<Vec<u8>>::new()),
+    );
+}
+
+#[test]
+fn a_file_another_device_moves_back_before_its_removal_runs_stays() {
+    let mut remote = Remote::new();
+    let (site_a, mut a) = linked(&mut remote, "a");
+    fs::create_dir(site_a.root.join("archive")).unwrap();
+    a.create(&mut remote, &site_a.root.join("archive/old.txt"), b"old");
+    a.create(&mut remote, &site_a.root.join("keep.txt"), b"keep");
+    let sync = SyncRules {
+        exclude: vec!["archive/".into()],
+        ..SyncRules::default()
+    };
+    let site = Site::new(&remote, "b");
+    let mut b = site.start_with(&sync);
+    b.connect(&remote);
+    b.scan_until(|b| b.folder.scanned);
+    b.run(&mut remote);
+    b.settle();
+    let keep = site.root.join("keep.txt");
+    assert_eq!(fs::read(&keep).unwrap(), b"keep");
+
+    fs::rename(
+        site_a.root.join("keep.txt"),
+        site_a.root.join("archive/keep.txt"),
+    )
+    .unwrap();
+    a.scan_until(|a| !a.work.is_empty());
+    a.run(&mut remote);
+    b.pull(&remote);
+    let Some(stage @ Work::Stage(_)) = b.work.pop_front() else {
+        panic!("the remote move must plan a local removal");
+    };
+    fs::rename(
+        site_a.root.join("archive/keep.txt"),
+        site_a.root.join("keep.txt"),
+    )
+    .unwrap();
+    a.scan_until(|a| !a.work.is_empty());
+    a.run(&mut remote);
+    b.pull(&remote);
+    let id = NodeId::from(live_id(&server_nodes(&remote), "keep.txt"));
+    let trees = &b.folder.engine.trees;
+    assert!(!trees.excluded(&id));
+    assert_eq!(
+        trees.remote().live(&id).unwrap().parent,
+        trees.remote().root
+    );
+    assert_eq!(fs::read(&keep).unwrap(), b"keep");
+    b.perform(stage, &mut remote).unwrap();
+
+    let trash: Vec<_> = trashed(&site.root)
+        .into_iter()
+        .map(|name| {
+            fs::read(
+                site.root
+                    .join(koidrive_fs::PRIVATE_DIR)
+                    .join("trash")
+                    .join(name),
+            )
+            .unwrap()
+        })
+        .collect();
+    assert_eq!(
+        (fs::read(&keep).ok(), trash),
+        (Some(b"keep".to_vec()), Vec::<Vec<u8>>::new()),
+    );
+}
+
+#[test]
+fn a_copy_a_rule_added_here_excludes_stays_when_the_server_trashes_it_before_its_removal_runs() {
+    let mut remote = Remote::new();
+    let (site_a, mut a) = linked(&mut remote, "a");
+    fs::create_dir(site_a.root.join("archive")).unwrap();
+    a.create(&mut remote, &site_a.root.join("archive/old.txt"), b"old");
+    a.create(&mut remote, &site_a.root.join("keep.txt"), b"keep");
+    let sync = SyncRules {
+        exclude: vec!["archive/".into()],
+        ..SyncRules::default()
+    };
+    let site = Site::new(&remote, "b");
+    let mut b = site.start_with(&sync);
+    b.connect(&remote);
+    b.scan_until(|b| b.folder.scanned);
+    b.run(&mut remote);
+    b.settle();
+    let keep = site.root.join("keep.txt");
+    assert_eq!(fs::read(&keep).unwrap(), b"keep");
+
+    fs::rename(
+        site_a.root.join("keep.txt"),
+        site_a.root.join("archive/keep.txt"),
+    )
+    .unwrap();
+    a.scan_until(|a| !a.work.is_empty());
+    a.run(&mut remote);
+    b.pull(&remote);
+    let Some(stage @ Work::Stage(_)) = b.work.pop_front() else {
+        panic!("the remote move must plan a local removal");
+    };
+    let id = NodeId::from(live_id(&server_nodes(&remote), "keep.txt"));
+    fs::write(site.root.join(".koiignore"), b"/keep.txt\n").unwrap();
+    b.scan_until(|b| b.folder.engine.trees.ignores(&["keep.txt"], Kind::File));
+    fs::remove_file(site_a.root.join("archive/keep.txt")).unwrap();
+    a.scan_until(|a| !a.work.is_empty());
+    a.run(&mut remote);
+    b.pull(&remote);
+    let trees = &b.folder.engine.trees;
+    assert!(trees.excluded(&id));
+    assert!(trees.remote().get(&id).is_some_and(|node| node.trashed));
+    assert_eq!(fs::read(&keep).unwrap(), b"keep");
+    b.perform(stage, &mut remote).unwrap();
+
+    let trash: Vec<_> = trashed(&site.root)
+        .into_iter()
+        .map(|name| {
+            fs::read(
+                site.root
+                    .join(koidrive_fs::PRIVATE_DIR)
+                    .join("trash")
+                    .join(name),
+            )
+            .unwrap()
+        })
+        .collect();
+    assert_eq!(
+        (fs::read(&keep).ok(), trash),
+        (Some(b"keep".to_vec()), Vec::<Vec<u8>>::new()),
     );
 }

@@ -5280,6 +5280,25 @@ impl Trees {
         path(&self.r, id).is_some_and(|(names, kind)| self.ignores(&names, kind))
     }
 
+    pub(crate) fn left_behind(&self, id: &NodeId) -> bool {
+        let (Some(local), Some(synced), Some(remote)) =
+            (self.l.get(id), self.s.live(id), self.r.live(id))
+        else {
+            return false;
+        };
+        local.shape.kind == Kind::File
+            && !local.parked
+            && local.shape.same(synced)
+            && !remote.same_position(synced)
+            && !self.edited(id)
+            && !self.unsent_moves.contains(id)
+            && self.excluded(id)
+            && !self.recorded_local(id)
+            && !self.displaced.contains_key(id)
+            && path(&self.l, id).is_some_and(|(names, kind)| !self.ignores(&names, kind))
+            && (self.ignored_in_remote(id) || self.excluded(&remote.parent))
+    }
+
     /// The name of a parked node's entry in the parked directory: its ID, or, for a node re-keyed
     /// while parked, the ID it was parked under. The entry keeps that name until it leaves the
     /// parked directory.

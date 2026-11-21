@@ -555,6 +555,21 @@ impl Rules {
     }
 }
 
+fn left_behind(trees: &Trees, id: &NodeId) -> bool {
+    trees.excluded(id)
+        && (trees.local().get(id))
+            .zip(trees.synced().live(id))
+            .zip(trees.remote().live(id))
+            .is_some_and(|((local, synced), remote)| {
+                local.shape.kind == Kind::File
+                    && synced.same(&local.shape)
+                    && !remote.same_position(synced)
+                    && !trees.edited(id)
+                    && !trees.recorded_local(id)
+                    && !trees.ignores(&local_path(trees, id), local.shape.kind)
+            })
+}
+
 /// The names from the root to `id` in L.
 fn local_path(trees: &Trees, id: &NodeId) -> Vec<String> {
     let mut names = Vec::new();
@@ -2436,7 +2451,7 @@ fn run_ignoring_answering_after(
                 Effect::RemoveDir { .. } => known,
                 _ => false,
             };
-            removals += usize::from(removes);
+            removals += usize::from(removes && !left_behind(&device.trees, &record.node));
             let removed = matches!(
                 record.effect,
                 Effect::RemoveFile { .. } | Effect::RemoveDir { .. }
@@ -2484,7 +2499,8 @@ fn run_ignoring_answering_after(
                                 discarded.contains_key(id)
                                     || device.trees.local().get(id).is_some_and(|node| node.parked)
                             });
-                        remote.is_none() && parked_or_taken_along
+                        (remote.is_none() && parked_or_taken_along)
+                            || left_behind(&device.trees, &record.node)
                     }
                 };
                 prop_assert!(

@@ -1842,3 +1842,59 @@ fn a_resend_is_judged_at_the_path_the_commit_gives_the_folders_above_it() {
         assert_eq!(created, expected, "{case}");
     }
 }
+
+#[test]
+fn a_file_this_device_moved_out_of_a_folder_it_then_left_out_stays_when_a_loss_drops_the_move() {
+    let mut trees = trees(&[synced("c", dir(ROOT, "c")), synced("f", file("c", "x", 1))]);
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    trees.set_local("f".into(), local(file(ROOT, "x", 1), 1));
+    trees.settle(commits.aliases());
+    let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
+    assert_eq!(ops(&commit), [mv("f", ROOT, "x")]);
+    trees.set_remote_made_here("f".into(), remote_at(file(ROOT, "x", 1), 2));
+    assert!(commits.own_record(2, &commit.commit_id, 0));
+    commits
+        .received(result(2, vec![outcome(op_result::Code::Applied)]))
+        .unwrap();
+    assert!(commits.acknowledge(&mut trees, 2));
+    trees.set_rules(
+        &[] as &[&str],
+        koidrive_engine::ignore::Source::Koiignore,
+        Some(RuleFile::parse(b"/c/\n")),
+    );
+    trees.settle(commits.aliases());
+    assert_eq!(commits.connected(&welcome(0)), Reconnect::AheadOfServer);
+    let (trashed, edited, moved) = (
+        trees.trashed_here(),
+        trees.edited_here(),
+        trees.moved_here(),
+    );
+    let synced = trees.taken_from_others(|seq| commits.lost_here(seq));
+    let untaken = trees.untaken_changes(|seq| commits.lost_here(seq));
+    let records = trees.remote_records(|seq| commits.lost_here(seq));
+    trees.set_remote("f".into(), remote_at(file("c", "x", 1), 1));
+    trees.forget_lost(
+        trashed,
+        edited,
+        synced,
+        moved,
+        untaken,
+        records,
+        &Default::default(),
+        commits.held_through(),
+        commits.accepted(),
+    );
+    commits.forget_lost_slots();
+    trees.settle(commits.aliases());
+    let planned = effects_for(&mut trees, &mut ids, "f");
+    assert!(
+        !planned
+            .iter()
+            .any(|effect| matches!(effect, Effect::RemoveFile { .. })),
+        "{planned:?}"
+    );
+    assert_eq!(
+        trees.local().get(&"f".into()).unwrap().shape,
+        file(ROOT, "x", 1)
+    );
+}

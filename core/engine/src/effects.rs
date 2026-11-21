@@ -479,7 +479,11 @@ impl Effects {
             if chosen.len() >= limit.effects {
                 break;
             }
-            if !candidate(trees, id) || trees.held(id) || (!gates.is_empty() && gated(id)) {
+            if !candidate(trees, id)
+                || trees.held(id)
+                || (!gates.is_empty() && gated(id))
+                || (trees.left_behind(id) && in_flight.is_some_and(|flight| flight.positions(id)))
+            {
                 continue;
             }
             match view.step(id) {
@@ -976,10 +980,11 @@ fn candidate(trees: &Trees, id: &NodeId) -> bool {
             && trees.remote().live(id).is_none()
             && !trees.edited(id)
             && !changed_locally(trees, id))
-        || trees.is_discarded(id);
+        || trees.is_discarded(id)
+        || trees.left_behind(id);
     changed
         && !forgets
-        && (!trees.excluded(id) || trees.trashed_while_parked(id))
+        && (!trees.excluded(id) || trees.trashed_while_parked(id) || trees.left_behind(id))
         && !trees.reclaimed(id)
 }
 
@@ -1202,6 +1207,9 @@ impl<'a> View<'a> {
     fn step(&self, id: &NodeId) -> Step {
         let local = self.trees.local().get(id);
         let remote = self.trees.remote().live(id);
+        if let Some(local) = local.filter(|_| self.trees.left_behind(id)) {
+            return self.remove(id, local);
+        }
         if let Some(local) = local.filter(|local| local.parked && self.trees.ignored(id)) {
             if self.trees.trashed_while_parked(id) {
                 return self.remove(id, local);
@@ -1340,6 +1348,16 @@ impl<'a> View<'a> {
             return false;
         }
         let Some(after) = &record.after else {
+            let left_behind = self.trees.left_behind(&record.node)
+                && !in_flight.is_some_and(|flight| flight.positions(&record.node));
+            if matches!(record.effect, Effect::RemoveFile { .. })
+                && (self.trees.remote().live(&record.node).is_some()
+                    || self.trees.excluded(&record.node))
+                && !left_behind
+                && !self.trees.trashed_while_parked(&record.node)
+            {
+                return false;
+            }
             let along = match &record.effect {
                 Effect::RemoveDir { along, .. } => along.as_slice(),
                 _ => &[],

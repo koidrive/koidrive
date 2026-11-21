@@ -1139,11 +1139,8 @@ fn done_refuses_a_download_or_a_move_whose_node_a_rewind_took_from_r() {
 
 /// One node's draw for one tree: ⊥, or its rank, a parent choice and a name.
 type Draw = Option<(u8, u8, u8)>;
-/// GUN-334. The server trashed `f`, and its removal was in flight when another device's commit
-/// restored it (R8). The removal is the engine's own, not the user's, so `f` is downloaded again
-/// and no Delete is sent for it.
 #[test]
-fn a_file_an_effect_removes_after_the_server_restored_it_is_downloaded_again() {
+fn a_removal_planned_before_the_server_restored_the_file_is_not_taken() {
     let (mut trees, mut disk) = space(&[("f", Some(file(ROOT, "f", 1)), None)]);
     trees.settle(&Default::default());
     let (mut effects, mut ids) = (Effects::default(), IdGen::new(1));
@@ -1155,16 +1152,10 @@ fn a_file_an_effect_removes_after_the_server_restored_it_is_downloaded_again() {
     assert!(matches!(record.effect, Effect::RemoveFile { .. }));
 
     trees.set_remote("f".into(), remote(file(ROOT, "f", 1)));
-    let created = disk.apply(&record.effect).unwrap();
-    effects
-        .done(&mut trees, None, &record.effect_id, created)
-        .unwrap();
-    trees.check().unwrap();
     trees.settle(&Default::default());
-    assert_eq!(trees.class(&"f".into()), Class::Remote);
-
+    assert!(!record.applies(&trees, None));
     let done = converge(&mut trees, &mut disk, 10).unwrap();
-    assert!(matches!(done[..], [Effect::WriteFile { .. }]), "{done:?}");
+    assert!(done.is_empty(), "{done:?}");
     assert_in_sync(&mut trees);
 }
 
@@ -1774,6 +1765,10 @@ fn a_reverted_parked_file_whose_r_name_an_excluded_node_holds_brings_back_its_de
         koidrive_engine::ignore::Source::Koiignore,
         Some(koidrive_engine::ignore::RuleFile::parse(b"logs/\n")),
     );
+    let mut edited = trees.local().get(&"e".into()).unwrap().clone();
+    edited.shape = file(ROOT, "z", 8);
+    trees.set_local("e".into(), edited);
+    disk.entries.get_mut(&2).unwrap().content = Some(content(8));
     let mut local = trees.local().get(&"x".into()).unwrap().clone();
     local.parked = true;
     local.shape = file("d", "y", 1);
