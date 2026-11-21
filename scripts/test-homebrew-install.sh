@@ -23,14 +23,18 @@ tag=v$version
 upgrade=v999.0.0
 releases=$tmp/github.com/koidrive/koidrive/releases
 mkdir -p "$tmp/package" "$tmp/other"
+notices=$(dirname "$binary")/THIRD-PARTY-NOTICES
+[ -f "$notices" ] || { echo "FAIL $notices is missing; the release archive must carry THIRD-PARTY-NOTICES next to koi" >&2; exit 1; }
 cp "$binary" "$tmp/package/koi"
 printf '#!/bin/sh\nexit 1\n' > "$tmp/other/koi"
+cp "$notices" "$tmp/package/THIRD-PARTY-NOTICES"
+cp "$notices" "$tmp/other/THIRD-PARTY-NOTICES"
 for each in "$tag" "$upgrade"; do
     release=$releases/download/$each
     mkdir -p "$release"
     for platform in aarch64-apple-darwin aarch64-unknown-linux-musl x86_64-unknown-linux-musl; do
         if [ "$platform" = "$target" ]; then source=$tmp/package; else source=$tmp/other; fi
-        tar -czf "$release/koidrive-$platform.tar.gz" -C "$source" koi
+        tar -czf "$release/koidrive-$platform.tar.gz" -C "$source" koi THIRD-PARTY-NOTICES
     done
     (cd "$release" && "${sha256[@]}" koidrive-*.tar.gz > SHA256SUMS)
 done
@@ -48,6 +52,7 @@ brew install "$formula"
 brew test "$formula"
 installed=$("$(brew --prefix)/bin/koi" --version)
 [ "$installed" = "koi $version" ] || { echo "FAIL the installed koi --version prints '$installed', expected 'koi $version'" >&2; exit 1; }
+cmp -s "$notices" "$(brew --prefix koidrive)/THIRD-PARTY-NOTICES" || { echo "FAIL brew install koidrive did not install THIRD-PARTY-NOTICES into $(brew --prefix koidrive)" >&2; exit 1; }
 for each in v1.2.3 v1.2.3-alpha.4 "$tag"; do
     render "$each" "$tag"
     brew style "$formula"

@@ -82,6 +82,7 @@ class Koidrive < Formula
 
   def install
     bin.install "koi"
+    prefix.install "THIRD-PARTY-NOTICES"
   end
 
   def caveats
