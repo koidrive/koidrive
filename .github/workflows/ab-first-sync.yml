@@ -1,0 +1,70 @@
+name: A/B first sync on one runner
+
+on:
+  push:
+    branches: [measure/koi938-ab]
+
+jobs:
+  ab:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    env:
+      REFS: "A=f6b8100b96810fd067535cdec8a978538f79bb2a B=e648ef66329dab7d94ed2be17c4bb58ac42ca3be"
+      REPS: "3"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install toolchain from rust-toolchain.toml
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+        with:
+          package_json_file: server/package.json
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      - name: Record the runner
+        run: |
+          lscpu | grep -E 'Model name|^CPU\(s\)|Thread|MHz'
+          nproc
+          free -m
+          df -h / /mnt
+      - name: Make room and let inotify watch every folder
+        run: |
+          sudo mkdir -p /mnt/koidrive-scale /mnt/ab && sudo chown "$USER" /mnt/koidrive-scale /mnt/ab
+          sudo sysctl -w fs.inotify.max_user_watches=1048576
+      - name: Build each ref in its own worktree
+        run: |
+          for pair in $REFS; do
+            label=${pair%%=*}; sha=${pair#*=}
+            git worktree add --detach "/mnt/ab/wt-$label" "$sha"
+            (cd "/mnt/ab/wt-$label/server" && pnpm install --frozen-lockfile)
+            (cd "/mnt/ab/wt-$label" && CARGO_TARGET_DIR="/mnt/ab/target-$label" cargo test --locked --release -p koidrive-driver --test first_sync_bench --no-run)
+          done
+          df -h /mnt
+      - name: Run the refs interleaved
+        run: |
+          mkdir -p /mnt/ab/logs
+          for rep in $(seq 1 "$REPS"); do
+            for pair in $REFS; do
+              label=${pair%%=*}; sha=${pair#*=}
+              log="/mnt/ab/logs/rep-$rep-$label.log"
+              {
+                echo "ref $label $sha rep $rep start $(date -u +%FT%TZ)"
+                lscpu | grep -E 'Model name|^CPU\(s\)'
+                free -m | sed -n 2p
+                cat /proc/loadavg
+              } > "$log"
+              (cd "/mnt/ab/wt-$label" && CARGO_TARGET_DIR="/mnt/ab/target-$label" KOIDRIVE_DRIVER_TEST=first_sync_bench KOIDRIVE_DRIVER_RELEASE=1 KOIDRIVE_SCALE_DIR=/mnt/koidrive-scale KOIDRIVE_SCALE_MAX_STALL=8 core/driver/scripts/integration-test.sh a_first_sync_of_two_million_entries_keeps_moving --nocapture) >> "$log" 2>&1 || echo "exit $?" >> "$log"
+              summary=$(grep -aE '"summary":true' "$log" | tail -1)
+              first=$(grep -aoE '"first_move":[0-9]+' "$log" | tail -1)
+              echo "rep $rep $label $first $summary" | tee -a /mnt/ab/logs/summary.txt
+            done
+          done
+          cat /mnt/ab/logs/summary.txt >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: always()
+        with:
+          name: ab-logs
+          path: /mnt/ab/logs
