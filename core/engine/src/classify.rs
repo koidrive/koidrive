@@ -1722,8 +1722,12 @@ impl Trees {
                 && (self.acknowledged(id)).is_some_and(|synced| synced.same_position(&local.shape))
         };
         let holding: BTreeSet<NodeId> = (released.iter())
-            .filter(|id| !moves_out(id))
-            .flat_map(|id| self.local_chain(id).skip(1))
+            .flat_map(|id| {
+                let mut followed = false;
+                (self.local_chain(id))
+                    .take_while(move |node| !std::mem::replace(&mut followed, moves_out(node)))
+                    .skip(1)
+            })
             .cloned()
             .collect();
         let mut folders: Vec<NodeId> = (holding.into_iter())
