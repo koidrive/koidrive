@@ -615,10 +615,17 @@ async function finishedRunNames(repository: string, deadline: Deadline): Promise
     const file = workflow.slice(workflow.lastIndexOf("/") + 1);
     for (let page = 1; ; page++) {
       const query = new URLSearchParams({ status: "completed", created, per_page: "100", page: String(page) });
-      const runs = (await github<{ workflow_runs?: { id?: unknown; run_attempt?: unknown; updated_at?: unknown }[] }>("/repos/" + repository + "/actions/workflows/" + file + "/runs?" + query, "the finished " + file + " runs", deadline))?.workflow_runs ?? [];
+      const what = "the finished " + file + " runs";
+      const listed = await github<{ workflow_runs?: { id?: unknown; run_attempt?: unknown; updated_at?: unknown }[] }>("/repos/" + repository + "/actions/workflows/" + file + "/runs?" + query, what, deadline);
+      if (!listed) throw new GitHubError("GitHub returned HTTP 404 for " + what);
+      const runs = listed.workflow_runs ?? [];
       for (const run of runs) {
         if (typeof run.id !== "number" || typeof run.run_attempt !== "number" || typeof run.updated_at !== "string" || !(Date.parse(run.updated_at) >= since)) continue;
-        for (let attempt = 1; attempt <= run.run_attempt; attempt++) names.push(NAME_PREFIX + run.id + "-" + attempt);
+        names.push(NAME_PREFIX + run.id + "-" + run.run_attempt);
+        for (let attempt = 1; attempt < run.run_attempt; attempt++) {
+          const earlier = await runAttempt(repository, String(run.id), String(attempt), deadline);
+          if (earlier?.status === "completed" && Date.parse(earlier.updated_at) >= since) names.push(NAME_PREFIX + run.id + "-" + attempt);
+        }
       }
       if (runs.length < 100) break;
     }
