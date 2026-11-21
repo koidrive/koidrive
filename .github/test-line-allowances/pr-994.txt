@@ -1,0 +1,7 @@
+411
+# A save continuation may adopt a file only when it was born at a temporary name on this device, and that
+# mark has to survive restarts, store upgrades and restore. #988's seven Word and Vim tests go back to their
+# earlier expectations. New driver tests cover the restart and in-flight windows, the clearing rule, folders,
+# upgraded marks, a trashed file brought through a tmp name (live, after a restart and as a watcher rename),
+# and a marked old inode against a true hardlink. The store tests cover the migration, the backfill and the
+# upgrade case, and the engine test covers restore. Each reaches a decision no other test reaches.

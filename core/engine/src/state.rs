@@ -225,6 +225,16 @@ impl ContentProvenance {
     }
 }
 
+/// How [`TreesState::born_as_temp`] knows a file was born at a temporary file name.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TempBirth {
+    /// This device found it as a new file there.
+    Seen,
+    /// L held it there when the store began to record temporary files, so it was born there only if the server does not know it
+    /// and no commit in flight creates it under another name.
+    Upgraded,
+}
+
 /// What [`Trees`](crate::classify::Trees) holds besides the nodes of R, L and S.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct TreesState {
@@ -240,6 +250,10 @@ pub struct TreesState {
     /// The nodes the rules excluded, or placed below an excluded folder, since an event or a scan last reported their
     /// local copy at an included position. Losing the local copy of such a node is not a deletion (section 5.10).
     pub unobserved: BTreeSet<NodeId>,
+    /// The files L has held only at temporary file names ([`temp_name`](crate::classify::temp_name)) since this device found
+    /// them there, each with how it knows they were born there. A save that renames one onto the name of the file it saves can
+    /// keep that file's node.
+    pub born_as_temp: BTreeMap<NodeId, TempBirth>,
     /// The server entries below each folder a Discard took along, as R held them when the Discard was carried out, each
     /// with that folder, which is its own member. Removing an entry that is not a member is a change to that entry alone.
     pub discard_members: BTreeMap<NodeId, NodeId>,
@@ -521,6 +535,7 @@ pub struct TreesChanges {
     pub reverted: SetChanges<NodeId>,
     pub cycle_reverted: SetChanges<NodeId>,
     pub unobserved: SetChanges<NodeId>,
+    pub born_as_temp: MapChanges<NodeId, TempBirth>,
     pub discard_members: MapChanges<NodeId, NodeId>,
     pub left_out_by_server: SetChanges<NodeId>,
     pub parked_as: MapChanges<NodeId, NodeId>,
@@ -571,6 +586,7 @@ impl TreesChanges {
             reverted,
             cycle_reverted,
             unobserved,
+            born_as_temp,
             discard_members,
             left_out_by_server,
             parked_as,
@@ -617,6 +633,7 @@ impl TreesChanges {
             reverted: set_changes(&before.reverted, reverted),
             cycle_reverted: set_changes(&before.cycle_reverted, cycle_reverted),
             unobserved: set_changes(&before.unobserved, unobserved),
+            born_as_temp: map_changes(&before.born_as_temp, born_as_temp),
             discard_members: map_changes(&before.discard_members, discard_members),
             left_out_by_server: set_changes(&before.left_out_by_server, left_out_by_server),
             parked_as: map_changes(&before.parked_as, parked_as),
@@ -856,6 +873,8 @@ pub enum StateError {
     NotLostPosition(NodeId),
     /// A node is recorded as a lost create, but R holds it or L does not.
     NotLostCreate(NodeId),
+    /// A node is recorded as born at a temporary file name, but L does not hold it as a file at such a name.
+    NotBornAsTemp(NodeId),
     /// The commit in flight does not take the slot after the accepted counter.
     DeviceSeq {
         accepted: u64,

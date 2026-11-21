@@ -18,7 +18,7 @@ use koidrive_engine::restore::SplitRestore;
 use koidrive_engine::state::{
     Agreed, CommitsChanges, CommitsState, ContentProvenance, EffectsChanges, EffectsState,
     FinishOrigin, GivenUp, LostPosition, MapChanges, MovedHere, PendingFinish, RenamedOver,
-    SetChanges, SyncedPosition, TreesChanges, TreesState,
+    SetChanges, SyncedPosition, TempBirth, TreesChanges, TreesState,
 };
 use koidrive_engine::tree::{ContentKey, DigestTooLong, FileIdentity, Kind, NodeId, Shape};
 use koidrive_proto::v1::{Commit, CommitResult, Content, NodeKind};
@@ -457,6 +457,17 @@ impl Tx<'_> {
                 .left_out_by_server
                 .insert(NodeId::from(row.get::<_, String>(0)?));
         }
+        let mut stmt = self
+            .0
+            .prepare_cached("SELECT node_id, upgraded FROM born_as_temp")?;
+        let mut rows = stmt.query([])?;
+        while let Some(row) = next_row!(rows, abandoned) {
+            let birth = match row.get::<_, bool>(1)? {
+                false => TempBirth::Seen,
+                true => TempBirth::Upgraded,
+            };
+            (state.trees.born_as_temp).insert(NodeId::from(row.get::<_, String>(0)?), birth);
+        }
         let mut stmt = self.0.prepare_cached("SELECT node_id FROM missing_nodes")?;
         let mut rows = stmt.query([])?;
         while let Some(row) = next_row!(rows, abandoned) {
@@ -796,6 +807,7 @@ impl Tx<'_> {
             unsearched,
             reverted,
             unobserved,
+            born_as_temp,
             discard_members,
             left_out_by_server,
             parked_as,
@@ -1044,6 +1056,12 @@ impl Tx<'_> {
             unobserved,
             "DELETE FROM unobserved WHERE node_id = ?1",
             "INSERT OR IGNORE INTO unobserved (node_id) VALUES (?1)",
+        )?;
+        self.write_node_map(
+            born_as_temp,
+            "DELETE FROM born_as_temp WHERE node_id = ?1",
+            "INSERT OR REPLACE INTO born_as_temp (node_id, upgraded) VALUES (?1, ?2)",
+            |put, node, birth| put.execute(params![node, *birth == TempBirth::Upgraded]),
         )?;
         self.write_node_map(
             discard_members,

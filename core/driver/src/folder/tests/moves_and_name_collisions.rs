@@ -1355,10 +1355,6 @@ fn a_save_that_renames_the_file_away_and_writes_it_again_keeps_its_node() {
                 .map(|node| node.0)
                 .collect();
             assert_eq!(live, ["docs", name], "{shape}, sending {sending}");
-            if shape == "word" && sending {
-                synced_temp_save_assert(&remote, name, &before);
-                continue;
-            }
             assert_eq!(
                 live_id(&server_nodes(&remote), name),
                 before,
@@ -1445,17 +1441,6 @@ fn safe_save_assert(remote: &Remote, before: &str) {
     assert_eq!(after, before, "{:?}", server_nodes(remote));
 }
 
-fn synced_temp_save_assert(remote: &Remote, name: &str, before: &str) {
-    let nodes = server_nodes(remote);
-    let after = live_id(&nodes, name);
-    assert_ne!(after, before, "{nodes:?}");
-    assert_eq!(server_bytes(remote, &after), b"version two", "{nodes:?}");
-    assert!(
-        !nodes.iter().any(|node| node.1 == before && node.2),
-        "{nodes:?}"
-    );
-}
-
 #[test]
 fn a_safe_save_word_staged_early() {
     let (mut remote, site, mut a, before) = safe_save_fixture();
@@ -1471,7 +1456,7 @@ fn a_safe_save_word_staged_early() {
     a.rescan();
     a.scan_until(|_| local_holds(&site, "report.docx"));
     safe_save_cleanup(&site, &mut a, &mut remote);
-    synced_temp_save_assert(&remote, "report.docx", &before);
+    safe_save_assert(&remote, &before);
 }
 
 #[test]
@@ -1494,7 +1479,7 @@ fn a_safe_save_word_promotes_temp_after_backup_cleanup() {
     a.rescan();
     a.scan_until(|_| local_holds(&site, "report.docx"));
     a.rest(&mut remote);
-    synced_temp_save_assert(&remote, "report.docx", &before);
+    safe_save_assert(&remote, &before);
 }
 
 #[test]
@@ -1635,7 +1620,7 @@ fn a_safe_save_ignored_lock_file_does_not_break_word_swap() {
     a.create(&mut remote, &site.root.join(".koiignore"), b"~$*.docx\n");
     a.rest(&mut remote);
     fs::write(site.root.join("~$port.docx"), b"lock owner").unwrap();
-    fs::write(site.root.join("~WRD0000.tmp"), b"version two").unwrap();
+    a.create(&mut remote, &site.root.join("~WRD0000.tmp"), b"version two");
     safe_save_swap(&site, &mut a);
     fs::rename(
         site.root.join("~WRD0000.tmp"),
@@ -2063,7 +2048,7 @@ fn a_safe_save_promotes_a_temp_file_that_synced_before_its_last_write() {
     a.scan_until(|_| local_holds(&site, "report.docx"));
     safe_save_cleanup(&site, &mut a, &mut remote);
     assert_eq!(remote.names(), ["report.docx"]);
-    synced_temp_save_assert(&remote, "report.docx", &before);
+    safe_save_assert(&remote, &before);
 }
 
 #[test]
@@ -2075,9 +2060,8 @@ fn a_safe_save_overlapping_word_saves_cleaned_up_in_separate_scans_keep_the_node
         ("~WRD0000.tmp", "~WRL0001.tmp", b"version two".as_slice()),
         ("~WRD0002.tmp", "~WRL0003.tmp", b"version three".as_slice()),
     ] {
-        fs::write(docs.join(stage), bytes).unwrap();
-        a.rescan();
-        a.scan_until(|a| tracks(a, stage));
+        a.create(&mut remote, &docs.join(stage), bytes);
+        a.rest(&mut remote);
         clock::advance_to(clock::instant() + Duration::from_millis(100));
         fs::rename(&report, docs.join(backup)).unwrap();
         fs::rename(docs.join(stage), &report).unwrap();
@@ -2109,9 +2093,8 @@ fn a_safe_save_copy_then_overwrite_and_a_large_tmp_swap_keep_the_node() {
         let backup = docs.join("report.txt~");
         if large {
             let stage = docs.join("report.txt.tmp");
-            fs::write(&stage, b"version two").unwrap();
-            a.rescan();
-            a.scan_until(|a| tracks(a, "report.txt.tmp"));
+            a.create(&mut remote, &stage, b"version two");
+            a.rest(&mut remote);
             fs::rename(&report, &backup).unwrap();
             fs::rename(&stage, &report).unwrap();
         } else {
@@ -2309,4 +2292,309 @@ fn a_safe_save_does_not_take_a_file_whose_create_awaits_its_reply() {
     assert_eq!(server_bytes(&remote, &report), b"version one", "{nodes:?}");
     assert_eq!(live_id(&nodes, "report.docx"), notes, "{nodes:?}");
     assert_eq!(server_bytes(&remote, &notes), b"notes", "{nodes:?}");
+}
+
+#[test]
+fn a_safe_save_does_not_take_a_file_renamed_to_a_tmp_name_before_its_create_was_built() {
+    let (mut remote, site, mut a, report) = safe_save_fixture();
+    let notes_path = site.root.join("notes.docx");
+    fs::write(&notes_path, b"notes").unwrap();
+    a.rescan();
+    a.settle();
+    let upload = a.work.pop_front().unwrap();
+    assert!(matches!(upload, Work::Upload(_)));
+    let stage = site.root.join("notes.tmp");
+    fs::rename(&notes_path, &stage).unwrap();
+    a.rescan();
+    a.settle();
+    a.perform(upload, &mut remote).unwrap();
+    let create = (0..8)
+        .find_map(|_| match a.work.pop_front() {
+            Some(Work::Send(create)) => Some(create),
+            Some(work) => {
+                a.perform(work, &mut remote).unwrap();
+                a.settle();
+                None
+            }
+            None => None,
+        })
+        .expect("notes create was sent after the renamed path uploaded");
+    let result = remote.commit(&a.caller, &create).unwrap();
+    let notes = live_id(&server_nodes(&remote), "notes.tmp");
+    let node = NodeId::from(notes.as_str());
+    assert!(a.folder.engine.trees.synced().get(&node).is_none());
+    safe_save_swap(&site, &mut a);
+    fs::rename(stage, site.root.join("report.docx")).unwrap();
+    a.rescan();
+    a.settle();
+    assert_eq!(
+        a.folder.engine.path_of(&node).as_deref(),
+        Some(Path::new("report.docx"))
+    );
+    fs::remove_file(site.root.join("~WRL0001.tmp")).unwrap();
+    a.rescan();
+    a.settle();
+
+    let step = a.folder.sent(Ok(result));
+    a.take(step).unwrap();
+    a.rest(&mut remote);
+    let nodes = server_nodes(&remote);
+    assert_eq!(server_bytes(&remote, &report), b"version one", "{nodes:?}");
+    assert_eq!(live_id(&nodes, "report.docx"), notes, "{nodes:?}");
+    assert_eq!(server_bytes(&remote, &notes), b"notes", "{nodes:?}");
+}
+
+#[test]
+fn a_word_save_keeps_its_node_when_the_temp_file_synced_before_a_restart() {
+    let (mut remote, site, mut a, before) = safe_save_fixture();
+    a.create(&mut remote, &site.root.join("~WRD0000.tmp"), b"version two");
+    a.rest(&mut remote);
+    drop(a);
+    let mut a = restarted(&site, &mut remote);
+    safe_save_swap(&site, &mut a);
+    fs::rename(
+        site.root.join("~WRD0000.tmp"),
+        site.root.join("report.docx"),
+    )
+    .unwrap();
+    a.rescan();
+    a.scan_until(|_| local_holds(&site, "report.docx"));
+    safe_save_cleanup(&site, &mut a, &mut remote);
+    safe_save_assert(&remote, &before);
+}
+
+#[test]
+fn a_safe_save_does_not_take_a_file_that_was_renamed_off_its_first_tmp_name() {
+    let (mut remote, site, mut a, before) = safe_save_fixture();
+    a.create(&mut remote, &site.root.join("draft.tmp"), b"draft");
+    a.rest(&mut remote);
+    fs::rename(site.root.join("draft.tmp"), site.root.join("draft.docx")).unwrap();
+    a.rescan();
+    a.scan_until(|_| local_holds(&site, "draft.docx"));
+    a.rest(&mut remote);
+    let draft = live_id(&server_nodes(&remote), "draft.docx");
+    safe_save_swap(&site, &mut a);
+    fs::rename(site.root.join("draft.docx"), site.root.join("draft.tmp")).unwrap();
+    a.rescan();
+    a.scan_until(|_| local_holds(&site, "draft.tmp"));
+    fs::rename(site.root.join("draft.tmp"), site.root.join("report.docx")).unwrap();
+    a.rescan();
+    a.scan_until(|_| local_holds(&site, "report.docx"));
+    safe_save_cleanup(&site, &mut a, &mut remote);
+    let nodes = server_nodes(&remote);
+    assert_eq!(server_bytes(&remote, &before), b"version one", "{nodes:?}");
+    assert_eq!(live_id(&nodes, "report.docx"), draft, "{nodes:?}");
+    assert_eq!(server_bytes(&remote, &draft), b"draft", "{nodes:?}");
+}
+
+#[test]
+fn a_folder_at_a_tmp_name_is_not_born_as_a_temp_file() {
+    let (mut remote, site, mut a, _) = safe_save_fixture();
+    fs::create_dir(site.root.join("folder.tmp")).unwrap();
+    a.rescan();
+    a.rest(&mut remote);
+    let id = node_named(&a, "folder.tmp");
+    assert!(a.folder.engine.trees.born_as_temp(&id).is_none());
+    assert!(site.stored().trees.born_as_temp(&id).is_none());
+}
+
+#[test]
+fn a_file_at_a_tmp_name_when_its_store_upgraded_continues_a_save_only_while_the_server_lacks_it() {
+    for synced in [false, true] {
+        let (mut remote, site, mut a, report) = safe_save_fixture();
+        let stage = site.root.join("notes.tmp");
+        fs::write(&stage, b"version two").unwrap();
+        a.rescan();
+        a.scan_until(|a| tracks(a, "notes.tmp"));
+        let notes = (a.folder.engine.trees.local().iter())
+            .find(|(_, node)| node.shape.name == "notes.tmp")
+            .unwrap()
+            .0
+            .clone();
+        drop(a);
+        Store::open(&site.db)
+            .unwrap()
+            .transaction(|tx| {
+                let mut state = tx.engine_state()?;
+                state.trees.born_as_temp =
+                    BTreeMap::from([(notes.clone(), koidrive_engine::state::TempBirth::Upgraded)]);
+                tx.set_engine_state(&state)
+            })
+            .unwrap();
+        let mut a = site.start();
+        a.connect(&remote);
+        a.scan_until(|a| a.folder.scanned && tracks(a, "notes.tmp"));
+        if synced {
+            a.rest(&mut remote);
+            assert_eq!(
+                live_id(&server_nodes(&remote), "notes.tmp"),
+                notes.to_string()
+            );
+        }
+        safe_save_swap(&site, &mut a);
+        fs::rename(&stage, site.root.join("report.docx")).unwrap();
+        a.rescan();
+        a.scan_until(|_| local_holds(&site, "report.docx"));
+        safe_save_cleanup(&site, &mut a, &mut remote);
+        let nodes = server_nodes(&remote);
+        let kept = if synced {
+            notes.to_string()
+        } else {
+            report.clone()
+        };
+        assert_eq!(live_id(&nodes, "report.docx"), kept, "{synced} {nodes:?}");
+        assert_eq!(
+            server_bytes(&remote, &kept),
+            b"version two",
+            "{synced} {nodes:?}"
+        );
+    }
+}
+
+#[test]
+fn a_save_continuation_does_not_take_a_trashed_file_through_an_unsynced_tmp() {
+    for (restart, renamed) in [(false, false), (true, false), (false, true), (true, true)] {
+        let at = format!("restart {restart}, renamed {renamed}");
+        clock::freeze();
+        let mut remote = Remote::new();
+        let (site, mut a) = linked(&mut remote, "a");
+        a.create(&mut remote, &site.root.join(".koiignore"), b"dist/\n");
+        a.create(&mut remote, &site.root.join("report.docx"), b"report");
+        a.rest(&mut remote);
+        a.create(&mut remote, &site.root.join("notes.docx"), b"notes");
+        a.rest(&mut remote);
+        let nodes = server_nodes(&remote);
+        let report = live_id(&nodes, "report.docx");
+        let notes = NodeId::from(live_id(&nodes, "notes.docx").as_str());
+        let file = a.observer.snapshot().entries[Path::new("notes.docx")].id;
+        fs::create_dir(site.root.join("dist")).unwrap();
+        fs::rename(
+            site.root.join("notes.docx"),
+            site.root.join("dist/notes.docx"),
+        )
+        .unwrap();
+        a.settle();
+        a.rest(&mut remote);
+        fs::write(site.root.join("notes.docx"), b"new notes").unwrap();
+        a.settle();
+        a.rest(&mut remote);
+        assert!(
+            a.folder.engine.trees.displaced_local().contains_key(&notes),
+            "{at}"
+        );
+
+        let (site_b, mut b) = linked(&mut remote, "b");
+        b.rest(&mut remote);
+        let notes_name = server_nodes(&remote)
+            .into_iter()
+            .find(|(_, id, live)| id.as_str() == notes && *live)
+            .unwrap()
+            .0;
+        fs::remove_file(site_b.root.join(notes_name)).unwrap();
+        b.settle();
+        b.rest(&mut remote);
+        for _ in 0..3 {
+            a.pull(&remote);
+            a.settle();
+            a.rest(&mut remote);
+        }
+        if restart {
+            drop(a);
+            a = restarted(&site, &mut remote);
+        }
+        assert!(
+            !a.folder.engine.trees.displaced_local().contains_key(&notes),
+            "{at}"
+        );
+        assert!(a.folder.engine.trees.remote().get(&notes).is_some(), "{at}");
+        assert!(
+            a.folder.engine.trees.remote().live(&notes).is_none(),
+            "{at}"
+        );
+
+        safe_save_swap(&site, &mut a);
+        a.rest(&mut remote);
+        fs::rename(
+            site.root.join("dist/notes.docx"),
+            site.root.join("notes.tmp"),
+        )
+        .unwrap();
+        if renamed {
+            observe(
+                &mut a,
+                vec![Observed::Renamed {
+                    from: "dist/notes.docx".into(),
+                    to: "notes.tmp".into(),
+                    kind: EntryKind::File,
+                    id: file,
+                    linked: false,
+                }],
+            );
+        }
+        a.rescan();
+        a.scan_until(|_| local_holds(&site, "notes.tmp"));
+        fs::rename(site.root.join("notes.tmp"), site.root.join("report.docx")).unwrap();
+        a.rescan();
+        a.scan_until(|_| local_holds(&site, "report.docx"));
+        safe_save_cleanup(&site, &mut a, &mut remote);
+        let nodes = server_nodes(&remote);
+        assert_eq!(server_bytes(&remote, &report), b"report", "{at} {nodes:?}");
+        assert_ne!(live_id(&nodes, "report.docx"), report, "{at} {nodes:?}");
+    }
+}
+
+#[test]
+fn a_marked_file_at_a_tmp_name_stages_a_save_only_when_it_is_the_file_its_node_holds() {
+    for hardlink in [false, true] {
+        let (mut remote, site, mut a, report) = safe_save_fixture();
+        let notes = site.root.join("notes.docx");
+        let stage = site.root.join("notes.tmp");
+        a.create(&mut remote, &notes, b"old notes");
+        a.rest(&mut remote);
+        let original = live_id(&server_nodes(&remote), "notes.docx");
+        if hardlink {
+            fs::hard_link(&notes, &stage).unwrap();
+        } else {
+            let held = site.root.with_file_name("held.docx");
+            drop(a);
+            fs::rename(&notes, &held).unwrap();
+            fs::write(&notes, b"new notes").unwrap();
+            a = restarted(&site, &mut remote);
+            a.rest(&mut remote);
+            assert_eq!(server_bytes(&remote, &original), b"new notes");
+            fs::rename(&held, &stage).unwrap();
+        }
+        let marked = koidrive_fs::node_mark(fs::File::open(&stage).unwrap().as_fd()).unwrap();
+        assert_eq!(marked.as_deref(), Some(original.as_str()), "{hardlink}");
+        a.rescan();
+        a.scan_until(|_| local_holds(&site, "notes.tmp"));
+        a.rest(&mut remote);
+        safe_save_swap(&site, &mut a);
+        a.rest(&mut remote);
+        fs::rename(&stage, site.root.join("report.docx")).unwrap();
+        a.rescan();
+        a.scan_until(|_| local_holds(&site, "report.docx"));
+        safe_save_cleanup(&site, &mut a, &mut remote);
+        let nodes = server_nodes(&remote);
+        let saved: &[u8] = if hardlink {
+            b"old notes"
+        } else {
+            b"version one"
+        };
+        assert_eq!(
+            server_bytes(&remote, &report),
+            saved,
+            "{hardlink} {nodes:?}"
+        );
+        assert_eq!(
+            live_id(&nodes, "report.docx") == report,
+            hardlink,
+            "{hardlink} {nodes:?}"
+        );
+        assert_eq!(
+            live_id(&nodes, "notes.docx"),
+            original,
+            "{hardlink} {nodes:?}"
+        );
+    }
 }
