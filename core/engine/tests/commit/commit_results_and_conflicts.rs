@@ -1053,19 +1053,28 @@ fn a_create_superseded_on_a_trashed_node_keeps_the_edit_made_after_it_was_sent()
     let mut trees = trees(&[("f", Some(file(ROOT, "c.txt", 1)), None, None)]);
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
     build(&mut commits, &mut trees, &mut ids).unwrap();
-    trees.set_local("f".into(), local(file(ROOT, "c.txt", 2), 1));
-    trees.set_remote("f".into(), trashed(file(ROOT, "c.txt", 1)));
+    let f = NodeId::from("f");
+    trees.set_local_changed(f.clone(), local(file(ROOT, "c.txt", 2), 1));
+    let edit = trees.journal_row(&f, Field::Content).map(|row| row.intent);
+    assert!(edit.is_some());
+    trees.set_remote(f.clone(), trashed(file(ROOT, "c.txt", 1)));
     acknowledge(
         &mut commits,
         &mut trees,
         vec![outcome(op_result::Code::Superseded)],
     );
     assert!(commits.problems().is_empty());
+    assert_eq!(trees.synced().get(&f), Some(&file(ROOT, "c.txt", 1)));
     assert_eq!(
-        trees.synced().get(&"f".into()),
-        Some(&file(ROOT, "c.txt", 1))
+        trees.local().get(&f).map(|node| &node.shape),
+        Some(&file(ROOT, "c.txt", 2))
     );
-    assert_ne!(trees.class(&"f".into()), Class::Remote);
+    let row = trees
+        .journal_row(&f, Field::Content)
+        .expect("the edit keeps its row");
+    assert_eq!(Some(row.intent), edit);
+    assert!(matches!(row.state, RowState::Local { .. }), "{row:?}");
+    assert_ne!(trees.class(&f), Class::Remote);
 }
 
 #[test]

@@ -17,6 +17,8 @@ use koidrive_engine::ids::IdGen;
 
 use koidrive_engine::ignore::RuleFile;
 
+use koidrive_engine::journal::{Field, RowState};
+
 use koidrive_engine::names::{MAX_NAME_BYTES, nfc, normalize_name};
 
 use koidrive_engine::state::{CommitsState, FinishOrigin, MovedHere, PendingFinish, TreesState};

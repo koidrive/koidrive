@@ -491,6 +491,7 @@ impl FailurePersistence for NewCases {
 
 struct Reds {
     test: &'static str,
+    mode: &'static str,
     recorded: BTreeMap<&'static str, BTreeSet<(Check, String)>>,
     wrong: Vec<String>,
 }
@@ -526,6 +527,7 @@ impl Reds {
         }
         Reds {
             test,
+            mode,
             recorded,
             wrong: Vec::new(),
         }
@@ -538,18 +540,19 @@ impl Reds {
             .flat_map(|(check, guard)| guard.fired().into_iter().map(move |why| (check, why)))
             .collect();
         let recorded = self.recorded.remove(case).unwrap_or_default();
-        let test = self.test;
+        let (test, mode) = (self.test, self.mode);
         if let Err(failure) = result {
             self.wrong
                 .push(format!("{test} case {case} fails: {failure}"));
         }
         for (check, why) in failed.difference(&recorded) {
-            self.wrong
-                .push(format!("not recorded: {test}\t{case}\t{check:?}\t{why}"));
+            self.wrong.push(format!(
+                "not recorded: {test}\t{case}\t{mode}\t{check:?}\t{why}"
+            ));
         }
         for (check, why) in recorded.difference(&failed) {
             self.wrong.push(format!(
-                "recorded but passed: {test}\t{case}\t{check:?}\t{why}"
+                "recorded but passed: {test}\t{case}\t{mode}\t{check:?}\t{why}"
             ));
         }
     }
@@ -684,9 +687,24 @@ fn replays<S: Strategy>(
         .map(|entry| entry.expect("read a saved case").path())
         .collect();
     cases.sort();
+    let mut wrong = Vec::new();
+    for intents in [true, false] {
+        let mode = FIELD_INTENTS.replace(intents);
+        wrong.extend(replays_in_mode(test, &cases, strategy, run));
+        FIELD_INTENTS.set(mode);
+    }
+    wrong
+}
+
+fn replays_in_mode<S: Strategy>(
+    test: &'static str,
+    cases: &[std::path::PathBuf],
+    strategy: &S,
+    run: &impl Fn(S::Value) -> Result<(), Failure>,
+) -> Vec<String> {
     let reds = RefCell::new(Reds::new(test, "cc-"));
     for path in cases {
-        let line = fs::read_to_string(&path).expect("read a saved case");
+        let line = fs::read_to_string(path).expect("read a saved case");
         let seed = (line.split('#').next()).and_then(|seed| seed.trim().parse().ok());
         let Some(seed) = seed else {
             panic!("{} holds no seed", path.display());
@@ -967,6 +985,61 @@ fn devices_converge_across_restores_and_rewinds_on_the_oracle_reds() {
         test_name!(devices_converge_across_restores_and_rewinds_on_the_oracle_reds),
         (2..=3usize, phases(Losses::RestoresAndRewinds)),
         |(devices, phases)| converge(devices, &phases).map(drop),
+    );
+}
+
+#[test]
+fn every_saved_case_replays_with_intents_on_and_then_off() {
+    let modes = RefCell::new(Vec::new());
+    let wrong = replays(
+        "replays",
+        ORACLE_REDS,
+        &(2..=3usize, phases(Losses::Restores)),
+        &|_| {
+            modes.borrow_mut().push(FIELD_INTENTS.get());
+            Ok(())
+        },
+    );
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+    let cases = fs::read_dir(ORACLE_REDS)
+        .expect("read the saved cases")
+        .count();
+    assert_eq!(
+        modes.into_inner(),
+        [vec![true; cases], vec![false; cases]].concat()
+    );
+}
+
+#[test]
+fn a_wrong_red_prints_a_row_the_oracle_reds_file_takes() {
+    let intents = FIELD_INTENTS.replace(false);
+    let mut reds = Reds::new("rows", "case-");
+    let why = "the delete of node 01a1c2c0-39a0-7510-83bc-38d6c6b89fe4 on device 0 came undone, and no change its user did not see brought the node back";
+    reds.recorded.insert(
+        "case-1",
+        BTreeSet::from([(Check::DeleteUndone, why.to_owned())]),
+    );
+    reds.case("case-0", || {
+        an_own_lost_create_under_a_folder_deleted_after_the_loss_leaves_the_folder_deleted();
+        Ok(())
+    });
+    reds.case("case-1", || Ok(()));
+    FIELD_INTENTS.set(intents);
+    let rows: Vec<Vec<&str>> = (reds.wrong.iter())
+        .map(|wrong| {
+            wrong
+                .split_once(": ")
+                .expect("a wrong red names its kind")
+                .1
+        })
+        .map(|row| row.split('\t').collect())
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            ["rows", "case-0", "off", "DeleteUndone", why],
+            ["rows", "case-1", "off", "DeleteUndone", why],
+        ]
     );
 }
 

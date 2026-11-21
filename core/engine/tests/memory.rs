@@ -9,7 +9,7 @@ use koidrive_engine::ids::IdGen;
 use koidrive_engine::journal::{Field, FieldIntent, NodeIntents};
 use koidrive_engine::state::CommitsState;
 use koidrive_engine::tree::{Content, FileIdentity, Kind, LocalNode, NodeId, RemoteNode, Shape};
-use koidrive_proto::v1::{ChunkRef, CommitResult, OpResult, op, op_result};
+use koidrive_proto::v1::{ChunkRef, CommitResult, OpResult, Welcome, op, op_result};
 use koidrive_sim::world::split;
 
 const ROOT: &str = "01a1eab7-d941-7d6a-9e0d-576a24408e65";
@@ -155,14 +155,18 @@ fn first_upload() -> (Trees, usize) {
     }
     trees.settle(&Default::default());
     let mut commits = Commits::from_state(CommitsState::default()).unwrap();
+    commits.connected(&Welcome {
+        features: vec!["field_intents".into()],
+        ..Default::default()
+    });
     let mut seq = 0;
     while let Some(commit) = commits
         .build(&mut trees, &mut ids, NOW, "history", "me", seq)
         .cloned()
     {
         seq += 1;
-        for op in commit.ops.iter().filter_map(|op| op.op.as_ref()) {
-            let (id, kind, parent, name, content) = match op {
+        for envelope in &commit.ops {
+            let (id, kind, parent, name, content) = match envelope.op.as_ref().expect("an op") {
                 op::Op::CreateDir(create) => (
                     &create.node_id,
                     Kind::Dir,
@@ -187,16 +191,28 @@ fn first_upload() -> (Trees, usize) {
                 content,
             };
             let id = NodeId::from(id);
+            let fields = envelope.fields.as_ref();
             let mut intents = NodeIntents::default();
             for field in Field::ALL {
-                let row = trees.journal_row(&id, field);
+                let given = match field {
+                    Field::Place => fields.and_then(|fields| fields.place.as_ref()),
+                    Field::Content => fields.and_then(|fields| fields.content.as_ref()),
+                    Field::Status => fields.and_then(|fields| fields.status.as_ref()),
+                };
+                let recorded = trees.journal_row(&id, field).map(|row| row.intent);
+                let sent = (given.or(envelope.intent.as_ref()))
+                    .and_then(FieldIntent::from_proto)
+                    .filter(|_| recorded.is_some());
+                assert_eq!(
+                    sent.as_ref().map(|sent| sent.id),
+                    recorded,
+                    "the request sends the {field:?} intent of {id}"
+                );
                 intents.set(
                     field,
-                    row.map(|row| FieldIntent {
-                        id: row.intent,
-                        author: "me".into(),
-                        replay: false,
+                    sent.map(|sent| FieldIntent {
                         applied_at_ms: NOW as i64,
+                        ..sent
                     }),
                 );
             }
