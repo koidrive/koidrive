@@ -1783,7 +1783,7 @@ impl Engine {
                 self.backup_gone.remove(&id);
             } else if !held {
                 let renamed_away = (self.renamed_away.iter())
-                    .find(|(_, (parent, name, _))| (parent, name) == (&slot.0, &slot.1))
+                    .find(|(_, (parent, name, _, _))| (parent, name) == (&slot.0, &slot.1))
                     .map(|(original, _)| original);
                 let marked_as_another =
                     (mark.map(NodeId::from)).is_some_and(|mark| renamed_away != Some(&mark));
