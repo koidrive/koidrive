@@ -305,6 +305,20 @@ fn a_child_the_rules_leave_out_gets_no_status_row_when_its_folder_is_deleted() {
 }
 
 #[test]
+fn a_removal_the_new_rules_leave_out_before_a_settle_records_no_delete() {
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
+    synced(&mut trees, "f", file(ROOT, "c.txt", 1), 1);
+    trees.rules_scanned();
+    trees.settle(&Default::default());
+    let rules = RuleFile::parse(b"*.txt\n");
+    trees.set_rules(&[] as &[&str; 0], Source::Koiignore, Some(rules));
+    assert!(!trees.unobserved(&"f".into()));
+    trees.remove_local_by_user(&"f".into());
+    assert!(trees.journal_row(&"f".into(), Field::Status).is_none());
+    assert!(trees.journal().seen(&"f".into()).is_empty());
+}
+
+#[test]
 fn a_delete_of_a_folder_whose_create_is_in_flight_sees_the_create() {
     let mut trees = Trees::new(ROOT, &IdGen::new(0));
     trees.set_local_changed("d".into(), local(dir(ROOT, "d")));

@@ -2425,10 +2425,8 @@ impl Trees {
     /// rules let sync and that the device observes is recorded with the folder L held it in
     /// ([`TreesState::removed_from`]); an unobserved one downloads again (section 5.10).
     pub fn remove_local(&mut self, id: &NodeId) {
-        let left_out = self.excluded(id) && self.ignored_in_remote(id);
-        let unobserved = self.unobserved.contains(id) || self.left_out_by_new_rules(id);
         let removed =
-            (self.l.get(id)).filter(|_| self.r.live(id).is_some() && !left_out && !unobserved);
+            (self.l.get(id)).filter(|_| self.r.live(id).is_some() && !self.removal_unobserved(id));
         if let Some(local) = removed {
             let folder = (self.member_removed_inside(id)).unwrap_or(&local.shape.parent);
             self.removed_from.insert(id.to_owned(), folder.clone());
@@ -2451,6 +2449,12 @@ impl Trees {
             at = &self.l.get(at)?.shape.parent;
         }
         None
+    }
+
+    fn removal_unobserved(&self, id: &NodeId) -> bool {
+        self.excluded(id) && self.ignored_in_remote(id)
+            || self.unobserved.contains(id)
+            || self.left_out_by_new_rules(id)
     }
 
     fn left_out_by_new_rules(&self, id: &NodeId) -> bool {
