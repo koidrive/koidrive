@@ -85,10 +85,15 @@ impl Folder {
                 )
         };
         let mut reasons: BTreeMap<&NodeId, Vec<String>> = BTreeMap::new();
-        let mut restart = (self.engine.effects.blocked().keys())
-            .any(|node| !self.denied.contains_key(node))
+        let blocked: Vec<&NodeId> = (self.engine.effects.blocked().iter())
+            .filter(|(id, effect)| {
+                !(matches!(effect, effects::Effect::RemoveDir { .. }) && trees.left_behind(id))
+            })
+            .map(|(id, _)| id)
+            .collect();
+        let mut restart = (blocked.iter()).any(|node| !self.denied.contains_key(*node))
             || held.keys().any(|id| !trees.stays_parked(id));
-        for id in self.engine.effects.blocked().keys() {
+        for id in blocked {
             let why = (self.effect_failures.get(id)).map_or("it failed earlier", |(_, why)| why);
             let why = format!("the server's change could not be made here: {why}");
             reasons.entry(id).or_default().push(why);

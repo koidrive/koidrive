@@ -8189,3 +8189,54 @@ fn a_server_folder_is_the_users_only_when_the_user_deletes_one_of_its_entries_wh
         );
     }
 }
+
+#[test]
+fn a_server_file_another_device_moves_into_a_taken_along_folder_goes_to_the_local_trash() {
+    let mut trees = trees(
+        &[
+            ("h", dir(ROOT, "a")),
+            ("s", dir(ROOT, "b")),
+            ("sx", file("s", "y", 4)),
+            ("m", file(ROOT, "m.txt", 12)),
+        ],
+        &[
+            ("s", dir(ROOT, "b")),
+            ("sx", file("s", "y", 4)),
+            ("m", file(ROOT, "m.txt", 12)),
+        ],
+    );
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(7));
+    commits.first_link(&mut trees, &mut ids, NOW, PriorSync::Shown);
+    trees.settle(commits.aliases());
+    trees.set_rules(
+        &[] as &[&str],
+        Source::Koiignore,
+        Some(RuleFile::parse(b"a\n")),
+    );
+    let mut taken = trees.local().get(&"s".into()).unwrap().clone();
+    taken.shape = dir("h", "c.txt");
+    trees.set_local_changed("s".into(), taken);
+    trees.settle(commits.aliases());
+    while let Some(open) = (commits.questions().iter()).find(|asked| asked.answer.is_none()) {
+        let id = open.id.clone();
+        assert!(commits.decide(&mut trees, &id, Answer::Discard));
+    }
+    drive_until_quiet(&mut commits, &mut trees, &mut ids);
+    assert!(trees.excluded(&"s".into()));
+    let mut moved = trees.remote().get(&"m".into()).unwrap().clone();
+    moved.shape.parent = "s".into();
+    moved.meta_rev += 1;
+    moved.meta_edit_rev += 1;
+    trees.set_remote("m".into(), moved);
+    assert_eq!(drive_until_quiet(&mut commits, &mut trees, &mut ids), []);
+    assert!(trees.local().get(&"m".into()).is_none());
+    trees.set_rules(&[] as &[&str], Source::Koiignore, None);
+    drive_until_quiet(&mut commits, &mut trees, &mut ids);
+    assert_eq!(
+        trees
+            .local()
+            .get(&"m".into())
+            .map(|node| node.shape.parent.clone()),
+        Some("s".into())
+    );
+}

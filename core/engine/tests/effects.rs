@@ -1774,6 +1774,10 @@ fn a_reverted_parked_file_whose_r_name_an_excluded_node_holds_brings_back_its_de
         koidrive_engine::ignore::Source::Koiignore,
         Some(koidrive_engine::ignore::RuleFile::parse(b"logs/\n")),
     );
+    let mut edited = trees.local().get(&"e".into()).unwrap().clone();
+    edited.shape = file(ROOT, "z", 8);
+    trees.set_local("e".into(), edited);
+    disk.entries.get_mut(&2).unwrap().content = Some(content(8));
     let mut local = trees.local().get(&"x".into()).unwrap().clone();
     local.parked = true;
     local.shape = file("d", "y", 1);

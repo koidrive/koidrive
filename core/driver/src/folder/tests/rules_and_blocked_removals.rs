@@ -516,6 +516,71 @@ fn a_remote_delete_of_a_folder_holding_an_entry_l_does_not_know_keeps_the_folder
 }
 
 #[test]
+fn a_folder_another_device_moves_where_the_rules_leave_it_out_here_goes_to_the_local_trash_but_with_an_entry_l_does_not_know()
+ {
+    for unknown in [None, Some("build.log"), Some("link")] {
+        let mut remote = Remote::new();
+        let (site_a, mut a) = linked(&mut remote, "a");
+        fs::create_dir(site_a.root.join("held")).unwrap();
+        fs::create_dir(site_a.root.join("archive")).unwrap();
+        a.create(&mut remote, &site_a.root.join("held/a.txt"), b"synced");
+        a.create(&mut remote, &site_a.root.join("archive/old.txt"), b"old");
+        let sync = SyncRules {
+            include: Vec::new(),
+            exclude: vec!["archive/".into(), "*.log".into()],
+            ..SyncRules::default()
+        };
+        let site = Site::new(&remote, "b");
+        let mut b = site.start_with(&sync);
+        b.connect(&remote);
+        b.scan_until(|b| b.folder.scanned);
+        b.run(&mut remote);
+        b.settle();
+        assert_eq!(names(&site.root), ["held"], "{unknown:?}");
+        assert_eq!(fs::read(site.root.join("held/a.txt")).unwrap(), b"synced");
+        let entry = unknown.map(|name| site.root.join("held").join(name));
+        match (unknown, &entry) {
+            (Some("link"), Some(entry)) => std::os::unix::fs::symlink("/etc/hosts", entry).unwrap(),
+            (_, Some(entry)) => fs::write(entry, b"left out").unwrap(),
+            (_, None) => {}
+        }
+        b.settle();
+        assert_eq!(b.state(), FolderState::UpToDate, "{unknown:?}");
+
+        fs::rename(site_a.root.join("held"), site_a.root.join("archive/held")).unwrap();
+        a.scan_until(|a| !a.work.is_empty());
+        a.run(&mut remote);
+        b.pull(&remote);
+        let mut steps = 0;
+        while let Some(work) = b.work.pop_front() {
+            steps += 1;
+            assert!(
+                steps < 20,
+                "{unknown:?}: the removal is planned again and again"
+            );
+            b.perform(work, &mut remote).unwrap();
+        }
+        b.settle();
+        assert!(b.work.is_empty(), "{unknown:?}");
+        assert!(!site.root.join("held/a.txt").exists(), "{unknown:?}");
+        match &entry {
+            Some(entry) => assert!(fs::symlink_metadata(entry).is_ok(), "{unknown:?} is kept"),
+            None => assert!(!site.root.join("held").exists()),
+        }
+        assert!(!trashed(&site.root).is_empty(), "{unknown:?}");
+        let view = b.folder.view();
+        assert_eq!(
+            (view.state, view.problem),
+            (FolderState::UpToDate, None),
+            "{unknown:?}"
+        );
+        assert!(b.folder.stuck_effects.is_empty(), "{unknown:?}");
+        assert!(b.sent.is_empty(), "{unknown:?}");
+        assert_eq!(remote.names(), ["a.txt", "archive", "held", "old.txt"], "{unknown:?}");
+    }
+}
+
+#[test]
 fn a_remote_delete_of_a_folder_whose_subfolder_holds_an_entry_l_does_not_know_keeps_both_folders() {
     let mut remote = Remote::new();
     let (site_a, mut a) = linked(&mut remote, "a");
@@ -771,11 +836,8 @@ fn a_folder_to_remove_that_holds_a_file_an_excluded_entry_keeps_out_lets_the_fol
     assert!(site.root.join("q/x").is_dir());
 }
 
-/// Device `b` excludes `skip/`. Device `a` moves the file `foo` to `skip/foo`, then makes a folder `foo` with the file
-/// `foo/child` in it. On `b` the excluded file keeps the name `foo`, so the folder can't be created and the file in it
-/// can't be written. The folder is up to date, and its problem names both and the entry that holds the name.
 #[test]
-fn a_file_in_a_folder_an_excluded_entry_keeps_out_is_named_with_it() {
+fn a_file_another_device_moves_where_the_rules_leave_it_out_here_frees_its_name_for_a_folder_made_there() {
     let mut remote = Remote::new();
     let (site_a, mut a) = linked(&mut remote, "a");
     a.create(&mut remote, &site_a.root.join("foo"), b"kept on b");
@@ -805,19 +867,11 @@ fn a_file_in_a_folder_an_excluded_entry_keeps_out_is_named_with_it() {
     assert!(b.run(&mut remote).is_empty());
 
     let view = b.folder.view();
-    assert_eq!(
-        (view.state, view.problem),
-        (
-            FolderState::UpToDate,
-            Some(
-                "2 items could not be synced: \"foo\" (its name here is taken by \"foo\", which this device's rules \
-                 exclude), \"foo/child\" (waits for \"foo\", whose name here is taken by an entry this device's rules \
-                 exclude); run koi folder restart once they are fixed"
-                    .into()
-            )
-        )
-    );
-    assert_eq!(fs::read(site.root.join("foo")).unwrap(), b"kept on b");
+    assert_eq!((view.state, view.problem), (FolderState::UpToDate, None));
+    assert_eq!(fs::read(site.root.join("foo/child")).unwrap(), b"written on a");
+    assert_eq!(trashed(&site.root).len(), 1);
+    assert!(b.sent.is_empty(), "{:?}", b.sent);
+    assert_eq!(remote.names(), ["child", "foo", "foo", "skip"]);
 }
 
 #[test]

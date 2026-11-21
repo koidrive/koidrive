@@ -556,6 +556,17 @@ impl Rules {
 }
 
 /// The names from the root to `id` in L.
+fn left_behind(trees: &Trees, id: &NodeId) -> bool {
+    trees.remote().live(id).is_some()
+        && trees.excluded(id)
+        && (trees.local().get(id))
+            .zip(trees.synced().live(id))
+            .is_some_and(|(local, synced)| {
+                synced.same(&local.shape)
+                    && !trees.ignores(&local_path(trees, id), local.shape.kind)
+            })
+}
+
 fn local_path(trees: &Trees, id: &NodeId) -> Vec<String> {
     let mut names = Vec::new();
     let mut current = id;
@@ -2436,7 +2447,7 @@ fn run_ignoring_answering_after(
                 Effect::RemoveDir { .. } => known,
                 _ => false,
             };
-            removals += usize::from(removes);
+            removals += usize::from(removes && !left_behind(&device.trees, &record.node));
             let removed = matches!(
                 record.effect,
                 Effect::RemoveFile { .. } | Effect::RemoveDir { .. }
@@ -2484,7 +2495,26 @@ fn run_ignoring_answering_after(
                                 discarded.contains_key(id)
                                     || device.trees.local().get(id).is_some_and(|node| node.parked)
                             });
-                        remote.is_none() && parked_or_taken_along
+                        let names: Option<Vec<&str>> =
+                            std::iter::successors(Some(&record.node), |id| {
+                                (device.trees.local().get(id))
+                                    .map(|node| &node.shape.parent)
+                                    .filter(|parent| **parent != device.trees.local().root)
+                            })
+                            .map(|id| {
+                                (device.trees.local().get(id))
+                                    .filter(|node| !node.parked)
+                                    .map(|node| node.shape.name.as_str())
+                            })
+                            .collect();
+                        let left_behind = remote.is_some()
+                            && (device.trees.synced().live(&record.node))
+                                .is_some_and(|synced| synced.same(&local.shape))
+                            && names.is_some_and(|mut names| {
+                                names.reverse();
+                                !device.trees.ignores(&names, local.shape.kind)
+                            });
+                        (remote.is_none() && parked_or_taken_along) || left_behind
                     }
                 };
                 prop_assert!(
@@ -2983,7 +3013,10 @@ fn run_ignoring_answering_after(
     prop_assert_eq!(unsettled, Vec::<&NodeId>::new());
     prop_assert!(commits.problems().is_empty(), "{:?}", commits.problems());
     prop_assert!(
-        (effects.blocked().keys()).all(|id| refused_merges.contains(id) || blocked_by_ignored(id)),
+        (effects.blocked().iter()).all(|(id, effect)| refused_merges.contains(id)
+            || blocked_by_ignored(id)
+            || matches!(effect, Effect::RemoveDir { along, .. }
+                if left_behind(&device.trees, id) && !held_on_disk(&device, id, along).is_empty())),
         "{:?}",
         effects.blocked()
     );

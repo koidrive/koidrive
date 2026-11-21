@@ -475,7 +475,19 @@ impl Effects {
         let mut chosen = Vec::new();
         let mut claimed = BTreeSet::new();
         let mut bytes = 0;
-        for id in trees.dirty_others() {
+        let mut left_behind = Vec::new();
+        let mut folders: Vec<&NodeId> = (trees.dirty_others().into_iter())
+            .filter(|id| trees.left_behind(id))
+            .collect();
+        while let Some(folder) = folders.pop() {
+            for child in trees.local_children(folder) {
+                if trees.left_behind(child) && !trees.dirty().contains(child) {
+                    left_behind.push(child);
+                    folders.push(child);
+                }
+            }
+        }
+        for id in left_behind.into_iter().rev().chain(trees.dirty_others()) {
             if chosen.len() >= limit.effects {
                 break;
             }
@@ -976,10 +988,11 @@ fn candidate(trees: &Trees, id: &NodeId) -> bool {
             && trees.remote().live(id).is_none()
             && !trees.edited(id)
             && !changed_locally(trees, id))
-        || trees.is_discarded(id);
+        || trees.is_discarded(id)
+        || trees.left_behind(id);
     changed
         && !forgets
-        && (!trees.excluded(id) || trees.trashed_while_parked(id))
+        && (!trees.excluded(id) || trees.trashed_while_parked(id) || trees.left_behind(id))
         && !trees.reclaimed(id)
 }
 
@@ -1202,6 +1215,9 @@ impl<'a> View<'a> {
     fn step(&self, id: &NodeId) -> Step {
         let local = self.trees.local().get(id);
         let remote = self.trees.remote().live(id);
+        if let Some(local) = local.filter(|_| self.trees.left_behind(id)) {
+            return self.remove(id, local);
+        }
         if let Some(local) = local.filter(|local| local.parked && self.trees.ignored(id)) {
             if self.trees.trashed_while_parked(id) {
                 return self.remove(id, local);
