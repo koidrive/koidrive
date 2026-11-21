@@ -1597,6 +1597,7 @@ fn waits_on_left_out(device: &Device, id: &NodeId) -> bool {
     remote.parent == device.trees.remote().root
         && device.left_out_root_holds(&remote.name)
         && (remote.kind == Kind::Dir
+            || device.trees.ignores(&[remote.name.as_str()], remote.kind)
             || (1..=MAX_CONFLICT_ATTEMPTS).all(|attempt| {
                 let name = conflict_name(&remote.name, "", NOW, attempt);
                 device.trees.ignores(&[name], remote.kind)
