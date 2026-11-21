@@ -204,6 +204,7 @@ impl World {
 mod tests {
     use koidrive_proto::v1::{NodeKind, NodeState, VersionInfo};
 
+    use super::super::intents::{Answered, KEEP};
     use super::*;
 
     fn file(root: &str, id: &str, status: NodeStatus, write: i64) -> NodeState {
@@ -246,24 +247,35 @@ mod tests {
     }
 
     #[test]
-    fn a_copy_excuses_a_write_a_delete_saw_only_on_the_node_it_was_copied_to() {
-        for (copied_to, reported) in [("y", true), ("z", false)] {
-            let (mut intents, deletion) = deleted_x();
-            let world = World::new(2);
-            let copy = BTreeMap::from([(3, NodeId::from(copied_to))]);
-            intents.observe(0, 0, &world.devices[0].disk, &copy, &"root".into());
-            let write = Value::Content {
-                write: 7,
-                digest: super::super::content(0, 0, 7).manifest_digest,
-            };
+    fn a_copy_or_a_keep_answer_excuses_a_write_a_delete_saw_only_on_the_node_it_put_it_on() {
+        let copy = |intents: &mut Intents, write| {
             intents.record(0, 0, 3, "copy", write);
-            let tree = x_trashed_and_z_holding_7("z");
-            let found = deletion.seen_writes_elsewhere(&intents, &tree, |_| false);
-            let wanted = match reported {
-                true => vec![(7, NodeId::from("x"), NodeId::from("z"))],
-                false => Vec::new(),
-            };
-            assert_eq!(found, wanted, "copied to {copied_to}");
+        };
+        let keep = |intents: &mut Intents, write| {
+            intents.answered((0, 0, KEEP), 3, write, Answered::Owed, true);
+        };
+        for (how, put) in [
+            ("copy", &copy as &dyn Fn(&mut Intents, Value)),
+            ("keep", &keep),
+        ] {
+            for (copied_to, reported) in [("y", true), ("z", false)] {
+                let (mut intents, deletion) = deleted_x();
+                let world = World::new(2);
+                let copy = BTreeMap::from([(3, NodeId::from(copied_to))]);
+                intents.observe(0, 0, &world.devices[0].disk, &copy, &"root".into());
+                let write = Value::Content {
+                    write: 7,
+                    digest: super::super::content(0, 0, 7).manifest_digest,
+                };
+                put(&mut intents, write);
+                let tree = x_trashed_and_z_holding_7("z");
+                let found = deletion.seen_writes_elsewhere(&intents, &tree, |_| false);
+                let wanted = match reported {
+                    true => vec![(7, NodeId::from("x"), NodeId::from("z"))],
+                    false => Vec::new(),
+                };
+                assert_eq!(found, wanted, "{how} to {copied_to}");
+            }
         }
     }
 
