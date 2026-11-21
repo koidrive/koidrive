@@ -123,7 +123,7 @@ Entering recovery is one store transaction that copies R, S and L into evidence 
 3. Classify every node ID in R′, S₀ or L, and every intent in I₀, by whether this device changed it since its last sync (L against S₀), never by path or content. Ops a user could have taken more than one way are never inferred.
 4. Apply the certain cases at once through the ordinary planner: set S for those nodes as the table says, and let §2.3 produce the effects. Hold the rest.
 5. Resume normal sync for every node that is not held. Held nodes are excluded from planning, like guard holds (§6.1), and stay on disk exactly as they are.
-6. Ask the user about the held groups. Each answer applies to the group's listed nodes at the revisions and contents it showed. Anything that changed since needs a new question.
+6. Ask the user about the held groups. Each answer applies to the group's listed nodes at the revisions and contents it showed. Anything that changed since needs a new question. The engine checks this by revision when it applies the answer, so a change whose shape returns to the one shown still needs a new question; once the engine has applied the answer, a later server change does not undo it: the answer's effects finish, and the change then syncs as any remote change does.
 7. Leave recovery when no held node and no undecided intent remains, and drop the evidence tables.
 
 ### Classification

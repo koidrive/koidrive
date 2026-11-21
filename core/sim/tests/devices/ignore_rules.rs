@@ -2987,6 +2987,89 @@ fn a_discard_after_rewind_does_not_trash_a_write_the_answer_never_saw() {
 }
 
 #[test]
+fn a_server_revision_after_a_discard_is_applied_downloads_once_let_in_and_the_trash_still_runs() {
+    let mut world = moved_out_of_a_displaced_folder(false, false, false, vec!["*.txt"]);
+    assert_eq!(changed_here(&world), vec![1]);
+    let node = live_node_at(&world, &["\u{df}", "b"]).unwrap();
+    let id = NodeId::from(node.clone());
+    let local = tag(&content_on(&world, 1, "ss"));
+    world.run(3, &[(1, Step::Answer(1)), (1, COMMIT)]).unwrap();
+    let engine = &world.devices[1].engine;
+    assert!(
+        engine
+            .trees
+            .synced()
+            .live(&id)
+            .unwrap()
+            .same(engine.trees.remote().live(&id).unwrap())
+    );
+    let before = engine.trees.remote().get(&id).unwrap().content_rev;
+    world
+        .run(3, &[(0, Step::Connect), (0, Step::Work(0))].repeat(20))
+        .unwrap();
+    let mut edit = vec![(0, overwrite(target(&world, 0, &["\u{df}", "b"])))];
+    edit.extend(commit(0));
+    world.run(3, &edit).unwrap();
+    world.run(3, &[(1, DELIVER); 8]).unwrap();
+    assert!(
+        world.devices[1]
+            .engine
+            .trees
+            .remote()
+            .get(&id)
+            .unwrap()
+            .content_rev
+            > before
+    );
+    let server = world.space().node(&node).unwrap().current.clone();
+    let newer = tag(&server.clone().unwrap().content.unwrap());
+    world
+        .run(3, &[(1, Step::Connect), (1, Step::Work(0))].repeat(20))
+        .unwrap();
+    assert!(world.devices[1].disk.binned(local));
+    assert!(world.devices[1].engine.commits.questions().is_empty());
+    world.phase(3, &[]).unwrap();
+    assert_eq!(world.space().node(&node).unwrap().current, server);
+    world.rule(1, &Ruling::Exclude(vec![])).unwrap();
+    world.phase(4, &[(1, SCAN)]).unwrap();
+    assert!(world.devices[1].disk.shows(newer));
+    assert!(!world.devices[1].disk.shows(local));
+    assert_eq!(world.space().node(&node).unwrap().current, server);
+    assert!(!live_writes(&world).contains(&local));
+}
+
+#[test]
+fn a_server_change_back_to_the_shown_shape_before_a_discard_is_applied_asks_again() {
+    let mut world = moved_out_of_a_displaced_folder(false, false, false, vec!["*.txt"]);
+    assert_eq!(changed_here(&world), vec![1]);
+    let local = tag(&content_on(&world, 1, "ss"));
+    world.run(3, &[(1, Step::Answer(1))]).unwrap();
+    world
+        .run(3, &[(0, Step::Connect), (0, Step::Work(0))].repeat(20))
+        .unwrap();
+    let folder = folder_number(&world, 0, &["\u{df}"]);
+    for (from, to) in [("b", "a"), ("a", "b")] {
+        let mut steps = vec![(0, rename(target(&world, 0, &["\u{df}", from]), folder, to))];
+        steps.extend(commit(0));
+        world.run(3, &steps).unwrap();
+    }
+    world.run(3, &[(1, DELIVER); 8]).unwrap();
+    for _ in 0..20 {
+        world
+            .run(3, &[(1, Step::Connect), (1, Step::Work(0))])
+            .unwrap();
+        assert!(
+            !world.devices[1].disk.binned(local),
+            "the Discard applied over a revision it never showed"
+        );
+        if changed_here(&world) == vec![1] {
+            return;
+        }
+    }
+    panic!("the new server revision wasn'''t asked about");
+}
+
+#[test]
 fn a_node_moved_out_of_an_included_folder_follows_the_server_after_a_rewind() {
     let made = vec![(1, folder("a")), (1, user(1, 0, 1, "b"))];
     let mut world = converge_excluding(&[vec![], vec!["*.txt"]], &[made]).unwrap();
