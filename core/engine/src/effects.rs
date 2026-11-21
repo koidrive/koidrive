@@ -1104,6 +1104,7 @@ fn candidate(trees: &Trees, id: &NodeId) -> bool {
             && !trees.edited(id)
             && !changed_locally(trees, id))
         || trees.is_discarded(id)
+        || trees.discarding(id)
         || trees.left_behind(id);
     changed
         && !forgets
@@ -1114,6 +1115,7 @@ fn candidate(trees: &Trees, id: &NodeId) -> bool {
 fn trashes_excluded_copy(trees: &Trees, id: &NodeId, in_flight: Option<&InFlight>) -> bool {
     trees.trashed_while_parked(id)
         || trees.left_for_displaced(id)
+        || trees.discarding(id)
         || (trees.left_behind(id) && !in_flight.is_some_and(|flight| flight.positions(id)))
 }
 
@@ -1420,6 +1422,12 @@ impl<'a> View<'a> {
     }
 
     fn step(&self, id: &NodeId) -> Step {
+        if self.trees.discarding(id) {
+            return match self.trees.local().get(id) {
+                Some(local) => self.remove(id, local),
+                None => Step::Skip,
+            };
+        }
         if let Some(local) = (self.trees.local().get(id)).filter(|_| self.trees.left_behind(id)) {
             return self.remove(id, local);
         }

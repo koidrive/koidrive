@@ -115,7 +115,19 @@ pub(crate) fn agreed<'a>(trees: &'a Trees, id: &NodeId) -> Option<Option<&'a Sha
     }
 }
 
-fn below_a_move_out_of_an_excluded_copy(trees: &Trees, id: &NodeId) -> bool {
+pub(crate) fn discarding(trees: &Trees, question: &Question) -> bool {
+    let gone = |id: &NodeId| trees.local().get(id).is_none();
+    asks(question)
+        && question.answer == Some(Answer::Discard)
+        && !question.holds().all(gone)
+        && question.holds().all(|id| {
+            gone(id)
+                || (same(trees.synced().live(id), trees.remote().live(id))
+                    && below_a_move_out_of_an_excluded_copy(trees, id))
+        })
+}
+
+pub(crate) fn below_a_move_out_of_an_excluded_copy(trees: &Trees, id: &NodeId) -> bool {
     let mut current = id;
     for _ in 0..trees.local().len() {
         if moved_out_of_an_excluded_copy(trees, current) {
@@ -397,6 +409,11 @@ pub(crate) fn release(
                     remote(id)
                 }
                 (RecoveryGroup::DeletedOnThisDevice, Answer::Delete | Answer::Restore) => None,
+                (RecoveryGroup::ChangedOnThisDevice, Answer::Discard)
+                    if below_a_move_out_of_an_excluded_copy(trees, id) =>
+                {
+                    remote(id)
+                }
                 (_, Answer::Discard) => local(id),
                 _ => return None,
             };

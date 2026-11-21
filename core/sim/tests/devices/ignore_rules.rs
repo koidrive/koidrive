@@ -2775,13 +2775,92 @@ fn a_node_moved_out_of_a_displaced_folder_is_asked_about_after_a_rewind_and_publ
 #[test]
 fn a_node_moved_out_of_a_displaced_folder_goes_to_the_local_trash_when_discarded_after_a_rewind() {
     for folder_moved in [false, true] {
-        let world = moved_out_of_a_displaced_folder(folder_moved, true, false, vec!["*.txt"]);
-        let world = answered(world, 1);
-        assert!(world.devices[1].disk.binned(2), "folder {folder_moved}");
-        assert!(
-            world.devices.iter().all(|device| !device.disk.shows(2)),
-            "folder {folder_moved}"
-        );
+        for edit_after in [false, true] {
+            for restart in [false, true] {
+                let case =
+                    format!("folder {folder_moved}, edit after {edit_after}, restart {restart}");
+                let world = moved_out_of_a_displaced_folder(
+                    folder_moved,
+                    edit_after,
+                    restart,
+                    vec!["*.txt"],
+                );
+                let mut world = answered(world, 1);
+                world.run(4, &[(1, Step::Crash)]).unwrap();
+                world.phase(4, &[]).unwrap();
+                assert!(world.devices[1].disk.binned(2), "{case}");
+                assert!(
+                    world.devices.iter().all(|device| !device.disk.shows(2)),
+                    "{case}"
+                );
+                let moved = if folder_moved { "\u{c9}" } else { "b" };
+                assert!(live_node_at(&world, &["\u{df}", moved]).is_some(), "{case}");
+                assert!(
+                    world.devices[1].engine.commits.questions().is_empty(),
+                    "{case}"
+                );
+                let disk = &world.devices[1].disk;
+                let mut at_root = disk.visible().into_iter().filter_map(|ino| disk.path(ino));
+                assert!(at_root.all(|path| path != ["ss"]), "{case}");
+            }
+        }
+    }
+}
+
+#[test]
+fn a_file_deleted_here_that_the_rules_leave_out_through_a_rewind_is_deleted_only_once_answered() {
+    for deleted_while_left_out in [false, true] {
+        for restart in [false, true] {
+            let case =
+                format!("deleted while left out {deleted_while_left_out}, restart {restart}");
+            let mut world =
+                converge_excluding(&[vec![], vec![]], &[vec![(0, file("c.txt"))]]).unwrap();
+            world.run(1, &[(0, Step::Backup), (1, Step::Drop)]).unwrap();
+            let deleted = [(1, delete(0)), (1, SCAN)];
+            if !deleted_while_left_out {
+                world.run(1, &deleted).unwrap();
+            }
+            world.rule(1, &Ruling::Exclude(vec!["*.txt"])).unwrap();
+            world.run(1, &[(1, SCAN)]).unwrap();
+            if deleted_while_left_out {
+                world.run(1, &deleted).unwrap();
+            }
+            for (phase, ruling) in [(2, vec!["*.txt"]), (3, vec![])] {
+                world.rule(1, &Ruling::Exclude(ruling)).unwrap();
+                let mut steps = vec![(1, SCAN)];
+                if phase == 2 {
+                    steps.push((0, Step::Rewind));
+                }
+                if restart {
+                    steps.push((1, Step::Crash));
+                }
+                steps.extend([(1, Step::Connect), (1, Step::Work(0))].repeat(20));
+                world.run(phase, &steps).unwrap();
+                let asked = (world.devices[1].engine.commits.questions().iter()).any(|question| {
+                    matches!(
+                        question.kind,
+                        QuestionKind::Recovery {
+                            group: koidrive_engine::question::RecoveryGroup::DeletedOnThisDevice,
+                            ..
+                        }
+                    )
+                });
+                assert_eq!(asked, !deleted_while_left_out, "{case}, phase {phase}");
+                assert!(
+                    live_node_at(&world, &["c.txt"]).is_some(),
+                    "{case}, phase {phase}"
+                );
+            }
+            world.run(3, &[(1, Step::Answer(0))]).unwrap();
+            world.phase(3, &[]).unwrap();
+            let kept = deleted_while_left_out;
+            assert_eq!(live_node_at(&world, &["c.txt"]).is_some(), kept, "{case}");
+            assert_eq!(
+                world.devices[1].disk.visible().len(),
+                kept as usize,
+                "{case}"
+            );
+        }
     }
 }
 

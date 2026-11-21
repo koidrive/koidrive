@@ -1382,6 +1382,10 @@ impl Commits {
         let mut intents = None;
         let mut certain = Vec::new();
         for mut question in std::mem::take(self.questions.get_mut()) {
+            if recovery::discarding(trees, &question) {
+                self.questions.get_mut().push(question);
+                continue;
+            }
             let QuestionKind::Recovery { group, sent_in, .. } = &mut question.kind else {
                 self.questions.get_mut().push(question);
                 continue;
@@ -1447,6 +1451,11 @@ impl Commits {
             updates.extend(recovery::release(trees, &question, answer));
             if matches!(answer, Answer::Publish | Answer::Keep | Answer::Delete) {
                 released.push(question);
+            } else if answer == Answer::Discard {
+                let moved = |id: &NodeId| recovery::below_a_move_out_of_an_excluded_copy(trees, id);
+                self.questions
+                    .get_mut()
+                    .extend(recovery::narrow(trees, question, moved));
             }
         }
         if let Some(question) = intents {
@@ -1499,11 +1508,14 @@ impl Commits {
     /// restores it from a state calls this.
     pub fn hold(&self, trees: &mut Trees) {
         self.clear_position_watches_if_idle(trees);
-        let shown = (self.questions.iter()).flat_map(|question| {
+        let (discarding, asking): (Vec<&Question>, Vec<&Question>) =
+            (self.questions.iter()).partition(|question| recovery::discarding(trees, question));
+        let shown = asking.into_iter().flat_map(|question| {
             let held = recovery::asks(question).then(|| question.holds());
             question.shown.keys().chain(held.into_iter().flatten())
         });
-        trees.set_asked(shown.cloned().collect());
+        let discarding = discarding.into_iter().flat_map(Question::holds);
+        trees.set_asked(shown.cloned().collect(), discarding.cloned().collect());
     }
 
     fn given_up_files(&self, trees: &Trees) -> u64 {

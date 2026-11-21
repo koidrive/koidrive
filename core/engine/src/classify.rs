@@ -704,6 +704,7 @@ pub struct Trees {
     unknown_rules: CountedSet<NodeId>,
     /// The local entries the open questions hold ([`Trees::set_asked`]).
     asked: BTreeSet<NodeId>,
+    discarding: BTreeSet<NodeId>,
     /// Dirty nodes marked since the last settle, the only ones whose class can have changed.
     unsettled: BTreeSet<NodeId>,
     relink: bool,
@@ -833,6 +834,7 @@ impl Trees {
             rules_known: true,
             unknown_rules: CountedSet::default(),
             asked: BTreeSet::new(),
+            discarding: BTreeSet::new(),
             unsettled: BTreeSet::new(),
             relink: false,
             unwatched: BTreeSet::new(),
@@ -2675,11 +2677,17 @@ impl Trees {
     }
 
     /// Sets the local entries R does not hold that the open questions hold (the commit planner's
-    /// questions), which stay on disk as they are until the person answers.
-    pub fn set_asked(&mut self, asked: BTreeSet<NodeId>) {
+    /// questions), which stay on disk as they are until the person answers, and the nodes whose
+    /// local copies a recovery Discard still moves to the local trash.
+    pub fn set_asked(&mut self, asked: BTreeSet<NodeId>, discarding: BTreeSet<NodeId>) {
         self.forget_reclaims();
         self.relink |= !self.asked.is_subset(&asked);
         self.asked = asked;
+        self.discarding = discarding;
+    }
+
+    pub(crate) fn discarding(&self, id: &NodeId) -> bool {
+        self.discarding.contains(id)
     }
 
     /// Whether the node is set aside ([`Trees::set_aside`]), or L, S or R places it at or below a node that awaits a
@@ -8078,6 +8086,7 @@ impl Trees {
             rules_known: _,
             unknown_rules: _,
             asked: _,
+            discarding: _,
             unsettled: _,
             relink: _,
             unwatched: _,
