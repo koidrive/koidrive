@@ -11,6 +11,8 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -68,7 +70,9 @@ record = dict(pid=os.getpid(), args=sys.argv[1:], cwd=os.getcwd(),
               server=os.environ.get('KOIDRIVE_TEST_SERVER'),
               manifest=os.environ.get('CARGO_MANIFEST_DIR'),
               capture=os.environ.get('STRESS_TEST_CAPTURE'))
-(probe / (seed + ('-2' if second else '') + '.start')).write_text(json.dumps(record))
+start = probe / (seed + ('-2' if second else '') + '.start')
+start.with_name(start.name + '.tmp').write_text(json.dumps(record))
+os.replace(start.with_name(start.name + '.tmp'), start)
 deadline = time.monotonic() + 5
 while len(list(probe.glob('*.start'))) < int(os.environ.get('BARRIER', '1')):
     if time.monotonic() > deadline:
@@ -349,8 +353,13 @@ while True:
         self.assertEqual((record["result"], record["exit_code"]), ("fail", 101))
         self.assertEqual((record["test_binaries"], record["finished_binaries"]), (2, 2))
 
+    def run_until_the_probe_hangs(self, args):
+        clock = SimpleNamespace(monotonic=lambda: 3600.0 if any(self.probes.glob("*.start")) else 0.0, sleep=time.sleep)
+        with patch.object(stress, "time", clock):
+            return self.run_tests(args, PROBE_MODE="hang")[0]
+
     def test_timeout_kills_processes(self):
-        record = self.run_tests(self.args("--timeout-seconds", "1"), PROBE_MODE="hang")[0]
+        record = self.run_until_the_probe_hangs(self.args("--timeout-seconds", "1"))
         self.assertEqual(record["result"], "timeout")
         pid = json.loads((self.probes / "17.start").read_text())["pid"]
         with self.assertRaises(ProcessLookupError):
@@ -358,7 +367,7 @@ while True:
 
     def test_worker_timeout_kills_nested_process_groups(self):
         self.worker_fixture()
-        record = self.run_tests(self.args("--mode", "worker", "--timeout-seconds", "3"), PROBE_MODE="hang")[0]
+        record = self.run_until_the_probe_hangs(self.args("--mode", "worker", "--timeout-seconds", "3"))
         self.assertEqual(record["result"], "timeout")
         worker = json.loads((self.probes / "17.worker").read_text())
         for pid in (worker["pid"], worker["child"]):

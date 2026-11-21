@@ -9,32 +9,66 @@ set -euo pipefail
 set -m
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
-if [ -d /dev/shm ]; then
-  export TMPDIR=/dev/shm
-fi
-work="$(mktemp -d)"
-port="${KOIDRIVE_TEST_PORT:-0}"
-log="$work/wrangler.log"
 wrangler="$root/server/node_modules/.bin/wrangler"
-
 if [ ! -x "$wrangler" ]; then
   echo "error: $wrangler is missing; run 'pnpm install' in server/ first." >&2
   exit 1
 fi
 
 cleanup() {
-  status=$?
-  if [ -n "${server_pid:-}" ]; then
-    kill -TERM -- "-$server_pid" 2>/dev/null || true
-    wait "$server_pid" 2>/dev/null || true
-  fi
-  if [ "$status" -ne 0 ]; then
+  trap '' HUP INT TERM
+  status=$1
+  groups="$(jobs -p)"
+  for group in $groups; do
+    kill -TERM -- "-$group" 2>/dev/null || true
+  done
+  deadline=$((SECONDS + 3))
+  while [ "$SECONDS" -lt "$deadline" ] && running; do
+    sleep 0.1
+  done
+  for group in $groups; do
+    kill -KILL -- "-$group" 2>/dev/null || true
+  done
+  if [ "$status" -ne 0 ] && [ -n "${log:-}" ]; then
     echo "--- wrangler dev output ($log) ---" >&2
     tail -n 200 "$log" >&2 || true
   fi
-  rm -rf "$work"
+  if [ -n "${work:-}" ]; then
+    rm -rf "$work"
+  fi
 }
-trap cleanup EXIT
+
+running() {
+  for group in $groups; do
+    if kill -0 -- "-$group" 2>/dev/null; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+stop() {
+  cleanup "$1"
+  trap - EXIT
+  exit "$1"
+}
+
+run() {
+  "$@" &
+  wait $!
+}
+
+trap 'cleanup $?' EXIT
+trap 'stop 129' HUP
+trap 'stop 130' INT
+trap 'stop 143' TERM
+
+if [ -d /dev/shm ]; then
+  export TMPDIR=/dev/shm
+fi
+work="$(mktemp -d)"
+port="${KOIDRIVE_TEST_PORT:-0}"
+log="$work/wrangler.log"
 
 # set -m puts the server in its own process group, so cleanup stops workerd with it.
 (cd "$root/server" && WRANGLER_SEND_METRICS=false exec "$wrangler" dev --ip 127.0.0.1 --port "$port" \
@@ -63,4 +97,4 @@ fi
 
 cd "$root"
 KOIDRIVE_TEST_SERVER="$server_url" KOIDRIVE_TEST_SERVER_LOG="$log" \
-  cargo test -p koidrive-driver --locked --test "${KOIDRIVE_DRIVER_TEST:-sync}" -- --ignored "$@"
+  run cargo test -p koidrive-driver --locked --test "${KOIDRIVE_DRIVER_TEST:-sync}" -- --ignored "$@"
