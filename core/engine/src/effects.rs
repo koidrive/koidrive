@@ -1138,11 +1138,13 @@ pub fn stuck_on_disk(
         .filter(|id| matches!(view.step(id), Step::Blocked(None)))
         .filter_map(|id| Some((*id, &trees.remote().live(id)?.parent)))
         .collect();
-    let mut stuck: BTreeMap<NodeId, Stuck> = (planned.iter())
-        .filter_map(|id| {
-            let by = view.stuck(id, trees.local().len())?;
-            Some(((*id).clone(), Stuck::HeldBy(by)))
-        })
+    let merged = |holder: &NodeId| merge_residue.0.contains_key(holder);
+    let kept: Vec<(&NodeId, NodeId)> = (planned.iter())
+        .filter_map(|id| Some((*id, view.kept_by(id)?)))
+        .collect();
+    let mut stuck: BTreeMap<NodeId, Stuck> = (kept.iter())
+        .filter(|(_, holder)| !merged(holder))
+        .map(|(id, holder)| ((*id).clone(), Stuck::HeldBy(holder.clone())))
         .collect();
     stuck.extend(merge_residue.0.iter().map(|(source, target)| {
         let holder = trees.local().get(source).and_then(|local| {
@@ -1155,8 +1157,9 @@ pub fn stuck_on_disk(
         )
     }));
     stuck.extend(
-        (planned.iter())
-            .filter_map(|id| Some(((*id).clone(), Stuck::Behind(view.behind_merge(id)?)))),
+        (kept.iter())
+            .filter(|(_, holder)| merged(holder))
+            .map(|(id, holder)| ((*id).clone(), Stuck::Behind(holder.clone()))),
     );
     let idle = effects.in_flight().is_empty()
         && effects
@@ -1352,25 +1355,29 @@ impl<'a> View<'a> {
     }
 
     fn keeps_in_place(&self, id: &NodeId) -> bool {
-        self.merge_residue
-            .is_some_and(|residue| residue.0.contains_key(id))
-            || self.behind_merge(id).is_some()
+        self.trees.excluded(id)
+            || self.merged(id)
+            || (self.trees.remote().live(id)).is_some_and(|remote| self.goes_home(id, remote))
+            || self.kept_by(id).is_some()
     }
 
-    fn behind_merge(&self, id: &NodeId) -> Option<NodeId> {
-        let residue = self.merge_residue?;
+    fn merged(&self, id: &NodeId) -> bool {
+        self.merge_residue
+            .is_some_and(|residue| residue.0.contains_key(id))
+    }
+
+    fn kept_by(&self, id: &NodeId) -> Option<NodeId> {
         let mut at = id.clone();
         for _ in 0..self.trees.local().len() {
-            let Step::Blocked(Some(holder)) = self.step(&at) else {
-                return None;
-            };
-            if residue.0.contains_key(&holder) {
-                return Some(holder);
+            match self.step(&at) {
+                Step::Blocked(Some(holder)) if holder != at => {
+                    if self.trees.excluded(&holder) || self.merged(&holder) {
+                        return Some(holder);
+                    }
+                    at = holder;
+                }
+                _ => return None,
             }
-            if self.trees.excluded(&holder) {
-                return None;
-            }
-            at = holder;
         }
         None
     }
@@ -1750,21 +1757,6 @@ impl<'a> View<'a> {
         None
     }
 
-    /// The excluded node that keeps `id` from its place, if one does: the name it moves to is held
-    /// by an excluded node, whose local copy no effect moves, or by a node that is stuck the same
-    /// way. Parking `id` would hide it for as long as the rules stay as they are.
-    fn stuck(&self, id: &NodeId, depth: usize) -> Option<NodeId> {
-        match self.step(id) {
-            Step::Blocked(Some(holder)) if holder != *id => {
-                if self.trees.excluded(&holder) {
-                    return Some(holder);
-                }
-                self.stuck(&holder, depth.checked_sub(1)?)
-            }
-            _ => None,
-        }
-    }
-
     /// True when `ancestor` is `id` or holds it on disk.
     fn inside(&self, id: &NodeId, ancestor: &NodeId) -> bool {
         let mut current = id;
@@ -1800,15 +1792,12 @@ impl<'a> View<'a> {
     fn parkable(&self, id: &NodeId) -> bool {
         let trees = self.trees;
         (candidate(trees, id) || trees.waiting().contains_key(id) || trees.reclaimed(id))
-            && !trees.excluded(id)
             && !trees.held(id)
             && trees.local().get(id).is_some_and(|node| {
                 !node.parked
                     && !(trees.remote().live(id))
                         .is_some_and(|remote| node.shape.same_position(remote))
             })
-            && self.stuck(id, trees.local().len()).is_none()
-            && !(trees.remote().live(id)).is_some_and(|remote| self.goes_home(id, remote))
             && !self.keeps_in_place(id)
     }
 

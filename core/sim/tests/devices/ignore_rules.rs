@@ -1707,6 +1707,87 @@ fn a_park_planned_in_a_swap_does_not_apply_once_the_chain_reaches_a_merged_folde
     assert!(!parked_ids_on(&world, 0).contains(&parked));
 }
 
+fn swap_beside_an_excluded_file() -> (World, NodeId, NodeId) {
+    let mut world = converge_excluding(
+        &[vec!["*.txt"], vec![]],
+        &[vec![
+            (0, folder("b")),
+            (0, folder("\u{df}")),
+            (0, file("c.txt")),
+        ]],
+    )
+    .unwrap();
+    let (tb, tss) = (target(&world, 1, &["b"]), target(&world, 1, &["\u{df}"]));
+    let mut steps = vec![
+        (1, rename(tb, 0, "\u{e9}")),
+        (1, rename(tss, 0, "b")),
+        (1, rename(tb, 0, "\u{df}")),
+    ];
+    steps.extend(commit(1));
+    steps.extend([(0, DELIVER); 8]);
+    steps.push((0, EFFECT));
+    world.run(2, &steps).unwrap();
+    let [park] = world.devices[0].engine.effects.in_flight() else {
+        panic!("expected one park for the swap");
+    };
+    assert!(
+        matches!(
+            park.effect,
+            Effect::Move {
+                to: koidrive_engine::effects::Location::Parked(_),
+                ..
+            }
+        ),
+        "{park:?}"
+    );
+    let parked = park.node.clone();
+    let other = (["b", "\u{df}"].into_iter())
+        .find_map(|name| held_at(&world, 0, &[name]).filter(|id| *id != parked))
+        .unwrap();
+    (world, parked, other)
+}
+
+fn rename_onto_the_excluded_file(world: &mut World, phase: usize, id: &NodeId) {
+    let name = (world.devices[1].engine.trees.local().get(id))
+        .unwrap()
+        .shape
+        .name
+        .clone();
+    let mut steps = vec![(1, rename(target(world, 1, &[&name]), 0, "c.txt"))];
+    steps.extend(commit(1));
+    steps.extend([(0, DELIVER); 8]);
+    world.run(phase, &steps).unwrap();
+}
+
+#[test]
+fn a_park_planned_in_a_swap_does_not_apply_once_the_rules_leave_out_its_folder_or_the_one_it_waits_on()
+ {
+    for renamed_parked in [true, false] {
+        let (mut world, parked, other) = swap_beside_an_excluded_file();
+        let (renamed, waiting) = match renamed_parked {
+            true => (parked, other),
+            false => (other, parked),
+        };
+        rename_onto_the_excluded_file(&mut world, 3, &renamed);
+        world.run(3, &[(0, EFFECT)]).unwrap();
+        assert!(parked_ids_on(&world, 0).is_empty(), "{renamed_parked}");
+        let _red = expect_red(
+            Check::NameLeftOut,
+            &format!(
+                "device 0 is quiet, but nodes [{:?}] wait for names that entries its rules leave out hold",
+                waiting.to_string()
+            ),
+        );
+        world.phase(4, &[]).unwrap();
+        assert!(parked_ids_on(&world, 0).is_empty(), "{renamed_parked}");
+        assert_eq!(
+            world.reported_problems(0),
+            [(waiting, Stuck::HeldBy(renamed))].into(),
+            "{renamed_parked}"
+        );
+    }
+}
+
 #[test]
 fn a_swap_at_a_merged_folders_name_key_keeps_both_folders_in_place() {
     let _red = expect_red(
