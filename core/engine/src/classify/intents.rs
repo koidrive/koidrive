@@ -311,8 +311,10 @@ impl Trees {
                     _ => self.acknowledged_intent(node, field),
                 };
                 let intent = self.journal.mint();
-                (self.journal)
-                    .insert_if_absent(node, row(intent, author, base, value, RowState::Sent, lost));
+                (self.journal).insert_sent_if_absent(
+                    node,
+                    row(intent, author, base, value, RowState::Sent, lost),
+                );
             }
         }
         let unsent_edits: Vec<NodeId> = self.unsent_edits.iter().cloned().collect();
@@ -346,7 +348,9 @@ impl Trees {
                 let from_flight = self
                     .journal_row(&id, field)
                     .map(|row| row.state == RowState::Sent);
-                if same(seen.as_ref(), Some(&value)) || from_flight == Some(false) {
+                let unsent_edit = field == Field::Content && self.unsent_edits.contains(&id);
+                if (same(seen.as_ref(), Some(&value)) && !unsent_edit) || from_flight == Some(false)
+                {
                     continue;
                 }
                 let base = self.acknowledged_intent(&id, field);
@@ -502,12 +506,24 @@ impl Trees {
     }
 
     pub(crate) fn delete_acknowledged(&mut self, id: &NodeId) {
-        if self.acknowledged(id).is_none() || self.journal_row(id, Field::Status).is_some() {
+        if self.acknowledged(id).is_none() {
             return;
         }
-        let seen_list = self.acknowledged_seen_list(id);
-        let base = self.acknowledged_intent(id, Field::Status);
-        self.record_user_delete(id, seen_list, base);
+        match self
+            .journal_row(id, Field::Status)
+            .map(|row| row.value.clone())
+        {
+            None => {
+                let seen_list = self.acknowledged_seen_list(id);
+                let base = self.acknowledged_intent(id, Field::Status);
+                self.record_user_delete(id, seen_list, base);
+            }
+            Some(Value::Status { live: false }) if self.journal.seen(id).is_empty() => {
+                let seen_list = self.acknowledged_seen_list(id);
+                self.journal.set_seen(id, seen_list);
+            }
+            Some(_) => {}
+        }
     }
 
     fn record_user_delete(&mut self, id: &NodeId, seen_list: Vec<Seen>, base: Option<IntentId>) {
@@ -518,11 +534,32 @@ impl Trees {
 
     fn acknowledged_seen_list(&self, id: &NodeId) -> Vec<Seen> {
         let mut nodes: Vec<NodeId> = vec![id.to_owned()];
+        let mut listed: BTreeSet<NodeId> = BTreeSet::from([id.to_owned()]);
         let mut next = 0;
         while let Some(node) = nodes.get(next).cloned() {
             next += 1;
-            let lacked = (self.s_names.children(&node)).filter(|child| self.l.get(child).is_none());
-            nodes.extend(lacked.cloned());
+            let waiting = (self.waiting.iter())
+                .filter(|(_, waiting)| {
+                    waiting
+                        .shape
+                        .as_ref()
+                        .is_some_and(|shape| shape.parent == node)
+                })
+                .map(|(child, _)| child);
+            let lacked: BTreeSet<NodeId> = (self.s_names.children(&node).chain(waiting))
+                .filter(|child| {
+                    self.l.get(child).is_none()
+                        && self
+                            .acknowledged(child)
+                            .is_some_and(|shape| shape.parent == node)
+                })
+                .cloned()
+                .collect();
+            nodes.extend(
+                lacked
+                    .into_iter()
+                    .filter(|child| listed.insert(child.clone())),
+            );
         }
         let mut seen = Vec::new();
         for node in &nodes {
@@ -870,6 +907,19 @@ impl Trees {
         }
     }
 
+    pub(super) fn note_remote_leaves(&mut self, id: &NodeId) {
+        let Some(remote) = self.r.get(id) else {
+            return;
+        };
+        let held: Vec<(Field, FieldIntent)> = (Field::ALL.into_iter())
+            .filter(|&field| self.local_holds_remote(id, remote, field))
+            .filter_map(|field| Some((field, remote_intent_of(remote, field)?.clone())))
+            .collect();
+        for (field, intent) in held {
+            self.journal.remote_holds(id, field, &intent, true);
+        }
+    }
+
     pub(super) fn note_local_leaves(&mut self, id: &NodeId, shape: &Shape) {
         let Some(remote) = self.r.get(id) else {
             return;
@@ -1044,7 +1094,11 @@ impl Trees {
         seen
     }
 
-    pub(super) fn note_synced_intents(&mut self, id: &NodeId) {
+    pub(super) fn synced_values(&self, id: &NodeId) -> [Option<Value>; 3] {
+        Field::ALL.map(|field| self.synced_value(id, field))
+    }
+
+    pub(super) fn note_synced_intents(&mut self, id: &NodeId, before: &[Option<Value>; 3]) {
         if self.s.get(id).is_none() {
             self.put_synced_intents(id, None);
             return;
@@ -1069,9 +1123,10 @@ impl Trees {
                     replay: row.replay,
                     applied_at_ms: row.time_ms,
                 });
-            if let Some(intent) = remote.or(row) {
-                intents.set(field, Some(intent));
-            }
+            let kept = (same(before[field as usize].as_ref(), Some(&value)))
+                .then(|| intents.get(field).cloned())
+                .flatten();
+            intents.set(field, remote.or(row).or(kept));
         }
         self.keep_synced_intents(id, intents);
     }
@@ -1204,7 +1259,7 @@ impl Trees {
         let reported = |trees: &Trees,
                         id: &NodeId,
                         field: Field|
-         -> Option<(FieldIntent, Option<String>, bool)> {
+         -> Option<(FieldIntent, Option<String>, bool, RemoteNode)> {
             let node = match states.get(id) {
                 Some(state) => {
                     let (_, mut node) = RemoteNode::from_state(state).ok()?;
@@ -1221,7 +1276,7 @@ impl Trees {
             }
             let version_id = (field == Field::Content && !node.version_id.is_empty())
                 .then(|| node.version_id.clone());
-            Some((intent, version_id, !node.trashed))
+            Some((intent, version_id, !node.trashed, node))
         };
         for (op, outcome) in commit.ops.iter().zip(&result.results) {
             let Some(kind) = &op.op else {
@@ -1242,22 +1297,24 @@ impl Trees {
                 };
                 match code {
                     Code::Applied | Code::AppliedRenamed => {
-                        if let Some((held, version_id, _)) = reported(self, &node, field) {
-                            self.journal.applied(&node, field, sent, &held, version_id);
+                        if let Some((held, version_id, _, state)) = reported(self, &node, field) {
+                            let in_local =
+                                same(value.as_ref(), remote_value(&state, field).as_ref())
+                                    || self.local_holds_remote(&node, &state, field);
+                            (self.journal).applied(&node, field, sent, &held, version_id, in_local);
+                            self.end_held_r_passed(&node, field, held.id, &state);
                         }
                     }
                     Code::ConflictCopy if field == Field::Content => {
-                        let version_id = reported(self, &NodeId::from(&outcome.node_id), field)
-                            .and_then(|(_, version, _)| version);
+                        let copy = NodeId::from(&outcome.node_id);
+                        let reported = reported(self, &copy, field);
+                        let version_id =
+                            (reported.as_ref()).and_then(|(_, version, _, _)| version.clone());
                         let at_ms = result.committed_at_ms;
-                        (self.journal).held_elsewhere(
-                            &node,
-                            field,
-                            sent,
-                            &NodeId::from(&outcome.node_id),
-                            version_id,
-                            at_ms,
-                        );
+                        (self.journal).held_elsewhere(&node, field, sent, &copy, version_id, at_ms);
+                        if let Some((_, _, _, state)) = reported {
+                            self.end_held_r_passed(&copy, field, sent, &state);
+                        }
                     }
                     Code::Superseded => {
                         let elsewhere = (std::iter::once(&outcome.node_id))
@@ -1267,10 +1324,10 @@ impl Trees {
                             .filter(|id| *id != node)
                             .find_map(|id| {
                                 (reported(self, &id, field))
-                                    .filter(|(held, _, _)| held.id == sent)
+                                    .filter(|(held, _, _, _)| held.id == sent)
                                     .map(|reported| (id, reported))
                             });
-                        if let Some((target, (held, version_id, _))) = elsewhere {
+                        if let Some((target, (held, version_id, _, state))) = elsewhere {
                             held_elsewhere.insert(node.clone());
                             (self.journal).held_elsewhere(
                                 &node,
@@ -1280,13 +1337,14 @@ impl Trees {
                                 version_id,
                                 held.applied_at_ms,
                             );
+                            self.end_held_r_passed(&target, field, sent, &state);
                             continue;
                         }
                         let own = reported(self, &node, field);
                         let first = (self.journal_row(&node, field))
                             .filter(|row| row.intent == sent)
                             .zip(own.as_ref())
-                            .is_some_and(|(row, (held, _, live))| {
+                            .is_some_and(|(row, (held, _, live, _))| {
                                 *live && held.applied_at_ms < row.time_ms
                             });
                         match first {
@@ -1298,7 +1356,7 @@ impl Trees {
                                 &node,
                                 field,
                                 sent,
-                                own.map(|(held, _, _)| held.id),
+                                own.map(|(held, _, _, _)| held.id),
                             ),
                         }
                     }
@@ -1306,7 +1364,7 @@ impl Trees {
                         if outcome.reject_reason == "ID_EXISTS"
                             && value == Some(Value::Status { live: true }) =>
                     {
-                        self.journal.end(&node, field);
+                        self.journal.sent_ends(&node, field, sent);
                     }
                     Code::Rejected => self.journal.unsend(&node, field),
                     _ => {}
@@ -1328,6 +1386,26 @@ impl Trees {
             self.compact_journal(&node, Compact::AfterChange);
         }
         (sent_again, held_elsewhere)
+    }
+
+    fn end_held_r_passed(
+        &mut self,
+        id: &NodeId,
+        field: Field,
+        held_as: IntentId,
+        reported: &RemoteNode,
+    ) {
+        let rev = |node: &RemoteNode| match field {
+            Field::Content => node.content_rev,
+            Field::Place | Field::Status => node.meta_rev,
+        };
+        let passed = (self.r.get(id)).is_some_and(|remote| {
+            rev(remote) > rev(reported)
+                && remote_intent_of(remote, field).is_some_and(|intent| intent.id != held_as)
+        });
+        if passed {
+            self.journal.end_held_as(id, field, held_as);
+        }
     }
 
     fn trash_seen(&self, id: &NodeId) -> Vec<Seen> {

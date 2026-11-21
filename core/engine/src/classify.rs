@@ -1492,11 +1492,10 @@ impl Trees {
         } else {
             self.marked.remove(&id);
         }
-        if (self.s.get(&id)).is_some_and(|synced| synced.same_position(&node.shape))
-            && self.s_marks.get(&id) != node.pending_for.as_ref()
-        {
-            self.set_synced_mark(id.clone(), node.pending_for.clone());
-        }
+        let synced_mark = ((self.s.get(&id))
+            .is_some_and(|synced| synced.same_position(&node.shape))
+            && self.s_marks.get(&id) != node.pending_for.as_ref())
+        .then(|| node.pending_for.clone());
         self.count_held_trash(&id, false);
         self.count_trashed(&id, false);
         self.cycles_may_end |= !made_here
@@ -1509,6 +1508,11 @@ impl Trees {
         self.content_provenance
             .remote_changing(&id, &self.r, Some(&node));
         let old = self.r.insert(id.clone(), node);
+        if let Some(mark) = synced_mark {
+            let before = self.synced_values(&id);
+            self.set_synced_mark(id.clone(), mark);
+            self.note_synced_intents(&id, &before);
+        }
         self.compact_journal(&id, Compact::AfterChange);
         self.index_remote(&id, old.as_ref());
         self.count_held_trash(&id, true);
@@ -1859,6 +1863,7 @@ impl Trees {
         self.discard_members.remove(id);
         self.write_out_synced_intents(id);
         self.write_out_journal(id);
+        self.note_remote_leaves(id);
         if let Some(old) = self.r.remove(id) {
             self.index_remote(id, Some(&old));
             self.mark(id);
@@ -7642,6 +7647,7 @@ impl Trees {
                 earlier.remove(0);
             }
         }
+        let before = self.synced_values(id);
         let old = match shape {
             Some(shape) => {
                 self.moved |= self.l.get(id).is_none()
@@ -7660,7 +7666,6 @@ impl Trees {
         self.release_links(id, old.as_ref());
         let file = |shape: Option<&Shape>| u64::from(shape.is_some_and(|s| s.kind == Kind::File));
         self.s_files = self.s_files - file(old.as_ref()) + file(self.s.get(id));
-        self.note_synced_intents(id);
         if let Some(changed) = self.watched.get_mut(id) {
             let before = old.as_ref().and_then(|shape| shape.content.as_ref());
             let after = self.s.get(id).and_then(|shape| shape.content.as_ref());
@@ -7688,13 +7693,14 @@ impl Trees {
                     .cloned(),
             }
         });
-        let before = match mark {
+        let before_mark = match mark {
             Some(mark) => self.s_marks.insert(id.to_owned(), mark),
             None => self.s_marks.remove(id),
         };
-        if before.as_ref() != self.s_marks.get(id) {
+        if before_mark.as_ref() != self.s_marks.get(id) {
             self.s.touch(id);
         }
+        self.note_synced_intents(id, &before);
         if let Some(old) = old {
             let kept = self
                 .s

@@ -292,8 +292,10 @@ pub enum WireBase {
 }
 
 /// `Carried` holds the author's device id when the store could show who made the value.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum Author {
+    #[default]
     Own,
     Carried(Option<String>),
 }
@@ -316,6 +318,25 @@ pub struct Flight {
     pub base: Option<IntentId>,
     pub wire_base: WireBase,
     pub time_ms: i64,
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub author: Author,
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub replay: bool,
+}
+
+impl Flight {
+    fn sent(self) -> Row {
+        Row {
+            intent: self.intent,
+            author: self.author,
+            base: self.base,
+            value: self.value,
+            wire_base: self.wire_base,
+            state: RowState::Sent,
+            time_ms: self.time_ms,
+            replay: self.replay,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -349,15 +370,21 @@ impl Row {
 
     fn in_flight(&self) -> Option<Flight> {
         match &self.state {
-            RowState::Sent => Some(Flight {
-                intent: self.intent,
-                value: self.value.clone(),
-                base: self.base,
-                wire_base: self.wire_base.clone(),
-                time_ms: self.time_ms,
-            }),
+            RowState::Sent => Some(self.as_flight()),
             RowState::Local { flight } => flight.clone(),
             RowState::Held { .. } => None,
+        }
+    }
+
+    fn as_flight(&self) -> Flight {
+        Flight {
+            intent: self.intent,
+            value: self.value.clone(),
+            base: self.base,
+            wire_base: self.wire_base.clone(),
+            time_ms: self.time_ms,
+            author: self.author.clone(),
+            replay: self.replay,
         }
     }
 }
@@ -784,14 +811,8 @@ impl Journal {
         };
         let row = match flight {
             Some(flight) if flight.value.same(&value) => Row {
-                intent: flight.intent,
-                author: Author::Own,
-                base: flight.base,
                 value,
-                wire_base: flight.wire_base,
-                state: RowState::Sent,
-                time_ms: flight.time_ms,
-                replay: false,
+                ..flight.sent()
             },
             flight => Row {
                 intent: self.mint(),
@@ -848,6 +869,27 @@ impl Journal {
         true
     }
 
+    pub fn insert_sent_if_absent(&mut self, node: &NodeId, sent: Row) {
+        let key = (node.to_owned(), sent.value.field());
+        if self.rows.get_compact(&key).is_some() {
+            return;
+        }
+        let Some(row) = self.rows.get(&key) else {
+            self.rows.insert(key, sent);
+            return;
+        };
+        if row.state != (RowState::Local { flight: None }) {
+            return;
+        }
+        let state = match row.value.same(&sent.value) {
+            true => RowState::Sent,
+            false => RowState::Local {
+                flight: Some(sent.as_flight()),
+            },
+        };
+        self.rows.update(&key, |row| row.state = state);
+    }
+
     pub fn replace(&mut self, node: &NodeId, row: Row) {
         let key = (node.to_owned(), row.value.field());
         if self.rows.remove_compact(&key).is_some() {
@@ -888,7 +930,9 @@ impl Journal {
         self.rows.update(&key, |row| {
             if matches!(row.state, RowState::Local { .. }) {
                 row.state = RowState::Sent;
-                row.time_ms = head_time_ms;
+                if !row.replay {
+                    row.time_ms = head_time_ms;
+                }
             }
         })?;
         self.rows.get(&key)
@@ -932,6 +976,7 @@ impl Journal {
         sent: IntentId,
         held: &FieldIntent,
         version_id: Option<String>,
+        in_local: bool,
     ) {
         self.rows
             .update(&(node.to_owned(), field), |row| match &mut row.state {
@@ -968,7 +1013,7 @@ impl Journal {
                 self.seen.insert(key, entries);
             }
         }
-        self.push_history(node, field, held.id, held.applied_at_ms, true);
+        self.push_history(node, field, held.id, held.applied_at_ms, in_local);
     }
 
     pub fn superseded(
@@ -978,6 +1023,13 @@ impl Journal {
         sent: IntentId,
         reported: Option<IntentId>,
     ) {
+        self.sent_ends(node, field, sent);
+        if let Some(reported) = reported {
+            self.rebase(sent, reported);
+        }
+    }
+
+    pub fn sent_ends(&mut self, node: &NodeId, field: Field, sent: IntentId) {
         let sent_row = self.rows.update(&(node.to_owned(), field), |row| {
             if let RowState::Local { flight } = &mut row.state {
                 flight.take_if(|f| f.intent == sent);
@@ -987,8 +1039,14 @@ impl Journal {
         if sent_row == Some(true) {
             self.end(node, field);
         }
-        if let Some(reported) = reported {
-            self.rebase(sent, reported);
+    }
+
+    pub fn end_held_as(&mut self, node: &NodeId, field: Field, held_as: IntentId) {
+        let held = (self.row(node, field)).is_some_and(
+            |row| matches!(row.state, RowState::Held { held_as: at, .. } if at == held_as),
+        );
+        if held {
+            self.end(node, field);
         }
     }
 
@@ -1009,16 +1067,7 @@ impl Journal {
                 _ => None,
             }))
             .flatten()
-            .map(|flight| Row {
-                intent: flight.intent,
-                author: Author::Own,
-                base: flight.base,
-                value: flight.value,
-                wire_base: flight.wire_base,
-                state: RowState::Sent,
-                time_ms: flight.time_ms,
-                replay: false,
-            }),
+            .map(Flight::sent),
             _ => None,
         };
         if let Some(mut row) = moved {
