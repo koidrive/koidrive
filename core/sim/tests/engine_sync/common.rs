@@ -2984,7 +2984,7 @@ fn run_ignoring_answering_after(
                     !remote.same_position(at)
                         && (device.disk_name_taken(&remote.parent, &[], &remote.name)
                             || (device.trees.local_holders(&remote.parent, &remote.name))
-                                .any(|holder| holder != id)
+                                .any(|holder| holder != id && !device.off_disk.contains(holder))
                             || device
                                 .trees
                                 .ignores(&remote_path(&device.trees, id), remote.kind))
