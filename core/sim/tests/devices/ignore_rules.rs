@@ -587,11 +587,12 @@ fn sends_nothing_more(world: &mut World, phase: usize) {
             })
             .collect::<Vec<_>>()
     };
-    let before = server(world);
+    let (before, seq) = (server(world), world.space().head_seq());
     world
         .phase(phase, &[(0, SCAN), (0, COMMIT), (0, COMMIT)])
         .unwrap();
     assert_eq!(server(world), before);
+    assert_eq!(world.space().head_seq(), seq);
 }
 
 fn left_out_files(world: &World) -> Vec<Vec<String>> {
@@ -827,14 +828,12 @@ fn a_kept_folder_takes_over_a_new_live_folder_of_its_name_while_a_merge_folder_b
     world
         .phase(2, &[(1, delete(live)), (1, folder("a"))])
         .unwrap();
+    let replacement = NodeId::from(live_node_at(&world, &["a"]).unwrap());
+    assert_eq!(held_at(&world, 0, &["a"]), Some(replacement.clone()));
     assert_eq!(
-        held_at(&world, 0, &["a"]).map(|id| id.to_string()),
-        live_node_at(&world, &["a"])
-    );
-    assert!(matches!(
         world.reported_problems(0).get(&source),
-        Some(Stuck::MergedInto(_))
-    ));
+        Some(&Stuck::MergedInto(replacement))
+    );
     ino_at(&world, 0, &["a", "c.txt"]);
     ino_at(&world, 0, &["A", "c.txt"]);
 }
@@ -2451,8 +2450,18 @@ fn merged_folders_settle_once_another_device_deletes_the_folder_that_took_one_ov
         .unwrap();
     let live = target(&world, 1, &["\u{e9}"]);
     world.phase(3, &[(1, delete(live))]).unwrap();
-    let kept = (world.devices[0].disk.entries().values()).filter(|e| e.name == "c.txt");
-    assert_eq!(kept.count(), 2);
+    let uploaded = NodeId::from(live_node_at(&world, &["\u{c9}"]).unwrap());
+    assert_eq!(held_at(&world, 0, &["E\u{301}"]), Some(uploaded.clone()));
+    let other = held_at(&world, 0, &["\u{e9}"]).unwrap();
+    assert_eq!(
+        world.reported_problems(0),
+        [(other, Stuck::MergedInto(uploaded))].into()
+    );
+    let kept: Vec<Vec<String>> = [["E\u{301}", "c.txt"], ["\u{e9}", "c.txt"]]
+        .iter()
+        .map(|path| path.iter().map(|name| name.to_string()).collect())
+        .collect();
+    assert_eq!(left_out_files(&world), kept);
     assert!((world.space().nodes().iter()).all(|node| node.name != "c.txt"));
     sends_nothing_more(&mut world, 4);
 }
