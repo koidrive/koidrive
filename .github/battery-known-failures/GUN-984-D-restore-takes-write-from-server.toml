@@ -8,7 +8,7 @@ tests = [
   "devices_on_coarse_volumes_converge_across_restores_and_rewinds",
   "devices_on_coarse_volumes_lose_no_write_across_restores_and_rewinds",
 ]
-message = '''after phase <n>: a restore took write <n> from the server while a disk held it, and the server does not hold it again, though no user overwrote or deleted it\.( not recorded: devices::\S+ \S+ (DeleteUndone the delete of node <id> on device <n> came undone, and no change its user did not see brought the node back|WriteKept write <n> of the write of node <id> on device <n> is not in the server's tree, and no later change that saw it, no delete that saw it and no rule for lost changes settles it))*'''
+message = '''after phase <n>: a restore took write <n> from the server while a disk held it, and the server does not hold it again, though no user overwrote or deleted it\.( not recorded: devices::\S+ \S+ (?:(?:on|off) )?(DeleteUndone the delete of node <id> on device <n> came undone, and no change its user did not see brought the node back|WriteKept write <n> of the write of node <id> on device <n> is not in the server's tree, and no later change that saw it, no delete that saw it and no rule for lost changes settles it))*'''
 examples = [
   "after phase 1: a restore took write 5 from the server while a disk held it, and the server does not hold it again, though no user overwrote or deleted it.",
   "after phase 2: a restore took write 4 from the server while a disk held it, and the server does not hold it again, though no user overwrote or deleted it.",

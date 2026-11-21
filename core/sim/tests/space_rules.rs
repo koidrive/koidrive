@@ -2131,3 +2131,22 @@ fn welcome_announces_field_intents_only_when_asked_and_keeps_it_across_a_restore
     s.space.announce_field_intents(false);
     assert!(s.space.welcome(&a.session).features.is_empty());
 }
+
+#[test]
+fn a_delete_fault_puts_its_copy_of_a_file_in_a_deleted_folder_under_the_nearest_live_folder() {
+    let mut s = Space::new();
+    let mut a = s.client("A");
+    let (root, dir) = (s.root(), s.id());
+    s.commit(&mut a, vec![mkdir(&dir, &root, "dir")], vec![]);
+    s.create_file(&mut a, &dir, "f", "one");
+    s.space.copy_each_deleted_file();
+    s.commit(&mut a, vec![delete(&dir)], vec![]);
+    assert!(!s.live(&dir));
+    let copy = (s.space.nodes().into_iter())
+        .find(|node| {
+            node.kind == koidrive_proto::v1::NodeKind::File as i32
+                && node.status == NodeStatus::Live as i32
+        })
+        .expect("the fault keeps a live copy of the deleted file");
+    assert_eq!(copy.parent_id, root);
+}

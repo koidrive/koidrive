@@ -1,7 +1,7 @@
 class = "R"
 issue = "GUN-1280"
 tests = ["devices_with_rules_lose_no_write"]
-message = '''not recorded: devices::devices_with_rules_lose_no_write \S+ SentLeftOut a commit of device <n> places node <id> at \["A", "b"\], which the rules of device <n> leave out( not recorded: devices::devices_with_rules_lose_no_write \S+ SentLeftOut a commit of device <n> places node <id> at \["A", "b", "[^"]+"\], which the rules of device <n> leave out)?'''
+message = '''not recorded: devices::devices_with_rules_lose_no_write \S+ (?:(?:on|off) )?SentLeftOut a commit of device <n> places node <id> at \["A", "b"\], which the rules of device <n> leave out( not recorded: devices::devices_with_rules_lose_no_write \S+ (?:(?:on|off) )?SentLeftOut a commit of device <n> places node <id> at \["A", "b", "[^"]+"\], which the rules of device <n> leave out)?'''
 examples = [
   "not recorded: devices::devices_with_rules_lose_no_write\tcc-3a4237a9331f8a1cf402aee90f06f985aaee756766d97eaab48771bad3b7328c\tSentLeftOut\ta commit of device 2 places node 01a1c2c0-39a0-7741-9272-f1d95e3d688f at [\"A\", \"b\"], which the rules of device 2 leave out\nnot recorded: devices::devices_with_rules_lose_no_write\tcc-3a4237a9331f8a1cf402aee90f06f985aaee756766d97eaab48771bad3b7328c\tSentLeftOut\ta commit of device 2 places node 01a1c2c0-39a0-7cb2-989b-810659c5a8bc at [\"A\", \"b\", \"É\"], which the rules of device 2 leave out",
   "not recorded: devices::devices_with_rules_lose_no_write\tcc-3a4237a9331f8a1cf402aee90f06f985aaee756766d97eaab48771bad3b7328c\tSentLeftOut\ta commit of device 2 places node 01a1c2c0-39a0-7741-9272-f1d95e3d688f at [\"A\", \"b\"], which the rules of device 2 leave out",
