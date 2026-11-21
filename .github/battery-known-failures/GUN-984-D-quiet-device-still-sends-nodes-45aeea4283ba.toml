@@ -9,5 +9,5 @@ examples = [
   "after phase 2: device 1 is quiet, but it still sends nodes again: {01a1c2c0-39a0-7ea7-93f8-3d888a182e12}, at {}, lost creates {}.",
 ]
 cases = [
-  "45aeea4283ba",
+  "45aeea4283bad112a4dfb008e7c67a75c58dea15306a57cb165f8b6cbd33238c",
 ]

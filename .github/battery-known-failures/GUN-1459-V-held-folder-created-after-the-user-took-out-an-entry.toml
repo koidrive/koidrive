@@ -7,3 +7,6 @@ message = '''<id> was discarded and is created on the server with no later answe
 examples = [
   "01a1c2c0-39a0-775c-844c-3cd7f43c661c was discarded and is created on the server with no later answer to publish it, and below it the user took out an entry it held at core/sim/tests/engine_sync/common.rs:2918.",
 ]
+cases = [
+  "fa4963197174392fcb3d01c49830ee30e1eee52af31edaa5dc9377851aa67831",
+]
