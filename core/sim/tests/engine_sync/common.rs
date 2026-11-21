@@ -1910,6 +1910,44 @@ fn revive(
     revived
 }
 
+fn what_the_user_did_below(device: &Device, folder: &NodeId) -> &'static str {
+    let trees = &device.trees;
+    let reaches = |start: Option<&NodeId>| {
+        let mut seen = BTreeSet::new();
+        let mut at = start.cloned();
+        while let Some(node) = at.filter(|node| seen.insert(node.clone())) {
+            if node == *folder {
+                return true;
+            }
+            at = trees.local().get(&node).map(|local| local.shape.parent.clone());
+        }
+        false
+    };
+    let arrived = |entry: &NodeId| {
+        (device.stays.get(entry))
+            .is_some_and(|stays| stays.values().any(|(by_other, _)| *by_other))
+    };
+    let taken_out: Vec<&NodeId> = (device.removed_from.iter())
+        .filter(|(_, from)| reaches(Some(from)))
+        .map(|(entry, _)| entry)
+        .collect();
+    let changed: Vec<&NodeId> = (device.acted.iter())
+        .filter(|entry| reaches(trees.local().get(entry).map(|local| &local.shape.parent)))
+        .chain(taken_out.iter().copied())
+        .collect();
+    if taken_out.iter().any(|entry| device.kept_back.contains(*entry)) {
+        "kept back an entry"
+    } else if changed.iter().any(|entry| arrived(entry)) {
+        "changed an entry another device brought in"
+    } else if !taken_out.is_empty() {
+        "took out an entry it held"
+    } else if !changed.is_empty() {
+        "changed an entry it holds"
+    } else {
+        "changed nothing"
+    }
+}
+
 fn release_taken_along(
     trees: &Trees,
     kept_with: &mut BTreeMap<NodeId, Shape>,
@@ -2870,8 +2908,9 @@ fn run_ignoring_answering_after(
                 !matches!(op.op, Some(op::Op::CreateDir(_)))
                     || !discarded_folders.contains(id)
                     || revived_once.contains(id),
-                "{} was discarded and is created on the server with no later answer to publish it",
-                id
+                "{} was discarded and is created on the server with no later answer to publish it, and below it the user {}",
+                id,
+                what_the_user_did_below(&device, id)
             );
             if let Some(op::Op::CreateDir(_)) = &op.op
                 && let Some(into) = merged_into.remove(id)
@@ -2925,8 +2964,13 @@ fn run_ignoring_answering_after(
             if held_once.contains(id) && !confirmed.contains(id) {
                 prop_assert!(
                     discarded.contains_key(id) && changed,
-                    "{} was held and sent before the person said so",
-                    id
+                    "{} was held and sent before the person said so, and {}",
+                    id,
+                    if discarded.contains_key(id) {
+                        "the answer discarded it, but its user did not change it"
+                    } else {
+                        "no answer discarded it"
+                    }
                 );
                 confirmed.insert(id.clone());
             }

@@ -1,15 +1,12 @@
 class = "F"
 issue = "GUN-1487"
-tests = ["a_first_link_discard_keeps_a_folder_the_user_changes_after_the_server_drops_part_of_it"]
-message = '''<id> was discarded and is created on the server with no later answer to publish it at \S+\.rs:<line>\.'''
-examples = [
-    "01a1c2c0-39a0-775c-844c-3cd7f43c661c was discarded and is created on the server with no later answer to publish it at core/sim/tests/engine_sync/common.rs:2805.",
+tests = [
+  "a_first_link_discard_keeps_a_folder_the_user_changes_after_the_server_drops_part_of_it",
+  "a_first_link_discard_takes_along_only_the_server_entries_the_user_leaves_alone",
 ]
-cases = [
-    "1b41de2a79416ca48096fd1d788ab1492ea737dc6491298008672eb2c00d6bab",
-    "25ce70d3713be05a0eb0f1d66ba64775151f7fa20b5a2f4a2f8b570ab93f2bd1",
-    "3ed737e670564b1311d6d10a8f78eda3d419457fe41d80837394b6e8f26e7105",
-    "68aec668f283752ccd5588dabd8914c376d3313dccbf27a5a3f2d2215ee3e205",
-    "749ab952250b1b2bff6a20979f4f9aa7ed5638a4280be2450814ff06c7351112",
-    "83bb9e563993dc71ee2139bef247e3a02a62a8f50fbf0682d839db53ad19f3b2",
+message = '''<id> was discarded and is created on the server with no later answer to publish it, and below it the user changed nothing at \S+\.rs:<line>\.'''
+examples = [
+  "01a1c2c0-39a0-775c-844c-3cd7f43c661c was discarded and is created on the server with no later answer to publish it, and below it the user changed nothing at core/sim/tests/engine_sync/common.rs:2907.",
+  "01a1c2c0-39a0-780a-953a-eb70673e29cb was discarded and is created on the server with no later answer to publish it, and below it the user changed nothing at core/sim/tests/engine_sync/common.rs:2907.",
+  "01a1c2c0-39a0-73d9-93fc-d6513d02befe was discarded and is created on the server with no later answer to publish it, and below it the user changed nothing at core/sim/tests/engine_sync/common.rs:2907.",
 ]

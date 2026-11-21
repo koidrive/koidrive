@@ -1,0 +1,10 @@
+class = "B"
+issue = "GUN-1475"
+tests = [
+  "a_first_link_discard_keeps_a_folder_the_user_changes_after_the_server_drops_part_of_it",
+]
+message = '''<id> was held and sent before the person said so, and the answer discarded it, but its user did not change it at \S+\.rs:<line>\.'''
+examples = [
+  "01a1c2c0-39a0-73d9-93fc-d6513d02befe was held and sent before the person said so, and the answer discarded it, but its user did not change it at core/sim/tests/engine_sync/common.rs:2965.",
+  "01a1c2c0-39a0-775c-844c-3cd7f43c661c was held and sent before the person said so, and the answer discarded it, but its user did not change it at core/sim/tests/engine_sync/common.rs:2965.",
+]

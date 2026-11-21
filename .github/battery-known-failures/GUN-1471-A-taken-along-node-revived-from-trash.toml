@@ -4,36 +4,10 @@ tests = [
   "a_first_link_discard_keeps_a_folder_the_user_changes_after_the_server_drops_part_of_it",
   "a_first_link_discard_takes_along_only_the_server_entries_the_user_leaves_alone",
   "a_first_link_sends_nothing_the_rules_leave_out_for_a_while_until_the_person_publishes_it",
+  "a_first_link_sends_nothing_it_holds_until_the_person_publishes_it",
+  "a_device_with_local_changes_converges_with_the_server_and_keeps_every_write",
 ]
 message = '''<id> is brought back from the server's trash with no change its user made in or below it and no move above it in the same commit at \S+\.rs:<line>\.'''
 examples = [
   "01a1c2c0-39a0-7c9f-92dd-37ded7172a70 is brought back from the server's trash with no change its user made in or below it and no move above it in the same commit at core/sim/tests/engine_sync/common.rs:1897.",
 ]
-cases = [
-  "1da71c778fcc",
-  "5590068d305f",
-  "fe4d630c841c",
-  "422ef0b66628bd1765d76d3b300fd8638d49a8172cfa0c162ea52b9eafe8e7b9",
-  "1228b2af4f32cfdde634f7870dbad32892aa3b58b7b1d282b07ff2b71d784ac1",
-  "3814c0d47299a0263dc72977ae65ecc8fdcb38da1cac3858c147e91eb9fe9cef",
-  "3fef08efeaccc68e2d7211c2637827f4a80f0204fb637afafa682a79fbac5cba",
-  "9199db6b5e9fd9e38724060e2f5c8ccdc526cbe20367bccc8d9c66668018d309",
-  "baf7332f3560a01e32aa5596cf6a8afaae91e4b4ce2800d505e17d9dbd2691fe",
-  "23748ce8e40f3eef8696ac1bb2316841fabd36f76e38a6408ddf259347465d15",
-  "270a2aefac493364d54074ac0f16be724bcf2d85866c2183ca9f6dc40fdc32cc",
-  "7736001cefaff0954daa0dbf6365d491127fb37593c80bc0d14335b5ff40cdef",
-  "795c724e6b5c5137bd872b0b617442ace0711a021f92e0b323dbec18b034a796",
-  "08df7076ba7677ace0601132bfdea7ee695af7724d5019a245208d4c0e6c5253",
-  "2b73d62abf22745bb894b117a574f3be27f89235d16feb6f563eeca4634d1d7e",
-  "681f0c95d2fcac26c20113bdadf09da62700736520a22e9490dd19c5a5b87410",
-  "6e0b1f7e7b953991ae204d0b1a7ee3f04bf96f74606bfd17c5f1afbc0ef7431d",
-  "9acf1bdc8739c074df787b623c60cd8427288d81ffcfba9f12228e69ed7f57dc",
-  "ab4422a862083c7c640560f417513828cadf685c8bbe8b0181954cfad46d7e1d",
-  "0a55fabed8223c0ecb7e3dbd41c17b33b5e3ed1c4018a4d39a9d35e5661f3d81",
-  "10cd6c622304dc57bd553d326115199866a1c639a2a184a0e88694c10f3fe434",
-  "4706f63f22663d19f840ffab06b6a55d12995825f8fe845a645136c28c7c3367",
-  "1c2215e6e52832589c940ccfddac7ac1d323a9bc5e3de216a615bf12a9a72f8a",
-  "74883660531f147214379390d1612967dcd6955bb876d217f15170dee58ac902",
-  "43edcf79aee2246554a4e135bf3c991caf5d78079569ee8f5a26527a781e4e0a",
-]
-

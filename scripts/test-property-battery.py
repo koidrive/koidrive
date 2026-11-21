@@ -633,6 +633,21 @@ cases = ["{1:064}"]
                             found = triage.matches(entries, test, example, case)
                             self.assertEqual([other["file"] for other in found], [entry["file"]], (test, example, case))
 
+    def test_no_two_registry_files_label_the_same_failure_of_a_test(self):
+        entries = triage.known_failures(triage.KNOWN_FAILURES)
+        for entry in entries:
+            for other in entries:
+                shared = sorted(set(entry["tests"]) & set(other["tests"]))
+                if not shared or other is entry:
+                    continue
+                for example in entry["examples"]:
+                    with self.subTest(file=entry["file"], other=other["file"], example=example[:60]):
+                        self.assertIsNone(
+                            other["pattern"].fullmatch(triage.normalized(example)),
+                            f"{other['file']} also labels this example of {entry['file']} in {shared[0]}. A later battery "
+                            "finds other cases, so case lists can't tell two files apart: give each file a message "
+                            "only it matches, or merge the files if they share a cause.")
+
     def test_registry_entries_that_share_a_message_label_only_their_own_tests_and_cases(self):
         entries = triage.known_failures(triage.KNOWN_FAILURES)
         left = "after phase 2: write 6 left the disk of device 2: the server never held it, and its user never overwrote or deleted it."
@@ -715,60 +730,61 @@ cases = ["{1:064}"]
         elsewhere = ("assertion failed: `(left == right)` \n  left: `(\"01a1c2c0-39a0-75ee-831c-498d57bc0a70\", \"a\")`, \n right: `(\"01a1c2c0-39a0-780a-953a-eb70673e29cb\", \"a\")`: 01a1c2c0-39a0-7895-abc3-b3429e08873f"
                      " is sent to a place the disk does not hold it at at core/sim/tests/engine_sync/common.rs:1330.")
         never_reached = next(entry for entry in entries
-                             if entry["file"] == "GUN-1012-I-delete-never-reached-server-across-server-restores.toml")["examples"][0]
+                             if entry["file"] == "GUN-1012-I-delete-never-reached-server.toml")["examples"][0]
         undone = next(entry for entry in entries if entry["file"] == "GUN-1012-I-delete-came-undone.toml")["examples"][1]
         def example(case):
             return next(entry for entry in entries if case.startswith(tuple(entry.get("cases", ["-"]))))["examples"][0]
         def after_670(case, test):
-            return next(text for entry in entries if case.startswith(tuple(entry.get("cases", ["-"])))
-                        for text in entry["examples"] if text.startswith(f"devices::{test} case "))
+            return next(text for entry in entries for text in entry["examples"] if text.startswith(f"devices::{test} case cc-{case} "))
         update = "}, Op { intent: None, fields: None, op: Some(UpdateContent"
-        three_ops = example(d1f7).replace(
+        moved_out = next(entry for entry in entries
+                         if entry["file"] == "GUN-1012-J-commit-takes-write-out-of-server-tree.toml")["examples"][0]
+        three_ops = moved_out.replace(
             update, "}, Op { intent: None, fields: None, op: Some(Delete(Delete { node_id: \"x\" })) " + update, 1)
         for test, message, case, labels in [
-            (restores_and_rewinds, three_ops, d1f7, []),
-            (restores_and_rewinds, example(a7b0) + " Then write 7 is lost too.", a7b0, []),
-            (restores_and_rewinds, left, a7b0, [("J", "GUN-1012", ["a7b0eabd2b85"])]),
-            (restores_and_rewinds, left, c96d, [("J", "GUN-1012", ["0c96dc79dd54"])]),
-            (restores_and_rewinds, left, cd97, []),
-            (restores_and_rewinds, left, other, []),
-            (server_restores, left, cd97, [("J", "GUN-1012", ["cd970b7805c3"])]),
-            (server_restores, left, a7b0, []),
+            (restores_and_rewinds, three_ops, d1f7, [("J", "GUN-1012", None)]),
+            (restores_and_rewinds, left + " Then write 7 is lost too.", a7b0, []),
+            (restores_and_rewinds, left, a7b0, [("J", "GUN-1012", None)]),
+            (restores_and_rewinds, left, c96d, [("J", "GUN-1012", None)]),
+            (restores_and_rewinds, left, cd97, [("J", "GUN-1012", None)]),
+            (restores_and_rewinds, left, other, [("J", "GUN-1012", None)]),
+            (server_restores, left, cd97, [("J", "GUN-1012", None)]),
+            (server_restores, left, a7b0, [("J", "GUN-1012", None)]),
             (rewinds_and_rollbacks, quiet, other, []),
             (restores_and_rewinds, quiet, ae45, [("D", "GUN-984", None)]),
             (server_restores, quiet, ae45, [("D", "GUN-984", None)]),
-            (server_restores, quiet, e0a5, [("J", "GUN-1012", ["5e0a61643769"])]),
+            (server_restores, quiet, e0a5, [("D", "GUN-984", None)]),
             (folder, never_reached, other, []),
             (rewinds_and_rollbacks, never_reached, other, []),
             (server_restores, never_reached, other, [("I", "GUN-1012", None)]),
             (restores_and_rewinds, never_reached, other, [("I", "GUN-1012", None)]),
             ("devices_on_coarse_volumes_converge_across_restores_and_rewinds", never_reached, other, [("I", "GUN-1012", None)]),
-            (lose_rollbacks, example(x2293), x2293, [("X", "GUN-1199", ["2293e681b3bc"])]),
-            (lose_rollbacks, example(x2293), other, []),
-            (lose_coarse, example(w74e3), w74e3, [("W", "GUN-1200", ["74e37aa2bf80", "78f33ddc3d91", "570e17d678be", "17e659c037e5"])]),
-            (lose_coarse, example(w74e3), other, [("A", "GUN-1004", None)]),
-            (lose_rollbacks, example(w74e3), w74e3, [("A", "GUN-1004", None)]),
-            ("devices_on_coarse_volumes_converge_once_the_faults_stop", undone + "\n" + example(w74e3), other, []),
-            (local_changes, elsewhere, e6d4a, [("E", "GUN-984", ["08e61c519396", "19f84e7ef1f0", "1d7c783628f2", "3c1845290a58", "4af1a1aa9520", "5434a941f700", "67ff8e5ba7b6", "6d4a438ebc80", "84d38f0bff21", "9350d8000cff", "99df591672b6", "b9d004f06e53"])]),
-            (local_changes, elsewhere, e84d3, [("E", "GUN-984", ["08e61c519396", "19f84e7ef1f0", "1d7c783628f2", "3c1845290a58", "4af1a1aa9520", "5434a941f700", "67ff8e5ba7b6", "6d4a438ebc80", "84d38f0bff21", "9350d8000cff", "99df591672b6", "b9d004f06e53"])]),
-            (takes_along, elsewhere, e1d7c, [("E", "GUN-984", ["08e61c519396", "19f84e7ef1f0", "1d7c783628f2", "3c1845290a58", "4af1a1aa9520", "5434a941f700", "67ff8e5ba7b6", "6d4a438ebc80", "84d38f0bff21", "9350d8000cff", "99df591672b6", "b9d004f06e53"])]),
-            (takes_along, elsewhere, e5434, [("E", "GUN-984", ["08e61c519396", "19f84e7ef1f0", "1d7c783628f2", "3c1845290a58", "4af1a1aa9520", "5434a941f700", "67ff8e5ba7b6", "6d4a438ebc80", "84d38f0bff21", "9350d8000cff", "99df591672b6", "b9d004f06e53"])]),
-            (local_changes, elsewhere, other, []),
-            (restores_and_rewinds, after_670(j6ef9, restores_and_rewinds), j6ef9, [("J", "GUN-1012", ["6ef9f2b252a2"])]),
-            (lose_restores, after_670(j6ef9, lose_restores), j6ef9, [("J", "GUN-1012", ["6ef9f2b252a2"])]),
-            (lose_restores, after_670(j6ef9, lose_restores), other, []),
-            (lose_coarse, after_670(j0bde, lose_coarse), j0bde, [("J", "GUN-1012", ["0bdef7272764"])]),
-            (lose_coarse, after_670(j0bde, lose_coarse), other, []),
-            (server_restores, example(i764b), i764b, [("I", "GUN-1012", ["764b716b5c59", "a80ed333a4ff"])]),
-            (server_restores, example(i764b), ia80e, [("I", "GUN-1012", ["764b716b5c59", "a80ed333a4ff"])]),
-            (server_restores, example(i764b), other, []),
-            (restores_and_rewinds, example(i764b), i764b, []),
-            (server_restores, example(i764b) + kept, i764b, []),
+            (lose_rollbacks, replayed(x2293), x2293, [("X", "GUN-1199", None)]),
+            (lose_rollbacks, replayed(x2293), other, [("X", "GUN-1199", None)]),
+            (lose_coarse, replayed(w74e3), w74e3, [("A", "GUN-1004", None)]),
+            (lose_coarse, replayed(w74e3), other, [("A", "GUN-1004", None)]),
+            (lose_rollbacks, replayed(w74e3), w74e3, [("A", "GUN-1004", None)]),
+            ("devices_on_coarse_volumes_converge_once_the_faults_stop", undone + "\n" + replayed(w74e3), other, []),
+            (local_changes, elsewhere, e6d4a, [("E", "GUN-984", None)]),
+            (local_changes, elsewhere, e84d3, [("E", "GUN-984", None)]),
+            (takes_along, elsewhere, e1d7c, [("E", "GUN-984", None)]),
+            (takes_along, elsewhere, e5434, [("E", "GUN-984", None)]),
+            (local_changes, elsewhere, other, [("E", "GUN-984", None)]),
+            (restores_and_rewinds, after_670(j6ef9, restores_and_rewinds), j6ef9, [("J", "GUN-1012", None)]),
+            (lose_restores, after_670(j6ef9, lose_restores), j6ef9, [("J", "GUN-1012", None)]),
+            (lose_restores, after_670(j6ef9, lose_restores), other, [("J", "GUN-1012", None)]),
+            (lose_coarse, after_670(j0bde, lose_coarse), j0bde, [("J", "GUN-1012", None)]),
+            (lose_coarse, after_670(j0bde, lose_coarse), other, [("J", "GUN-1012", None)]),
+            (server_restores, replayed(i764b), i764b, [("I", "GUN-1012", None)]),
+            (server_restores, replayed(i764b), ia80e, [("I", "GUN-1012", None)]),
+            (server_restores, replayed(i764b), other, [("I", "GUN-1012", None)]),
+            (restores_and_rewinds, replayed(i764b), i764b, []),
+            (server_restores, replayed(i764b) + kept, i764b, []),
             (server_restores, head_only_undone(server_restores, ia80e), ia80e, []),
-            (coarse_restores, example(a9151), a9151, [("A", "GUN-767", ["9151604dfe20"])]),
-            (coarse_restores, example(a9151), other, [("I", "GUN-1012", None)]),
-            (restores_and_rewinds, example(a9151), a9151, [("I", "GUN-1012", None)]),
-            (coarse_restores, undone, a9151, [("A", "GUN-767", ["9151604dfe20"])]),
+            (coarse_restores, replayed(a9151), a9151, [("I", "GUN-1012", None)]),
+            (coarse_restores, replayed(a9151), other, [("I", "GUN-1012", None)]),
+            (restores_and_rewinds, replayed(a9151), a9151, [("I", "GUN-1012", None)]),
+            (coarse_restores, undone, a9151, [("I", "GUN-1012", None)]),
             (coarse_restores, undone, other, [("I", "GUN-1012", None)]),
             (restores_and_rewinds, example(ibbe9), ibbe9, [("I", "GUN-1012", ["bbe992fee5c2"])]),
             (restores_and_rewinds, example(ibbe9), other, []),
@@ -791,7 +807,7 @@ cases = ["{1:064}"]
             (takes_along, reverted_parent, other, []),
             (rewinds_and_rollbacks, reverted_parent, tb5bf, []),
             (takes_along, reverted_parent + "\n" + undone, tb5bf, []),
-            (lose_coarse, replayed(w78f3), w78f3, [("W", "GUN-1200", ["74e37aa2bf80", "78f33ddc3d91", "570e17d678be", "17e659c037e5"])]),
+            (lose_coarse, replayed(w78f3), w78f3, [("A", "GUN-1004", None)]),
             (lose_coarse, replayed(w78f3), other, [("A", "GUN-1004", None)]),
             (lose_coarse, replayed(w78f3) + "\n" + undone, w78f3, []),
             (lose_coarse, head_only_undone(lose_coarse, w78f3), w78f3, []),
@@ -805,7 +821,7 @@ cases = ["{1:064}"]
             (rewinds_and_rollbacks, restored_late, t1437, []),
             (takes_along, restored_late + "\n" + undone, t1437, []),
             (takes_along, head_only_undone(takes_along, t1437), t1437, []),
-            (lose_coarse, replayed(w570e), w570e, [("W", "GUN-1200", ["74e37aa2bf80", "78f33ddc3d91", "570e17d678be", "17e659c037e5"])]),
+            (lose_coarse, replayed(w570e), w570e, [("A", "GUN-1004", None)]),
             (lose_coarse, replayed(w570e), other, [("A", "GUN-1004", None)]),
             (coarse_once, replayed(w570e), w570e, []),
             (lose_coarse, replayed(w570e) + "\n" + undone, w570e, []),
@@ -823,18 +839,18 @@ cases = ["{1:064}"]
             (local_changes, head_only_undone(local_changes, g4bf7), g4bf7, []),
             (local_changes, queued, od1d0, []),
             (local_changes, queued, e6d4a, []),
-            (local_changes, elsewhere, g4bf7, []),
+            (local_changes, elsewhere, g4bf7, [("E", "GUN-984", None)]),
             (local_changes, queued, n62f7, []),
             (lose_coarse, replayed(a0fe7), a0fe7, [("A", "GUN-1004", None)]),
             (lose_coarse, replayed(a0fe7), other, [("A", "GUN-1004", None)]),
             (lose_coarse, replayed(ae9f1), ae9f1, [("A", "GUN-1004", None)]),
-            (lose_coarse, replayed(a0fe7), w74e3, [("W", "GUN-1200", ["74e37aa2bf80", "78f33ddc3d91", "570e17d678be", "17e659c037e5"])]),
-            (lose_coarse, replayed(ae9f1), w17e6, [("W", "GUN-1200", ["74e37aa2bf80", "78f33ddc3d91", "570e17d678be", "17e659c037e5"])]),
+            (lose_coarse, replayed(a0fe7), w74e3, [("A", "GUN-1004", None)]),
+            (lose_coarse, replayed(ae9f1), w17e6, [("A", "GUN-1004", None)]),
             (coarse_once, replayed(a0fe7), a0fe7, []),
             (lose_coarse, replayed(a0fe7) + "\n" + undone, a0fe7, []),
             (lose_coarse, head_only_undone(lose_coarse, a0fe7), a0fe7, []),
             (lose_coarse, head_only_undone(lose_coarse, ae9f1), ae9f1, []),
-            (lose_coarse, replayed(w17e6), w17e6, [("W", "GUN-1200", ["74e37aa2bf80", "78f33ddc3d91", "570e17d678be", "17e659c037e5"])]),
+            (lose_coarse, replayed(w17e6), w17e6, [("A", "GUN-1004", None)]),
             (lose_coarse, replayed(w17e6), other, [("A", "GUN-1004", None)]),
             (lose_coarse, replayed(w17e6), a0fe7, [("A", "GUN-1004", None)]),
             (coarse_once, replayed(w17e6), w17e6, []),
@@ -845,7 +861,7 @@ cases = ["{1:064}"]
             (takes_along, parked, v73cf, []),
             (takes_along, parked, other, []),
             (rules_change, excluded_left, v0d10, []),
-            (rules_leave_out, excluded_left, vad76, []),
+            (rules_leave_out, excluded_left, vad76, [("Z", "GUN-1460", None)]),
         ]:
             with self.subTest(test=test, message=message[:40], case=case[:12]):
                 found = triage.matches(entries, test, message, case)
