@@ -357,4 +357,27 @@ mod tests {
             "{why}"
         );
     }
+
+    #[test]
+    fn a_discarded_copy_does_not_excuse_a_write_a_delete_saw() {
+        let (mut intents, deletion) = deleted_x();
+        let world = World::new(2);
+        let copy = BTreeMap::from([(3, NodeId::from("z"))]);
+        intents.observe(0, 0, &world.devices[0].disk, &copy, &"root".into());
+        let write = Value::Content {
+            write: 7,
+            digest: super::super::content(0, 0, 7).manifest_digest,
+        };
+        intents.record(0, 0, 3, "copy", write);
+        intents.give_up(
+            &Server::of("root", Vec::new()),
+            0,
+            &BTreeSet::from([NodeId::from("z")]),
+        );
+        let tree = x_trashed_and_z_holding_7("z");
+        assert_eq!(
+            deletion.seen_writes_elsewhere(&intents, &tree, |_| false),
+            vec![(7, NodeId::from("x"), NodeId::from("z"))]
+        );
+    }
 }
