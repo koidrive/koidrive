@@ -1844,6 +1844,39 @@ fn an_engine_state_read_asks_whether_to_stop_once_per_frozen_answer_row() {
             .unwrap()
     };
     assert_eq!(polls(5) - polls(0), 5);
+    drop(polls);
+    let raw = Connection::open(dir.path().join("state.db")).unwrap();
+    raw.pragma_update(None, "foreign_keys", false).unwrap();
+    raw.execute(
+        "INSERT INTO open_question_frozen
+             (question_id, node_id, parent_id, name, taken, member, member_of)
+             VALUES ('unknown', 'o', 'p', 'o', 1, 0, NULL)",
+        [],
+    )
+    .unwrap();
+    let mut read = |stop_at: Option<usize>| {
+        let mut polls = 0;
+        let read = store.transaction(|tx| {
+            let mut stop = || {
+                polls += 1;
+                Some(polls) == stop_at
+            };
+            tx.engine_state_unless(&mut EngineState::default(), &mut stop)
+        });
+        (read, polls)
+    };
+    let (whole, rows) = read(None);
+    assert!(
+        matches!(whole, Err(Error::InvalidEngineState(_))),
+        "{whole:?}"
+    );
+    for stop_at in 1..=rows {
+        let (stopped, _) = read(Some(stop_at));
+        assert!(
+            matches!(stopped, Ok(false)),
+            "{stop_at} of {rows}: {stopped:?}"
+        );
+    }
 }
 
 #[test]
