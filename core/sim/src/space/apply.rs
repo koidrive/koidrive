@@ -119,6 +119,7 @@ pub(super) struct Applier<'a> {
     purged: Vec<ChangeRecord>,
     intents: OpIntents,
     made_copies: BTreeSet<String>,
+    trashed_files: Vec<String>,
 }
 
 impl<'a> Applier<'a> {
@@ -135,6 +136,7 @@ impl<'a> Applier<'a> {
             purged: Vec::new(),
             intents: OpIntents::default(),
             made_copies: BTreeSet::new(),
+            trashed_files: Vec::new(),
         }
     }
 
@@ -167,6 +169,7 @@ impl<'a> Applier<'a> {
             }
         }
         self.retrash_unneeded_ancestors();
+        self.copy_trashed_files();
         let changes = (self.touched.iter())
             .map(|id| ChangeRecord {
                 change: Some(change_record::Change::Node(
@@ -1387,18 +1390,24 @@ impl<'a> Applier<'a> {
         stored.meta_rev = seq;
         stored.meta_edit_rev = seq;
         stored.meta_edit_dev = dev.clone();
-        stored.meta_dev = dev.clone();
+        stored.meta_dev = dev;
         self.set_incoming(node_id, Field::Status);
         self.report(node_id);
-        let node = &self.st.nodes[node_id];
-        if let (true, Some(parent_id), Some(version)) = (
-            self.ctx.copies_deleted_files,
-            node.parent_id.clone(),
-            node.cur_version_id.as_ref(),
-        ) {
+        if self.ctx.copies_deleted_files {
+            self.trashed_files.push(node_id.to_owned());
+        }
+    }
+
+    fn copy_trashed_files(&mut self) {
+        let dev = self.dev().to_string();
+        for node_id in std::mem::take(&mut self.trashed_files) {
+            let node = self.st.nodes[&node_id].clone();
+            let (Some(parent_id), Some(version)) = (&node.parent_id, &node.cur_version_id) else {
+                continue;
+            };
             let content = self.st.versions[version].content.clone();
-            let name = node.name.clone();
-            self.insert_conflict_copy(&parent_id, &name, &content, &dev);
+            let home = self.nearest_live(Some(parent_id));
+            self.insert_conflict_copy(&home.node_id, &node.name, &content, &dev);
         }
     }
 

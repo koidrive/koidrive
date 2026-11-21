@@ -761,16 +761,16 @@ cases = ["{1:064}"]
         lose_server_restores = "devices_lose_no_write_across_server_restores"
         taken = ("after phase 2: a restore took write 2 from the server while a disk held it, and the server does not hold it "
                  "again, though no user overwrote or deleted it.")
-        kept = (f"\nnot recorded: devices::{server_restores}\tcc-{i764b}\tWriteKept\twrite 3 of the write of node "
+        kept = (f"\nnot recorded: devices::{server_restores}\tcc-{i764b}\ton\tWriteKept\twrite 3 of the write of node "
                 "01a1c2c0-39a0-7c5c-8466-a7d0954b76a3 on device 0 is not in the server's tree, and no later change that saw it, "
                 "no delete that saw it and no rule for lost changes settles it")
-        placed = (f"\nnot recorded: devices::{restores_and_rewinds}\tcc-{ibbe9}\tPlaceKept\tthe move on device 1 that puts node "
+        placed = (f"\nnot recorded: devices::{restores_and_rewinds}\tcc-{ibbe9}\ton\tPlaceKept\tthe move on device 1 that puts node "
                   "01a1c2c0-39a0-7c5c-8466-a7d0954b76a3 at \"a\" is not on the server, though its user saw the place the server "
                   "holds and no rule for lost changes settles it")
         copied = ("after phase 2: write 4 is in more than one file on the server, and no user copied it: "
                   "[[\"A\"], [\"A (conflict from device-1 2026-11-09)\"]].")
         def head_only_undone(test, case):
-            return (f"{copied}\nnot recorded: devices::{test}\tcc-{case}\tDeleteUndone\tthe delete of node "
+            return (f"{copied}\nnot recorded: devices::{test}\tcc-{case}\ton\tDeleteUndone\tthe delete of node "
                     "01a1c2c0-39a0-7c5c-8466-a7d0954b76a3 on device 1 came undone, and no change its user did not see brought the node back")
         elsewhere = ("assertion failed: `(left == right)` \n  left: `(\"01a1c2c0-39a0-75ee-831c-498d57bc0a70\", \"a\")`, \n right: `(\"01a1c2c0-39a0-780a-953a-eb70673e29cb\", \"a\")`: 01a1c2c0-39a0-7895-abc3-b3429e08873f"
                      " is sent to a place the disk does not hold it at at core/sim/tests/engine_sync/common.rs:1330.")
@@ -973,7 +973,7 @@ cases = ["{1:064}"]
     def test_a_devices_replay_keeps_its_unrecorded_reds_and_drops_the_cases_triage_removed(self):
         entries = triage.known_failures(triage.KNOWN_FAILURES)
         test = "devices_converge_across_restores_and_rewinds"
-        red = (f"not recorded: devices::{test}\tcc-085dc3892c1039055c5cb4b0523f824a775a089818ccdd9b62a5960caad5158f\t"
+        red = (f"not recorded: devices::{test}\tcc-085dc3892c1039055c5cb4b0523f824a775a089818ccdd9b62a5960caad5158f\ton\t"
                "DeleteUndone\tthe delete of node 01a1c2c0-39a0-7510-83bc-38d6c6b89fe4 on device 1 came undone, and no "
                "change its user did not see brought the node back")
         never_ran = (f"devices::{test} never ran case "
@@ -1316,7 +1316,7 @@ class Triage(unittest.TestCase):
         fixed_seed = ("---- rewinds_converge_from_seed_122 stdout ----\nthread 'x' panicked at core/sim/tests/devices.rs:495:5:\n"
                       "devices::rewinds_converge_from_seed_122 case case-17 fails: write 1 is lost\n")
         recorded = ("---- rewinds_converge_from_seed_122 stdout ----\nthread 'x' panicked at core/sim/tests/devices.rs:495:5:\n"
-                    "recorded but passed: devices::rewinds_converge_from_seed_122\tcase-17\tWriteKept\twrite 1 is lost\n")
+                    "recorded but passed: devices::rewinds_converge_from_seed_122\tcase-17\ton\tWriteKept\twrite 1 is lost\n")
         plain = "---- prints_help stdout ----\nproptest regression: cc cc2e\nthread 'x' panicked at t.rs:3:1:\nboom\n"
         self.assertEqual(unsaved(committed + saving), [("a", True)])
         self.assertEqual(unsaved(shared + saving), [("a", False)])
