@@ -557,6 +557,25 @@ fn a_delete_lists_what_l_held_for_the_node_and_below_it() {
 }
 
 #[test]
+fn a_delete_after_r_drops_the_node_still_sees_the_value_l_took_from_r() {
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
+    let f = NodeId::from("f");
+    synced(&mut trees, "f", file(ROOT, "f", 1), 1);
+    let a = held(&trees, "f", Field::Content);
+    assert!(trees.journal().history(&f, Field::Content).is_empty());
+    trees.remove_remote(&f);
+    trees.set_local_changed(f.clone(), local(file(ROOT, "f", 2)));
+    trees.remove_local_by_user(&f);
+    assert!(
+        trees
+            .journal()
+            .seen(&f)
+            .iter()
+            .any(|entry| entry.intent == a)
+    );
+}
+
+#[test]
 fn s_keeps_the_intents_of_the_values_it_holds_when_r_moves_on_or_loses_the_node() {
     let mut trees = Trees::new(ROOT, &IdGen::new(0));
     synced(&mut trees, "f", file(ROOT, "a", 1), 1);
@@ -578,6 +597,69 @@ fn s_keeps_the_intents_of_the_values_it_holds_when_r_moves_on_or_loses_the_node(
     let before = trees.synced_intents(&"f".into());
     trees.remove_remote(&"f".into());
     assert_eq!(trees.synced_intents(&"f".into()), before);
+}
+
+#[test]
+fn s_taking_a_waiting_update_that_r_and_the_journal_lack_drops_its_old_intent() {
+    let mut t = Trees::new(ROOT, &IdGen::new(0));
+    let n = NodeId::from("f");
+    synced(&mut t, "b", dir(ROOT, "b"), 1);
+    synced(&mut t, "f", file(ROOT, "a", 1), 1);
+    let blocker = NodeId::from("g");
+    t.set_synced(blocker.clone(), Some(file("b", "a", 5)));
+    let old = held(&t, "f", Field::Content);
+    let waiting = file("b", "a", 2);
+    t.set_remote(n.clone(), remote(waiting.clone(), 2));
+    let mut state = t.state();
+    state.waiting.insert(
+        n.clone(),
+        Waiting {
+            shape: Some(waiting.clone()),
+            origin: Origin::Commit(1),
+        },
+    );
+    t.restore(state).unwrap();
+    t.set_remote(n.clone(), remote(file("b", "a", 3), 3));
+    t.set_local_changed(n.clone(), local(file("b", "a", 4)));
+    t.set_synced(blocker, None);
+    assert!(t.set_synced_if_valid(n.clone(), Some(waiting)));
+    assert_ne!(
+        t.synced_intents(&n).unwrap().content.map(|i| i.id),
+        Some(old)
+    );
+}
+
+#[test]
+fn s_taking_a_marked_remote_place_takes_that_places_intent() {
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
+    let f = NodeId::from("f");
+    synced(&mut trees, "f", file(ROOT, "a", 1), 1);
+    let moved = file(ROOT, "b (pending)", 1);
+    trees.set_remote(
+        f.clone(),
+        RemoteNode {
+            pending_for: Some("b".into()),
+            ..remote(file(ROOT, "b (pending)", 2), 2)
+        },
+    );
+    let wanted = held(&trees, "f", Field::Place);
+    trees.set_synced(f.clone(), Some(moved));
+    assert_eq!(trees.synced_mark(&f), Some("b"));
+    assert_eq!(trees.synced_intents(&f).unwrap().place.unwrap().id, wanted);
+}
+
+#[test]
+fn a_remote_change_of_only_the_pending_mark_gives_s_the_new_place_intent() {
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
+    let f = NodeId::from("f");
+    let shape = file(ROOT, "stand-in", 1);
+    synced(&mut trees, "f", shape, 1);
+    let mut changed = trees.remote().get(&f).unwrap().clone();
+    changed.pending_for = Some("wanted".into());
+    changed.intents.as_mut().unwrap().place = Some(FieldIntent::legacy(id(42)));
+    trees.set_remote(f.clone(), changed);
+    assert_eq!(trees.synced_mark(&f), Some("wanted"));
+    assert_eq!(trees.synced_intents(&f).unwrap().place.unwrap().id, id(42));
 }
 
 fn build(trees: &mut Trees, features: &[&str], committed_at_ms: i64) -> proto::Commit {
@@ -914,6 +996,70 @@ fn a_result_without_intents_holds_rows_as_the_legacy_ids_of_its_node_state() {
 }
 
 #[test]
+fn an_applied_rename_does_not_mark_the_servers_name_as_held_in_l() {
+    let mut t = Trees::new(ROOT, &IdGen::new(0));
+    synced(&mut t, "f", file(ROOT, "a", 1), 1);
+    t.set_local_changed("f".into(), local(file(ROOT, "b", 1)));
+    let commit = build(&mut t, &[], 1_700);
+    let renamed = file(ROOT, "b (conflict)", 1);
+    t.set_remote_made_here("f".into(), remote(renamed.clone(), 2));
+    t.record_results(
+        &commit,
+        &answered(
+            vec![proto::OpResult {
+                name: renamed.name.clone(),
+                ..outcome(op_result::Code::AppliedRenamed)
+            }],
+            vec![node_state("f", &renamed, 2, None)],
+        ),
+    );
+    let server_place = held(&t, "f", Field::Place);
+    assert_eq!(t.local().get(&"f".into()).unwrap().shape.name, "b");
+    t.remove_local_by_user(&"f".into());
+    assert!(
+        !t.journal()
+            .seen(&"f".into())
+            .iter()
+            .any(|e| e.intent == server_place)
+    );
+}
+
+#[test]
+fn an_applied_result_that_r_already_moved_past_ends_the_row() {
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
+    let f = NodeId::from("f");
+    synced(&mut trees, "f", file(ROOT, "f", 1), 1);
+    let b = file(ROOT, "f", 2);
+    trees.set_local_changed(f.clone(), local(b.clone()));
+    let (mut commits, _) = sent_with_intents(&mut trees);
+    for (shape, rev, intent) in [(b.clone(), 2, id(20)), (file(ROOT, "f", 3), 3, id(30))] {
+        let mut node = remote(shape, rev);
+        node.intents = Some(NodeIntents {
+            content: Some(FieldIntent::legacy(intent)),
+            ..Default::default()
+        });
+        trees.set_remote(f.clone(), node);
+    }
+    let proof = node_state(
+        "f",
+        &b,
+        2,
+        Some(proto::FieldIntents {
+            content: Some(wire(id(20), 2_000)),
+            ..Default::default()
+        }),
+    );
+    commits
+        .received(proto::CommitResult {
+            seq: 2,
+            ..answered(vec![outcome(op_result::Code::Applied)], vec![proof])
+        })
+        .unwrap();
+    assert!(commits.acknowledge(&mut trees, 3));
+    assert!(trees.journal_row(&f, Field::Content).is_none());
+}
+
+#[test]
 fn a_superseded_move_ends_unless_the_server_applied_another_place_before_it() {
     for (applied_at_ms, stays) in [(2_500, false), (1_000, true)] {
         let mut trees = Trees::new(ROOT, &IdGen::new(0));
@@ -1023,6 +1169,35 @@ fn a_create_answered_id_exists_ends_its_live_status_row_and_keeps_the_rest_to_se
             assert_eq!(row.state, RowState::Local { flight: None });
         }
     }
+}
+
+#[test]
+fn id_exists_on_a_create_ends_its_flight_and_keeps_a_later_delete_with_its_seen_list() {
+    let mut t = Trees::new(ROOT, &IdGen::new(0));
+    let n = NodeId::from("f");
+    let shape = file(ROOT, "a", 1);
+    t.set_local_changed(n.clone(), local(shape.clone()));
+    let commit = build(&mut t, &["field_intents"], 1_700);
+    t.remove_local_by_user(&n);
+    let seen = t.journal().seen(&n).to_vec();
+    assert!(!seen.is_empty());
+    t.set_remote(n.clone(), remote(shape, 2));
+    t.record_results(
+        &commit,
+        &answered(
+            vec![proto::OpResult {
+                reject_reason: "ID_EXISTS".into(),
+                ..outcome(op_result::Code::Rejected)
+            }],
+            Vec::new(),
+        ),
+    );
+    assert!(
+        t.journal_row(&n, Field::Status)
+            .is_some_and(|r| r.value == (Value::Status { live: false })
+                && r.state == (RowState::Local { flight: None }))
+    );
+    assert_eq!(t.journal().seen(&n), seen.as_slice());
 }
 
 #[test]
@@ -1611,6 +1786,23 @@ fn a_purged_folder_ends_when_r_holds_it_again_or_its_absence_lapses() {
     assert!(!device.trees.purged_folder(&"x".into()));
 }
 
+fn stored_flight(kind: op::Op) -> InFlight {
+    InFlight {
+        commit: proto::Commit {
+            ops: vec![proto::Op {
+                op: Some(kind),
+                ..Default::default()
+            }],
+            ..Default::default()
+        },
+        move_bases: Default::default(),
+        deletes: Default::default(),
+        restores: Default::default(),
+        owners: Default::default(),
+        result: None,
+    }
+}
+
 fn backfilled(table: &str, waiting: Option<Waiting>) -> Trees {
     let mut trees = Trees::new(ROOT, &IdGen::new(0));
     trees.set_synced("d".into(), Some(dir(ROOT, "d")));
@@ -1692,6 +1884,21 @@ fn a_backfilled_lost_folder_whose_queued_removal_finishes_keeps_no_rows() {
         .map(|(_, row)| row.state)
         .collect();
     assert_eq!(states, [RowState::Sent, RowState::Sent]);
+}
+
+#[test]
+fn a_backfill_keeps_an_unsent_edit_whose_bytes_r_already_holds() {
+    let mut t = Trees::new(ROOT, &IdGen::new(0));
+    synced(&mut t, "f", file(ROOT, "a", 1), 1);
+    let mut old = t.state();
+    old.unsent_edits.insert("f".into());
+    old.dirty.insert("f".into());
+    t.restore(old).unwrap();
+    t.backfill(None, false, 1_000);
+    assert!(
+        t.journal_row(&"f".into(), Field::Content)
+            .is_some_and(|r| r.author == Author::Own && matches!(r.state, RowState::Local { .. }))
+    );
 }
 
 fn position(seed: u64, rev: u64, name: &str) -> MovePosition {
@@ -1898,6 +2105,39 @@ fn a_backfilled_folder_whose_create_the_server_applies_keeps_its_rows_held() {
     assert!(trees.state().unsent_creates.is_empty());
     assert_eq!(held_as(&trees, "d", Field::Place), Some((place, 1_800)));
     assert_eq!(rows_of(&trees, "d").len(), 2);
+}
+
+#[test]
+fn a_backfilled_resend_in_flight_is_held_once_the_server_applies_it() {
+    let mut t = Trees::new(ROOT, &IdGen::new(0));
+    let n = NodeId::from("f");
+    let old = file(ROOT, "a", 1);
+    let sent = file(ROOT, "a", 2);
+    t.set_remote(n.clone(), remote(old.clone(), 1));
+    t.set_synced(n.clone(), Some(old));
+    t.set_local(n.clone(), local(sent.clone()));
+    let mut state = t.state();
+    state.resends.insert(n.clone());
+    t.restore(state).unwrap();
+    let flight = stored_flight(op::Op::UpdateContent(proto::UpdateContent {
+        node_id: "f".into(),
+        content: sent.content.map(|key| key.content(&[])),
+        resend: true,
+        ..Default::default()
+    }));
+    t.backfill(Some(&flight), true, 1_000);
+    let reported = node_state("f", &sent, 2, None);
+    t.set_remote_made_here(n.clone(), remote(sent.clone(), 2));
+    t.record_results(
+        &flight.commit,
+        &answered(vec![outcome(op_result::Code::Applied)], vec![reported]),
+    );
+    t.set_synced(n.clone(), Some(sent));
+    t.settle(&Default::default());
+    assert!(
+        t.journal_row(&n, Field::Content)
+            .is_some_and(|r| matches!(r.state, RowState::Held { .. }))
+    );
 }
 
 #[test]
@@ -2189,4 +2429,54 @@ fn a_relisted_node_whose_field_intents_did_not_change_keeps_no_separate_s_intent
     listed.meta_rev += 1;
     trees.set_listed_remote(f.clone(), listed);
     assert!(trees.synced_intents_apart_from_remote(&f).is_none());
+}
+
+#[test]
+fn a_backfilled_delete_already_in_flight_gets_the_seen_list_of_what_s_held() {
+    let mut t = Trees::new(ROOT, &IdGen::new(0));
+    let shape = file(ROOT, "a", 1);
+    t.set_remote("f".into(), remote(shape.clone(), 1));
+    t.set_synced("f".into(), Some(shape));
+    let content = held(&t, "f", Field::Content);
+    let flight = stored_flight(op::Op::Delete(proto::Delete {
+        node_id: "f".into(),
+        ..Default::default()
+    }));
+    t.backfill(Some(&flight), false, 1_000);
+    assert!(t.journal_row(&"f".into(), Field::Status).unwrap().is_sent());
+    assert!(
+        t.journal()
+            .seen(&"f".into())
+            .iter()
+            .any(|e| e.intent == content)
+    );
+}
+
+#[test]
+fn a_backfilled_delete_sees_a_child_under_the_folder_its_waiting_update_moved_it_to() {
+    let mut t = Trees::new(ROOT, &IdGen::new(0));
+    synced(&mut t, "a", dir(ROOT, "a"), 1);
+    let b = dir(ROOT, "b");
+    t.set_remote("b".into(), remote(b.clone(), 1));
+    t.set_synced("b".into(), Some(b));
+    t.set_synced("f".into(), Some(file("a", "f", 1)));
+    t.set_synced("g".into(), Some(file("b", "f", 2)));
+    let moved = file("b", "f", 1);
+    t.set_remote("f".into(), remote(moved.clone(), 2));
+    let mut old = t.state();
+    old.waiting.insert(
+        "f".into(),
+        Waiting {
+            shape: Some(moved),
+            origin: Origin::Commit(1),
+        },
+    );
+    t.restore(old).unwrap();
+    t.backfill(None, false, 1_000);
+    assert!(
+        t.journal()
+            .seen(&"b".into())
+            .iter()
+            .any(|e| e.node == "f" && matches!(&e.value, Some(Value::Place(p)) if p.parent == "b"))
+    );
 }
