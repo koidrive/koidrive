@@ -611,7 +611,7 @@ jobs:
     needs: [changes, rust-build-linux, rust-build-macos, rust-tests-linux, rust-tests-macos]
     if: ${{ !cancelled() && needs.changes.outputs.site_only != 'true' && needs.changes.outputs.rust_archive == 'true' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

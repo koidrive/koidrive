@@ -448,14 +448,14 @@ class ArtifactDownloads(unittest.TestCase):
                         self.assertRegex(step, r"(?m)^timeout-minutes: [1-3]$")
         self.assertGreater(found, 0)
 
-    def test_every_job_outlasts_a_stall_in_each_of_its_downloads(self):
+    def test_every_job_outlasts_all_its_download_steps_timing_out(self):
         for path in sorted((ROOT / ".github/workflows").glob("*.yml")):
             jobs = workflow_jobs(path.read_text())
             anchors = {m[1]: block for block in jobs.values() for m in re.finditer(r"(?m)^    steps: &(\S+)$", block)}
             for name, block in jobs.items():
                 alias = re.search(r"(?m)^    steps: \*(\S+)$", block)
-                attempts = download_steps(anchors[alias[1]] if alias else block)[::2]
-                stalls = sum(int(re.search(r"(?m)^timeout-minutes: (\d+)$", step)[1]) for step in attempts)
+                steps = download_steps(anchors[alias[1]] if alias else block)
+                stalls = sum(int(re.search(r"(?m)^timeout-minutes: (\d+)$", step)[1]) for step in steps)
                 if not stalls:
                     continue
                 with self.subTest(workflow=path.name, job=name):
