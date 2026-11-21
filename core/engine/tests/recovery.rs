@@ -6751,6 +6751,190 @@ fn a_file_s_lacks_that_the_server_holds_in_the_trash_with_its_bytes_goes_to_the_
     }
 }
 
+#[test]
+fn a_published_folder_whose_child_another_device_moves_before_the_commit_is_asked_again_and_changes_only_itself()
+ {
+    use koidrive_proto::v1::{Commit, CreateDir, Delete, Move, NodeState, NodeStatus, Op};
+    use koidrive_sim::space::{Role, Session, SpaceDo};
+    let session = |device: &str| Session {
+        device_id: device.into(),
+        user_id: "user".into(),
+        device_name: device.into(),
+        role: Role::Owner,
+        max_format: 1,
+    };
+    let op = |body: op::Op| Op {
+        op: Some(body),
+        ..Default::default()
+    };
+    let mut space = SpaceDo::new(11, NOW as i64);
+    let root = space.space_id().to_owned();
+    let mut ids = IdGen::new(31);
+    let [d, c, f] = std::array::from_fn(|_| ids.uuid_v7(NOW));
+    let mut other = |space: &mut SpaceDo, ops: Vec<op::Op>| {
+        let commit = Commit {
+            commit_id: ids.uuid_v7(NOW),
+            history_id: space.history_id().into(),
+            device_seq: space.device_seq("other") + 1,
+            base_seq: space.head_seq(),
+            ops: ops.into_iter().map(op).collect(),
+            ..Default::default()
+        };
+        space
+            .commit(&session("other"), NOW as i64, &commit)
+            .unwrap();
+    };
+    let made = [(&d, &root, "old"), (&c, &d, "c"), (&f, &root, "f")];
+    let mkdir = |(id, parent, name): &(&String, &String, &str)| {
+        op::Op::CreateDir(CreateDir {
+            node_id: id.to_string(),
+            parent_id: parent.to_string(),
+            name: name.to_string(),
+            ..Default::default()
+        })
+    };
+    other(&mut space, made.iter().map(mkdir).collect());
+    let delete = |id: &String| {
+        op::Op::Delete(Delete {
+            node_id: id.clone(),
+            ..Default::default()
+        })
+    };
+    other(&mut space, vec![delete(&d), delete(&f)]);
+    let learn = |trees: &mut Trees, space: &SpaceDo| {
+        for node in (space.nodes().into_iter()).filter(|node| node.node_id != space.space_id()) {
+            let (id, held) = RemoteNode::from_state(&node).unwrap();
+            trees.set_remote(id, held);
+        }
+    };
+    let mut trees = Trees::new(&root);
+    for (ino, (id, parent, name)) in made.iter().enumerate() {
+        let local = match *id == &d {
+            true => dir(parent, "new"),
+            false => dir(parent, name),
+        };
+        let node = LocalNode {
+            left_out_when_placed: false,
+            content_from_server: false,
+            shape: local,
+            identity: FileIdentity {
+                ino: ino as u128 + 1,
+                birth_ns: Some(0),
+                handle: None,
+            },
+            parked: false,
+            chunks: Box::default(),
+        };
+        trees.set_local(id.as_str().into(), node);
+        trees.set_synced(id.as_str().into(), Some(dir(parent, name)));
+    }
+    learn(&mut trees, &space);
+    trees.rules_scanned();
+    trees.settle(&Default::default());
+    let (mut commits, mut ids) = recovered(&mut trees, 0);
+    let first = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &[d.as_str()]);
+    assert!(commits.decide(&mut trees, &first.id, Answer::Publish));
+    let built = commits
+        .build(
+            &mut trees,
+            &mut ids,
+            NOW,
+            space.history_id(),
+            "me",
+            space.head_seq(),
+        )
+        .cloned()
+        .unwrap();
+    assert!(built.require_head);
+    let touched = |commit: &Commit| -> BTreeSet<String> {
+        (commit.ops.iter())
+            .map(|op| match &op.op {
+                Some(op::Op::Move(moved)) => moved.node_id.clone(),
+                Some(op::Op::Delete(deleted)) => deleted.node_id.clone(),
+                other => panic!("{other:?}"),
+            })
+            .collect()
+    };
+    assert_eq!(touched(&built), BTreeSet::from([d.clone(), c.clone()]));
+
+    other(
+        &mut space,
+        vec![op::Op::Move(Move {
+            node_id: c.clone(),
+            new_parent_id: root.clone(),
+            new_name: "c".into(),
+            ..Default::default()
+        })],
+    );
+    let (head, before) = (space.head_seq(), space.nodes());
+    let refused = space
+        .commit(&session("me"), NOW as i64, &built)
+        .unwrap_err();
+    assert_eq!(refused.code, error::Code::HeadMoved as i32);
+    assert_eq!((space.head_seq(), space.nodes()), (head, before.clone()));
+    assert_eq!(commits.failed(&mut trees, &refused), Ok(Failure::Abandoned));
+    learn(&mut trees, &space);
+    trees.settle(commits.aliases());
+    assert_eq!(
+        commits.build(
+            &mut trees,
+            &mut ids,
+            NOW,
+            space.history_id(),
+            "me",
+            space.head_seq()
+        ),
+        None
+    );
+
+    let again = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &[d.as_str()]);
+    assert_eq!(again.answer, None);
+    assert!(trees.held(&d.as_str().into()));
+    assert!(commits.decide(&mut trees, &again.id, Answer::Publish));
+    let built = commits
+        .build(
+            &mut trees,
+            &mut ids,
+            NOW,
+            space.history_id(),
+            "me",
+            space.head_seq(),
+        )
+        .cloned()
+        .unwrap();
+    assert_eq!(touched(&built), BTreeSet::from([d.clone()]));
+    let done = space.commit(&session("me"), NOW as i64, &built).unwrap();
+    commits.received(done.result.clone()).unwrap();
+    learn(&mut trees, &space);
+    assert!(commits.acknowledge(&mut trees, done.result.seq));
+    trees.settle(commits.aliases());
+
+    let state =
+        |nodes: &[NodeState], id: &str| nodes.iter().find(|node| node.node_id == id).cloned();
+    let after = space.nodes();
+    for id in [&c, &f] {
+        assert_eq!(state(&after, id), state(&before, id), "{id}");
+    }
+    let shown = |id: &str| {
+        let node = space.node(id).unwrap();
+        (node.status() == NodeStatus::Live, node.parent_id, node.name)
+    };
+    assert_eq!(shown(&d), (true, root.clone(), "new".to_owned()));
+    assert_eq!(shown(&c), (true, root.clone(), "c".to_owned()));
+    assert!(!shown(&f).0);
+    assert_eq!(
+        commits.build(
+            &mut trees,
+            &mut ids,
+            NOW,
+            space.history_id(),
+            "me",
+            space.head_seq()
+        ),
+        None
+    );
+}
+
 fn in_flight(commits: &Commits) -> Option<&str> {
     (commits.in_flight()).map(|flight| flight.commit.commit_id.as_str())
 }

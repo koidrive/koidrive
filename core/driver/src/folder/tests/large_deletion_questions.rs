@@ -433,6 +433,29 @@ fn a_restore_given_while_stopped_holds_a_deletion_made_since() {
 }
 
 #[test]
+fn an_unanswered_question_is_asked_again_under_its_own_id_after_each_restart() {
+    let mut remote = Remote::new();
+    let (site, a) = with_a_held_folder(&mut remote);
+    drop(a);
+    let stored = || {
+        let mut store = Store::open(&site.db).unwrap();
+        let rows = store.transaction(|tx| tx.questions()).unwrap();
+        (rows.into_iter())
+            .map(|row| (row.question_id, row.answer.is_some()))
+            .collect::<Vec<_>>()
+    };
+    let asked = stored();
+    assert!(matches!(&asked[..], [(_, false)]), "{asked:?}");
+    for restart in 0..2 {
+        let mut a = restarted(&site, &mut remote);
+        a.rest(&mut remote);
+        assert_eq!(a.folder.view().questions, 1, "restart {restart}");
+        assert_eq!(stored(), asked, "restart {restart}");
+        assert_eq!(remote.names().len(), 21, "restart {restart}");
+    }
+}
+
+#[test]
 fn a_taken_answer_survives_a_second_restart_before_it_is_applied() {
     let mut remote = Remote::new();
     let (site, a) = with_a_held_folder(&mut remote);
