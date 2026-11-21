@@ -746,6 +746,8 @@ export class CommitApplier {
     if (found.kind !== NodeKindValue.FILE) return rejected("NOT_FILE");
     if (this.client && this.holdsIntents(found, ["content"]) && this.holds(found, content)) return unchanged(found);
     if (this.heldElsewhere(found.node_id, ["content"])) return superseded();
+    const replaced = "SELECT 1 FROM versions WHERE node_id = ? AND ((version_id = ? AND version_id IS NOT ?) OR instr(',' || made_over || ',', ',' || ? || ',') > 0) LIMIT 1";
+    if (source && this.sql.exec(replaced, found.node_id, source, found.cur_version_id, source).toArray().length > 0) return superseded();
     const yields = resend || (this.client && intent.carried);
     if (found.status === NodeStatusValue.TRASHED) {
       if (this.client && intent.carried) {
@@ -755,9 +757,6 @@ export class CommitApplier {
       if (resend) return superseded();
     }
     const current = found.cur_version_id ? getVersion(this.sql, found.cur_version_id) : undefined;
-    if (source && current && versionMadeOver(current).includes(source)) {
-      return superseded();
-    }
     const bases = expandMadeOver(this.sql, found.node_id, ancestry?.madeOver ?? []);
     const alias = this.client ? current?.source_version_id : "";
     const viaAlias = current !== undefined && !!alias && !bases.includes(current.version_id) && bases.includes(alias);

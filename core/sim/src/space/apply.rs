@@ -615,11 +615,14 @@ impl<'a> Applier<'a> {
             return Ok(rejected("NOT_FILE"));
         }
         if resend
-            && found.cur_version_id.as_ref().is_some_and(|id| {
-                self.st.versions[id]
-                    .made_over
-                    .iter()
-                    .any(|id| id == source_version_id)
+            && !source_version_id.is_empty()
+            && found.cur_version_id.as_ref().is_some_and(|current| {
+                self.st.versions.values().any(|version| {
+                    version.node_id == node_id
+                        && ((version.version_id == source_version_id
+                            && &version.version_id != current)
+                            || version.made_over.iter().any(|id| id == source_version_id))
+                })
             })
         {
             return Ok(result(op_result::Code::Superseded, "", ""));

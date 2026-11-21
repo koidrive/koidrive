@@ -756,10 +756,12 @@ fn an_overwrite_after_a_keep_through_a_rewind_replaces_the_kept_write_on_every_d
         }
         let kept = live_node(world.space(), "a");
         world.phase(3, &[(writer, overwrite(0))]).unwrap();
-        if writer == 0 {
-            let replayed = resent(&world, 1, &kept);
-            assert_eq!(replayed, (op_result::Code::Superseded, 2));
-        }
+        let replayed = resent(&world, 1, &kept);
+        assert_eq!(
+            replayed,
+            (op_result::Code::Superseded, 2),
+            "writer {writer}"
+        );
         let root = world.space().space_id().to_owned();
         let current: Vec<i64> = (world.space().nodes().into_iter())
             .filter(|node| node.node_id != root && node.status == NodeStatus::Live as i32)
