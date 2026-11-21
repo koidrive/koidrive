@@ -2039,6 +2039,50 @@ fn a_halt_survives_a_reopen_with_its_commit() {
 }
 
 #[test]
+fn forgetting_the_sync_state_keeps_only_a_policy_halt() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.db");
+    let forgotten = |halted| {
+        let mut state = engine_state();
+        state.commits.halted = halted;
+        let mut store = Store::open(&path).unwrap();
+        store
+            .transaction(|tx| {
+                tx.set_engine_state(&state)?;
+                tx.forget_sync_state()?;
+                tx.engine_state()
+            })
+            .unwrap()
+    };
+    let none = forgotten(None);
+    let cause = RecoveryCause::rewind(4, 1_700_000_000_000);
+    let policy = Some(Halt::Policy { code: 7 });
+    for (halted, kept) in [
+        (Halt::ReadOnly, None),
+        (
+            Halt::Recovery {
+                cause,
+                policy: None,
+            },
+            None,
+        ),
+        (
+            Halt::Recovery {
+                cause,
+                policy: Some(7),
+            },
+            policy,
+        ),
+        (Halt::Policy { code: 7 }, policy),
+    ] {
+        let mut state = forgotten(Some(halted));
+        assert_eq!(state.commits.halted, kept, "{halted:?}");
+        state.commits.halted = None;
+        assert_eq!(state, none, "{halted:?}");
+    }
+}
+
+#[test]
 fn a_policy_halt_outlasts_a_restart_and_resends_nothing() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("state.db");

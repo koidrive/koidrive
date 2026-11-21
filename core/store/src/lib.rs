@@ -37,6 +37,7 @@ use std::time::Duration;
 
 pub use engine::{EffectCounter, EngineChanges, EngineState};
 use koidrive_engine::commit::Base;
+use koidrive_engine::state::CommitsChanges;
 use koidrive_engine::tree::NodeId;
 use koidrive_fs::{FileId, Minted, Mount, RootAt, RootTokens, VolumeId};
 use koidrive_proto::v1::{Content, FieldIntents, Intent, NodeState, VersionInfo};
@@ -1038,7 +1039,9 @@ impl Tx<'_> {
     }
 
     /// Empties the sync state to what a first link starts from, keeping the link with its root tokens, the volume
-    /// mounts, the chunk cache, the ID generator, the write stamp and the restores a person asked for.
+    /// mounts, the chunk cache, the ID generator, the write stamp and the restores a person asked for. A policy halt,
+    /// standing or interrupted by a recovery, stays as a standing policy halt, since only the person or a client
+    /// update lifts it; the commit it refused is forgotten.
     pub fn forget_sync_state(&self) -> Result<()> {
         const KEPT: [&str; 9] = [
             "migrations",
@@ -1052,6 +1055,7 @@ impl Tx<'_> {
             "write_stamp",
         ];
         let ids = self.id_generator()?;
+        let policy = self.kept_policy_halt()?;
         let tables: Vec<String> = self
             .0
             .prepare(
@@ -1068,6 +1072,16 @@ impl Tx<'_> {
         }
         if let Some(ids) = ids {
             self.set_id_generator(&ids)?;
+        }
+        if let Some(halt) = policy {
+            let commits = CommitsChanges {
+                halted: Some(Some(halt)),
+                ..CommitsChanges::default()
+            };
+            self.write_engine_changes(&EngineChanges {
+                commits,
+                ..EngineChanges::default()
+            })?;
         }
         Ok(())
     }
