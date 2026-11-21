@@ -157,7 +157,7 @@ export class MockCloudflare {
           if (run.path.replace(/@.*$/, "").endsWith("/" + match[1]) && attempt > (latest.get(id)?.attempt ?? 0)) latest.set(id, { attempt, run });
         }
         const page = Number(new URL(request.url ?? "/", this.url).searchParams.get("page") ?? "1");
-        const runs = page > 1 ? [] : [...latest].filter(([, { run }]) => run.status === "completed").map(([id, { attempt }]) => ({ id, run_attempt: attempt }));
+        const runs = page > 1 ? [] : [...latest].filter(([, { run }]) => run.status === "completed").map(([id, { attempt, run }]) => ({ id, run_attempt: attempt, updated_at: run.updated_at }));
         return send(200, { total_count: runs.length, workflow_runs: runs });
       }
       if ((match = /^\/github\/repos\/koidrive\/koidrive\/actions\/runs\/(\d+)\/attempts\/(\d+)$/.exec(path)) && method === "GET") {

@@ -231,9 +231,9 @@ describe("sweep", () => {
       "The sweep listed 1 Workers named koidrive-test-*: koidrive-test-7-1",
       "The sweep listed 2 R2 buckets named koidrive-test-*: koidrive-test-7-1, koidrive-test-8-2",
       "The sweep listed 3 Durable Object namespaces, 2 of them with no Worker name and 0 with no id or class",
-      "The sweep looked up the Worker and R2 bucket of 2 test run attempts that finished in the last 14 days and that the lists did not show: 0 exist",
-      "::warning::The sweep left alone the Durable Object namespace AccountDO no-script, because the API names no Worker for it",
-      "::warning::The sweep left alone the Durable Object namespace SpaceDO null-script, because the API names no Worker for it",
+      "The sweep looked up the Worker and R2 bucket of 2 test run attempts that finished in the last 14 days and that the lists did not show: 0 exist, 0 lookups failed",
+      "::warning::The sweep left alone the Durable Object namespace AccountDO (an id that is not 32 hex digits), because the API names no Worker for it",
+      "::warning::The sweep left alone the Durable Object namespace SpaceDO (an id that is not 32 hex digits), because the API names no Worker for it",
     ]);
     expect(mock.workers.size).toBe(0);
     expect(mock.namespaces.map((namespace) => namespace.id)).toEqual(["no-script", "null-script"]);
@@ -343,7 +343,7 @@ describe("sweep", () => {
     const bucket = mock.addBucket("koidrive-test-7-1", "");
     const { status, output } = await runTs("sweep");
     expect(status).toBe(0);
-    expect(output).toContain("::warning::The sweep left alone the R2 bucket koidrive-test-7-1, because the API gave no creation time for it");
+    expect(output).toContain("::warning::The sweep left alone the R2 bucket koidrive-test-7-1, because the API gave no valid creation time for it");
     expect(mock.buckets.get("koidrive-test-7-1")).toBe(bucket);
   });
 
@@ -354,7 +354,7 @@ describe("sweep", () => {
     const { status, output } = await runTs("sweep");
     expect(status).toBe(0);
     expect(mock.namespaces).toEqual(orphans);
-    expect(output).toContain("::warning::The sweep left alone the Durable Object namespace SpaceDO b of the deleted Worker koidrive-test-10-1");
+    expect(output).toContain("::warning::The sweep left alone the Durable Object namespace SpaceDO (an id that is not 32 hex digits) of the deleted Worker koidrive-test-10-1");
   });
 
   it("says what it listed when no earlier run left anything", async () => {
@@ -382,8 +382,8 @@ describe("sweep", () => {
     expect(status).toBe(0);
     expect(output).toContain("The sweep listed 0 R2 buckets named koidrive-test-*\n");
     expect(output).toContain("of 3 test run attempts that finished in the last 14 days and that the lists did not show: 2 exist");
-    expect(output).toContain("::warning::The sweep left alone the Worker koidrive-test-7-1, which exists although the Worker list left it out");
-    expect(output).toContain("::warning::The sweep left alone the R2 bucket koidrive-test-8-1, which exists although the bucket list left it out");
+    expect(output).toContain("::warning::The sweep left alone the Worker koidrive-test-7-1, which exists although its list left it out");
+    expect(output).toContain("::warning::The sweep left alone the R2 bucket koidrive-test-8-1, which exists although its list left it out");
     expect(mock.deletes()).toEqual([]);
   });
 
@@ -396,6 +396,50 @@ describe("sweep", () => {
     expect(output).toContain("::warning::The sweep could not check for leftovers the lists left out, listing the finished test runs: GitHub returned HTTP 500 for the finished deploy-test.yml runs");
     expect(output).not.toContain("::error::");
     expect(mock.buckets.has("koidrive-test-7-1")).toBe(false);
+  });
+
+  it("looks up a finished run's bucket even when its Worker lookup fails, and prints no provider error text", async () => {
+    mock.runAttempts.set("7/1", attempt(Date.now() - HOUR, Date.now() + HOUR));
+    mock.addWorker("koidrive-test-7-1");
+    mock.hiddenWorkers.add("koidrive-test-7-1");
+    mock.namespaces.length = 0;
+    mock.failingWorkerCall = "GET";
+    mock.addBucket("koidrive-test-7-1");
+    mock.hiddenBuckets.add("koidrive-test-7-1");
+    const { status, output } = await runTs("sweep");
+    expect(status).toBe(0);
+    expect(output).toContain("lists did not show: 1 exist, 1 lookups failed");
+    expect(output).toContain("::warning::The sweep left alone the R2 bucket koidrive-test-7-1, which exists although its list left it out");
+    expect(output).toContain("::warning::The sweep could not check for leftovers the lists left out, looking up the Worker koidrive-test-7-1: ");
+    expect(output).not.toContain("internal error");
+    expect(mock.deletes()).toEqual([]);
+  });
+
+  it("looks up the attempts of runs that finished in the last 14 days, whenever they were created", async () => {
+    mock.runAttempts.set("7/2", attempt(Date.now() - 21 * 24 * HOUR, Date.now() - HOUR));
+    mock.runAttempts.set("8/1", attempt(Date.now() - 16 * 24 * HOUR, Date.now() - 15 * 24 * HOUR));
+    for (const name of ["koidrive-test-7-2", "koidrive-test-8-1"]) {
+      mock.addBucket(name);
+      mock.hiddenBuckets.add(name);
+    }
+    const { status, output } = await runTs("sweep");
+    expect(status).toBe(0);
+    expect(output).toContain("of 2 test run attempts that finished in the last 14 days and that the lists did not show: 1 exist, 0 lookups failed");
+    expect(output).toContain("the R2 bucket koidrive-test-7-2, which exists");
+    expect(output).not.toContain("koidrive-test-8-1");
+  });
+
+  it("prints a namespace id only when it is 32 hex digits and a creation time only as a parsed instant", async () => {
+    const id = "0123456789abcdef0123456789abcdef";
+    mock.runAttempts.set("7/1", attempt(Date.now() - HOUR, Date.now() + HOUR));
+    mock.namespaces.push({ id, class: "SpaceDO" }, { id: "fixture-only-marker", class: "fixture-only-class" });
+    mock.addBucket("koidrive-test-7-1", "fixture-only-time");
+    const { status, output } = await runTs("sweep");
+    expect(status).toBe(0);
+    expect(output).toContain("namespace SpaceDO " + id + ", because the API names no Worker for it");
+    expect(output).toContain("namespace (a class that is not an identifier) (an id that is not 32 hex digits), because");
+    expect(output).toContain("the R2 bucket koidrive-test-7-1, because the API gave no valid creation time for it");
+    expect(output).not.toContain("fixture-only");
   });
 
   it("follows the bucket list's cursor past empty pages", async () => {
@@ -413,7 +457,7 @@ describe("sweep", () => {
     const { status, output } = await runTs("sweep");
     expect(status).toBe(0);
     expect(output).toContain("The sweep listed 2 Durable Object namespaces, 1 of them with no Worker name and 1 with no id or class");
-    expect(output).toContain("::warning::The sweep left alone the Durable Object namespace SpaceDO blank, because the API names no Worker for it");
+    expect(output).toContain("::warning::The sweep left alone the Durable Object namespace SpaceDO (an id that is not 32 hex digits), because the API names no Worker for it");
     expect(output).toContain("::warning::The sweep left alone 1 Durable Object namespaces the API listed with no id or class");
     expect(mock.namespaces).toHaveLength(2);
   });

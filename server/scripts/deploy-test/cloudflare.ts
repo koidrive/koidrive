@@ -22,9 +22,11 @@ export interface Namespace {
 
 export class ApiError extends Error {
   readonly status: number;
-  constructor(message: string, status: number) {
+  readonly summary: string;
+  constructor(message: string, status: number, summary = message) {
     super(message);
     this.status = status;
+    this.summary = summary;
   }
 }
 
@@ -93,7 +95,7 @@ async function send(account: Account, method: string, path: string, init: { body
       });
     } catch (error) {
       if (init.deadline && Date.now() >= init.deadline.atMs) throw new DeadlineError(init.deadline.what);
-      if (attempt >= ATTEMPTS) throw new ApiError(what + " failed: " + (error instanceof Error ? error.message : String(error)), 0);
+      if (attempt >= ATTEMPTS) throw new ApiError(what + " failed: " + (error instanceof Error ? error.message : String(error)), 0, what + " failed");
       await sleep(Math.max(0, Math.min(2000 * attempt, init.deadline === undefined ? Infinity : init.deadline.atMs - Date.now())));
       continue;
     }
@@ -114,7 +116,7 @@ async function send(account: Account, method: string, path: string, init: { body
       if (errors.length > 0) detail = errors.map((error) => error.code + " " + error.message).join("; ");
     } catch {}
     const hint = response.status === 403 ? " (the token lacks a permission this call needs; see docs/deploy-test.md)" : "";
-    throw new ApiError(what + " returned HTTP " + response.status + ": " + detail + hint, response.status);
+    throw new ApiError(what + " returned HTTP " + response.status + ": " + detail + hint, response.status, what + " returned HTTP " + response.status + hint);
   }
 }
 
