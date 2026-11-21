@@ -203,6 +203,41 @@ fn while_no_daemon_answers_the_state_is_what_koi_status_reads() {
 }
 
 #[test]
+fn an_unanswered_question_is_asked_again_under_its_own_id_each_time_the_session_starts() {
+    let asked = Arc::new(std::sync::Mutex::new(Vec::new()));
+    struct Asked(Arc<std::sync::Mutex<Vec<Vec<String>>>>);
+    impl SessionListener for Asked {
+        fn on_event(&self, event: SessionEvent) {
+            if let SessionEvent::Questions { questions } = event {
+                let ids = questions.into_iter().map(|question| question.id).collect();
+                self.0.lock().unwrap().push(ids);
+            }
+        }
+    }
+    let koi = Koi::with_listener(signed_in(false), Box::new(Asked(asked.clone())));
+    let mut status = ok(signed_in(false));
+    status["decisions"] = json!([{
+        "id": "q1",
+        "space_id": "s1",
+        "kind": "mass_delete",
+        "asked_at_ms": 7,
+        "counts": { "deletions": 1200, "affected_files": 1500, "space_files": 2000, "exceeded": ["deletions"] },
+        "items": [{ "node_id": "n1", "path": "Archive", "files": 1200 }],
+        "answers": [],
+    }]);
+    koi.answer("status", status);
+    koi.core.reload();
+    let before = asked.lock().unwrap().len();
+    for round in 1..=3 {
+        koi.core.start();
+        koi.core.stop();
+        let seen = asked.lock().unwrap().clone();
+        assert_eq!(seen.len(), before + round, "{seen:?}");
+        assert_eq!(seen.last().unwrap(), &["q1".to_owned()], "{seen:?}");
+    }
+}
+
+#[test]
 fn while_no_daemon_answers_koi_status_says_whether_an_update_is_out() {
     let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
     struct Updates(Arc<std::sync::Mutex<Vec<UpdateStatus>>>);

@@ -238,6 +238,76 @@ fn a_recovery_question_records_the_rewind_it_comes_from() {
 }
 
 #[test]
+fn a_synced_edit_a_rewind_takes_back_stays_in_the_local_trash_until_its_retention_ends() {
+    let mut remote = Remote::new();
+    let (site, mut a) = linked(&mut remote, "a");
+    a.create(&mut remote, &site.root.join("f.txt"), b"before");
+    let backup = remote.space.clone();
+    a.create(&mut remote, &site.root.join("f.txt"), b"after");
+    remote.space.rewind(&backup, NOW);
+
+    a.pull(&remote);
+    assert_eq!(a.run(&mut remote).first(), Some(&"reconnect"));
+    a.settle();
+    a.rest(&mut remote);
+    assert!(shown(&site).is_empty(), "{:?}", shown(&site));
+    assert_eq!(fs::read(site.root.join("f.txt")).unwrap(), b"before");
+    assert_eq!(trashed_bytes(&site.root), [b"after".to_vec()]);
+    reclaims_only_when_due(&site, &mut a, &mut remote);
+    assert_eq!(fs::read(site.root.join("f.txt")).unwrap(), b"before");
+}
+
+#[test]
+fn a_write_discarded_after_a_rewind_stays_in_the_local_trash_until_its_retention_ends() {
+    let mut remote = Remote::new();
+    let (site, mut a) = linked(&mut remote, "a");
+    a.create(&mut remote, &site.root.join("kept.txt"), b"kept");
+    let backup = remote.space.clone();
+    a.create(&mut remote, &site.root.join("rewound.txt"), b"rewound");
+    remote.space.rewind(&backup, NOW);
+    a.pull(&remote);
+    assert_eq!(a.run(&mut remote).first(), Some(&"reconnect"));
+    a.settle();
+    a.run(&mut remote);
+    drop(a);
+    answer(&site, Answer::Discard);
+
+    let mut a = restarted(&site, &mut remote);
+    a.rest(&mut remote);
+    assert!(shown(&site).is_empty(), "{:?}", shown(&site));
+    assert_eq!(names(&site.root), ["kept.txt"]);
+    assert_eq!(remote.names(), ["kept.txt"]);
+    assert_eq!(trashed_bytes(&site.root), [b"rewound".to_vec()]);
+    reclaims_only_when_due(&site, &mut a, &mut remote);
+    assert_eq!(names(&site.root), ["kept.txt"]);
+}
+
+fn trashed_bytes(root: &Path) -> Vec<Vec<u8>> {
+    let trash = root.join(koidrive_fs::PRIVATE_DIR).join("trash");
+    (files(&trash).into_iter())
+        .map(|(name, _)| fs::read(trash.join(name)).unwrap())
+        .collect()
+}
+
+fn reclaims_only_when_due(site: &Site, a: &mut Device, remote: &mut Remote) {
+    let (sent, served) = (a.sent.len(), remote.tree());
+    let now = SystemTime::now();
+    let early = a.folder.disk.reclaim_trash(now, u64::MAX).unwrap();
+    assert!(early.removed.is_empty(), "{early:?}");
+    assert!(early.recovered.is_empty(), "{early:?}");
+    assert_eq!(trashed_bytes(&site.root).len(), 1);
+    let due = now + koidrive_fs::TRASH_RETENTION + Duration::from_secs(60);
+    let reclaimed = a.folder.disk.reclaim_trash(due, u64::MAX).unwrap();
+    assert_eq!(reclaimed.removed.len(), 1, "{reclaimed:?}");
+    assert!(reclaimed.recovered.is_empty(), "{reclaimed:?}");
+    assert!(trashed_bytes(&site.root).is_empty());
+    a.rescan();
+    a.rest(remote);
+    assert_eq!((a.sent.len(), remote.tree()), (sent, served));
+    assert!(shown(site).is_empty());
+}
+
+#[test]
 fn a_device_back_after_another_devices_keep_is_asked_about_its_own_write() {
     for rewound_again in [false, true] {
         let mut remote = Remote::new();

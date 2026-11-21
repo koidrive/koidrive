@@ -725,6 +725,48 @@ fn a_keep_given_while_the_device_is_down_counts_after_the_restart() {
 }
 
 #[test]
+fn an_overwrite_after_a_keep_through_a_rewind_replaces_the_kept_write_on_every_device() {
+    for writer in [0, 1] {
+        let mut world = synced(2, &[vec![(0, Step::Backup), (0, file("a"))]]);
+        let keep = [
+            (0, Step::Rewind),
+            (0, Step::Connect),
+            (0, DELIVER),
+            (0, Step::Answer(0)),
+            (0, COMMIT),
+            (0, COMMIT),
+            (0, DELIVER),
+            (1, Step::Connect),
+            (1, DELIVER),
+            (1, Step::Answer(0)),
+        ];
+        world.run(1, &keep).unwrap();
+        world.phase(2, &[]).unwrap();
+        assert_eq!(live(&world), ["a"], "writer {writer}");
+        for (d, device) in world.devices.iter().enumerate() {
+            let questions = device.engine.commits.questions();
+            assert!(
+                questions.is_empty(),
+                "writer {writer}, device {d}: {questions:?}"
+            );
+        }
+        world.phase(3, &[(writer, overwrite(0))]).unwrap();
+        let root = world.space().space_id().to_owned();
+        let current: Vec<i64> = (world.space().nodes().into_iter())
+            .filter(|node| node.node_id != root && node.status == NodeStatus::Live as i32)
+            .filter_map(|node| node.current.and_then(|current| current.content))
+            .map(|content| tag(&content))
+            .collect();
+        assert_eq!(current, [2], "writer {writer}");
+        for (d, device) in world.devices.iter().enumerate() {
+            let disk = &device.disk;
+            assert!(disk.shows(2), "writer {writer}, device {d}");
+            assert!(!disk.shows(1), "writer {writer}, device {d}");
+        }
+    }
+}
+
+#[test]
 fn a_keep_the_engine_asks_again_after_a_refused_commit_no_longer_counts() {
     let mut world = synced(2, &[vec![(0, Step::Backup), (0, file("a"))]]);
     world

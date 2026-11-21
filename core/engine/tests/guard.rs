@@ -5,6 +5,7 @@ use koidrive_engine::commit::Commits;
 use koidrive_engine::effects::{BatchLimit, Effects};
 use koidrive_engine::guard::{WINDOW_MS, Window};
 use koidrive_engine::ids::{IdGen, uuid_v7};
+use koidrive_engine::ignore::{RuleFile, Source};
 use koidrive_engine::question::{Answer, Held, Limit, Question, QuestionKind, RecoveryGroup};
 use koidrive_engine::state::CommitsState;
 use koidrive_engine::tree::{Content, FileIdentity, Kind, LocalNode, NodeId, RemoteNode, Shape};
@@ -841,6 +842,108 @@ fn a_confirmed_folder_deleted_over_several_commits_takes_one_answer() {
         !next.is_empty() && next.iter().all(|node| node.starts_with("d/")),
         "{next:?}"
     );
+}
+
+#[test]
+fn a_folder_deleted_over_several_commits_keeps_every_ancestor_of_an_excluded_file_across_restarts()
+{
+    let mut trees = space(10, 15);
+    for (id, shape, ino) in [
+        ("d/e", shape("d", "e", Kind::Dir), 100),
+        ("d/e/f", shape("d/e", "f", Kind::Dir), 101),
+        ("d/e/f/x", shape("d/e/f", "x.log", Kind::File), 102),
+    ] {
+        put_back(&mut trees, id, shape.clone(), ino);
+        trees.set_synced(NodeId::from(id), Some(shape.clone()));
+        serve(&mut trees, id.to_owned(), shape);
+    }
+    let rules = || Some(RuleFile::parse(b"*.log\n"));
+    trees.set_rules(&[] as &[&str], Source::Koiignore, rules());
+    trees.rules_scanned();
+    trees.settle(&Default::default());
+    let state = CommitsState {
+        cap: Some(1),
+        ..Default::default()
+    };
+    let (mut commits, mut ids) = (Commits::from_state(state).unwrap(), IdGen::new(1));
+    remove(&mut trees, &["d"]);
+    build_at(&mut commits, &mut trees, &mut ids, NOW);
+    let question = asked(&commits).expect("the deletion is held").clone();
+    assert_eq!(window(&question).affected_files, 15);
+    assert!(commits.decide(&mut trees, &question.id, Answer::Delete));
+
+    let (mut sent, mut built) = (Vec::new(), Vec::new());
+    for (seq, now) in (8..).zip(NOW + 1..NOW + 40) {
+        let ops = build_at(&mut commits, &mut trees, &mut ids, now);
+        if ops.is_empty() {
+            break;
+        }
+        built.push(ops.len());
+        for node in deleted(&ops) {
+            let mut remote = trees.remote().get(&NodeId::from(&node)).unwrap().clone();
+            remote.trashed = true;
+            remote.meta_rev = seq;
+            trees.set_remote(NodeId::from(&node), remote);
+            sent.push(node);
+        }
+        trees.settle(commits.aliases());
+        acknowledge(&mut commits, &mut trees, seq);
+        commits = Commits::from_state(commits.state()).unwrap();
+        let mut reloaded = Trees::new(ROOT);
+        for (id, node) in trees.local().iter() {
+            reloaded.set_local(id.clone(), node.clone());
+        }
+        for (id, node) in trees.remote().iter() {
+            reloaded.set_remote(id.clone(), node.clone());
+        }
+        for (id, shape) in trees.synced().iter() {
+            reloaded.set_synced(id.clone(), Some(shape.clone()));
+        }
+        reloaded.restore(trees.state()).unwrap();
+        reloaded.set_rules(&[] as &[&str], Source::Koiignore, rules());
+        reloaded.rules_scanned();
+        reloaded.settle(commits.aliases());
+        trees = reloaded;
+        assert_eq!(asked(&commits), None, "the rest of d is still confirmed");
+    }
+    assert_eq!(built.first(), Some(&1), "{built:?}");
+    assert!(built.len() > 2, "{built:?}");
+    sent.sort();
+    let mut files: Vec<String> = (0..15).map(|i| format!("d/g{i}")).collect();
+    files.sort();
+    assert_eq!(sent, files);
+    for id in ["d", "d/e", "d/e/f", "d/e/f/x"] {
+        let id = NodeId::from(id);
+        assert!(trees.synced().live(&id).is_some(), "{id} stays in S");
+        assert!(
+            !trees.remote().get(&id).unwrap().trashed,
+            "{id} stays on the server"
+        );
+    }
+
+    trees.set_rules(&[] as &[&str], Source::Koiignore, None);
+    trees.settle(commits.aliases());
+    let mut effects = Effects::default();
+    let mut placed = Vec::new();
+    for ino in 200.. {
+        trees.settle(commits.aliases());
+        let Some(record) = (effects
+            .plan(&trees, None, &mut ids, NOW, BatchLimit::ONE)
+            .first())
+        .cloned() else {
+            break;
+        };
+        let identity = FileIdentity {
+            ino,
+            birth_ns: Some(0),
+            handle: None,
+        };
+        effects
+            .done(&mut trees, None, &record.effect_id, Some(identity))
+            .unwrap();
+        placed.push(record.node.to_string());
+    }
+    assert_eq!(placed, ["d", "d/e", "d/e/f", "d/e/f/x"]);
 }
 
 #[test]

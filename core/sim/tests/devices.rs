@@ -1556,6 +1556,34 @@ fn a_commit_replayed_before_its_result_is_applied_once() {
     assert_eq!(world.devices[0].disk.entries().len(), 1);
 }
 
+#[test]
+fn a_commit_whose_result_is_lost_before_the_log_is_truncated_is_applied_once() {
+    let mut world = world(2);
+    let sent = [
+        (0, Step::Connect),
+        (0, file("a")),
+        (0, SCAN),
+        (0, COMMIT),
+        (0, COMMIT),
+        (0, Step::Drop),
+    ];
+    world.run(0, &sent).unwrap();
+    let head = world.space().head_seq();
+    world.truncate_log();
+    world
+        .phase(1, &[(0, Step::Connect), (0, DELIVER), (0, EFFECT)])
+        .unwrap();
+    assert!(world.seen.contains_key("resume finds the log truncated"));
+    assert_eq!(world.seen["result arrives after its records"], 1);
+    assert_eq!(world.seen["commit answered from the stored result"], 1);
+    assert_eq!(world.seen["commit applied"], 1);
+    assert!(world.devices[0].engine.commits.in_flight().is_none());
+    assert_eq!(world.space().head_seq(), head);
+    for (d, device) in world.devices.iter().enumerate() {
+        assert_eq!(device.disk.entries().len(), 1, "device {d}");
+    }
+}
+
 /// Both devices create the folder "a" with a file in it. Device 1's folder is merged into device
 /// 0's, the answer is lost, and device 1 reads its own commit in the backlog first.
 #[test]
