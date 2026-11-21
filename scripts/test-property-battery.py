@@ -761,6 +761,13 @@ cases = ["{1:064}"]
             "ce161a1b8ce4a7560899e13c47519fba82412fb121ebbd22ab84f78ea9b1569e",
             "ef97f43f5cf18fb25ed120d1f943de522be8f952ae67632ef6dd9bc5ea32ed9c",
             "fc5f70b12a1d01ca54090cc44ba5138dec575e8be3497d566cbb4da09c3b1094",
+            "040b7515aafd314ddd42d7e6b01aac8d0a3907ecfb5faae102505613de0c2a86",
+            "0b17b929dad9f19a828136a971a7961130b7623ec9e2821bde1fdc82b6aec1b0",
+            "1e9a3709062bd2b5db8d83e15c071b0d1c876fb80d9c16a2ac7bb2a86de8d139",
+            "2dbefa766afba23d90bfc820f11e0d662b7fdb178fe4378db6c8c76b37a74b4a",
+            "b868849c0fd88b02febc1666b28d9966a80b198fb48080b99ede756acc9be06a",
+            "ee4ca10c6d656e6309941d458b11baec738d751962808db801b26ab825febf19",
+            "f94a32856b7c6519a7edef64041294ee65f2c3e74cb17cd65a66bddc16be5c71",
         ]
         f_cases = [
             "1b41de2a79416ca48096fd1d788ab1492ea737dc6491298008672eb2c00d6bab",

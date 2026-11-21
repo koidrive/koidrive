@@ -1,0 +1,10 @@
+class = "A"
+issue = "GUN-767"
+tests = ["devices_on_coarse_volumes_converge_across_restores_and_rewinds"]
+message = '''not recorded: devices::\S+ \S+ DeleteUndone the delete of node <id> on device <n> came undone, and no change its user did not see brought the node back'''
+examples = [
+  "not recorded: devices::devices_on_coarse_volumes_converge_across_restores_and_rewinds\tcc-6496439bc2a86a0c9f45902c19613c6a454b150645104a80529d9717d8d73890\tDeleteUndone\tthe delete of node 01a1c2c0-39a0-7cb2-989b-810659c5a8bc on device 1 came undone, and no change its user did not see brought the node back",
+]
+cases = [
+  "6496439bc2a86a0c9f45902c19613c6a454b150645104a80529d9717d8d73890",
+]

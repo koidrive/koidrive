@@ -1,0 +1,10 @@
+class = "K"
+issue = "GUN-1533"
+tests = ["a_node_another_device_moves_onto_a_folder_the_rules_leave_out_here_settles"]
+message = '''\{"<id>": Move \{ from: Parked\("<id>"\), identity: FileIdentity \{ ino: <n>, birth_ns: None, handle: None \}, to: At \{ base: Root, dirs: \[\], name: "a" \} \}\} at \S+\.rs:<line>\.'''
+examples = [
+  "{\"01a1c2c0-39a0-7001-b241-9db23951df99\": Move { from: Parked(\"01a1c2c0-39a0-7001-b241-9db23951df99\"), identity: FileIdentity { ino: 1, birth_ns: None, handle: None }, to: At { base: Root, dirs: [], name: \"a\" } }} at core/sim/tests/engine_sync/common.rs:3277.",
+]
+cases = [
+  "7d5cda85da2b0b16b1104fe791fc62c5fba09aeb55376c9ec0b874b2c7430a9f",
+]
