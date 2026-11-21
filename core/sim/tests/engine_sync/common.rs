@@ -534,14 +534,6 @@ fn ruling() -> impl Strategy<Value = Ruling> {
 
 /// The rules as the disk and the configuration hold them. They are not part of the stored
 /// state, so the device reads them again after every restart.
-#[derive(Clone, Debug)]
-struct Placement {
-    by_other: bool,
-    order: u64,
-    from: Vec<NodeId>,
-    to: Vec<NodeId>,
-}
-
 fn ancestors(trees: &Trees, parent: Option<NodeId>) -> Vec<NodeId> {
     let mut chain = Vec::new();
     let mut above = parent;
@@ -596,7 +588,7 @@ struct Device {
     acted: BTreeSet<NodeId>,
     acked: BTreeSet<NodeId>,
     removed_from: BTreeMap<NodeId, NodeId>,
-    placed: BTreeMap<NodeId, Vec<Placement>>,
+    stays: BTreeMap<NodeId, BTreeMap<NodeId, (bool, u64)>>,
     placements: u64,
     on_server_when_taken_along: BTreeMap<NodeId, BTreeMap<NodeId, NodeId>>,
     kept_back: BTreeSet<NodeId>,
@@ -652,13 +644,10 @@ impl Device {
     ) {
         let folders: Vec<&NodeId> = folders.into_iter().collect();
         let mut on_server = self.on_server();
-        for (id, _) in (self.placed.iter()).filter(|(_, history)| {
-            (history.iter().rev())
-                .take_while(|placement| placement.order > *answered_at)
-                .find(|placement| {
-                    placement.by_other || !folders.iter().any(|f| placement.from.contains(f))
-                })
-                .is_some_and(|placement| placement.by_other)
+        for (id, _) in (self.stays.iter()).filter(|(_, stays)| {
+            (folders.iter()).any(|f| {
+                (stays.get(*f)).is_some_and(|(by_other, at)| *by_other && at > answered_at)
+            })
         }) {
             match at_answer.get(id) {
                 Some(parent) => on_server.insert(id.clone(), parent.clone()),
@@ -679,7 +668,7 @@ impl Device {
             acted: BTreeSet::new(),
             acked: BTreeSet::new(),
             removed_from: BTreeMap::new(),
-            placed: BTreeMap::new(),
+            stays: BTreeMap::new(),
             placements: 0,
             on_server_when_taken_along: BTreeMap::new(),
             kept_back: BTreeSet::new(),
@@ -731,13 +720,29 @@ impl Device {
             let users_origin = (self.relocated.get(&node))
                 .filter(|moved| remote.same_position(&moved.to))
                 .map(|moved| moved.from.parent.clone());
-            self.placements += 1;
-            (self.placed.entry(node.clone()).or_default()).push(Placement {
-                by_other: !answered && users_origin.is_none(),
-                order: self.placements,
-                from: users_origin.map_or(from, |origin| ancestors(&self.trees, Some(origin))),
-                to: ancestors(&self.trees, Some(remote.parent.clone())),
-            });
+            let by_other = !answered && users_origin.is_none();
+            let from = users_origin.map_or(from, |origin| ancestors(&self.trees, Some(origin)));
+            let entered: Vec<NodeId> = ancestors(&self.trees, Some(remote.parent.clone()))
+                .into_iter()
+                .filter(|folder| !from.contains(folder))
+                .collect();
+            if !entered.is_empty() {
+                self.placements += 1;
+                let moved_in: Vec<NodeId> = (self.trees.remote().iter())
+                    .filter(|(id, remote)| {
+                        **id == node
+                            || ancestors(&self.trees, Some(remote.shape.parent.clone()))
+                                .contains(&node)
+                    })
+                    .map(|(id, _)| id.clone())
+                    .collect();
+                for id in moved_in {
+                    let stays = self.stays.entry(id).or_default();
+                    for folder in &entered {
+                        stays.insert(folder.clone(), (by_other, self.placements));
+                    }
+                }
+            }
             let Some(moved) = self.relocated.get_mut(&node) else {
                 continue;
             };
@@ -2097,20 +2102,10 @@ fn acted_below(
             .or_else(|| trees.remote().live(at).map(|remote| remote.parent.clone()))
     };
     let arrived = |entry: &NodeId| {
-        if !reaches(entry, &agreed) {
-            return false;
-        }
-        let mut chain = vec![entry.to_owned()];
-        while let Some(parent) =
-            agreed(chain.last().unwrap()).filter(|at| at != id && !chain.contains(at))
-        {
-            chain.push(parent);
-        }
-        (chain.iter())
-            .flat_map(|at| device.placed.get(at).into_iter().flatten())
-            .filter(|placement| placement.to.contains(id) && !placement.from.contains(id))
-            .max_by_key(|placement| placement.order)
-            .is_some_and(|placement| placement.by_other)
+        reaches(entry, &agreed)
+            && (device.stays.get(entry))
+                .and_then(|stays| stays.get(id))
+                .is_some_and(|(by_other, _)| *by_other)
     };
     let as_agreed = |entry: &NodeId| {
         let Some(local) = trees.local().get(entry) else {

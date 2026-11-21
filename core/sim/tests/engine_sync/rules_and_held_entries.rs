@@ -765,12 +765,7 @@ fn renaming_an_entry_another_device_brought_into_a_taken_along_folder_changes_th
         if brought {
             device.placements += 1;
             let order = device.placements;
-            (device.placed.entry(g.clone()).or_default()).push(Placement {
-                by_other: true,
-                order,
-                from: Vec::new(),
-                to: vec!["s".into()],
-            });
+            (device.stays.entry(g.clone()).or_default()).insert("s".into(), (true, order));
         }
         device.acted.insert(g);
         assert_eq!(
@@ -1737,11 +1732,11 @@ fn a_batch_that_moves_a_folder_into_its_former_child_records_the_arrival_once_it
     device.receive(&seed, false);
     device.note_taken_along([&b.as_str().into()]);
     device.receive(&changes, false);
-    let placed = device.placed.get(&a.as_str().into());
+    let stays = device.stays.get(&a.as_str().into());
     assert!(
-        placed
-            .and_then(|history| history.last())
-            .is_some_and(|last| last.by_other)
+        stays
+            .and_then(|stays| stays.get(&b.as_str().into()))
+            .is_some_and(|(by_other, _)| *by_other)
     );
 }
 
@@ -2166,4 +2161,37 @@ fn renaming_an_entry_the_user_moved_in_that_another_device_moved_elsewhere_in_th
     device.receive(&[a_dir_record("e", "a", 3)], true);
     renames_after_sync(&mut device, "e", "a");
     assert!(acted_below(&device, &s, &kept, &discarded));
+}
+
+#[test]
+fn renaming_an_entry_that_came_with_an_arrival_after_this_device_moves_it_within_the_folder_changes_that_entry_alone()
+ {
+    let (mut device, kept, discarded) = a_file_in_a_taken_along_server_folder();
+    let s: NodeId = "s".into();
+    place_dir(&mut device, "y", Some(("root", "y")), Some(("root", "y")));
+    place_dir(&mut device, "c", Some(("y", "c")), Some(("y", "c")));
+    place_dir(&mut device, "m", Some(("s", "m")), Some(("s", "m")));
+    device.note_taken_along([&s]);
+    place_dir(&mut device, "y", Some(("s", "y")), None);
+    device.receive(&[a_dir_record("y", "s", 2)], false);
+    place_dir(&mut device, "c", Some(("m", "c")), None);
+    device.receive(&[a_dir_record("c", "m", 2)], true);
+    renames_after_sync(&mut device, "c", "m");
+    assert!(!acted_below(&device, &s, &kept, &discarded));
+}
+
+#[test]
+fn renaming_an_arrival_another_device_moves_into_a_folder_this_device_brought_in_changes_that_entry_alone()
+ {
+    let (mut device, kept, discarded) = a_file_in_a_taken_along_server_folder();
+    let s: NodeId = "s".into();
+    place_dir(&mut device, "y", Some(("root", "y")), Some(("root", "y")));
+    device.note_taken_along([&s]);
+    device.receive(&[a_dir_record("a", "s", 1)], false);
+    place_dir(&mut device, "y", Some(("s", "y")), None);
+    device.receive(&[a_dir_record("y", "s", 2)], true);
+    place_dir(&mut device, "a", Some(("y", "a")), None);
+    device.receive(&[a_dir_record("a", "y", 2)], false);
+    renames_after_sync(&mut device, "a", "y");
+    assert!(!acted_below(&device, &s, &kept, &discarded));
 }
