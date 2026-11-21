@@ -1,4 +1,4 @@
-87
+113
 # The tests protect what a first-link or recovery Discard of a rules file lets in: every entry its rules
 # excluded is held and asked about before anything uploads. No earlier test discards a rules file
 # that still excludes entries, so none of these paths was reached before.
@@ -7,6 +7,9 @@
 # the record has to wait across commits, and each mode blocks the write at a different step.
 # The restart test's upgrade variant opens the store the previous release leaves between the answer and
 # the rules leaving. The alpha6 upgrade case opens a store with no discard pending, so it can't reach this.
+# The failing-write test's upgraded mode is the only case where that store's rules leave the matcher
+# before the file leaves the local tree. The restart test's gone variant restarts after the rules file
+# left the disk but before the trash outcome was stored, the one crash point no other step reaches.
 # The lifecycle test ends a record by deleting or renaming the folder, restoring or editing the rules
 # file, and asking the question again. Each end path is a separate branch in the judge.
 # The unread-folder test keeps the record while a folder below it can't be read, and the recovery test
