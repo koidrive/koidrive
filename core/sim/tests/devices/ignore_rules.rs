@@ -2618,7 +2618,7 @@ fn a_restore_that_loses_the_move_of_a_displaced_file_leaves_nothing_to_send() {
 }
 
 #[test]
-fn an_edit_moved_out_of_a_displaced_folder_follows_the_server_after_the_server_loses_it() {
+fn an_edit_moved_out_of_a_displaced_folder_reaches_the_server_after_the_server_loses_it() {
     for (works, lost) in [
         (5, Step::Rewind),
         (6, Step::Rewind),
@@ -2660,15 +2660,187 @@ fn an_edit_moved_out_of_a_displaced_folder_follows_the_server_after_the_server_l
                 "works {works}: device 0 never gets device 1's {content:?}"
             );
         }
-        if lost == Step::Rewind {
-            assert!(
-                world.devices.iter().all(|device| !device.disk.shows(2)),
-                "works {works}"
-            );
-            assert!(world.devices[1].disk.binned(2), "works {works}");
-        } else {
-            assert_eq!(first, second, "works {works}: restored files differ");
-            assert!(world.devices[0].disk.shows(2), "works {works}");
+        assert_eq!(first, second, "works {works}: files differ");
+        assert!(world.devices[0].disk.shows(2), "works {works}");
+    }
+}
+
+fn moved_out_of_a_displaced_folder(
+    folder_moved: bool,
+    edit_after: bool,
+    restart: bool,
+    exclude: Vec<&'static str>,
+) -> World {
+    let (made, moved, edited) = match folder_moved {
+        true => (
+            vec![
+                (1, folder("a")),
+                (1, user(0, 0, 1, "\u{c9}")),
+                (1, user(1, 0, 2, "b")),
+                (1, folder("c.txt")),
+            ],
+            rename(0, 3, "a"),
+            2,
+        ),
+        false => (
+            vec![
+                (1, folder("a")),
+                (1, user(1, 0, 1, "b")),
+                (1, folder("c.txt")),
+            ],
+            rename(0, 2, "a"),
+            1,
+        ),
+    };
+    let displaced = vec![
+        (1, moved),
+        (1, SCAN),
+        (0, rename(0, 0, "\u{df}")),
+        (0, folder("a")),
+    ];
+    let mut world = converge_excluding(&[vec![], exclude], &[made, displaced]).unwrap();
+    let mut out = vec![(0, Step::Backup), (1, rename(1, 0, "ss"))];
+    if !edit_after {
+        out.push((1, overwrite(edited)));
+    }
+    out.extend(std::iter::repeat_n((1, Step::Work(0)), 5));
+    out.push((0, Step::Rewind));
+    if edit_after {
+        out.push((1, overwrite(edited)));
+    }
+    if restart {
+        out.push((1, Step::Crash));
+    }
+    world.run(2, &out).unwrap();
+    for _ in 0..30 {
+        if !changed_here(&world).is_empty() {
+            break;
         }
+        world
+            .run(2, &[(1, Step::Connect), (1, Step::Work(0))])
+            .unwrap();
+    }
+    world
+}
+
+fn changed_here(world: &World) -> Vec<usize> {
+    (world.devices[1].engine.commits.questions().iter())
+        .filter(|question| {
+            question.answer.is_none()
+                && matches!(
+                    question.kind,
+                    QuestionKind::Recovery {
+                        group: koidrive_engine::question::RecoveryGroup::ChangedOnThisDevice,
+                        ..
+                    }
+                )
+        })
+        .flat_map(|question| question.held.values().map(|item| item.members.len()))
+        .collect()
+}
+
+fn answered(mut world: World, answer: usize) -> World {
+    world.run(3, &[(1, Step::Answer(answer))]).unwrap();
+    world.phase(3, &[]).unwrap();
+    world
+}
+
+#[test]
+fn a_node_moved_out_of_a_displaced_folder_is_asked_about_after_a_rewind_and_published() {
+    for folder_moved in [false, true] {
+        for edit_after in [false, true] {
+            for restart in [false, true] {
+                let case =
+                    format!("folder {folder_moved}, edit after {edit_after}, restart {restart}");
+                let world = moved_out_of_a_displaced_folder(
+                    folder_moved,
+                    edit_after,
+                    restart,
+                    vec!["*.txt"],
+                );
+                let members = if folder_moved { 2 } else { 1 };
+                assert_eq!(changed_here(&world), vec![members], "{case}");
+                let world = answered(world, 0);
+                assert!(
+                    world.devices.iter().all(|device| device.disk.shows(2)),
+                    "{case}"
+                );
+                let moved = if folder_moved { "\u{c9}" } else { "b" };
+                assert_eq!(live_node_at(&world, &["\u{df}", moved]), None, "{case}");
+            }
+        }
+    }
+}
+
+#[test]
+fn a_node_moved_out_of_a_displaced_folder_goes_to_the_local_trash_when_discarded_after_a_rewind() {
+    for folder_moved in [false, true] {
+        let world = moved_out_of_a_displaced_folder(folder_moved, true, false, vec!["*.txt"]);
+        let world = answered(world, 1);
+        assert!(world.devices[1].disk.binned(2), "folder {folder_moved}");
+        assert!(
+            world.devices.iter().all(|device| !device.disk.shows(2)),
+            "folder {folder_moved}"
+        );
+    }
+}
+
+#[test]
+fn a_node_moved_out_of_an_included_folder_follows_the_server_after_a_rewind() {
+    let made = vec![(1, folder("a")), (1, user(1, 0, 1, "b"))];
+    let mut world = converge_excluding(&[vec![], vec!["*.txt"]], &[made]).unwrap();
+    let mut out = vec![(0, Step::Backup), (1, rename(1, 0, "ss"))];
+    out.extend(std::iter::repeat_n((1, Step::Work(0)), 5));
+    out.extend([(0, Step::Rewind), (1, Step::Connect)]);
+    out.extend(std::iter::repeat_n((1, Step::Work(0)), 12));
+    world.run(1, &out).unwrap();
+    assert_eq!(changed_here(&world), Vec::<usize>::new());
+    world.phase(1, &[]).unwrap();
+    assert!(live_node_at(&world, &["a", "b"]).is_some());
+    let on_disk = |path: &[&str]| {
+        (world.devices[1].disk.entries().keys()).any(|ino| {
+            world.devices[1]
+                .disk
+                .path(*ino)
+                .is_some_and(|at| at == path)
+        })
+    };
+    assert!(on_disk(&["a", "b"]));
+}
+
+#[test]
+fn a_subfolder_moved_out_of_a_displaced_folder_reaches_the_other_device_after_a_rewind() {
+    for edit_after in [false, true] {
+        let mut out = vec![(0, Step::Backup), (1, rename(1, 0, "ss"))];
+        if !edit_after {
+            out.push((1, overwrite(2)));
+        }
+        out.extend(std::iter::repeat_n((1, Step::Work(0)), 5));
+        out.push((0, Step::Rewind));
+        if edit_after {
+            out.push((1, overwrite(2)));
+        }
+        let phases = [
+            vec![
+                (1, folder("a")),
+                (1, user(0, 0, 1, "\u{c9}")),
+                (1, user(1, 0, 2, "b")),
+                (1, folder("c.txt")),
+            ],
+            vec![
+                (1, rename(0, 3, "a")),
+                (1, SCAN),
+                (0, rename(0, 0, "\u{df}")),
+                (0, folder("a")),
+            ],
+            out,
+            vec![],
+        ];
+        let world = converge_excluding(&[vec![], vec!["*.txt"]], &phases).unwrap();
+        assert_eq!(
+            content_on(&world, 1, "b"),
+            content_on(&world, 0, "b"),
+            "edit_after={edit_after}"
+        );
     }
 }

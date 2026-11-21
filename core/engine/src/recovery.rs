@@ -49,6 +49,9 @@ pub(crate) fn group(
     };
     let remote = trees.remote().get(id);
     let live = trees.remote().live(id);
+    if below_a_move_out_of_an_excluded_copy(trees, id) {
+        return Some(RecoveryGroup::ChangedOnThisDevice);
+    }
     if (live.is_some() || synced.is_some()) && agreed(trees, id).is_some() {
         return None;
     }
@@ -110,6 +113,57 @@ pub(crate) fn agreed<'a>(trees: &'a Trees, id: &NodeId) -> Option<Option<&'a Sha
     } else {
         None
     }
+}
+
+fn below_a_move_out_of_an_excluded_copy(trees: &Trees, id: &NodeId) -> bool {
+    let mut current = id;
+    for _ in 0..trees.local().len() {
+        if moved_out_of_an_excluded_copy(trees, current) {
+            return true;
+        }
+        match trees.local().get(current) {
+            Some(node) if node.shape.parent != trees.local().root => current = &node.shape.parent,
+            _ => return false,
+        }
+    }
+    false
+}
+
+fn moved_out_of_an_excluded_copy(trees: &Trees, id: &NodeId) -> bool {
+    if trees.local().get(id).is_none() || excluded_where_it_sits(trees, id) != Some(false) {
+        return false;
+    }
+    let mut current = id;
+    for _ in 0..trees.remote().len() {
+        match trees.remote().live(current) {
+            Some(remote) if remote.parent != trees.local().root => current = &remote.parent,
+            _ => return false,
+        }
+        if excluded_where_it_sits(trees, current) == Some(true) {
+            return true;
+        }
+    }
+    false
+}
+
+fn excluded_where_it_sits(trees: &Trees, id: &NodeId) -> Option<bool> {
+    let kind = trees.local_entry(id)?.shape.kind;
+    if trees.recorded_local(id) {
+        return Some(true);
+    }
+    let mut names = Vec::new();
+    let mut current = id;
+    while *current != trees.local().root {
+        let node = trees.local_entry(current).filter(|node| !node.parked)?;
+        names.push(node.shape.name.as_str());
+        current = &node.shape.parent;
+        if names.len() > trees.local().len() + trees.displaced_local().len() {
+            return None;
+        }
+    }
+    names.reverse();
+    let folder_ignored = (1..names.len()).any(|end| trees.ignores(&names[..end], Kind::Dir));
+    Some(folder_ignored || trees.ignores(&names, kind))
 }
 
 fn written_again(local: Option<&Shape>, synced: Option<&Shape>) -> bool {
