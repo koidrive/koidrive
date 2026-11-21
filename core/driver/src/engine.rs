@@ -1284,6 +1284,16 @@ impl Engine {
                 } => {
                     let identity = file_identity(*id);
                     let mark = marked_node.as_deref().map(NodeId::from);
+                    let refused_folder = match &resolved[at] {
+                        Err(held)
+                            if !moving.contains(held)
+                                && (self.trees.local().get(held))
+                                    .is_some_and(|node| node.shape.kind == Kind::Dir) =>
+                        {
+                            Some(held.clone())
+                        }
+                        _ => None,
+                    };
                     let bound = match std::mem::replace(&mut resolved[at], Ok(None)) {
                         Ok(bound) => bound,
                         Err(held) => self.refused(
@@ -1303,28 +1313,48 @@ impl Engine {
                         EntryKind::File => Kind::File,
                         EntryKind::Dir => Kind::Dir,
                     };
-                    if names(to).is_some_and(|to| self.trees.ignores(&to, node_kind)) {
-                        let Some(node) = &before else { continue };
-                        if to
-                            .parent()
-                            .and_then(|dir| local_at(&self.trees, dir))
-                            .is_none()
-                        {
-                            self.trees.ignore_local(node);
-                            continue;
+                    'place: {
+                        if names(to).is_some_and(|to| self.trees.ignores(&to, node_kind)) {
+                            let Some(node) = &before else { break 'place };
+                            if to
+                                .parent()
+                                .and_then(|dir| local_at(&self.trees, dir))
+                                .is_none()
+                            {
+                                self.trees.ignore_local(node);
+                                break 'place;
+                            }
                         }
+                        let content = before
+                            .as_ref()
+                            .and_then(|id| self.trees.local().get(id))
+                            .and_then(LocalNode::content);
+                        self.place(
+                            bound,
+                            to,
+                            *kind,
+                            identity,
+                            content,
+                            mark.as_ref(),
+                            now_ms,
+                            &moving,
+                            &mut touched,
+                            &mut gone,
+                        );
                     }
-                    let content = before
-                        .as_ref()
-                        .and_then(|id| self.trees.local().get(id))
-                        .and_then(LocalNode::content);
-                    self.place(
-                        bound,
-                        to,
-                        *kind,
-                        identity,
-                        content,
-                        mark.as_ref(),
+                    let Some(held) = refused_folder else { continue };
+                    if let Some(folder) = local_at(&self.trees, to).filter(|folder| {
+                        *folder != held
+                            && (self.trees.local().get(folder))
+                                .is_some_and(|node| node.shape.kind == Kind::Dir)
+                    }) {
+                        self.adopt(&held, &folder, &moving, &mut touched);
+                    }
+                    self.lose(
+                        &held,
+                        from,
+                        true,
+                        false,
                         now_ms,
                         &moving,
                         &mut touched,
@@ -1654,10 +1684,35 @@ impl Engine {
         if let Some((moved, true)) = moved {
             return bind(held, Binding::TempMove(moved), [mark]);
         }
-        if !moving.contains(&held) {
+        if !moving.contains(&held) && kind == EntryKind::File {
             self.lose(&held, path, outside, false, now_ms, moving, touched, gone);
         }
         bind(moved?.0, Binding::Gone, [mark])
+    }
+
+    fn adopt(
+        &mut self,
+        from: &NodeId,
+        folder: &NodeId,
+        moving: &BTreeSet<NodeId>,
+        touched: &mut BTreeSet<NodeId>,
+    ) {
+        let children: Vec<NodeId> = (self.trees.local_children(from))
+            .filter(|child| !moving.contains(*child))
+            .cloned()
+            .collect();
+        for child in children {
+            let Some(node) = self.trees.local().get(&child).cloned() else {
+                continue;
+            };
+            let shape = Shape {
+                parent: folder.clone(),
+                ..node.shape
+            };
+            self.trees
+                .set_local_changed(child.clone(), LocalNode { shape, ..node });
+            touched.insert(child);
+        }
     }
 
     fn temp_born(&self, id: &NodeId) -> bool {
@@ -1962,9 +2017,9 @@ impl Engine {
         let previous = existing.map(|old| (old.shape.parent.clone(), old.shape.name.clone()));
         let unchanged = existing.is_some_and(|old| {
             !old.parked
-                && given
-                    .as_ref()
-                    .is_some_and(|id| !self.trees.ignored_local().contains(id))
+                && given.as_ref().is_some_and(|id| {
+                    !self.trees.ignored_local().contains(id) && may_become(mark, id)
+                })
                 && old.identity == identity
                 && old.shape.parent == shape.parent
                 && old.shape.name == shape.name
@@ -2019,7 +2074,12 @@ impl Engine {
                     }
                     bound = held;
                 }
-                Some(None) => self.lose(&holder, path, false, false, now_ms, moving, touched, gone),
+                Some(None) => {
+                    if kind == Kind::Dir {
+                        self.adopt(&holder, bound.id(), moving, touched);
+                    }
+                    self.lose(&holder, path, false, false, now_ms, moving, touched, gone)
+                }
                 None => self.remove(&holder, moving, false, false, touched, gone),
             }
         }
@@ -4630,6 +4690,101 @@ mod tests {
             let (held, identity, _) = holding(&engine, "docs/report.txt").unwrap();
             assert_eq!((held, identity), (draft, file_identity(ino(4))), "{rename}");
             assert!(engine.trees.local().get(&report).is_none(), "{rename}");
+        }
+    }
+
+    #[test]
+    fn a_folder_renamed_under_another_folders_mark_takes_a_new_node_and_keeps_its_contents() {
+        let (_dir, mut engine) = mapper();
+        let (report, draft) = saved_report(&mut engine);
+        let folder = |path: &str, id: u64| Observed::Created {
+            path: path.into(),
+            kind: EntryKind::Dir,
+            id: ino(id),
+            linked: false,
+            content: None,
+            marked_node: None,
+        };
+        engine.observe(
+            &[
+                folder("other", 7),
+                folder("docs/sub", 8),
+                created("docs/sub/deep.txt", ino(10), false, 3),
+            ],
+            100,
+        );
+        synced_everywhere(&mut engine);
+        let held = |engine: &Engine, path| holding(engine, path).unwrap().0;
+        let (docs, other) = (held(&engine, "docs"), held(&engine, "other"));
+        let (sub, deep) = (
+            held(&engine, "docs/sub"),
+            held(&engine, "docs/sub/deep.txt"),
+        );
+        let moved = Observed::Renamed {
+            from: "docs".into(),
+            to: "archive".into(),
+            kind: EntryKind::Dir,
+            id: ino(9),
+            linked: false,
+            marked_node: Some(other.to_string()),
+        };
+        engine.observe(&[moved], 1_000);
+        let archive = held(&engine, "archive");
+        assert!(![docs.clone(), other.clone()].contains(&archive));
+        assert!(engine.trees.local().get(&docs).is_none());
+        assert_eq!(held(&engine, "other"), other);
+        let rescan = [
+            marked("archive/report.txt", 2, &report.to_string()),
+            marked("archive/draft.txt", 4, &draft.to_string()),
+            marked("archive/sub/deep.txt", 10, &deep.to_string()),
+        ];
+        engine.observe(&rescan, 1_100);
+        for (path, node) in [
+            ("archive/report.txt", &report),
+            ("archive/draft.txt", &draft),
+            ("archive/sub", &sub),
+            ("archive/sub/deep.txt", &deep),
+        ] {
+            assert_eq!(held(&engine, path), *node, "{path}");
+        }
+        assert_eq!(engine.trees.check(), Ok(()));
+    }
+
+    #[test]
+    fn a_folder_arriving_under_another_folders_mark_over_a_kept_folder_keeps_its_contents() {
+        let (_dir, mut engine) = mapper();
+        let (report, draft) = saved_report(&mut engine);
+        let folder = |path: &str, id: u64, mark: Option<&NodeId>| Observed::Created {
+            path: path.into(),
+            kind: EntryKind::Dir,
+            id: ino(id),
+            linked: false,
+            content: None,
+            marked_node: mark.map(ToString::to_string),
+        };
+        engine.observe(&[folder("other", 7, None)], 100);
+        synced_everywhere(&mut engine);
+        let held = |engine: &Engine, path| holding(engine, path).unwrap().0;
+        let (docs, other) = (held(&engine, "docs"), held(&engine, "other"));
+        engine.trees.ignore_local(&docs);
+        engine.observe(&[folder("docs", 9, Some(&other))], 1_000);
+        let arrived = held(&engine, "docs");
+        assert!(![docs.clone(), other.clone()].contains(&arrived));
+        assert!(engine.trees.local().get(&docs).is_none());
+        assert_eq!(held(&engine, "docs/report.txt"), report);
+        assert_eq!(held(&engine, "docs/draft.txt"), draft);
+        assert_eq!(engine.trees.check(), Ok(()));
+    }
+
+    #[test]
+    fn a_new_mark_on_the_same_reported_inode_refuses_the_save_even_with_identical_bytes() {
+        for size in [6, 5] {
+            let (_dir, mut engine) = mapper();
+            let (report, draft) = saved_report(&mut engine);
+            saved_over_by_a_temp(&mut engine);
+            let mark = draft.to_string();
+            engine.observe(&[rewritten("docs/report.txt", 5, size, Some(&mark))], 1_200);
+            assert!(!continued(&mut engine, &report), "replacement size {size}");
         }
     }
 

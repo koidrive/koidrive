@@ -3230,3 +3230,59 @@ fn a_file_moved_back_from_the_trash_over_a_document_edited_elsewhere_keeps_both(
         .collect();
     assert!(live.contains(&b"notes".to_vec()), "{nodes:?}");
 }
+
+#[test]
+fn a_folder_renamed_under_another_folders_mark_keeps_every_node_inside_it() {
+    for restart in [false, true] {
+        clock::freeze();
+        let mut remote = Remote::new();
+        let (site, mut a) = linked(&mut remote, "a");
+        fs::create_dir_all(site.root.join("docs/sub")).unwrap();
+        fs::create_dir(site.root.join("other")).unwrap();
+        a.create(&mut remote, &site.root.join("docs/report.docx"), b"report");
+        a.create(&mut remote, &site.root.join("docs/sub/deep.docx"), b"deep");
+        a.rest(&mut remote);
+        let before = server_nodes(&remote);
+        let id = |name| live_id(&before, name);
+        fs::create_dir(site.root.join("archive")).unwrap();
+        for name in ["report.docx", "sub"] {
+            fs::rename(site.root.join("docs").join(name), site.root.join("archive").join(name)).unwrap();
+        }
+        fs::remove_dir(site.root.join("docs")).unwrap();
+        let archive = fs::File::open(site.root.join("archive")).unwrap();
+        observe(
+            &mut a,
+            vec![Observed::Renamed {
+                from: "docs".into(),
+                to: "archive".into(),
+                kind: EntryKind::Dir,
+                id: koidrive_fs::id_of(archive.as_fd()).unwrap(),
+                linked: false,
+                marked_node: Some(id("other")),
+            }],
+        );
+        if restart {
+            drop(a);
+            a = restarted(&site, &mut remote);
+        }
+        a.rescan();
+        a.settle();
+        a.rest(&mut remote);
+        let after = server_nodes(&remote);
+        for name in ["report.docx", "sub", "deep.docx", "other"] {
+            assert_eq!(live_id(&after, name), id(name), "{restart} {after:?}");
+        }
+        assert_eq!(server_bytes(&remote, &id("report.docx")), b"report", "{restart}");
+        assert_eq!(server_bytes(&remote, &id("deep.docx")), b"deep", "{restart}");
+        let archive = live_id(&after, "archive");
+        assert_ne!(archive, id("docs"), "{restart} {after:?}");
+        let parent = |node: &str| {
+            let nodes = remote.space.nodes();
+            nodes.into_iter().find(|n| n.node_id == node).unwrap().parent_id
+        };
+        assert_eq!(parent(&id("report.docx")), archive, "{restart}");
+        assert_eq!(parent(&id("sub")), archive, "{restart}");
+        let trashed: Vec<&str> = (after.iter()).filter(|node| !node.2).map(|node| node.1.as_str()).collect();
+        assert_eq!(trashed, [id("docs").as_str()], "{restart} {after:?}");
+    }
+}
