@@ -1,0 +1,12 @@
+class = "M"
+issue = "GUN-1393"
+tests = [
+  "a_first_link_discard_takes_along_only_the_server_entries_the_user_leaves_alone",
+]
+message = '''<id> was discarded and is created on the server with no later answer to publish it, and below it the user changed nothing at \S+\.rs:<line>\.'''
+examples = [
+  "01a1c2c0-39a0-73d9-93fc-d6513d02befe was discarded and is created on the server with no later answer to publish it, and below it the user changed nothing at core/sim/tests/engine_sync/common.rs:2918.",
+]
+cases = [
+  "1a5a26e7e993648c79095e1fce614f8ffc3b38e5f2fc3209dc93c33d625070ed",
+]

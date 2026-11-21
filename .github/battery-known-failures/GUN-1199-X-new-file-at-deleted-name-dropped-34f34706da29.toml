@@ -1,0 +1,12 @@
+class = "X"
+issue = "GUN-1199"
+tests = [
+  "devices_on_coarse_volumes_lose_no_write_across_restores_and_rewinds",
+]
+message = '''(after phase <n>: write <n> of the .* of node <id> on device <n> is not in the server's tree, and no later change that saw it, no delete that saw it and no rule for lost changes settles it\.|not recorded: devices::\S+ \S+ WriteKept write <n> of the (?:(?! not recorded: ).)* of node <id> on device <n> is not in the server's tree, and no later change that saw it, no delete that saw it and no rule for lost changes settles it( not recorded: devices::\S+ \S+ (WriteKept|IntentKept) (?:(?! not recorded: ).)+?settles it)*)'''
+examples = [
+  "not recorded: devices::devices_on_coarse_volumes_lose_no_write_across_restores_and_rewinds\tcc-34f34706da29bd847073d489545b53a8e3987583e07c333f9a5301e1fac5421b\tWriteKept\twrite 4 of the create of node 01a1c2c0-39a0-7cdc-8389-c4663807ce68 on device 0 is not in the server's tree, and no later change that saw it, no delete that saw it and no rule for lost changes settles it\nnot recorded: devices::devices_on_coarse_volumes_lose_no_write_across_restores_and_rewinds\tcc-34f34706da29bd847073d489545b53a8e3987583e07c333f9a5301e1fac5421b\tIntentKept\tthe move on device 0 that puts node 01a1c2c0-39a0-7cdc-8389-c4663807ce68 at \"ss\" is not on the server, and no later change that saw it, no delete that saw it and no rule for lost changes settles it",
+]
+cases = [
+  "34f34706da29bd847073d489545b53a8e3987583e07c333f9a5301e1fac5421b",
+]

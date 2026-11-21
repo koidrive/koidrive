@@ -2,7 +2,6 @@ class = "D"
 issue = "GUN-984"
 tests = [
   "devices_converge_across_restores_and_rewinds",
-  "devices_converge_across_server_restores",
   "devices_lose_no_write_across_restores_and_rewinds",
 ]
 message = '''after phase <n>: device <n> is quiet, but (it still sends nodes again: \{.*\}, at \{.*\}, lost creates \{.*\}|node <id> is parked)\.'''

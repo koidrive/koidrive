@@ -35,6 +35,11 @@ SILENT = "a side crashed without a message (unconfirmed)"
 VERDICTS = ("PR-caused", "unstable", "unknown", SILENT, MOVED, "flaky or fixed", SAME)
 HARNESS_OUTPUT = re.compile(r"^(running \d+ tests?$|test \S+ \.\.\.)")
 SILENT_CRASH = re.compile(r"^killed by signal \d+$")
+USER_FACT = re.compile(r"^(\S+ (?:was discarded and is created on the server with no later answer to publish it|was held and sent "
+                       r"before the person said so)), and (?:below it the user (?:kept back an entry|changed an entry another device "
+                       r"brought in|took out an entry it held|changed an entry it holds|changed nothing)|the harness could not "
+                       r"establish what changed below it|the answer discarded it, but its user did not change it|no answer discarded it)"
+                       r"( at [\w./-]*\.rs:\d+(?::\d+)?\.?)$")
 
 
 def comparable(message):
@@ -418,6 +423,12 @@ def verdict(head_runs, base_runs):
         return SAME
     if comparable(head["message"]) == comparable(base["message"]):
         return MOVED
+    head_fact, base_fact = (USER_FACT.match(side["message"] or "") for side in (head, base))
+    if bool(head_fact) != bool(base_fact):
+        head_message, base_message = (fact.expand(r"\1\2") if fact else side["message"]
+                                      for fact, side in ((head_fact, head), (base_fact, base)))
+        if comparable(head_message) == comparable(base_message):
+            return MOVED
     return "PR-caused"
 
 

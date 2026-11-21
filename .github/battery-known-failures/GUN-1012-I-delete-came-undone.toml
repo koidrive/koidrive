@@ -10,7 +10,6 @@ tests = [
   "devices_converge_once_the_faults_stop",
   "devices_converge_when_folders_are_rescanned_alone",
   "devices_lose_no_write_across_restores_and_rewinds",
-  "devices_on_coarse_volumes_converge_across_restores_and_rewinds",
   "devices_on_coarse_volumes_converge_once_the_faults_stop",
   "devices_with_rules_converge_once_the_faults_stop",
 ]

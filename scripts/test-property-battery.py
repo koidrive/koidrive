@@ -633,6 +633,26 @@ cases = ["{1:064}"]
                             found = triage.matches(entries, test, example, case)
                             self.assertEqual([other["file"] for other in found], [entry["file"]], (test, example, case))
 
+    def test_no_two_registry_files_label_the_same_failure_of_a_test(self):
+        entries = triage.known_failures(triage.KNOWN_FAILURES)
+        for entry in entries:
+            for other in entries:
+                shared = sorted(set(entry["tests"]) & set(other["tests"]))
+                if not shared or other is entry or self.cases_apart(entry, other):
+                    continue
+                for example in entry["examples"]:
+                    with self.subTest(file=entry["file"], other=other["file"], example=example[:60]):
+                        self.assertIsNone(
+                            other["pattern"].fullmatch(triage.normalized(example)),
+                            f"{other['file']} also labels this example of {entry['file']} in {shared[0]}, and a case "
+                            "both match or that neither lists would get both labels: give each file a message only it "
+                            "matches, merge the files if they share a cause, or list disjoint cases in both.")
+
+    @staticmethod
+    def cases_apart(entry, other):
+        return ("cases" in entry and "cases" in other
+                and not any(a.startswith(b) or b.startswith(a) for a in entry["cases"] for b in other["cases"]))
+
     def test_registry_entries_that_share_a_message_label_only_their_own_tests_and_cases(self):
         entries = triage.known_failures(triage.KNOWN_FAILURES)
         left = "after phase 2: write 6 left the disk of device 2: the server never held it, and its user never overwrote or deleted it."
@@ -695,6 +715,8 @@ cases = ["{1:064}"]
         parked = "a parked node is neither on its way out nor reported at core/sim/tests/engine_sync/common.rs:2074."
         excluded_left = ("assertion failed: `(left == right)` \n  left: `[\"01a1c2c0-39a0-7122-aa2f-19dfbfa03020\"]`,\n"
                          " right: `[]` at core/sim/tests/engine_sync/common.rs:2008.")
+        m1a5a = "1a5a26e7e993648c79095e1fce614f8ffc3b38e5f2fc3209dc93c33d625070ed"
+        purged = next(entry for entry in entries if entry["file"] == "GUN-1393-M-purged-entry-reclaims-discarded-folder.toml")["examples"][0]
         def replayed(case):
             return next(text for entry in entries for text in entry["examples"] if f"\tcc-{case}\t" in text)
         coarse_once = "devices_on_coarse_volumes_converge_once_the_faults_stop"
@@ -736,18 +758,19 @@ cases = ["{1:064}"]
             (server_restores, left, a7b0, []),
             (rewinds_and_rollbacks, quiet, other, []),
             (restores_and_rewinds, quiet, ae45, [("D", "GUN-984", None)]),
-            (server_restores, quiet, ae45, [("D", "GUN-984", None)]),
+            (server_restores, quiet, ae45, [("D", "GUN-984", ["45aeea4283bad112a4dfb008e7c67a75c58dea15306a57cb165f8b6cbd33238c"])]),
             (server_restores, quiet, e0a5, [("J", "GUN-1012", ["5e0a61643769"])]),
             (folder, never_reached, other, []),
             (rewinds_and_rollbacks, never_reached, other, []),
             (server_restores, never_reached, other, [("I", "GUN-1012", None)]),
             (restores_and_rewinds, never_reached, other, [("I", "GUN-1012", None)]),
             ("devices_on_coarse_volumes_converge_across_restores_and_rewinds", never_reached, other, [("I", "GUN-1012", None)]),
-            (lose_rollbacks, example(x2293), x2293, [("X", "GUN-1199", ["2293e681b3bc"])]),
+            (lose_rollbacks, example(x2293), x2293, [("X", "GUN-1199", ["2293e681b3bc09faeca001d034140fd95df720190105bcb9a754644310248df5"])]),
             (lose_rollbacks, example(x2293), other, []),
-            (lose_coarse, example(w74e3), w74e3, [("W", "GUN-1200", ["74e37aa2bf80", "78f33ddc3d91", "570e17d678be", "17e659c037e5"])]),
-            (lose_coarse, example(w74e3), other, [("A", "GUN-1004", None)]),
-            (lose_rollbacks, example(w74e3), w74e3, [("A", "GUN-1004", None)]),
+            (lose_rollbacks, example(x2293), "34f34706da29bd847073d489545b53a8e3987583e07c333f9a5301e1fac5421b", []),
+            (lose_coarse, example(w74e3), w74e3, [("W", "GUN-1200", ["74e37aa2bf801d15aab9bf0f584dddf33f51a77e14d48566c299c6ec6b7b18e4", "78f33ddc3d91d9ca24ee8db9ad24f0ca0437d7aef0592e880d853f42fbc7443a", "570e17d678be8db7ebb4f77ea1126ef4fb3f78e9e54a571548f9a65426b4a44e", "17e659c037e555323b11dcd2ee4741bd632f1ca7a6ffa45baf2f4c350fa9c144"])]),
+            (lose_coarse, example(w74e3), other, []),
+            (lose_rollbacks, example(w74e3), w74e3, []),
             ("devices_on_coarse_volumes_converge_once_the_faults_stop", undone + "\n" + example(w74e3), other, []),
             (local_changes, elsewhere, e6d4a, [("E", "GUN-984", ["08e61c519396", "19f84e7ef1f0", "1d7c783628f2", "3c1845290a58", "4af1a1aa9520", "5434a941f700", "67ff8e5ba7b6", "6d4a438ebc80", "84d38f0bff21", "9350d8000cff", "99df591672b6", "b9d004f06e53"])]),
             (local_changes, elsewhere, e84d3, [("E", "GUN-984", ["08e61c519396", "19f84e7ef1f0", "1d7c783628f2", "3c1845290a58", "4af1a1aa9520", "5434a941f700", "67ff8e5ba7b6", "6d4a438ebc80", "84d38f0bff21", "9350d8000cff", "99df591672b6", "b9d004f06e53"])]),
@@ -766,10 +789,10 @@ cases = ["{1:064}"]
             (server_restores, example(i764b) + kept, i764b, []),
             (server_restores, head_only_undone(server_restores, ia80e), ia80e, []),
             (coarse_restores, example(a9151), a9151, [("A", "GUN-767", ["9151604dfe20"])]),
-            (coarse_restores, example(a9151), other, [("I", "GUN-1012", None)]),
+            (coarse_restores, example(a9151), other, []),
             (restores_and_rewinds, example(a9151), a9151, [("I", "GUN-1012", None)]),
             (coarse_restores, undone, a9151, [("A", "GUN-767", ["9151604dfe20"])]),
-            (coarse_restores, undone, other, [("I", "GUN-1012", None)]),
+            (coarse_restores, undone, other, []),
             (restores_and_rewinds, example(ibbe9), ibbe9, [("I", "GUN-1012", ["bbe992fee5c2"])]),
             (restores_and_rewinds, example(ibbe9), other, []),
             (lose_restores, example(ibbe9), ibbe9, []),
@@ -791,8 +814,8 @@ cases = ["{1:064}"]
             (takes_along, reverted_parent, other, []),
             (rewinds_and_rollbacks, reverted_parent, tb5bf, []),
             (takes_along, reverted_parent + "\n" + undone, tb5bf, []),
-            (lose_coarse, replayed(w78f3), w78f3, [("W", "GUN-1200", ["74e37aa2bf80", "78f33ddc3d91", "570e17d678be", "17e659c037e5"])]),
-            (lose_coarse, replayed(w78f3), other, [("A", "GUN-1004", None)]),
+            (lose_coarse, replayed(w78f3), w78f3, [("W", "GUN-1200", ["74e37aa2bf801d15aab9bf0f584dddf33f51a77e14d48566c299c6ec6b7b18e4", "78f33ddc3d91d9ca24ee8db9ad24f0ca0437d7aef0592e880d853f42fbc7443a", "570e17d678be8db7ebb4f77ea1126ef4fb3f78e9e54a571548f9a65426b4a44e", "17e659c037e555323b11dcd2ee4741bd632f1ca7a6ffa45baf2f4c350fa9c144"])]),
+            (lose_coarse, replayed(w78f3), other, []),
             (lose_coarse, replayed(w78f3) + "\n" + undone, w78f3, []),
             (lose_coarse, head_only_undone(lose_coarse, w78f3), w78f3, []),
             (folder, replayed(l14fe), l14fe, [("L", "GUN-984", None)]),
@@ -805,8 +828,8 @@ cases = ["{1:064}"]
             (rewinds_and_rollbacks, restored_late, t1437, []),
             (takes_along, restored_late + "\n" + undone, t1437, []),
             (takes_along, head_only_undone(takes_along, t1437), t1437, []),
-            (lose_coarse, replayed(w570e), w570e, [("W", "GUN-1200", ["74e37aa2bf80", "78f33ddc3d91", "570e17d678be", "17e659c037e5"])]),
-            (lose_coarse, replayed(w570e), other, [("A", "GUN-1004", None)]),
+            (lose_coarse, replayed(w570e), w570e, [("W", "GUN-1200", ["74e37aa2bf801d15aab9bf0f584dddf33f51a77e14d48566c299c6ec6b7b18e4", "78f33ddc3d91d9ca24ee8db9ad24f0ca0437d7aef0592e880d853f42fbc7443a", "570e17d678be8db7ebb4f77ea1126ef4fb3f78e9e54a571548f9a65426b4a44e", "17e659c037e555323b11dcd2ee4741bd632f1ca7a6ffa45baf2f4c350fa9c144"])]),
+            (lose_coarse, replayed(w570e), other, []),
             (coarse_once, replayed(w570e), w570e, []),
             (lose_coarse, replayed(w570e) + "\n" + undone, w570e, []),
             (lose_coarse, head_only_undone(lose_coarse, w570e), w570e, []),
@@ -825,18 +848,18 @@ cases = ["{1:064}"]
             (local_changes, queued, e6d4a, []),
             (local_changes, elsewhere, g4bf7, []),
             (local_changes, queued, n62f7, []),
-            (lose_coarse, replayed(a0fe7), a0fe7, [("A", "GUN-1004", None)]),
-            (lose_coarse, replayed(a0fe7), other, [("A", "GUN-1004", None)]),
-            (lose_coarse, replayed(ae9f1), ae9f1, [("A", "GUN-1004", None)]),
-            (lose_coarse, replayed(a0fe7), w74e3, [("W", "GUN-1200", ["74e37aa2bf80", "78f33ddc3d91", "570e17d678be", "17e659c037e5"])]),
-            (lose_coarse, replayed(ae9f1), w17e6, [("W", "GUN-1200", ["74e37aa2bf80", "78f33ddc3d91", "570e17d678be", "17e659c037e5"])]),
+            (lose_coarse, replayed(a0fe7), a0fe7, [("A", "GUN-1004", ["0fe7ddf6285c0887303b86e99b643151f2eba36a5e0ac7dd84f81f71cf526f46", "e9f1c12fe9f9fdacfa8d7907f72f45eba58c488436bb16ca8febf853228fa089"])]),
+            (lose_coarse, replayed(a0fe7), other, []),
+            (lose_coarse, replayed(ae9f1), ae9f1, [("A", "GUN-1004", ["0fe7ddf6285c0887303b86e99b643151f2eba36a5e0ac7dd84f81f71cf526f46", "e9f1c12fe9f9fdacfa8d7907f72f45eba58c488436bb16ca8febf853228fa089"])]),
+            (lose_coarse, replayed(a0fe7), w74e3, [("W", "GUN-1200", ["74e37aa2bf801d15aab9bf0f584dddf33f51a77e14d48566c299c6ec6b7b18e4", "78f33ddc3d91d9ca24ee8db9ad24f0ca0437d7aef0592e880d853f42fbc7443a", "570e17d678be8db7ebb4f77ea1126ef4fb3f78e9e54a571548f9a65426b4a44e", "17e659c037e555323b11dcd2ee4741bd632f1ca7a6ffa45baf2f4c350fa9c144"])]),
+            (lose_coarse, replayed(ae9f1), w17e6, [("W", "GUN-1200", ["74e37aa2bf801d15aab9bf0f584dddf33f51a77e14d48566c299c6ec6b7b18e4", "78f33ddc3d91d9ca24ee8db9ad24f0ca0437d7aef0592e880d853f42fbc7443a", "570e17d678be8db7ebb4f77ea1126ef4fb3f78e9e54a571548f9a65426b4a44e", "17e659c037e555323b11dcd2ee4741bd632f1ca7a6ffa45baf2f4c350fa9c144"])]),
             (coarse_once, replayed(a0fe7), a0fe7, []),
             (lose_coarse, replayed(a0fe7) + "\n" + undone, a0fe7, []),
             (lose_coarse, head_only_undone(lose_coarse, a0fe7), a0fe7, []),
             (lose_coarse, head_only_undone(lose_coarse, ae9f1), ae9f1, []),
-            (lose_coarse, replayed(w17e6), w17e6, [("W", "GUN-1200", ["74e37aa2bf80", "78f33ddc3d91", "570e17d678be", "17e659c037e5"])]),
-            (lose_coarse, replayed(w17e6), other, [("A", "GUN-1004", None)]),
-            (lose_coarse, replayed(w17e6), a0fe7, [("A", "GUN-1004", None)]),
+            (lose_coarse, replayed(w17e6), w17e6, [("W", "GUN-1200", ["74e37aa2bf801d15aab9bf0f584dddf33f51a77e14d48566c299c6ec6b7b18e4", "78f33ddc3d91d9ca24ee8db9ad24f0ca0437d7aef0592e880d853f42fbc7443a", "570e17d678be8db7ebb4f77ea1126ef4fb3f78e9e54a571548f9a65426b4a44e", "17e659c037e555323b11dcd2ee4741bd632f1ca7a6ffa45baf2f4c350fa9c144"])]),
+            (lose_coarse, replayed(w17e6), other, []),
+            (lose_coarse, replayed(w17e6), a0fe7, [("A", "GUN-1004", ["0fe7ddf6285c0887303b86e99b643151f2eba36a5e0ac7dd84f81f71cf526f46", "e9f1c12fe9f9fdacfa8d7907f72f45eba58c488436bb16ca8febf853228fa089"])]),
             (coarse_once, replayed(w17e6), w17e6, []),
             (lose_coarse, replayed(w17e6) + "\n" + undone, w17e6, []),
             (lose_coarse, head_only_undone(lose_coarse, w17e6), w17e6, []),
@@ -846,6 +869,10 @@ cases = ["{1:064}"]
             (takes_along, parked, other, []),
             (rules_change, excluded_left, v0d10, []),
             (rules_leave_out, excluded_left, vad76, []),
+            (lose_coarse, replayed(w74e3), w74e3[:12] + "0" * 52, []),
+            (lose_coarse, replayed(a0fe7), a0fe7[:12] + "0" * 52, []),
+            (takes_along, purged, m1a5a, [("M", "GUN-1393", [m1a5a])]),
+            (takes_along, purged, "53195fc36ab56c3514afc3fdfa7a52b5d1192f6a75a240b901e4604d04525f82", []),
         ]:
             with self.subTest(test=test, message=message[:40], case=case[:12]):
                 found = triage.matches(entries, test, message, case)
@@ -1339,6 +1366,13 @@ class Triage(unittest.TestCase):
             (runs("unmapped", "no log", times=1), runs("unmapped", "no log", times=1), "unknown"),
             (runs("pass")[:1] + runs("fail", "lost")[:1], runs("fail", "lost"), "unstable"),
             (runs("fail", "lost at a.rs:1")[:1] + runs("fail", "lost at a.rs:2")[:1], runs("fail", "lost"), "unstable"),
+            (runs("fail", "01a1c2c0-39a0-775c-844c-3cd7f43c661c was discarded and is created on the server with no later answer to publish it, and below it the user changed nothing at core/sim/tests/engine_sync/common.rs:2918."), runs("fail", "01a1c2c0-39a0-775c-844c-3cd7f43c661c was discarded and is created on the server with no later answer to publish it at core/sim/tests/engine_sync/common.rs:2869."), triage.MOVED),
+            (runs("fail", "01a1c2c0-39a0-73d9-93fc-d6513d02befe was held and sent before the person said so, and the answer discarded it, but its user did not change it at core/sim/tests/engine_sync/common.rs:2976."), runs("fail", "01a1c2c0-39a0-73d9-93fc-d6513d02befe was held and sent before the person said so at core/sim/tests/engine_sync/common.rs:2926."), triage.MOVED),
+            (runs("fail", "01a1c2c0-39a0-775c-844c-3cd7f43c661c was discarded and is created on the server with no later answer to publish it, and below it the user changed nothing at core/sim/tests/engine_sync/common.rs:2918."), runs("fail", "01a1c2c0-39a0-775c-844c-3cd7f43c661c was discarded and is created on the server with no later answer to publish it, and below it the user kept back an entry at core/sim/tests/engine_sync/common.rs:2918."), "PR-caused"),
+            (runs("fail", "01a1c2c0-39a0-775c-844c-3cd7f43c661c was discarded and is created on the server with no later answer to publish it, and below it the user changed nothing at core/sim/tests/engine_sync/common.rs:2918."), runs("fail", "01a1c2c0-39a0-775c-844c-3cd7f43c661c was discarded and is created on the server with no later answer to publish it, and below it the user changed nothing at core/sim/tests/engine_sync/common.rs:2918."), triage.SAME),
+            (runs("fail", "01a1c2c0-39a0-775c-844c-3cd7f43c661c was discarded and is created on the server with no later answer to publish it, and below it the user changed nothing at core/sim/tests/engine_sync/common.rs:2869."), runs("fail", "01a1c2c0-39a0-775c-844c-3cd7f43c661c was discarded and is created on the server with no later answer to publish it at core/sim/tests/engine_sync/common.rs:2869."), triage.MOVED),
+            (runs("fail", "01a1c2c0-39a0-775c-844c-3cd7f43c661c was discarded and is created on the server with no later answer to publish it, and the harness could not establish what changed below it at core/sim/tests/engine_sync/common.rs:2869."), runs("fail", "01a1c2c0-39a0-775c-844c-3cd7f43c661c was discarded and is created on the server with no later answer to publish it at core/sim/tests/engine_sync/common.rs:2869."), triage.MOVED),
+            (runs("fail", "write 2 is lost.\n01a1c2c0-39a0-775c-844c-3cd7f43c661c was discarded and is created on the server with no later answer to publish it, and below it the user changed nothing at a.rs:12."), runs("fail", "write 2 is lost.\n01a1c2c0-39a0-775c-844c-3cd7f43c661c was discarded and is created on the server with no later answer to publish it at a.rs:12."), "PR-caused"),
         ]
         for head, base, expected in rules:
             with self.subTest(head=head, base=base):

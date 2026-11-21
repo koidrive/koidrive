@@ -7,5 +7,7 @@ tests = [
   "a_first_link_sends_nothing_the_rules_leave_out_for_a_while_until_the_person_publishes_it",
   "a_device_whose_rules_change_deletes_nothing_on_either_side",
 ]
-message = '''<id> was held and sent before the person said so at \S+\.rs:<line>\.'''
-examples = ["01a1c2c0-39a0-780a-953a-eb70673e29cb was held and sent before the person said so at core/sim/tests/engine_sync/common.rs:1869."]
+message = '''<id> was held and sent before the person said so, and no answer discarded it at \S+\.rs:<line>\.'''
+examples = [
+  "01a1c2c0-39a0-780a-953a-eb70673e29cb was held and sent before the person said so, and no answer discarded it at core/sim/tests/engine_sync/common.rs:1869.",
+]

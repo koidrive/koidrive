@@ -617,6 +617,8 @@ struct Device {
     acted: BTreeSet<NodeId>,
     acked: BTreeSet<NodeId>,
     removed_from: BTreeMap<NodeId, NodeId>,
+    left_from: BTreeMap<NodeId, Vec<NodeId>>,
+    placed_elsewhere: BTreeSet<NodeId>,
     stays: BTreeMap<NodeId, BTreeMap<NodeId, (bool, u64)>>,
     last_other: BTreeMap<NodeId, u64>,
     placements: u64,
@@ -643,6 +645,7 @@ struct Relocation {
     from: koidrive_engine::tree::Shape,
     to: koidrive_engine::tree::Shape,
     origin: Vec<NodeId>,
+    left: Vec<(koidrive_engine::tree::Shape, Vec<NodeId>)>,
 }
 
 impl Device {
@@ -695,6 +698,8 @@ impl Device {
             acted: BTreeSet::new(),
             acked: BTreeSet::new(),
             removed_from: BTreeMap::new(),
+            left_from: BTreeMap::new(),
+            placed_elsewhere: BTreeSet::new(),
             stays: BTreeMap::new(),
             last_other: BTreeMap::new(),
             placements: 0,
@@ -714,21 +719,34 @@ impl Device {
         before: &koidrive_engine::tree::Shape,
         after: &koidrive_engine::tree::Shape,
     ) {
-        let (from, origin) = (self.relocated.remove(id))
-            .filter(|moved| moved.to.same_position(before))
-            .map_or_else(
-                || {
-                    (
-                        before.clone(),
-                        ancestors(&self.trees, Some(before.parent.clone())),
-                    )
-                },
-                |moved| (moved.from, moved.origin),
-            );
+        let kept = (self.relocated.remove(id)).filter(|moved| moved.to.same_position(before));
+        let chain = self.chain_above(&before.parent);
+        if kept.is_none() {
+            self.left_from.insert(id.to_owned(), chain.clone());
+            self.placed_elsewhere.remove(id);
+        }
+        let (from, origin, mut left) = kept.map_or_else(
+            || {
+                (
+                    before.clone(),
+                    ancestors(&self.trees, Some(before.parent.clone())),
+                    Vec::new(),
+                )
+            },
+            |moved| (moved.from, moved.origin, moved.left),
+        );
+        left.push((before.clone(), chain));
         if !from.same_position(after) {
             let to = after.clone();
-            self.relocated
-                .insert(id.to_owned(), Relocation { from, to, origin });
+            self.relocated.insert(
+                id.to_owned(),
+                Relocation {
+                    from,
+                    to,
+                    origin,
+                    left,
+                },
+            );
         }
     }
 
@@ -786,6 +804,15 @@ impl Device {
             if remote.same_position(&moved.to) {
                 self.relocated.remove(&node);
             } else if answered {
+                let place =
+                    (moved.left.iter().skip(1)).position(|(shape, _)| remote.same_position(shape));
+                if let Some(at) = place {
+                    moved.left.drain(..=at);
+                    self.left_from.insert(node.clone(), moved.left[0].1.clone());
+                    self.placed_elsewhere.remove(&node);
+                } else if !remote.same_position(&moved.from) {
+                    self.placed_elsewhere.insert(node.clone());
+                }
                 moved.from = remote;
                 moved.origin = now;
             }
@@ -894,8 +921,9 @@ impl Device {
         }) {
             above = (self.trees.local().get(&folder)).map(|node| node.shape.parent.clone());
             self.off_disk.remove(&folder);
-            self.removed_from
-                .insert(folder.clone(), above.clone().expect("lost folder in L"));
+            let parent = above.clone().expect("lost folder in L");
+            self.leave(&folder, &parent);
+            self.removed_from.insert(folder.clone(), parent);
             self.kept_back.remove(&folder);
             self.relocated.remove(&folder);
             self.acted_on(folder.clone());
@@ -953,6 +981,22 @@ impl Device {
             .filter(|id| visible(&self.trees, id))
             .collect();
         self.trees.listed(&moved, Pending::default());
+    }
+
+    fn leave(&mut self, id: &NodeId, parent: &NodeId) {
+        let chain = self.chain_above(parent);
+        self.left_from.insert(id.to_owned(), chain);
+        self.placed_elsewhere.remove(id);
+    }
+
+    fn chain_above(&self, parent: &NodeId) -> Vec<NodeId> {
+        let mut chain = Vec::new();
+        let mut at = Some(parent.clone());
+        while let Some(node) = at.filter(|node| !chain.contains(node)) {
+            at = (self.trees.local().get(&node)).map(|local| local.shape.parent.clone());
+            chain.push(node);
+        }
+        chain
     }
 
     fn acted_on(&mut self, id: NodeId) {
@@ -1193,9 +1237,11 @@ impl Device {
                 }
                 self.off_disk.extend(only_in_l);
                 for other in doomed.into_iter().rev() {
-                    if let Some(node) = self.trees.local().get(&other) {
-                        self.removed_from
-                            .insert(other.clone(), node.shape.parent.clone());
+                    if let Some(parent) =
+                        (self.trees.local().get(&other)).map(|node| node.shape.parent.clone())
+                    {
+                        self.leave(&other, &parent);
+                        self.removed_from.insert(other.clone(), parent);
                     }
                     self.kept_back.remove(&other);
                     self.relocated.remove(&other);
@@ -1908,6 +1954,69 @@ fn revive(
         }
     }
     revived
+}
+
+fn what_the_user_did_below(device: &Device, folder: &NodeId) -> &'static str {
+    let trees = &device.trees;
+    let reaches = |start: Option<&NodeId>| {
+        let mut seen = BTreeSet::new();
+        let mut at = start.cloned();
+        while let Some(node) = at.filter(|node| seen.insert(node.clone())) {
+            if node == *folder {
+                return true;
+            }
+            at = trees
+                .local()
+                .get(&node)
+                .map(|local| local.shape.parent.clone());
+        }
+        false
+    };
+    let arrived = |entry: &NodeId| {
+        (device.stays.get(entry)).is_some_and(|stays| stays.values().any(|(by_other, _)| *by_other))
+    };
+    let below = |entry: &NodeId| reaches(trees.local().get(entry).map(|local| &local.shape.parent));
+    let left_it =
+        |entry: &NodeId| (device.left_from.get(entry)).is_some_and(|chain| chain.contains(folder));
+    let unsure = |entry: &NodeId| device.placed_elsewhere.contains(entry) && !below(entry);
+    let fact = |taken_out: Vec<&NodeId>| {
+        let changed: Vec<&NodeId> = (device.acted.iter())
+            .filter(|entry| below(entry))
+            .chain(taken_out.iter().copied())
+            .collect();
+        if taken_out
+            .iter()
+            .any(|entry| device.kept_back.contains(*entry))
+        {
+            "below it the user kept back an entry"
+        } else if changed.iter().any(|entry| arrived(entry)) {
+            "below it the user changed an entry another device brought in"
+        } else if !taken_out.is_empty() {
+            "below it the user took out an entry it held"
+        } else if !changed.is_empty() {
+            "below it the user changed an entry it holds"
+        } else {
+            "below it the user changed nothing"
+        }
+    };
+    let taken_out: Vec<&NodeId> = (device.removed_from.keys())
+        .filter(|entry| left_it(entry))
+        .chain(
+            (device.relocated.keys())
+                .filter(|entry| left_it(entry) && !below(entry) && !unsure(entry)),
+        )
+        .collect();
+    let without = fact(taken_out.clone());
+    let with = fact(
+        (taken_out.into_iter())
+            .chain((device.relocated.keys()).filter(|entry| unsure(entry)))
+            .collect(),
+    );
+    if with == without {
+        without
+    } else {
+        "the harness could not establish what changed below it"
+    }
 }
 
 fn release_taken_along(
@@ -2870,8 +2979,9 @@ fn run_ignoring_answering_after(
                 !matches!(op.op, Some(op::Op::CreateDir(_)))
                     || !discarded_folders.contains(id)
                     || revived_once.contains(id),
-                "{} was discarded and is created on the server with no later answer to publish it",
-                id
+                "{} was discarded and is created on the server with no later answer to publish it, and {}",
+                id,
+                what_the_user_did_below(&device, id)
             );
             if let Some(op::Op::CreateDir(_)) = &op.op
                 && let Some(into) = merged_into.remove(id)
@@ -2925,8 +3035,13 @@ fn run_ignoring_answering_after(
             if held_once.contains(id) && !confirmed.contains(id) {
                 prop_assert!(
                     discarded.contains_key(id) && changed,
-                    "{} was held and sent before the person said so",
-                    id
+                    "{} was held and sent before the person said so, and {}",
+                    id,
+                    if discarded.contains_key(id) {
+                        "the answer discarded it, but its user did not change it"
+                    } else {
+                        "no answer discarded it"
+                    }
                 );
                 confirmed.insert(id.clone());
             }
