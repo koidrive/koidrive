@@ -145,6 +145,11 @@ fn folders_of(at: &Location) -> &[crate::resolve::Dir] {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    static WHILE_CARRYING: std::cell::RefCell<Option<Box<dyn FnMut()>>> = const { std::cell::RefCell::new(None) };
+}
+
 /// The change times marks moved: for each marked entry, its change time before and after its latest mark.
 #[derive(Debug, Clone, Default)]
 pub struct MarkLog(Arc<Mutex<HashMap<FileId, (i128, i128)>>>);
@@ -155,10 +160,12 @@ impl MarkLog {
     }
 
     pub(crate) fn carry(&self, old: &mut BTreeMap<PathBuf, Entry>, new: &BTreeMap<PathBuf, Entry>) {
-        let mut marks = self.0.lock().unwrap();
+        let marks = self.0.lock().unwrap().clone();
         if marks.is_empty() {
             return;
         }
+        #[cfg(test)]
+        WHILE_CARRYING.with_borrow_mut(|hook| hook.as_mut().map(|hook| hook()));
         for (path, before) in old.iter_mut() {
             if let Some(now) = new.get(path)
                 && now.id == before.id
@@ -180,7 +187,15 @@ impl MarkLog {
             })
             .map(|now| now.id)
             .collect();
-        marks.retain(|id, _| raced.contains(id) || !(seen.contains(id) || gone.contains(id)));
+        let mut held = self.0.lock().unwrap();
+        for (id, moved) in &marks {
+            if !raced.contains(id)
+                && (seen.contains(id) || gone.contains(id))
+                && held.get(id) == Some(moved)
+            {
+                held.remove(id);
+            }
+        }
     }
 }
 
@@ -269,4 +284,36 @@ fn native(entry: BorrowedFd<'_>) -> bool {
 #[cfg(not(target_vendor = "apple"))]
 fn native(_: BorrowedFd<'_>) -> bool {
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    use super::*;
+
+    #[test]
+    fn a_mark_is_recorded_while_a_scan_carries_the_marks_before_it() {
+        let log = MarkLog::default();
+        log.record(FileId::stored(1, None, None), 1, 2);
+        let marking = log.clone();
+        WHILE_CARRYING.with_borrow_mut(|hook| {
+            *hook = Some(Box::new(move || {
+                let (marked, waiting) = mpsc::channel();
+                let marking = marking.clone();
+                std::thread::spawn(move || {
+                    marking.record(FileId::stored(2, None, None), 3, 4);
+                    let _ = marked.send(());
+                });
+                assert!(
+                    waiting.recv_timeout(Duration::from_secs(5)).is_ok(),
+                    "a mark waited for the scan to carry the marks"
+                );
+            }));
+        });
+        log.carry(&mut BTreeMap::new(), &BTreeMap::new());
+        WHILE_CARRYING.with_borrow_mut(Option::take);
+        assert!(log.0.lock().unwrap().contains_key(&FileId::stored(2, None, None)));
+    }
 }
