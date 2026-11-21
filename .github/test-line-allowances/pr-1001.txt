@@ -1,0 +1,2 @@
+30
+# A first-link Discard must keep an entry the user changed after the answer, also after a change back to the shown bytes or name, while the rules leave it out, before any commit, without rules, and after a rewind. Each of those paths has its own engine test with restarts (file write-back, file move-back, folder rename-back, excluded child in a reclaimed folder, rewind), and the new discard_changed table needs its migration test and upgrade case.

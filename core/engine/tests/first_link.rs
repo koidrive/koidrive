@@ -8241,6 +8241,19 @@ fn a_server_file_another_device_moves_into_a_taken_along_folder_goes_to_the_loca
     );
 }
 
+fn discarded_ss() -> (Trees, Commits, IdGen) {
+    let mut trees = trees(
+        &[("l-dir", dir(ROOT, "ß")), ("l-f", file("l-dir", "ss", 1))],
+        &[("r-ss", dir(ROOT, "ss")), ("r-c", file("r-ss", "c.txt", 2))],
+    );
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(7));
+    commits.first_link(&mut trees, &mut ids, NOW, PriorSync::Shown);
+    trees.settle(commits.aliases());
+    assert!(commits.decide(&mut trees, &question(&commits).id, Answer::Discard));
+    assert!(ops(&mut commits, &mut trees, &mut ids).is_empty());
+    (trees, commits, ids)
+}
+
 struct ChangedWhileLeftOut {
     sent_left_out: Vec<(&'static str, String)>,
     held_left_out: Vec<NodeId>,
@@ -8257,15 +8270,7 @@ fn changed_while_left_out(
     left_out: &'static str,
     commit_between: bool,
 ) -> ChangedWhileLeftOut {
-    let mut trees = trees(
-        &[("l-dir", dir(ROOT, "ß")), ("l-f", file("l-dir", "ss", 1))],
-        &[("r-ss", dir(ROOT, "ss")), ("r-c", file("r-ss", "c.txt", 2))],
-    );
-    let (mut commits, mut ids) = (Commits::default(), IdGen::new(7));
-    commits.first_link(&mut trees, &mut ids, NOW, PriorSync::Shown);
-    trees.settle(commits.aliases());
-    assert!(commits.decide(&mut trees, &question(&commits).id, Answer::Discard));
-    assert!(ops(&mut commits, &mut trees, &mut ids).is_empty());
+    let (mut trees, mut commits, mut ids) = discarded_ss();
     let write = |trees: &mut Trees, commits: &Commits, back: bool| {
         let mut node = trees.local().get(&changed.into()).unwrap().clone();
         change(&mut node, back);
@@ -8341,18 +8346,14 @@ fn written_back_while_left_out(commit_between: bool) -> ChangedWhileLeftOut {
 }
 
 #[test]
-fn a_first_link_discard_holds_a_file_the_user_changed_under_a_new_question_while_the_rules_leave_it_out()
- {
-    let changed = written_back_while_left_out(true);
-    assert_eq!(changed.sent_left_out, []);
-    assert_eq!(changed.held_left_out, [NodeId::from("l-f")]);
-}
-
-#[test]
 fn a_first_link_discard_asks_again_about_a_file_the_user_writes_back_to_its_shown_bytes_once_the_rules_let_it_in()
  {
     for commit_between in [true, false] {
         let changed = written_back_while_left_out(commit_between);
+        assert_eq!(changed.sent_left_out, []);
+        if commit_between {
+            assert_eq!(changed.held_left_out, [NodeId::from("l-f")]);
+        }
         assert_eq!(changed.sent_let_in, []);
         assert_eq!(
             changed.asked_let_in.shown.get(&"l-f".into()),
@@ -8407,15 +8408,7 @@ fn a_first_link_discard_asks_again_about_a_folder_the_user_renames_back_to_its_s
 #[test]
 fn a_first_link_discard_asks_once_about_a_file_the_rules_leave_out_inside_a_folder_the_user_changed()
  {
-    let mut trees = trees(
-        &[("l-dir", dir(ROOT, "ß")), ("l-f", file("l-dir", "ss", 1))],
-        &[("r-ss", dir(ROOT, "ss")), ("r-c", file("r-ss", "c.txt", 2))],
-    );
-    let (mut commits, mut ids) = (Commits::default(), IdGen::new(7));
-    commits.first_link(&mut trees, &mut ids, NOW, PriorSync::Shown);
-    trees.settle(commits.aliases());
-    assert!(commits.decide(&mut trees, &question(&commits).id, Answer::Discard));
-    assert!(ops(&mut commits, &mut trees, &mut ids).is_empty());
+    let (mut trees, mut commits, mut ids) = discarded_ss();
     let root: [&str; 0] = [];
     let rules = RuleFile::parse(b"/x/ss\n");
     trees.set_rules(&root, Source::Koiignore, Some(rules.clone()));
@@ -8491,15 +8484,7 @@ fn a_first_link_discard_asks_again_about_an_entry_the_user_changes_back_before_a
         }),
     ];
     for (changed, change) in changes {
-        let mut trees = trees(
-            &[("l-dir", dir(ROOT, "ß")), ("l-f", file("l-dir", "ss", 1))],
-            &[("r-ss", dir(ROOT, "ss")), ("r-c", file("r-ss", "c.txt", 2))],
-        );
-        let (mut commits, mut ids) = (Commits::default(), IdGen::new(7));
-        commits.first_link(&mut trees, &mut ids, NOW, PriorSync::Shown);
-        trees.settle(commits.aliases());
-        assert!(commits.decide(&mut trees, &question(&commits).id, Answer::Discard));
-        assert!(ops(&mut commits, &mut trees, &mut ids).is_empty());
+        let (mut trees, mut commits, mut ids) = discarded_ss();
         for back in [false, true] {
             let mut node = trees.local().get(&changed.into()).unwrap().clone();
             change(&mut node.shape, back);
@@ -8535,15 +8520,7 @@ fn a_first_link_discard_asks_again_about_an_entry_the_user_changes_back_before_a
 
 #[test]
 fn a_first_link_discard_asks_once_about_an_entry_the_user_changed_after_a_rewind() {
-    let mut trees = trees(
-        &[("l-dir", dir(ROOT, "ß")), ("l-f", file("l-dir", "ss", 1))],
-        &[("r-ss", dir(ROOT, "ss")), ("r-c", file("r-ss", "c.txt", 2))],
-    );
-    let (mut commits, mut ids) = (Commits::default(), IdGen::new(7));
-    commits.first_link(&mut trees, &mut ids, NOW, PriorSync::Shown);
-    trees.settle(commits.aliases());
-    assert!(commits.decide(&mut trees, &question(&commits).id, Answer::Discard));
-    assert!(ops(&mut commits, &mut trees, &mut ids).is_empty());
+    let (mut trees, mut commits, mut ids) = discarded_ss();
     let write = |trees: &mut Trees, bytes: u8| {
         let mut node = trees.local().get(&"l-f".into()).unwrap().clone();
         node.shape.content = Some(content(bytes));
