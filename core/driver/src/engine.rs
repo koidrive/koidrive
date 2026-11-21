@@ -1313,6 +1313,7 @@ impl Engine {
                         EntryKind::File => Kind::File,
                         EntryKind::Dir => Kind::Dir,
                     };
+                    let at_to = local_at(&self.trees, to);
                     'place: {
                         if names(to).is_some_and(|to| self.trees.ignores(&to, node_kind)) {
                             let Some(node) = &before else { break 'place };
@@ -1345,6 +1346,7 @@ impl Engine {
                     let Some(held) = refused_folder else { continue };
                     let Some(folder) = local_at(&self.trees, to).filter(|folder| {
                         *folder != held
+                            && Some(folder) != at_to.as_ref()
                             && (self.trees.local().get(folder))
                                 .is_some_and(|node| node.shape.kind == Kind::Dir)
                     }) else {

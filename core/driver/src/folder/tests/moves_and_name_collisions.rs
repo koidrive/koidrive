@@ -3372,3 +3372,100 @@ fn a_refused_folder_rename_into_an_ignored_parent_keeps_the_children_on_the_serv
         );
     }
 }
+
+#[test]
+fn a_refused_folder_rename_does_not_adopt_into_a_stale_ignored_destination() {
+    for restart in [false] {
+        clock::freeze();
+        let mut remote = Remote::new();
+        let (site, mut a) = linked(&mut remote, "a");
+        a.create(&mut remote, &site.root.join(".koiignore"), b"hidden/\n");
+        fs::create_dir_all(site.root.join("docs/sub")).unwrap();
+        fs::create_dir(site.root.join("other")).unwrap();
+        a.create(&mut remote, &site.root.join("docs/report.docx"), b"report");
+        a.create(&mut remote, &site.root.join("docs/sub/deep.docx"), b"deep");
+        a.rest(&mut remote);
+        fs::create_dir(site.root.join("archive")).unwrap();
+        a.create(
+            &mut remote,
+            &site.root.join("archive/old.docx"),
+            b"old archive",
+        );
+        a.rest(&mut remote);
+        a.create(
+            &mut remote,
+            &site.root.join(".koiignore"),
+            b"hidden/\narchive/\n",
+        );
+        a.rest(&mut remote);
+        let before = server_nodes(&remote);
+        let id = |name| live_id(&before, name);
+        let stale = NodeId::from(id("archive").as_str());
+        assert_eq!(
+            a.folder.engine.path_of(&stale).as_deref(),
+            Some(Path::new("archive"))
+        );
+        fs::create_dir_all(site.root.join("hidden")).unwrap();
+        fs::rename(
+            site.root.join("archive"),
+            site.root.join("hidden/prior-archive"),
+        )
+        .unwrap();
+        fs::create_dir(site.root.join("archive")).unwrap();
+        for name in ["report.docx", "sub"] {
+            fs::rename(
+                site.root.join("docs").join(name),
+                site.root.join("archive").join(name),
+            )
+            .unwrap();
+        }
+        fs::remove_dir(site.root.join("docs")).unwrap();
+        let archive = fs::File::open(site.root.join("archive")).unwrap();
+        observe(
+            &mut a,
+            vec![Observed::Renamed {
+                from: "docs".into(),
+                to: "archive".into(),
+                kind: EntryKind::Dir,
+                id: koidrive_fs::id_of(archive.as_fd()).unwrap(),
+                linked: false,
+                marked_node: Some(id("other")),
+            }],
+        );
+        let report = NodeId::from(id("report.docx").as_str());
+        assert_eq!(
+            a.folder.engine.path_of(&report).as_deref(),
+            Some(Path::new("docs/report.docx")),
+            "an ignored observation cannot reparent to the stale archive node",
+        );
+        if restart {
+            drop(a);
+            a = restarted(&site, &mut remote);
+        }
+        a.rescan();
+        a.settle();
+        a.rest(&mut remote);
+        let after = server_nodes(&remote);
+        for name in ["report.docx", "sub", "deep.docx", "other"] {
+            assert_eq!(live_id(&after, name), id(name), "{restart} {after:?}");
+        }
+        assert_eq!(
+            server_bytes(&remote, &id("report.docx")),
+            b"report",
+            "{restart}"
+        );
+        assert_eq!(
+            server_bytes(&remote, &id("deep.docx")),
+            b"deep",
+            "{restart}"
+        );
+        assert_eq!(
+            fs::read(site.root.join("archive/report.docx")).unwrap(),
+            b"report",
+        );
+        assert_eq!(
+            fs::read(site.root.join("archive/sub/deep.docx")).unwrap(),
+            b"deep",
+        );
+    }
+}
