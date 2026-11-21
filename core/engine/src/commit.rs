@@ -1711,7 +1711,11 @@ impl Commits {
         let cause = self.questions.iter().find_map(Question::cause).cloned();
         let left = self.ask_again(trees, ids, now_ms);
         let released = self.ask_recovery(trees, cause, left, ids, now_ms);
-        let reclaimed = trees.reclaim(|_| true);
+        let held: BTreeSet<NodeId> = (self.questions.iter())
+            .flat_map(|question| question.holds().cloned())
+            .collect();
+        let asked = trees.discarded_within(&held);
+        let reclaimed = trees.reclaim(|id| !asked.contains(id));
         let discardable = reclaimed
             .into_iter()
             .filter(|id| !holds_server_entry(trees, id));

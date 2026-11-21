@@ -94,6 +94,7 @@ fn trees_state() -> TreesState {
         cycle_reverted: ["a".into()].into(),
         unobserved: ["b".into()].into(),
         discard_members: [("c".into(), "b".into())].into(),
+        discard_changed: ["a".into()].into(),
         left_out_by_server: ["b".into()].into(),
         parked_as: [("b".into(), "c".into())].into(),
         waiting: [(

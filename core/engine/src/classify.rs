@@ -627,6 +627,7 @@ pub struct Trees {
     cycle_reverted: TrackedSet<NodeId>,
     unobserved: TrackedSet<NodeId>,
     discard_members: TrackedMap<NodeId, NodeId>,
+    discard_changed: TrackedSet<NodeId>,
     left_out_by_server: TrackedSet<NodeId>,
     rules_changed: BTreeSet<Vec<String>>,
     relist: BTreeSet<NodeId>,
@@ -769,6 +770,7 @@ impl Trees {
             cycle_reverted: TrackedSet::default(),
             unobserved: TrackedSet::default(),
             discard_members: TrackedMap::default(),
+            discard_changed: TrackedSet::default(),
             left_out_by_server: TrackedSet::default(),
             rules_changed: BTreeSet::new(),
             relist: BTreeSet::new(),
@@ -2256,6 +2258,13 @@ impl Trees {
         {
             return;
         }
+        if self.discarded.contains_key(&id)
+            && self.r.get(&id).is_none()
+            && (self.l.get(&id))
+                .is_some_and(|old| old.parked == node.parked && old.shape != node.shape)
+        {
+            self.discard_changed.insert(id.clone());
+        }
         let relist = node.shape.kind == Kind::Dir
             && !node.parked
             && !self.unobserved.is_empty()
@@ -2661,7 +2670,7 @@ impl Trees {
         if self.r.get(id).is_some() || !judged.insert(id) {
             return None;
         }
-        let mut changed = !local.shape.same(discarded);
+        let mut changed = self.discard_changed.contains(id) || !local.shape.same(discarded);
         let mut holds_excluded = false;
         for child in self.local_children_placed_or_parked(id) {
             if changed {
@@ -2893,9 +2902,10 @@ impl Trees {
         if self.r.get(id).is_some() {
             return self.left_as_discarded_within(id, judged);
         }
-        let unchanged = (self.l.get(id)).is_some_and(|local| {
-            (self.discarded.get(id)).is_some_and(|shape| local.shape.same(shape))
-        });
+        let unchanged = !self.discard_changed.contains(id)
+            && (self.l.get(id)).is_some_and(|local| {
+                (self.discarded.get(id)).is_some_and(|shape| local.shape.same(shape))
+            });
         unchanged
             && (self.local_children_placed_or_parked(id))
                 .all(|child| self.kept_as_discarded_in(child, id, judged))
@@ -3108,6 +3118,9 @@ impl Trees {
         self.forget_reclaims();
         if let Some(shape) = self.discarded.remove(from) {
             self.unsort(to);
+            if self.discard_changed.remove(from) {
+                self.discard_changed.insert(to.to_owned());
+            }
             self.discarded.insert(to.to_owned(), shape);
         }
         let children: Vec<NodeId> = self.discarded.children(from).cloned().collect();
@@ -3134,6 +3147,7 @@ impl Trees {
             }
             if let (None, Some(shape)) = (self.r.get(&id), shown.get(&id)) {
                 self.unsort(&id);
+                self.discard_changed.remove(&id);
                 self.discarded.insert(id, shape.clone());
             }
         }
@@ -3188,6 +3202,7 @@ impl Trees {
             }
         }
         for (id, shape) in taken {
+            self.discard_changed.remove(&id);
             self.discarded.insert(id, shape);
         }
     }
@@ -3392,6 +3407,13 @@ impl Trees {
                 self.mark(&id);
             }
         }
+    }
+
+    pub(crate) fn discarded_within(&self, folders: &BTreeSet<NodeId>) -> BTreeSet<NodeId> {
+        (self.discarded.keys())
+            .filter(|id| self.local_chain(id).any(|at| folders.contains(at)))
+            .cloned()
+            .collect()
     }
 
     pub(crate) fn reclaim(&mut self, among: impl Fn(&NodeId) -> bool) -> Vec<NodeId> {
@@ -7768,6 +7790,7 @@ impl Trees {
             cycle_reverted: self.cycle_reverted.to_set(),
             unobserved: self.unobserved.to_set(),
             discard_members: self.discard_members.to_map(),
+            discard_changed: self.discard_changed.to_set(),
             left_out_by_server: self.left_out_by_server.to_set(),
             parked_as: self.parked_as.to_map(),
             waiting: self.waiting.to_map(),
@@ -7811,6 +7834,8 @@ impl Trees {
 
     /// What changed in [`Trees::state`] since the last call, for the store to write.
     pub fn take_changes(&mut self) -> TreesChanges {
+        let discarded = &self.discarded;
+        self.discard_changed.retain(|id| discarded.contains_key(id));
         let Self {
             r,
             place_ids: _,
@@ -7825,6 +7850,7 @@ impl Trees {
             cycle_reverted,
             unobserved,
             discard_members,
+            discard_changed,
             left_out_by_server,
             rules_changed: _,
             relist: _,
@@ -7912,6 +7938,7 @@ impl Trees {
             cycle_reverted: cycle_reverted.take_changes(),
             unobserved: unobserved.take_changes(),
             discard_members: discard_members.take_changes(),
+            discard_changed: discard_changed.take_changes(),
             left_out_by_server: left_out_by_server.take_changes(),
             parked_as: parked_as.take_changes(),
             waiting: waiting.take_changes(),
@@ -8157,6 +8184,7 @@ impl Trees {
             cycle_reverted,
             unobserved,
             discard_members,
+            discard_changed,
             left_out_by_server,
             parked_as,
             waiting,
@@ -8208,6 +8236,7 @@ impl Trees {
         self.cycle_reverted = cycle_reverted.into();
         self.unobserved = unobserved.into();
         self.discard_members = discard_members.into();
+        self.discard_changed = discard_changed.into();
         self.left_out_by_server = left_out_by_server.into();
         self.copies_gone = (self.unobserved.iter())
             .filter(|id| self.l.get(id).is_none())
