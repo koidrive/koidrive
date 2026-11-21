@@ -13,7 +13,8 @@
 //! the engine can freeze the node at its synced position, and what a move out of one brings into the sync tree is
 //! reported as created, each entry with its identity and every file with its content.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, btree_map};
+use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::io;
 use std::ops::Bound;
@@ -31,7 +32,7 @@ use koidrive_fs::{
     check_root,
 };
 use koidrive_proto::v1::{ChunkRef, Content};
-use rustix::fs::{Mode, OFlags};
+use rustix::fs::{AtFlags, Mode, OFlags};
 
 use crate::ignore::{Matcher, scan_rules};
 
@@ -303,6 +304,12 @@ impl Unread {
     }
 }
 
+struct FileRead {
+    content: Content,
+    marked_node: Option<String>,
+    linked: bool,
+}
+
 /// The reads of one observation.
 #[derive(Default)]
 struct Reads {
@@ -318,6 +325,7 @@ struct Reads {
     replaced: Vec<PathBuf>,
     left_files: u64,
     left_bytes: u64,
+    beneath: Beneath,
 }
 
 impl Reads {
@@ -483,14 +491,15 @@ impl FsObserver {
             Change::Created { path, kind } => {
                 let Some(entry) = entry(&path) else { return };
                 let must = reads.replaced.iter().any(|dir| path.starts_with(dir));
-                let content = (kind == EntryKind::File)
-                    .then(|| self.content(&path, &entry, reads, must))
-                    .flatten();
-                let marked_node = (kind == EntryKind::Dir || content.is_some())
-                    .then(|| self.marked_node(&path, &entry))
-                    .flatten();
+                let (content, marked_node, linked) = match kind {
+                    EntryKind::File => match self.content(&path, &entry, reads, must) {
+                        Some(read) => (Some(read.content), read.marked_node, read.linked),
+                        None => (None, None, self.linked(&path, kind)),
+                    },
+                    EntryKind::Dir => (None, self.marked_node(&path, &entry, reads), false),
+                };
                 out.push(Observed::Created {
-                    linked: self.linked(&path, kind),
+                    linked,
                     path,
                     kind,
                     id: entry.id,
@@ -503,16 +512,16 @@ impl FsObserver {
                 if entry.kind != EntryKind::File {
                     return;
                 }
-                let content = self.content(&path, &entry, reads, false);
-                let marked_node = content
-                    .is_some()
-                    .then(|| self.marked_node(&path, &entry))
-                    .flatten();
+                let (content, marked_node, linked) = match self.content(&path, &entry, reads, false)
+                {
+                    Some(read) => (Some(read.content), read.marked_node, read.linked),
+                    None => (None, None, self.linked(&path, entry.kind)),
+                };
                 out.push(Observed::Modified {
                     content,
                     marked_node,
                     id: entry.id,
-                    linked: self.linked(&path, entry.kind),
+                    linked,
                     path,
                 });
             }
@@ -612,14 +621,14 @@ impl FsObserver {
                 continue;
             }
             match self.read(&path, &entry, reads) {
-                Ok(Some(content)) => {
+                Ok(Some(read)) => {
                     self.unread.remove(&path);
                     out.push(Observed::Modified {
-                        linked: self.linked(&path, entry.kind),
-                        marked_node: self.marked_node(&path, &entry),
+                        linked: read.linked,
+                        marked_node: read.marked_node,
                         path,
                         id: entry.id,
-                        content: Some(content),
+                        content: Some(read.content),
                     });
                 }
                 Err(_) if (self.stopped)() => break,
@@ -638,13 +647,20 @@ impl FsObserver {
             && std::fs::symlink_metadata(self.root.join(path)).is_ok_and(|meta| meta.nlink() > 1)
     }
 
-    fn read(&self, path: &Path, entry: &Entry, reads: &mut Reads) -> io::Result<Option<Content>> {
+    fn read(&self, path: &Path, entry: &Entry, reads: &mut Reads) -> io::Result<Option<FileRead>> {
         let (files, bytes) = (reads.left_files, reads.left_bytes);
         let mut read = 0;
-        let content = read_content(&self.root, path, entry, &*self.stopped, &mut |chunk| {
-            read += chunk;
-            let bytes = bytes.saturating_sub(read);
-            (self.progress)(Observing::Reading { files, bytes });
+        let content = reads.beneath.open(&self.root, path).and_then(|file| {
+            let content = read_file(&file, path, entry, &*self.stopped, &mut |chunk| {
+                read += chunk;
+                let bytes = bytes.saturating_sub(read);
+                (self.progress)(Observing::Reading { files, bytes });
+            })?;
+            Ok(content.map(|(content, after)| FileRead {
+                content,
+                marked_node: mark_of(&file, path),
+                linked: after.nlink() > 1,
+            }))
         });
         if let Ok(Some(_)) = content {
             reads.left_files = files.saturating_sub(1);
@@ -665,7 +681,7 @@ impl FsObserver {
         entry: &Entry,
         reads: &mut Reads,
         must: bool,
-    ) -> Option<Content> {
+    ) -> Option<FileRead> {
         if matches!(entry.ctime, Ctime::Racy { .. }) || !reads.take(entry.size, must) {
             reads.deferred.push(path.to_path_buf());
             return None;
@@ -756,9 +772,9 @@ impl FsObserver {
         }
     }
 
-    fn marked_node(&self, path: &Path, entry: &Entry) -> Option<String> {
-        let read = || -> io::Result<Option<String>> {
-            let opened = open_beneath(&self.root, path)?;
+    fn marked_node(&self, path: &Path, entry: &Entry, reads: &mut Reads) -> Option<String> {
+        let mut read = || -> io::Result<Option<String>> {
+            let opened = reads.beneath.open(&self.root, path)?;
             if !koidrive_fs::id_of(opened.as_fd())?.same(&entry.id) {
                 return Ok(None);
             }
@@ -860,6 +876,34 @@ impl Observer for FsObserver {
         changes.extend(retried);
         if (self.stopped)() {
             return Ok(None);
+        }
+        let left = reads.beneath.left();
+        for change in &mut changes {
+            let (Observed::Created {
+                path,
+                content,
+                marked_node,
+                linked,
+                ..
+            }
+            | Observed::Modified {
+                path,
+                content,
+                marked_node,
+                linked,
+                ..
+            }) = change
+            else {
+                continue;
+            };
+            if !path.ancestors().skip(1).any(|above| left.contains(above)) {
+                continue;
+            }
+            *marked_node = None;
+            if content.take().is_some() {
+                *linked = self.linked(path, EntryKind::File);
+                reads.busy.push(path.clone());
+            }
         }
         for path in &reads.busy {
             let size = self.size(path);
@@ -1015,9 +1059,7 @@ impl Observer for FsObserver {
             rules,
             all_rules: first,
             tracked: poll.tracked,
-            mounts: (self.watcher.snapshot().entries.iter())
-                .filter_map(|(path, entry)| Some((path.clone(), entry.mount?)))
-                .collect(),
+            mounts: self.watcher.snapshot().entries.mounts().clone(),
             detached: self.watcher.snapshot().detached.clone(),
             ctimes,
             unread: (self.watcher.snapshot().unread.as_ref()).map(|unread| {
@@ -1082,7 +1124,18 @@ pub(crate) fn read_content(
     stopped: &dyn Fn() -> bool,
     chunked: &mut dyn FnMut(u64),
 ) -> io::Result<Option<Content>> {
-    let file = open_beneath(root, path)?;
+    let read = read_file(&open_beneath(root, path)?, path, entry, stopped, chunked)?;
+    Ok(read.map(|(content, _)| content))
+}
+
+#[cfg_attr(not(test), allow(unused_variables))]
+fn read_file(
+    file: &File,
+    path: &Path,
+    entry: &Entry,
+    stopped: &dyn Fn() -> bool,
+    chunked: &mut dyn FnMut(u64),
+) -> io::Result<Option<(Content, std::fs::Metadata)>> {
     #[cfg(test)]
     READS.with_borrow_mut(|reads| reads.push(path.to_path_buf()));
     let before = file.metadata()?;
@@ -1091,7 +1144,7 @@ pub(crate) fn read_content(
         return Ok(None);
     }
     let config = ChunkerConfig::V0;
-    let chunks = koidrive_chunk::chunks(io::Read::take(&file, entry.size), config)
+    let chunks = koidrive_chunk::chunks(io::Read::take(file, entry.size), config)
         .map(|chunk| match stopped() {
             true => Err(io::ErrorKind::Interrupted.into()),
             false => chunk.map(|chunk| {
@@ -1104,12 +1157,16 @@ pub(crate) fn read_content(
     if !same_version(&after, entry) {
         return Ok(None);
     }
-    Ok(Some(koidrive_chunk::content(
-        chunks,
-        mtime_ns(&after) as i64,
-        entry.executable,
-        &config,
-    )))
+    let content =
+        koidrive_chunk::content(chunks, mtime_ns(&after) as i64, entry.executable, &config);
+    Ok(Some((content, after)))
+}
+
+fn mark_of(file: &File, path: &Path) -> Option<String> {
+    koidrive_fs::node_mark(file.as_fd()).unwrap_or_else(|error| {
+        tracing::debug!(path = %koidrive_fs::quoted(path), %error, "a node mark could not be read");
+        None
+    })
 }
 
 fn mtime_ns(meta: &std::fs::Metadata) -> i128 {
@@ -1128,37 +1185,87 @@ fn same_version(meta: &std::fs::Metadata, entry: &Entry) -> bool {
 
 /// Opens the file at the relative `path` under `root` for reading, one folder at a time, following no symbolic link.
 pub(crate) fn open_beneath(root: &Path, path: &Path) -> io::Result<File> {
-    #[cfg(test)]
-    tests::before_open(path)?;
-    let dir_flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC;
-    open_under(rustix::fs::open(root, dir_flags, Mode::empty())?, path)
+    Beneath::default().open(root, path)
 }
 
-/// Opens the file at the relative `path` under the open folder `root` for reading, one folder at a time, following
-/// no symbolic link.
-fn open_under(root: impl AsFd, path: &Path) -> io::Result<File> {
-    let dir_flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC;
-    let mut dir: OwnedFd = rustix::fs::openat(&root, ".", dir_flags, Mode::empty())?;
-    let mut parts = path.components().peekable();
-    while let Some(part) = parts.next() {
-        let Component::Normal(name) = part else {
-            break;
+#[derive(Default)]
+struct Beneath {
+    root: Option<OwnedFd>,
+    folders: Vec<(OsString, OwnedFd)>,
+    opened: BTreeMap<PathBuf, rustix::fs::Stat>,
+}
+
+impl Beneath {
+    fn open(&mut self, root: &Path, path: &Path) -> io::Result<File> {
+        #[cfg(test)]
+        tests::before_open(path)?;
+        let not_relative = || {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("{} is not a relative file path", koidrive_fs::quoted(path)),
+            )
         };
-        if parts.peek().is_none() {
-            let flags = OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC;
-            return Ok(File::from(rustix::fs::openat(
-                &dir,
-                name,
-                flags,
-                Mode::empty(),
-            )?));
+        let names = (path.components())
+            .map(|part| match part {
+                Component::Normal(name) => Ok(name),
+                _ => Err(not_relative()),
+            })
+            .collect::<io::Result<Vec<&OsStr>>>()?;
+        let Some((leaf, folders)) = names.split_last() else {
+            return Err(not_relative());
+        };
+        let dir_flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC;
+        let root = match &mut self.root {
+            Some(root) => root,
+            empty => empty.insert(open_at(rustix::fs::CWD, root, dir_flags)?),
+        };
+        let kept = (self.folders.iter().zip(folders))
+            .take_while(|((open, _), name)| open == *name)
+            .count();
+        self.folders.truncate(kept);
+        for name in &folders[kept..] {
+            let above = self
+                .folders
+                .last()
+                .map_or(root.as_fd(), |(_, dir)| dir.as_fd());
+            let dir = open_at(above, *name, dir_flags | OFlags::NOFOLLOW)?;
+            let at: PathBuf = folders[..=self.folders.len()].iter().collect();
+            if let btree_map::Entry::Vacant(first) = self.opened.entry(at) {
+                first.insert(rustix::fs::fstat(&dir)?);
+            }
+            self.folders.push((name.to_os_string(), dir));
         }
-        dir = rustix::fs::openat(&dir, name, dir_flags | OFlags::NOFOLLOW, Mode::empty())?;
+        let above = self
+            .folders
+            .last()
+            .map_or(root.as_fd(), |(_, dir)| dir.as_fd());
+        let flags = OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC;
+        Ok(File::from(open_at(above, *leaf, flags)?))
     }
-    Err(io::Error::new(
-        io::ErrorKind::InvalidInput,
-        format!("{} is not a relative file path", koidrive_fs::quoted(path)),
-    ))
+
+    fn left(&self) -> BTreeSet<PathBuf> {
+        let Some(root) = &self.root else {
+            return BTreeSet::new();
+        };
+        (self.opened.iter())
+            .filter(|(at, was)| {
+                !rustix::fs::statat(root, at.as_path(), AtFlags::SYMLINK_NOFOLLOW)
+                    .is_ok_and(|now| now.st_dev == was.st_dev && now.st_ino == was.st_ino)
+            })
+            .map(|(at, _)| at.clone())
+            .collect()
+    }
+}
+
+fn open_at(dir: impl AsFd, name: impl rustix::path::Arg, flags: OFlags) -> io::Result<OwnedFd> {
+    #[cfg(test)]
+    tests::OPENS.set(tests::OPENS.get() + 1);
+    Ok(rustix::fs::openat(dir, name, flags, Mode::empty())?)
+}
+
+#[cfg(test)]
+pub(crate) fn before_next_file_open(path: PathBuf, change: Box<dyn FnOnce()>) {
+    tests::BEFORE_OPEN.set(Some((path, change)));
 }
 
 #[cfg(test)]
@@ -1210,7 +1317,7 @@ impl FsObserver {
 
 #[cfg(test)]
 mod tests {
-    use std::cell::RefCell;
+    use std::cell::{Cell, RefCell};
     use std::fs;
     use std::os::unix::fs::MetadataExt;
     use std::time::Instant;
@@ -1226,9 +1333,18 @@ mod tests {
     thread_local! {
         /// The file whose next open on this thread fails with EINTR, as an open the OS interrupts does.
         static INTERRUPTED_OPEN: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
+        pub(super) static OPENS: Cell<usize> = const { Cell::new(0) };
+        pub(super) static BEFORE_OPEN: RefCell<Option<(PathBuf, Change)>> = RefCell::new(None);
     }
 
+    type Change = Box<dyn FnOnce()>;
+
     pub(super) fn before_open(path: &Path) -> io::Result<()> {
+        if let Some((_, change)) =
+            BEFORE_OPEN.with_borrow_mut(|next| next.take_if(|(at, _)| at == path))
+        {
+            change();
+        }
         match INTERRUPTED_OPEN.with_borrow_mut(|next| next.take_if(|next| next == path)) {
             Some(_) => Err(rustix::io::Errno::INTR.into()),
             None => Ok(()),
@@ -1357,6 +1473,184 @@ mod tests {
             seen.iter().all(|change| !matches!(change, Observed::Created { path, .. } if path.starts_with(".koidrive"))),
             "{seen:?}"
         );
+    }
+
+    fn opens_to_read_twenty_files(depth: usize) -> usize {
+        let dir = marked();
+        let folder: PathBuf = (0..depth).map(|level| format!("{level}")).collect();
+        fs::create_dir_all(dir.path().join(&folder)).unwrap();
+        for file in 0..20 {
+            fs::write(dir.path().join(&folder).join(format!("{file}.txt")), "x").unwrap();
+        }
+        let mut observer = observer(dir.path());
+        OPENS.set(0);
+        observe_until(&mut observer, |seen| seen.len() >= depth + 20);
+        OPENS.get()
+    }
+
+    #[test]
+    fn reading_files_opens_each_folder_above_them_once_whatever_their_depth() {
+        let (shallow, deep) = (
+            opens_to_read_twenty_files(1),
+            opens_to_read_twenty_files(11),
+        );
+        assert!(
+            deep <= shallow + 2 * 10,
+            "{shallow} opens to read twenty files one folder deep and {deep} eleven folders deep"
+        );
+    }
+
+    fn after(changes: &[Observed]) -> BTreeMap<PathBuf, Option<Vec<Vec<u8>>>> {
+        let hashes = |content: &Option<Content>| {
+            (content.as_ref()).map(|content| {
+                content
+                    .chunks
+                    .iter()
+                    .map(|chunk| chunk.hash.clone())
+                    .collect()
+            })
+        };
+        let mut files = BTreeMap::new();
+        for change in changes {
+            match change {
+                Observed::Created {
+                    path,
+                    kind: EntryKind::File,
+                    content,
+                    ..
+                } => {
+                    files.insert(path.clone(), hashes(content));
+                }
+                Observed::Modified { path, content, .. } if content.is_some() => {
+                    files.insert(path.clone(), hashes(content));
+                }
+                Observed::Renamed { from, to, .. } => {
+                    let moved: Vec<PathBuf> = files
+                        .keys()
+                        .filter(|path| path.starts_with(from))
+                        .cloned()
+                        .collect();
+                    for path in moved {
+                        let content = files.remove(&path).unwrap();
+                        let rest = path.strip_prefix(from).unwrap();
+                        let path = if rest.as_os_str().is_empty() {
+                            to.clone()
+                        } else {
+                            to.join(rest)
+                        };
+                        files.insert(path, content);
+                    }
+                }
+                Observed::Removed { path, .. } => files.retain(|file, _| !file.starts_with(path)),
+                _ => {}
+            }
+        }
+        files
+    }
+
+    fn on_disk(root: &Path, at: &Path, files: &mut BTreeMap<PathBuf, Option<Vec<Vec<u8>>>>) {
+        for item in fs::read_dir(root.join(at)).unwrap() {
+            let path = at.join(item.unwrap().file_name());
+            let meta = fs::symlink_metadata(root.join(&path)).unwrap();
+            if path.starts_with(".koidrive") || meta.is_symlink() {
+                continue;
+            }
+            if meta.is_dir() {
+                on_disk(root, &path, files);
+            } else {
+                let hash =
+                    koidrive_chunk::chunk_hash(&fs::read(root.join(&path)).unwrap()).to_vec();
+                files.insert(path, Some(vec![hash]));
+            }
+        }
+    }
+
+    fn changed_between_two_reads(change: impl FnOnce(&Path, &Path) + 'static) {
+        let (dir, outside) = (marked(), tempfile::tempdir().unwrap());
+        fs::create_dir_all(dir.path().join("a")).unwrap();
+        fs::create_dir_all(outside.path().join("a")).unwrap();
+        fs::write(dir.path().join("a/1.txt"), "one").unwrap();
+        fs::write(dir.path().join("a/2.txt"), "two").unwrap();
+        fs::write(outside.path().join("a/2.txt"), "outside").unwrap();
+        let (root, out) = (dir.path().to_path_buf(), outside.path().to_path_buf());
+        BEFORE_OPEN.set(Some((
+            "a/2.txt".into(),
+            Box::new(move || change(&root, &out)),
+        )));
+        let mut observer = observer(dir.path());
+        let mut seen = Vec::new();
+        let mut quiet = 0;
+        while quiet < 6 {
+            match observer.observe(Duration::from_millis(500)).unwrap() {
+                Some(observation) => {
+                    seen.extend(observation.changes);
+                    quiet = 0;
+                }
+                None => quiet += usize::from(observer.unread() == (0, 0)),
+            }
+        }
+        assert!(
+            BEFORE_OPEN.with_borrow(Option::is_none),
+            "a/2.txt was never opened"
+        );
+        let outside_hash = koidrive_chunk::chunk_hash(b"outside").to_vec();
+        assert!(
+            after(&seen)
+                .values()
+                .flatten()
+                .flatten()
+                .all(|hash| *hash != outside_hash),
+            "{seen:?}"
+        );
+        assert!(
+            !seen.iter().any(|one| matches!(
+                one,
+                Observed::Created { path, content: Some(_), .. }
+                | Observed::Modified { path, content: Some(_), .. }
+                    if path == Path::new("a/2.txt")
+            )),
+            "a/2.txt was read through a folder that left its path: {seen:?}"
+        );
+        let mut disk = BTreeMap::new();
+        on_disk(dir.path(), Path::new(""), &mut disk);
+        assert_eq!(after(&seen), disk, "{seen:?}");
+    }
+
+    #[test]
+    fn a_folder_replaced_and_opened_again_in_one_batch_counts_as_left() {
+        let (dir, outside) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        for path in ["a/1.txt", "b/1.txt"] {
+            fs::create_dir_all(dir.path().join(path).parent().unwrap()).unwrap();
+            fs::write(dir.path().join(path), "one").unwrap();
+        }
+        let mut beneath = Beneath::default();
+        beneath.open(dir.path(), Path::new("a/1.txt")).unwrap();
+        beneath.open(dir.path(), Path::new("b/1.txt")).unwrap();
+        fs::rename(dir.path().join("a"), outside.path().join("moved")).unwrap();
+        fs::create_dir(dir.path().join("a")).unwrap();
+        fs::write(dir.path().join("a/2.txt"), "two").unwrap();
+        beneath.open(dir.path(), Path::new("a/2.txt")).unwrap();
+        assert_eq!(beneath.left(), BTreeSet::from([PathBuf::from("a")]));
+    }
+
+    #[test]
+    fn a_folder_renamed_between_two_reads_leaves_its_files_at_their_new_paths() {
+        changed_between_two_reads(|root, _| fs::rename(root.join("a"), root.join("b")).unwrap());
+    }
+
+    #[test]
+    fn a_folder_replaced_by_a_symbolic_link_between_two_reads_is_not_read_through() {
+        changed_between_two_reads(|root, outside| {
+            fs::rename(root.join("a"), root.join("old")).unwrap();
+            std::os::unix::fs::symlink(outside.join("a"), root.join("a")).unwrap();
+        });
+    }
+
+    #[test]
+    fn a_folder_moved_out_of_the_root_between_two_reads_leaves_none_of_its_files() {
+        changed_between_two_reads(|root, outside| {
+            fs::rename(root.join("a"), outside.join("moved")).unwrap();
+        });
     }
 
     #[test]

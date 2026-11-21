@@ -4,8 +4,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use koidrive_engine::tree::NodeId;
-use koidrive_proto::v1::{Commit, op};
+use koidrive_engine::tree::{Content, NodeId};
 use tokio::sync::watch;
 
 use crate::lifecycle::Lifecycle;
@@ -126,11 +125,48 @@ impl Tracker {
     }
 
     pub fn track(&mut self, wanted: BTreeMap<Item, u64>, synced: impl Fn(&Item) -> bool) -> bool {
-        let shown = !self.entries.is_empty();
         let gone: Vec<Item> = (self.entries.keys())
             .filter(|item| !wanted.contains_key(*item))
             .cloned()
             .collect();
+        self.change(gone, wanted, synced)
+    }
+
+    pub fn update(
+        &mut self,
+        nodes: impl IntoIterator<Item = (NodeId, Vec<(Item, u64)>)>,
+        synced: impl Fn(&Item) -> bool,
+    ) -> bool {
+        let mut gone = Vec::new();
+        let mut wanted = Vec::new();
+        for (node, items) in nodes {
+            for direction in [Direction::Upload, Direction::Download] {
+                let from = Item {
+                    direction,
+                    node: node.clone(),
+                    digest: Vec::new(),
+                };
+                let tracked = (self.entries.range(from..)).map(|(item, _)| item);
+                let tracked =
+                    tracked.take_while(|item| item.direction == direction && item.node == node);
+                (gone).extend(
+                    tracked
+                        .filter(|item| !items.iter().any(|(kept, _)| kept == *item))
+                        .cloned(),
+                );
+            }
+            wanted.extend(items);
+        }
+        self.change(gone, wanted, synced)
+    }
+
+    fn change(
+        &mut self,
+        gone: Vec<Item>,
+        wanted: impl IntoIterator<Item = (Item, u64)>,
+        synced: impl Fn(&Item) -> bool,
+    ) -> bool {
+        let shown = !self.entries.is_empty();
         for item in gone {
             let entry = self.remove(&item);
             self.finished += match synced(&item) {
@@ -232,21 +268,14 @@ pub(crate) struct Credit {
 }
 
 impl Credit {
-    pub fn upload(
+    pub fn upload<'a>(
         tracker: &Arc<Mutex<Tracker>>,
-        commit: &Commit,
+        files: impl IntoIterator<Item = (NodeId, &'a Content)>,
         path_of: impl Fn(&NodeId) -> Option<PathBuf>,
     ) -> Credit {
         let mut credit = Credit::download(tracker, []);
         let mut items = Vec::new();
-        for op in &commit.ops {
-            let (node, content) = match &op.op {
-                Some(op::Op::CreateFile(create)) => (&create.node_id, &create.content),
-                Some(op::Op::UpdateContent(update)) => (&update.node_id, &update.content),
-                _ => continue,
-            };
-            let Some(content) = content else { continue };
-            let node = NodeId::from(node);
+        for (node, content) in files {
             if let Some(path) = path_of(&node) {
                 credit
                     .paths
@@ -374,7 +403,7 @@ mod tests {
 
     #[test]
     fn an_upload_that_starts_before_a_recount_counts_its_file_and_the_chunks_it_sends() {
-        use koidrive_proto::v1::{ChunkRef, Content, CreateFile, Op};
+        use koidrive_proto::v1::{ChunkRef, Commit, Content, CreateFile, Op, op};
         let sum = Arc::default();
         let a = folder("a", &sum);
         let tracker = Arc::new(Mutex::new(a.tracker));
@@ -401,7 +430,7 @@ mod tests {
             ..Default::default()
         };
 
-        let credit = Credit::upload(&tracker, &commit, |_| None);
+        let credit = Credit::upload(&tracker, crate::disk::added(&commit), |_| None);
         assert_eq!(shown(&sum), Some((0, 100)));
         credit.chunk(b"1");
         assert_eq!(shown(&sum), Some((40, 100)));

@@ -840,6 +840,22 @@ jobs:
         working-directory: server
       - name: Test two drivers against the Worker under wrangler dev
         run: core/driver/scripts/integration-test.sh
+      - name: Make room for a first sync of two million entries
+        run: sudo mkdir -p /mnt/koidrive-scale && sudo chown "$USER" /mnt/koidrive-scale
+      - name: Let inotify watch every folder of two million entries
+        run: sudo sysctl -w fs.inotify.max_user_watches=1048576
+      - name: Test that a first sync of two million entries never stands still
+        env:
+          KOIDRIVE_DRIVER_TEST: first_sync_bench
+          KOIDRIVE_DRIVER_RELEASE: "1"
+          KOIDRIVE_SCALE_DIR: /mnt/koidrive-scale
+        run: core/driver/scripts/integration-test.sh a_first_sync_of_two_million_entries_keeps_moving --nocapture
+      - name: Test that a first sync holds at most its heap ceilings per entry
+        env:
+          KOIDRIVE_DRIVER_TEST: first_sync_bench
+          KOIDRIVE_DRIVER_RELEASE: "1"
+          KOIDRIVE_SCALE_DIR: /mnt/koidrive-scale
+        run: core/driver/scripts/integration-test.sh a_first_sync_holds_at_most_its_heap_ceilings_per_entry --nocapture
 
   cli-integration:
     name: cli integration (ubuntu-latest)

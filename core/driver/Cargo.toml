@@ -28,7 +28,7 @@ serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 sha2 = "0.11.1"
 thiserror = "2.0.21"
-tokio = { version = "1.48", features = ["macros", "rt", "sync", "time"] }
+tokio = { version = "1.48", features = ["macros", "rt", "rt-multi-thread", "sync", "time"] }
 toml = "1.1.8"
 toml_edit = "0.25.19"
 tracing = "0.1.41"
@@ -38,6 +38,7 @@ url = "2.5.8"
 futures-util = { version = "0.3.31", default-features = false, features = ["sink", "std"] }
 koidrive-sim = { path = "../sim" }
 koidrive-test-support = { path = "../test-support" }
+libc = "0.2.191"
 proptest = "1.12.0"
 rusqlite = "0.41.1"
 tempfile = "3.27.0"

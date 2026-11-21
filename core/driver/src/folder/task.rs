@@ -31,10 +31,10 @@ use crate::status::Remedy;
 use crate::timing::Time;
 
 use super::commit::sent_in_order;
-use super::work::{Slot, finished, list_tree, stage_effect, upload_chunks};
+use super::work::{Slot, finished, in_place, list_tree, spawned, stage_effect, upload_chunks};
 use super::{
-    CLAIM_RECHECK, Folder, Listed, Listing, MAX_FORMAT, OTHER_FOLDER, RECLAIM_TRASH, REPLACED,
-    ROOT_AGAIN, ROOT_RECHECK, View, Work,
+    CLAIM_RECHECK, Folder, Listed, Listing, MAX_FORMAT, OBSERVED_AHEAD, OTHER_FOLDER,
+    RECLAIM_TRASH, REPLACED, ROOT_AGAIN, ROOT_RECHECK, View, Work,
 };
 
 /// What the observer's thread sends to the task.
@@ -333,6 +333,7 @@ impl FolderTask {
                 );
             }
         };
+        let session = Arc::new(session);
         let transfer = self.transfer();
         self.publish(&mut folder);
         let stop = {
@@ -340,6 +341,7 @@ impl FolderTask {
             let mut list: Slot<'_, Result<Listed, Stop>> = None;
             let mut stage: Slot<'_, (Pending, Result<Staged, Stall>)> = None;
             let mut upload: Slot<'_, Result<Vec<UploadReceipt>, ChunkError>> = None;
+            let mut ahead = tokio::task::JoinSet::new();
             let mut send: Slot<'_, Result<CommitResult, CallError>> = None;
             let mut wait: Slot<'_, ()> = None;
             let mut retry: Slot<'_, ()> = None;
@@ -350,31 +352,35 @@ impl FolderTask {
             'session: loop {
                 let step = tokio::select! {
                     event = events.next() => match event {
-                        Some(event) => folder.event(event),
+                        Some(event) => in_place(|| folder.event(event)),
                         None => Err(Stop::Protocol("the session ended".into())),
                     },
                     Some(seen) = from_disk.recv() => match seen {
                         // The observer reaches the folder by its path, so a folder replaced before its
                         // first scan is scanned or fails there before the recheck below sees it.
-                        FromDisk::Batch(batch, entries) => folder.observed(*batch, entries),
-                        FromDisk::Scanned => folder.scanned(),
+                        FromDisk::Batch(batch, entries) => in_place(|| folder.observed(*batch, entries)),
+                        FromDisk::Scanned => in_place(|| folder.scanned()),
                         FromDisk::Failed(_) if !claim::still_locked(&lock, &self.link.root) => {
                             break Halt::Root(Halted::Replaced, REPLACED.to_owned());
                         }
                         FromDisk::Failed(why) => Err(Stop::Io(io::Error::other(why))),
                     },
-                    pages = finished(&mut list) => folder.listed(pages),
-                    (pending, staged) = finished(&mut stage) => folder.staged(pending, staged),
-                    receipts = finished(&mut upload) => folder.uploaded(receipts),
-                    result = finished(&mut send) => {
-                        sent_in_order(&mut folder, std::iter::from_fn(|| events.try_next()), result)
+                    pages = finished(&mut list) => in_place(|| folder.listed(pages)),
+                    (pending, staged) = finished(&mut stage) => in_place(|| folder.staged(pending, staged)),
+                    receipts = finished(&mut upload) => in_place(|| folder.uploaded(receipts)),
+                    Some(ended) = ahead.join_next(), if !ahead.is_empty() => {
+                        let (id, receipts) = ended.unwrap_or_else(|error| std::panic::resume_unwind(error.into_panic()));
+                        in_place(|| folder.uploaded_ahead(id, receipts))
                     }
-                    () = finished(&mut wait) => folder.resend(),
-                    () = finished(&mut retry) => folder.retry(),
+                    result = finished(&mut send) => {
+                        in_place(|| sent_in_order(&mut folder, std::iter::from_fn(|| events.try_next()), result))
+                    }
+                    () = finished(&mut wait) => in_place(|| folder.resend()),
+                    () = finished(&mut retry) => in_place(|| folder.retry()),
                     () = finished(&mut expire) => Ok(Vec::new()),
-                    () = self.requests.notified() => folder.requested(),
+                    () = self.requests.notified() => in_place(|| folder.requested()),
                     _ = reclaim.tick() => {
-                        folder.reclaim_trash(self.trash_cap);
+                        in_place(|| folder.reclaim_trash(self.trash_cap));
                         Ok(Vec::new())
                     }
                     _ = recheck.tick() => {
@@ -393,36 +399,51 @@ impl FolderTask {
                         Work::Subscribe(since) => session.subscribe(since),
                         Work::List => {
                             let listing = Listing::default();
-                            list = Some(Box::pin(list_tree(
-                                session,
-                                &self.link.space_id,
+                            list = spawned(list_tree(
+                                session.clone(),
+                                self.link.space_id.clone(),
                                 listing,
                                 None,
-                            )))
+                            ))
                         }
                         Work::ListAfter(wait, listing) => {
-                            list = Some(Box::pin(list_tree(
-                                session,
-                                &self.link.space_id,
+                            list = spawned(list_tree(
+                                session.clone(),
+                                self.link.space_id.clone(),
                                 listing,
                                 Some(wait),
-                            )))
+                            ))
                         }
                         Work::Stage(pending) => {
-                            stage = Some(Box::pin(stage_effect(session, transfer, pending, None)));
+                            stage = Some(Box::pin(stage_effect(
+                                session.clone(),
+                                transfer.clone(),
+                                pending,
+                                None,
+                            )));
                         }
                         Work::StageAfter(wait, pending) => {
                             stage = Some(Box::pin(stage_effect(
-                                session,
-                                transfer,
+                                session.clone(),
+                                transfer.clone(),
                                 pending,
                                 Some(wait),
                             )));
                         }
                         Work::Upload(chunks) => {
-                            upload = Some(Box::pin(upload_chunks(session, transfer, chunks)));
+                            upload =
+                                spawned(upload_chunks(session.clone(), transfer.clone(), chunks));
                         }
-                        Work::Send(commit) => send = Some(Box::pin(session.commit(commit))),
+                        Work::UploadAhead(id, chunks) => {
+                            let (session, transfer) = (session.clone(), transfer.clone());
+                            ahead.spawn(async move {
+                                (id, upload_chunks(session, transfer, chunks).await)
+                            });
+                        }
+                        Work::Send(commit) => {
+                            let session = session.clone();
+                            send = spawned(async move { session.commit(commit).await });
+                        }
                         Work::ResendAfter(after) => {
                             wait = Some(Box::pin(tokio::time::sleep(after)))
                         }
@@ -433,7 +454,7 @@ impl FolderTask {
                         Work::Reconnect => break 'session Halt::Reconnect,
                     }
                 }
-                self.publish(&mut folder);
+                in_place(|| self.publish(&mut folder));
                 expire = match folder.next_change() {
                     Some(after) => Some(Box::pin(tokio::time::sleep(after))),
                     None => None,
@@ -516,8 +537,8 @@ impl FolderTask {
         lock: Arc<Flock>,
         sections: Arc<Sections>,
         previous: Snapshot,
-    ) -> mpsc::UnboundedReceiver<FromDisk> {
-        let (sender, receiver) = mpsc::unbounded_channel();
+    ) -> mpsc::Receiver<FromDisk> {
+        let (sender, receiver) = mpsc::channel(OBSERVED_AHEAD);
         let matcher = self.matcher.clone();
         *self.observing.lock().unwrap() = None;
         let walked = Arc::new(AtomicBool::new(false));
@@ -546,7 +567,7 @@ impl FolderTask {
                 Ok(observer) => observer,
                 Err(error) => {
                     tracing::warn!(space_id = link.space_id, %error, "the folder cannot be observed");
-                    let _ = sender.send(FromDisk::Failed(format!(
+                    let _ = sender.blocking_send(FromDisk::Failed(format!(
                         "the folder cannot be observed: {error}"
                     )));
                     return;
@@ -582,7 +603,7 @@ impl FolderTask {
                             before();
                         }
                         let entries = observer.snapshot().entries.len() as u64;
-                        let _ = sender.send(FromDisk::Batch(Box::new(batch), entries));
+                        let _ = sender.blocking_send(FromDisk::Batch(Box::new(batch), entries));
                     }
                     Err(error) => {
                         tracing::warn!(space_id = link.space_id, %error, "observing the folder failed");
@@ -603,7 +624,7 @@ impl FolderTask {
                 if !scanned && observer.scanned().is_some() {
                     scanned = true;
                     walked.store(true, Ordering::Relaxed);
-                    let _ = sender.send(FromDisk::Scanned);
+                    let _ = sender.blocking_send(FromDisk::Scanned);
                 }
             }
         });
@@ -616,7 +637,7 @@ impl FolderTask {
         let view = folder.view();
         (self.status).set_pending(folder.engine.trees.dirty().len() as u64);
         folder.record_status(view.state);
-        let began_or_ended = folder.recount_progress(view.state);
+        let began_or_ended = folder.show_progress(view.state);
         let activity = folder.activity(view.state);
         let asked = folder.take_questions_changed();
         let mut status = self.status.lock().unwrap();

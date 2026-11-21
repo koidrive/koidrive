@@ -1107,7 +1107,7 @@ pub enum Change {
 /// exact names the directory listings return.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Snapshot {
-    pub entries: BTreeMap<PathBuf, Entry>,
+    pub entries: Entries,
     /// The entries the snapshot knew that the rules now leave out, as each was
     /// last known. What is below them is not known.
     pub left_out: BTreeMap<PathBuf, Entry>,
@@ -1462,12 +1462,13 @@ impl Snapshot {
                 replaced: Vec::new(),
                 unreadable: Vec::new(),
                 left_out: BTreeMap::new(),
-                mounts: (self.entries.iter())
-                    .filter(|(path, entry)| {
-                        entry.mount.is_some()
-                            || self.detached.get(*path) == Some(&Detached::Covered)
-                    })
-                    .map(|(path, entry)| (path.clone(), *entry))
+                mounts: (self.entries.mounts().keys())
+                    .chain(
+                        (self.detached.iter())
+                            .filter(|(_, detached)| **detached == Detached::Covered)
+                            .map(|(path, _)| path),
+                    )
+                    .filter_map(|path| Some((path.clone(), *self.entries.get(path)?)))
                     .collect(),
                 plain_ids: BTreeMap::new(),
                 detached: Vec::new(),
@@ -1530,10 +1531,8 @@ impl Snapshot {
             });
             if result.is_err() {
                 for path in &learned {
-                    for entry in [self.entries.get_mut(path), self.left_out.get_mut(path)]
-                        .into_iter()
-                        .flatten()
-                    {
+                    self.entries.update(path, |entry| entry.id.handle = None);
+                    if let Some(entry) = self.left_out.get_mut(path) {
                         entry.id.handle = None;
                     }
                 }
@@ -1564,14 +1563,18 @@ impl Snapshot {
         if found.is_empty() {
             return learned;
         }
-        for (path, entry) in (self.entries.iter_mut()).chain(self.left_out.iter_mut()) {
+        let mut learn = |path: &Path, entry: &mut Entry| {
             if entry.id.handle.is_none()
                 && let Some(&handle) = found.get(&(entry.id, entry.kind))
                 && handle.is_some()
             {
                 entry.id.handle = handle;
-                learned.push(path.clone());
+                learned.push(path.to_path_buf());
             }
+        };
+        self.entries.update_all(&mut learn);
+        for (path, entry) in self.left_out.iter_mut() {
+            learn(path, entry);
         }
         learned
     }
@@ -4994,6 +4997,7 @@ impl From<ItemPath> for String {
 }
 
 mod effect;
+mod entries;
 mod git;
 mod ignore;
 mod mark;
@@ -5008,6 +5012,7 @@ pub use effect::{
     Action, BroughtBack, Contents, Displaced, Effect, Outcome, QUARANTINE_DIR, Reason, Refusal,
     STAGING_DIR, Section, Step, platform_file,
 };
+pub use entries::Entries;
 pub use git::GitIndex;
 pub use ignore::{Coverage, Ignore, Ignored, Rules};
 use ignore::{Key, Pending, RulesRead, Seeded, Wanted};

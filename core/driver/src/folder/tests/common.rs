@@ -356,7 +356,7 @@ impl Device {
     fn take(&mut self, step: Result<Vec<Work>, Stop>) -> Result<(), Stop> {
         self.work.extend(step?);
         let folder = &mut self.folder;
-        folder.track_progress(folder.view().state);
+        folder.show_progress(folder.view().state);
         if folder.timing.is_on() || folder.timing.has_first() {
             folder.record_status(folder.view().state);
         }
@@ -526,6 +526,10 @@ impl Device {
                 let receipts = remote.store(&self.caller, &upload);
                 self.folder.uploaded(receipts)
             }
+            Work::UploadAhead(id, upload) => {
+                let receipts = remote.store(&self.caller, &upload);
+                self.folder.uploaded_ahead(id, receipts)
+            }
             Work::Send(commit) => {
                 self.sent.push(commit.clone());
                 let result = remote.commit(&self.caller, &commit);
@@ -561,6 +565,7 @@ impl Device {
                 Work::Stage(_) => "stage",
                 Work::StageAfter(..) => "stage again",
                 Work::Upload(_) => "upload",
+                Work::UploadAhead(..) => "upload ahead",
                 Work::Send(_) => "send",
                 Work::ResendAfter(_) => "wait",
                 Work::RetryAt(_) => "retry",

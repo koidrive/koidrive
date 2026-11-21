@@ -13,6 +13,7 @@
 //! A future owns what it needs and borrows only the session and the transfer client, so none holds the store or
 //! the engine across an await.
 
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs::File;
 use std::path::{Path, PathBuf};
@@ -26,7 +27,9 @@ use koidrive_engine::tree::{FileIdentity, LocalNode, NodeId};
 use koidrive_fs::{Detached, Refusal, Snapshot};
 use koidrive_net::{Backoff, Cause, DisconnectReason, Event, ServerError};
 use koidrive_proto::v1::resync_required::Reason;
-use koidrive_proto::v1::{Commit, CommitRecord, Resume, TrashPage, TreePage, Welcome};
+use koidrive_proto::v1::{
+    Commit, CommitRecord, Resume, TrashPage, TreePage, UploadReceipt, Welcome,
+};
 use koidrive_store::{Cursor, Link, Store, Tx};
 
 use crate::clock;
@@ -37,11 +40,15 @@ use crate::status::{FolderState, HeldDisk, Wait, WaitKind, describe};
 use crate::timing::{Time, Timing};
 use koidrive_engine::question::{RecoveryCause, RecoveryTrigger};
 
+mod ahead;
 mod commit;
 mod effect;
+mod outstanding;
 mod task;
 mod view;
 mod work;
+
+use outstanding::Outstanding;
 
 #[cfg(test)]
 use crate::claim::{self, Identity};
@@ -58,7 +65,7 @@ use koidrive_net::{CallError, ChunkError, NotResent, StopReason, Transfer, Uploa
 #[cfg(test)]
 use koidrive_proto::v1::error::Code;
 #[cfg(test)]
-use koidrive_proto::v1::{ChunkRef, CommitResult, Error as ProtoError, UploadReceipt, op_result};
+use koidrive_proto::v1::{ChunkRef, CommitResult, Error as ProtoError, op_result};
 #[cfg(test)]
 use std::sync::atomic::{AtomicBool, Ordering};
 pub(crate) use task::FolderTask;
@@ -75,6 +82,7 @@ use work::{later, upload_chunks, upload_counted};
 pub const MAX_FORMAT: u32 = 1;
 /// Nodes per `ListTree` page, the most spec v0 section 13 allows.
 const TREE_PAGE: u32 = 5_000;
+const OBSERVED_AHEAD: usize = 2;
 /// How often a folder that failed its root check is checked again.
 const ROOT_RECHECK: Duration = Duration::from_secs(30);
 /// The first wait before a folder that halted for its root syncs again. Each such halt doubles it, up to
@@ -83,7 +91,6 @@ const ROOT_AGAIN: Duration = Duration::from_secs(1);
 /// How often a running folder reclaims its local trash, after the first time when it starts.
 const RECLAIM_TRASH: Duration = Duration::from_secs(24 * 60 * 60);
 
-const RECOUNT_SPACING: u32 = 9;
 /// How often a running folder checks that its path still names the folder it locked.
 const CLAIM_RECHECK: Duration = Duration::from_secs(2);
 /// The wait before a commit is built again after a file changed while its content was uploaded. The observer
@@ -143,6 +150,7 @@ pub(crate) struct Folder {
     flight: Flight,
     cycle: Option<Cycle>,
     landed_at: Option<Instant>,
+    ahead: ahead::Ahead,
     sent_commit: Option<String>,
     /// The observer has scanned the folder once. Nothing is planned before, because L does not describe the disk
     /// until then.
@@ -177,11 +185,8 @@ pub(crate) struct Folder {
     refused_nodes: BTreeMap<NodeId, String>,
     asked: BTreeSet<String>,
     progress: Arc<Mutex<Tracker>>,
-    recount_at: Option<Instant>,
-    recount_waits: bool,
+    outstanding: RefCell<Outstanding>,
     unread: (u64, u64),
-    other_changes: u64,
-    questions_holding_changes: u64,
     /// When the [`Work::RetryAt`] that is out ends.
     retry_at: Option<Instant>,
     /// Tests stop the task after this many more store transactions, as a crash right after one would.
@@ -212,7 +217,8 @@ enum Flight {
     /// again unchanged, once a `Welcome` allows that (design §2.8).
     Unknown,
     /// The content the commit adds is being uploaded from these files. The server holds nothing of the commit.
-    Uploading(Sources),
+    Uploading(Sources, Vec<UploadReceipt>),
+    AwaitingAhead,
     /// `Session::commit` is out with this copy of the commit, which carries the upload's receipts. The session
     /// resends it after a reconnect, so the folder starts no second call.
     Sending(Commit),
@@ -245,6 +251,7 @@ pub(crate) enum Work {
     StageAfter(Duration, Pending),
     /// `Transfer::upload` of the chunks a commit adds. Answered with [`Folder::uploaded`].
     Upload(Upload),
+    UploadAhead(u64, Upload),
     /// `Session::commit`. Answered with [`Folder::sent`].
     Send(Commit),
     /// Answered with [`Folder::resend`] after the wait.
@@ -455,6 +462,7 @@ impl Folder {
             disk,
             stream: Stream::Connecting,
             flight,
+            ahead: ahead::Ahead::default(),
             sent_commit,
             scanned: false,
             disconnected: None,
@@ -477,11 +485,8 @@ impl Folder {
             refused_nodes: BTreeMap::new(),
             asked,
             progress: Arc::default(),
-            recount_at: None,
-            recount_waits: false,
+            outstanding: RefCell::default(),
             unread: (0, 0),
-            other_changes: 0,
-            questions_holding_changes: 0,
             retry_at: None,
             cycle: None,
             landed_at: None,
@@ -751,7 +756,6 @@ impl Folder {
             engine.accept_restores(tx)?;
             Ok(engine.accept_answers(tx)?)
         })?;
-        self.recount_at = None;
         Ok(())
     }
 
@@ -1191,12 +1195,23 @@ impl Folder {
     /// and S stay.
     fn list_again(&mut self, work: &mut Vec<Work>) {
         self.timing.clear_origins();
+        self.clear_ahead(work);
         if let Stream::Listing { superseded } = &mut self.stream {
             *superseded = true;
             return;
         }
         self.stream = Stream::Listing { superseded: false };
         work.push(Work::List);
+    }
+
+    fn clear_ahead(&mut self, work: &mut Vec<Work>) {
+        self.ahead.clear();
+        if matches!(self.flight, Flight::AwaitingAhead) {
+            self.flight = Flight::Idle;
+            if let Some(commit) = self.in_flight() {
+                self.start(commit, work);
+            }
+        }
     }
 
     fn retry_when_due(&mut self, due: Option<u64>, work: &mut Vec<Work>) {

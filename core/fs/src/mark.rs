@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 use rustix::fs::{Mode, OFlags, XattrFlags};
 use rustix::io::Errno;
 
-use crate::resolve::{Location, Space, Unresolved};
+use crate::resolve::{Base, Folder, Location, Space, Unresolved, check_name, child};
 use crate::{Entry, FileId, stat_fd};
 
 #[cfg(target_vendor = "apple")]
@@ -46,6 +46,73 @@ impl Space {
         }
     }
 
+    /// Marks each entry as [`Space::mark`] does, and opens each folder on the way to them once. Returns the node and
+    /// the error of each mark that failed.
+    pub fn mark_all(&self, mut marks: Vec<(Location, FileId, String)>) -> Vec<(String, io::Error)> {
+        let mut failed = Vec::new();
+        let root = match self.root_folder() {
+            Ok(root) => root,
+            Err(err) => {
+                let err = io::Error::from(err);
+                return (marks.into_iter())
+                    .map(|(.., node)| (node, io::Error::new(err.kind(), err.to_string())))
+                    .collect();
+            }
+        };
+        let names = |at: &Location| {
+            folders_of(at)
+                .iter()
+                .map(|dir| dir.name.clone())
+                .collect::<Vec<_>>()
+        };
+        marks.sort_by_cached_key(|(at, ..)| names(at));
+        let mut open: Vec<Folder> = vec![root];
+        for (at, expected, node) in marks {
+            let Location::At {
+                base: Base::Root,
+                dirs,
+                name,
+            } = &at
+            else {
+                if let Err(err) = self.mark(&at, expected, &node) {
+                    failed.push((node, err));
+                }
+                continue;
+            };
+            let shared = (open[1..].iter().zip(dirs))
+                .take_while(|(folder, dir)| folder.route().last() == Some(*dir))
+                .count();
+            open.truncate(shared + 1);
+            let reached = check_name(name).and_then(|()| {
+                for dir in &dirs[shared..] {
+                    let next = child(open.last().expect("the root stays open"), dir)?;
+                    open.push(next);
+                }
+                Ok(())
+            });
+            let marked = match reached {
+                Ok(()) => open_checked(open.last().expect("the root stays open"), name, expected)
+                    .map(|entry| {
+                        if let Some(entry) = entry
+                            && let Some((before, after)) = write(entry.as_fd(), &node)
+                        {
+                            self.marks.record(expected, before, after);
+                        }
+                    }),
+                Err(
+                    Unresolved::Missing(_)
+                    | Unresolved::NotAFolder(_)
+                    | Unresolved::Replaced { .. },
+                ) => Ok(()),
+                Err(err) => Err(err.into()),
+            };
+            if let Err(err) = marked {
+                failed.push((node, err));
+            }
+        }
+        failed
+    }
+
     fn open_entry(&self, at: &Location, expected: FileId) -> io::Result<Option<OwnedFd>> {
         let (parent, name) = match self.parent(at) {
             Ok(found) => found,
@@ -56,11 +123,31 @@ impl Space {
             }
             Err(err) => return Err(err.into()),
         };
-        let Some(entry) = open(parent.fd(), name)? else {
-            return Ok(None);
-        };
-        Ok((stat_fd(entry.as_fd())?.id.same(&expected)).then_some(entry))
+        open_checked(&parent, name, expected)
     }
+}
+
+fn open_checked(parent: &Folder, name: &OsStr, expected: FileId) -> io::Result<Option<OwnedFd>> {
+    let Some(entry) = open(parent.fd(), name)? else {
+        return Ok(None);
+    };
+    Ok((stat_fd(entry.as_fd())?.id.same(&expected)).then_some(entry))
+}
+
+fn folders_of(at: &Location) -> &[crate::resolve::Dir] {
+    match at {
+        Location::At {
+            base: Base::Root,
+            dirs,
+            ..
+        } => dirs,
+        _ => &[],
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    static WHILE_CARRYING: std::cell::RefCell<Option<Box<dyn FnMut()>>> = const { std::cell::RefCell::new(None) };
 }
 
 /// The change times marks moved: for each marked entry, its change time before and after its latest mark.
@@ -73,10 +160,12 @@ impl MarkLog {
     }
 
     pub(crate) fn carry(&self, old: &mut BTreeMap<PathBuf, Entry>, new: &BTreeMap<PathBuf, Entry>) {
-        let mut marks = self.0.lock().unwrap();
+        let marks = self.0.lock().unwrap().clone();
         if marks.is_empty() {
             return;
         }
+        #[cfg(test)]
+        WHILE_CARRYING.with_borrow_mut(|hook| hook.as_mut().map(|hook| hook()));
         for (path, before) in old.iter_mut() {
             if let Some(now) = new.get(path)
                 && now.id == before.id
@@ -98,7 +187,15 @@ impl MarkLog {
             })
             .map(|now| now.id)
             .collect();
-        marks.retain(|id, _| raced.contains(id) || !(seen.contains(id) || gone.contains(id)));
+        let mut held = self.0.lock().unwrap();
+        for (id, moved) in &marks {
+            if !raced.contains(id)
+                && (seen.contains(id) || gone.contains(id))
+                && held.get(id) == Some(moved)
+            {
+                held.remove(id);
+            }
+        }
     }
 }
 
@@ -187,4 +284,41 @@ fn native(entry: BorrowedFd<'_>) -> bool {
 #[cfg(not(target_vendor = "apple"))]
 fn native(_: BorrowedFd<'_>) -> bool {
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    use super::*;
+
+    #[test]
+    fn a_mark_is_recorded_while_a_scan_carries_the_marks_before_it() {
+        let log = MarkLog::default();
+        log.record(FileId::stored(1, None, None), 1, 2);
+        let marking = log.clone();
+        WHILE_CARRYING.with_borrow_mut(|hook| {
+            *hook = Some(Box::new(move || {
+                let (marked, waiting) = mpsc::channel();
+                let marking = marking.clone();
+                std::thread::spawn(move || {
+                    marking.record(FileId::stored(2, None, None), 3, 4);
+                    let _ = marked.send(());
+                });
+                assert!(
+                    waiting.recv_timeout(Duration::from_secs(5)).is_ok(),
+                    "a mark waited for the scan to carry the marks"
+                );
+            }));
+        });
+        log.carry(&mut BTreeMap::new(), &BTreeMap::new());
+        WHILE_CARRYING.with_borrow_mut(Option::take);
+        assert!(
+            log.0
+                .lock()
+                .unwrap()
+                .contains_key(&FileId::stored(2, None, None))
+        );
+    }
 }

@@ -250,6 +250,8 @@ pub struct Commits {
     granted: Unstored<Vec<NodeId>>,
     confirmed: Unstored<Option<u64>>,
     device_name: Unstored<String>,
+    published_checked: Unstored<bool>,
+    published_left: Unstored<BTreeSet<NodeId>>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -329,6 +331,8 @@ impl Commits {
             confirmed: _,
             device_name: _,
             unbuildable: _,
+            published_checked: _,
+            published_left: _,
         } = self;
         CommitsChanges {
             accepted: accepted.take_changed().copied(),
@@ -454,6 +458,8 @@ impl Commits {
             granted: Unstored::default(),
             confirmed: Unstored::default(),
             device_name: Unstored::default(),
+            published_checked: Unstored::default(),
+            published_left: Unstored::default(),
         })
     }
 
@@ -957,6 +963,7 @@ impl Commits {
             PriorSync::Fresh => tops.into_iter().partition(first_link::trashed_there(trees)),
         };
         self.published.extend(first_link::below(trees, &sent));
+        self.published_checked.0 = false;
         if let Some(question) = first_link::ask(trees, held, None, None, ids, now_ms) {
             self.questions.get_mut().push(question);
         }
@@ -1381,6 +1388,7 @@ impl Commits {
                             }
                         }
                         self.published.extend(question.shown.into_keys());
+                        self.published_checked.0 = false;
                     }
                 }
                 None => {
@@ -1708,6 +1716,9 @@ impl Commits {
         deferred: &BTreeSet<NodeId>,
         owed: &BTreeSet<NodeId>,
     ) -> Option<&proto::Commit> {
+        let published = &self.published;
+        (self.published_left.0)
+            .extend((trees.take_left_local().into_iter()).filter(|id| published.contains(id)));
         if self.in_flight.is_some() {
             return None;
         }
@@ -1841,7 +1852,15 @@ impl Commits {
         self.hold(trees);
         self.split.retain(|id| deletable(trees, id));
         (self.trash_groups).retain(|id, _| deletable(trees, id) && trees.local().get(id).is_none());
-        self.published.retain(|id| trees.local().get(id).is_some());
+        let left = std::mem::take(&mut self.published_left.0);
+        if self.published_checked.0 {
+            for id in left.iter().filter(|id| trees.local().get(id).is_none()) {
+                self.published.remove(id);
+            }
+        } else {
+            self.published.retain(|id| trees.local().get(id).is_some());
+            self.published_checked.0 = true;
+        }
         self.aliases.retain(|id, _| trees.holds_merge(id));
         let held_restores: BTreeSet<RestoreId> = self.asked_again().collect();
         let held_ops: Vec<&proto::Restore> = (self.restores.iter())
@@ -1888,48 +1907,18 @@ impl Commits {
             self.answer_moves.clear();
         }
         let (creates, ready) = (trees.dirty_creates(), trees.ready_creates());
-        let aliased: Vec<&NodeId> = (self.aliases.keys())
-            .flat_map(|alias| trees.local_children(alias))
-            .filter(|id| creates.contains(*id) && !ready.contains(*id))
-            .collect();
         let mut window = 2 * cap;
         let (
             (planned, deletes, deletions, reverts, cycle_reverts, given_up, retrashed, owners),
             unbuildable,
         ) = loop {
-            let mut seeds = ready.iter().peekable();
-            let mut next: BinaryHeap<Reverse<(usize, &NodeId)>> =
-                aliased.iter().map(|id| Reverse((1, *id))).collect();
-            let mut picked = Vec::new();
-            let mut bound = None;
-            loop {
-                let seeded = match (seeds.peek(), next.peek()) {
-                    (Some(id), Some(Reverse(top))) => (1, *id) < *top,
-                    (seed, _) => seed.is_some(),
-                };
-                let popped = match seeded {
-                    true => seeds.next().map(|id| (1, id)),
-                    false => next.pop().map(|Reverse(key)| key),
-                };
-                let Some((pass, id)) = popped else {
-                    break;
-                };
-                if trees.excluded(id) || trees.held(id) {
-                    continue;
-                }
-                if picked.len() == window {
-                    bound = Some((pass, id));
-                    break;
-                }
-                picked.push(id);
-                if !self.aliases.contains_key(id) {
-                    next.extend(
-                        (trees.local_children(id))
-                            .filter(|child| creates.contains(*child))
-                            .map(|child| Reverse((pass + usize::from(child < id), child))),
-                    );
-                }
-            }
+            let (picked, bound) = picked_creates(
+                trees,
+                &self.aliases,
+                ready.iter(),
+                |id| ready.contains(id),
+                window,
+            );
             let planned_from = |picked: Vec<&NodeId>, bound| {
                 let mut candidates: Vec<&NodeId> = (picked.into_iter())
                     .filter(|id| !trees.excluded(id) && !trees.held(id))
@@ -2271,6 +2260,51 @@ impl Commits {
         }
         self.questions.set(kept);
         ops
+    }
+
+    /// The files whose content the next builds would add, among the next `limit` nodes a build would take and in
+    /// the order it takes them. The nodes of the commit in flight are not among them.
+    pub fn upcoming(&self, trees: &Trees, limit: usize) -> Vec<(NodeId, Content)> {
+        let sent: BTreeSet<NodeId> = (self.in_flight().into_iter())
+            .flat_map(|flight| &flight.commit.ops)
+            .filter_map(|op| op.op.as_ref())
+            .map(op_node)
+            .collect();
+        let (creates, ready) = (trees.dirty_creates(), trees.ready_creates());
+        let freed: BTreeSet<&NodeId> = (sent.iter())
+            .flat_map(|id| trees.local_children(id))
+            .filter(|child| {
+                creates.contains(*child) && !ready.contains(*child) && !sent.contains(*child)
+            })
+            .collect();
+        let mut unsent = (ready.iter()).filter(|id| !sent.contains(*id)).peekable();
+        let mut unlocked = freed.iter().copied().peekable();
+        let seeds = std::iter::from_fn(|| match (unsent.peek(), unlocked.peek()) {
+            (Some(held), Some(next)) if next < held => unlocked.next(),
+            (Some(_), _) => unsent.next(),
+            (None, _) => unlocked.next(),
+        });
+        let is_ready =
+            |id: &NodeId| (ready.contains(id) && !sent.contains(id)) || freed.contains(id);
+        let (picked, _) = picked_creates(trees, &self.aliases, seeds, is_ready, limit);
+        let differs = |shape: Option<&Shape>, content: &ContentKey| {
+            (shape.and_then(|shape| shape.content.as_ref()))
+                .is_none_or(|other| !same_content(other, content))
+        };
+        let mut seen = BTreeSet::new();
+        (picked.into_iter().chain(trees.dirty_others()))
+            .filter(|id| seen.insert(*id) && !sent.contains(*id))
+            .filter(|id| !self.problems.contains(*id) && !trees.excluded(id) && !trees.held(id))
+            .take(limit)
+            .filter_map(|id| {
+                let local = trees.local().get(id)?;
+                let key =
+                    (local.shape.content.as_ref()).filter(|_| local.shape.kind == Kind::File)?;
+                let adds =
+                    differs(trees.acknowledged(id), key) && differs(trees.remote().live(id), key);
+                adds.then(|| (id.clone(), key.content(&local.chunks)))
+            })
+            .collect()
     }
 
     /// Whether a build has something to do: a node is dirty or its S update waits, a restore is
@@ -4736,6 +4770,50 @@ type Planned = (
     BTreeMap<usize, RestoreId>,
 );
 
+fn picked_creates<'t>(
+    trees: &'t Trees,
+    aliases: &'t TrackedMap<NodeId, NodeId>,
+    ready: impl IntoIterator<Item = &'t NodeId>,
+    is_ready: impl Fn(&NodeId) -> bool,
+    window: usize,
+) -> (Vec<&'t NodeId>, Option<(usize, &'t NodeId)>) {
+    let creates = trees.dirty_creates();
+    let mut seeds = ready.into_iter().peekable();
+    let mut next: BinaryHeap<Reverse<(usize, &NodeId)>> = (aliases.keys())
+        .flat_map(|alias| trees.local_children(alias))
+        .filter(|id| creates.contains(*id) && !is_ready(id))
+        .map(|id| Reverse((1, id)))
+        .collect();
+    let mut picked = Vec::new();
+    loop {
+        let seeded = match (seeds.peek(), next.peek()) {
+            (Some(id), Some(Reverse(top))) => (1, *id) < *top,
+            (seed, _) => seed.is_some(),
+        };
+        let popped = match seeded {
+            true => seeds.next().map(|id| (1, id)),
+            false => next.pop().map(|Reverse(key)| key),
+        };
+        let Some((pass, id)) = popped else {
+            return (picked, None);
+        };
+        if trees.excluded(id) || trees.held(id) {
+            continue;
+        }
+        if picked.len() == window {
+            return (picked, Some((pass, id)));
+        }
+        picked.push(id);
+        if !aliases.contains_key(id) {
+            next.extend(
+                (trees.local_children(id))
+                    .filter(|child| creates.contains(*child))
+                    .map(|child| Reverse((pass + usize::from(child < id), child))),
+            );
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn plan(
     trees: &Trees,
@@ -7037,5 +7115,137 @@ mod compensation_tests {
         let scratch = Scratch::new(&trees);
         let answer = wants[0].as_ref().unwrap();
         assert!((scratch.compensation(answer, &answers, &trees, &wants, &moving)).is_none());
+    }
+}
+
+#[cfg(test)]
+mod build_work_tests {
+    use super::*;
+    use std::cell::Cell;
+
+    use crate::tree::{ADOPTION_READ, ENTRIES_READ, FileIdentity, LocalNode, RemoteNode};
+
+    const NOW: u64 = 1_794_268_740_000;
+
+    fn linked(folders: usize) -> (Trees, Commits, IdGen) {
+        let mut trees = Trees::new("root");
+        trees.rules_scanned();
+        for n in 0..folders {
+            let parent = match n {
+                0..10 => NodeId::from("root"),
+                n => NodeId::from(format!("d{:06}", n / 10 - 1)),
+            };
+            let node = LocalNode {
+                shape: Shape {
+                    parent,
+                    name: format!("folder {n}"),
+                    kind: Kind::Dir,
+                    content: None,
+                },
+                identity: FileIdentity {
+                    ino: n as u128 + 1,
+                    birth_ns: Some(0),
+                    handle: None,
+                },
+                parked: false,
+                left_out_when_placed: false,
+                content_from_server: false,
+                chunks: Box::default(),
+            };
+            trees.set_local(NodeId::from(format!("d{n:06}")), node);
+        }
+        trees.settle(&Default::default());
+        let state = CommitsState {
+            cap: Some(50),
+            ..Default::default()
+        };
+        let mut commits = Commits::from_state(state).unwrap();
+        let mut ids = IdGen::new(1);
+        commits.first_link(&mut trees, &mut ids, NOW, PriorSync::Fresh);
+        assert_eq!(commits.published.len(), folders);
+        (trees, commits, ids)
+    }
+
+    fn sent(trees: &mut Trees, commits: &mut Commits, seq: u64) {
+        let commit = commits.in_flight().unwrap().commit.clone();
+        for op in commit.ops.iter().filter_map(|op| op.op.as_ref()) {
+            let op::Op::CreateDir(create) = op else {
+                panic!("a first link of folders only creates folders: {op:?}");
+            };
+            let node = RemoteNode {
+                made_over: Vec::new(),
+                shape: Shape {
+                    parent: NodeId::from(&create.parent_id),
+                    name: create.name.clone(),
+                    kind: Kind::Dir,
+                    content: None,
+                },
+                trashed: false,
+                content_rev: seq,
+                meta_rev: seq,
+                trash_group: String::new(),
+                version_id: String::new(),
+                edit_rev: seq,
+                meta_edit_rev: seq,
+                pending_for: None,
+                pending_by: None,
+                chunks: Box::default(),
+            };
+            trees.set_remote_made_here(NodeId::from(&create.node_id), node);
+        }
+        let applied = proto::OpResult {
+            code: op_result::Code::Applied as i32,
+            ..Default::default()
+        };
+        let result = proto::CommitResult {
+            seq,
+            results: vec![applied; commit.ops.len()],
+            ..Default::default()
+        };
+        commits.received(result).unwrap();
+        assert!(commits.acknowledge(trees, seq));
+        trees.settle(commits.aliases());
+    }
+
+    fn entries_read_by_commits(folders: usize) -> Vec<(u64, u64)> {
+        let (mut trees, mut commits, mut ids) = linked(folders);
+        (1..=3)
+            .map(|seq| {
+                let before = ENTRIES_READ.with(Cell::get);
+                let built = commits.build(&mut trees, &mut ids, NOW, "history", "me", seq - 1);
+                assert_eq!(built.map(|commit| commit.ops.len()), Some(50 << (seq - 1)));
+                let built = ENTRIES_READ.with(Cell::get);
+                let adopted = ADOPTION_READ.with(Cell::get);
+                sent(&mut trees, &mut commits, seq);
+                (built - before, ADOPTION_READ.with(Cell::get) - adopted)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_commit_of_a_first_link_reads_as_many_entries_whatever_the_size_of_the_tree() {
+        let (small, large) = (
+            entries_read_by_commits(2_000),
+            entries_read_by_commits(20_000),
+        );
+        let steps = [
+            ("third build", small[2].0, large[2].0),
+            (
+                "adoption walk after the first commit, whose folders hold the whole tree",
+                small[0].1,
+                large[0].1,
+            ),
+            (
+                "adoption walk after the third commit",
+                small[2].1,
+                large[2].1,
+            ),
+        ];
+        for (step, small, large) in steps {
+            assert!(
+                (large as f64) < 1.5 * small as f64,
+                "the {step} read {small} entries in a tree of 2000 folders and {large} in one of 20000"
+            );
+        }
     }
 }
