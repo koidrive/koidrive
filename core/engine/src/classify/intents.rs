@@ -1013,7 +1013,7 @@ impl Trees {
                 for field in Field::ALL {
                     self.journal.end(id, field);
                 }
-            } else if !self.asked.contains(id) {
+            } else if !self.asked.contains(id) && !self.removal_unobserved(id) {
                 let seen_list = self.seen_list(id);
                 let base = (self.r.live(id).and(self.r.get(id)))
                     .and_then(|remote| remote_intent_of(remote, Field::Status))
