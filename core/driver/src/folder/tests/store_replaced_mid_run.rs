@@ -43,7 +43,7 @@ fn put_back_across_an_s_only_pull(commit: bool) -> (Remote, Site, &'static str) 
     let records = remote.space.resume(&a.since()).unwrap();
     let stop = a.folder.event(Event::Changes(records)).err();
     assert!(
-        matches!(stop, Some(Stop::StoreBehind)),
+        matches!(&stop, Some(stop @ Stop::Store(koidrive_store::Error::Replaced)) if stop.remedy() == crate::status::Remedy::Root),
         "{commit}: {stop:?}"
     );
     drop(a);
@@ -112,4 +112,135 @@ fn a_store_put_back_across_an_s_only_pull_asks_about_bytes_the_server_never_had(
             "{commit}: {trashed:?}"
         );
     }
+}
+
+fn s_only_pull_after_a_copy() -> (Remote, Site, Device, Site, Device, PathBuf) {
+    let mut remote = Remote::new();
+    let (site, mut a) = linked(&mut remote, "a");
+    let (other, mut b) = linked(&mut remote, "b");
+    fs::write(other.root.join("f.txt"), b"A").unwrap();
+    sync(&mut remote, (&site, &mut a), (&other, &mut b));
+    let copy = site.db.with_extension("copy");
+    copy_store_while_open(&site.db, &copy);
+    fs::write(other.root.join("f.txt"), b"B").unwrap();
+    b.rescan();
+    b.rest(&mut remote);
+    a.connect(&remote);
+    fs::write(site.root.join("f.txt"), b"B").unwrap();
+    a.rescan();
+    a.settle();
+    a.pull(&remote);
+    a.rest(&mut remote);
+    (remote, site, a, other, b, copy)
+}
+
+fn sent_ops(device: &Device) -> Vec<&op::Op> {
+    (device.sent.iter())
+        .flat_map(|commit| commit.ops.iter())
+        .filter_map(|op| op.op.as_ref())
+        .collect()
+}
+
+#[test]
+fn a_store_put_back_across_an_s_only_pull_alone_reloads_before_the_next_pull_is_recorded() {
+    let (mut remote, site, mut a, other, mut b, copy) = s_only_pull_after_a_copy();
+    copy_store_while_open(&copy, &site.db);
+    let copied = site.stored().cursor;
+    b.create(&mut remote, &other.root.join("g.txt"), b"g");
+    a.compares_store = false;
+    let pulled = a.resume(&remote, a.since());
+    assert!(
+        matches!(&pulled, Err(stop @ Stop::Store(koidrive_store::Error::Replaced)) if stop.remedy() == crate::status::Remedy::Root),
+        "{pulled:?}"
+    );
+    assert_eq!(site.stored().cursor, copied);
+    assert_eq!(names(&site.root), ["f.txt"]);
+    drop(a);
+
+    let mut a = restarted(&site, &mut remote);
+    a.rest(&mut remote);
+    assert_eq!(sent_ops(&a), Vec::<&op::Op>::new());
+    assert_eq!(names(&site.root), ["f.txt", "g.txt"]);
+    assert_eq!(fs::read(site.root.join("f.txt")).unwrap(), b"B");
+}
+
+#[test]
+fn a_store_put_back_before_a_commit_build_reloads_and_sends_only_what_the_user_made() {
+    let (mut remote, site, mut a, _other, _b, copy) = s_only_pull_after_a_copy();
+    fs::write(site.root.join("h.txt"), b"h").unwrap();
+    a.rescan();
+    a.scan_until(|device| !device.work.is_empty());
+    copy_store_while_open(&copy, &site.db);
+    a.compares_store = false;
+    let built = a.try_run(&mut remote);
+    assert!(
+        matches!(&built, Err(stop @ Stop::Store(koidrive_store::Error::Replaced)) if stop.remedy() == crate::status::Remedy::Root),
+        "{built:?}"
+    );
+    assert!(a.sent.is_empty(), "{:?}", a.sent);
+    drop(a);
+
+    let mut a = restarted(&site, &mut remote);
+    a.rest(&mut remote);
+    assert!(a.sent.is_empty(), "{:?}", a.sent);
+    let [question] = &shown(&site)[..] else {
+        panic!("one question");
+    };
+    let held: Vec<_> = (question.items.iter())
+        .map(|item| item.path.unquoted())
+        .collect();
+    assert_eq!(held, ["h.txt"]);
+    drop(a);
+
+    answer(&site, Answer::Publish);
+    let mut a = restarted(&site, &mut remote);
+    a.rest(&mut remote);
+    let sent = sent_ops(&a);
+    assert!(
+        matches!(&sent[..], [op::Op::CreateFile(create)] if create.name == "h.txt"),
+        "{sent:?}"
+    );
+    assert_eq!(remote.names(), ["f.txt", "h.txt"]);
+}
+
+#[test]
+fn a_store_put_back_while_the_folder_is_stopped_sends_nothing_after_a_restart() {
+    let (mut remote, site, a, other, mut b, copy) = s_only_pull_after_a_copy();
+    drop(a);
+    copy_store_while_open(&copy, &site.db);
+    b.create(&mut remote, &other.root.join("g.txt"), b"g");
+    let mut a = restarted(&site, &mut remote);
+    a.rest(&mut remote);
+    assert_eq!(sent_ops(&a), Vec::<&op::Op>::new());
+    assert_eq!(names(&site.root), ["f.txt", "g.txt"]);
+}
+
+#[test]
+fn a_store_from_before_the_write_stamp_syncs_without_a_reload() {
+    let mut remote = Remote::new();
+    let (site, mut a) = linked(&mut remote, "a");
+    let (other, mut b) = linked(&mut remote, "b");
+    fs::write(other.root.join("f.txt"), b"A").unwrap();
+    sync(&mut remote, (&site, &mut a), (&other, &mut b));
+    drop(a);
+    rusqlite::Connection::open(&site.db)
+        .unwrap()
+        .execute_batch("DROP TABLE write_stamp; DELETE FROM migrations WHERE name = 'write_stamp';")
+        .unwrap();
+
+    let mut a = restarted(&site, &mut remote);
+    b.create(&mut remote, &other.root.join("g.txt"), b"g");
+    a.pull(&remote);
+    a.rest(&mut remote);
+    a.create(&mut remote, &site.root.join("h.txt"), b"h");
+    a.rest(&mut remote);
+    assert_eq!(a.folder.view().problem, None);
+    assert_eq!(remote.names(), ["f.txt", "g.txt", "h.txt"]);
+    let stamp: u64 = rusqlite::Connection::open(&site.db)
+        .unwrap()
+        .query_row("SELECT stamp FROM write_stamp WHERE id = 1", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert!(stamp > 0, "{stamp}");
 }

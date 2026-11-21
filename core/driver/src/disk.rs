@@ -129,9 +129,11 @@ impl Stop {
     pub(crate) fn remedy(&self) -> Remedy {
         match self {
             Stop::Root(RootProblem::Copy) | Stop::DiskBehind { .. } => Remedy::Relink,
-            Stop::Withdrawn(_) | Stop::Root(_) | Stop::OtherRoot | Stop::StoreBehind => {
-                Remedy::Root
-            }
+            Stop::Withdrawn(_)
+            | Stop::Root(_)
+            | Stop::OtherRoot
+            | Stop::StoreBehind
+            | Stop::Store(koidrive_store::Error::Replaced) => Remedy::Root,
             Stop::Session(StopReason::CredentialsRefused | StopReason::DeviceRevoked) => {
                 Remedy::SetUpAgain
             }
@@ -1301,6 +1303,7 @@ impl Disk {
     }
 
     fn still_current(&self, store: &mut Store) -> Result<Marker, Stop> {
+        store.check_stamp()?;
         let (found, standing) =
             store.read(|tx| marker_standing(&self.space, &self.link, tx, tx.effect_counter()?))?;
         match standing {

@@ -3691,6 +3691,35 @@ fn a_store_swapped_for_an_older_copy_between_two_batches_halts_before_the_second
 }
 
 #[test]
+fn a_store_put_back_at_the_markers_counter_halts_before_the_next_marker_write() {
+    let (folder, mut running) = two_batches_ahead();
+    let server = Server::default();
+    let stamp = (running.store)
+        .read::<_, Stop>(|tx| Ok(tx.write_stamp()?))
+        .unwrap();
+    running.store.stamp_writes(stamp);
+    assert_eq!(running.step(&server), Some(Settled::Done));
+    let copy = folder.dir.path().join("copy.sqlite");
+    copy_store_while_open(&folder.db, &copy);
+    let pending = (running.disk)
+        .next(&mut running.engine, &mut running.store)
+        .unwrap()
+        .unwrap();
+    let staged = ready(pending.stage(&server)).unwrap();
+    copy_store_while_open(&copy, &folder.db);
+    let before = tree(&folder.root);
+    let stop = (running.disk)
+        .apply(staged, &mut running.engine, &mut running.store)
+        .err();
+    assert!(
+        matches!(stop, Some(Stop::Store(koidrive_store::Error::Replaced))),
+        "{stop:?}"
+    );
+    assert_eq!(tree(&folder.root), before);
+    assert_eq!(folder.marker(), 1);
+}
+
+#[test]
 fn a_store_swapped_for_an_older_copy_before_a_rescan_halts_with_nothing_planned() {
     let (folder, mut running) = two_batches_ahead();
     let server = Server::default();

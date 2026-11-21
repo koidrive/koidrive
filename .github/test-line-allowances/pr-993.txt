@@ -1,0 +1,5 @@
+640
+# Engine: a file another device trashed with the bytes this device holds follows the trash after a store rollback, both when recovery starts and when a held node is classified again, with a folder sibling and a contrast where L holds other bytes. No earlier test covers R's trashed shape in recovery's "L equals R" row.
+# Driver: a store put back while the folder runs across a pull that changed only S, once with the bytes the server gave this device and once with bytes it never had, each with and without a commit of this device since the copy. They share one setup helper.
+# Driver: the write stamp, as KOI-1007 listed it: a put-back store caught at the pull, before a commit build and at a batch's marker write, the control that restarts before the next pull, and an upgrade from a store without the stamp.
+# Store: the write_stamp migration's upgrade case and its tests: the default stamp, which connections advance it, and a write refused on a put-back store.

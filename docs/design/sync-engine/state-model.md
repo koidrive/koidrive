@@ -306,6 +306,7 @@ A store restored to before it applied a remote change, with no commit of its own
 - On startup, before recovering the effects in flight (§5.3) and before planning from a rescan, the driver compares the two. When *m* is above *e* plus the number of effects recorded in flight, the store is older than the disk: nothing is recovered or planned from it, and the space enters recovery (§6.4) with the store as evidence.
 - When *m* is below *e*, the disk or its marker was restored from an older state. The space pauses with a problem (§6.2) instead of reading the older files as local edits.
 - The driver makes the same comparison again, with the same outcomes, before it writes the marker for a batch and before the engine plans from a rescan, so a store replaced while the device runs is caught before anything is planned from it or written to the disk.
+- The store also keeps a write stamp that every transaction of the driver advances, and the driver keeps the last one it wrote. Before the same steps, and before it builds a commit, it reads the stamp back. A stamp other than its own means the store was replaced while the device ran: the folder reloads the store and the startup comparison decides from what it finds, and nothing the device remembers is planned from it or written over it.
 
 ### The commit in flight follows its history
 
