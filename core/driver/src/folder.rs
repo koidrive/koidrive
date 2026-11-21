@@ -1197,7 +1197,9 @@ impl Folder {
     fn drive(&mut self, work: &mut Vec<Work>) -> Result<(), Stop> {
         let now_ms = crate::clock::unix_ms();
         let disk = &self.disk;
-        (self.engine).end_backup_waits(now_ms, |trees, shape| disk.owed_name_absent(trees, shape));
+        (self.engine).end_backup_waits(now_ms, |trees, shape| {
+            (disk.owed_name_absent(trees, shape), crate::clock::unix_ms())
+        });
         self.retry_when_due(self.engine.holds_due(now_ms), work);
         self.publish_remote()?;
         let staging = !self.engine.effects.in_flight().is_empty();

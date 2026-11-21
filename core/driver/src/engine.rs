@@ -1499,7 +1499,7 @@ impl Engine {
     pub(super) fn end_backup_waits(
         &mut self,
         now_ms: u64,
-        name_absent: impl Fn(&Trees, &Shape) -> Option<bool>,
+        name_absent: impl Fn(&Trees, &Shape) -> (Option<bool>, u64),
     ) {
         for (id, (parent, name, renamed, _)) in &self.renamed_away {
             if now_ms < renamed.saturating_add(DELETE_WAIT_MS)
@@ -1512,8 +1512,9 @@ impl Engine {
             let Some(node) = self.trees.local().get(id) else {
                 continue;
             };
-            let on_time = now_ms < renamed.saturating_add(DELETE_WAIT_MS + BACKUP_CHECK_SLACK_MS);
-            let gone = on_time && name_absent(&self.trees, &node.shape) == Some(true);
+            let late = renamed.saturating_add(DELETE_WAIT_MS + BACKUP_CHECK_SLACK_MS);
+            let gone = now_ms < late
+                && matches!(name_absent(&self.trees, &node.shape), (Some(true), seen_ms) if seen_ms < late);
             self.backup_gone.insert(id.clone(), gone);
         }
     }
@@ -5386,6 +5387,37 @@ mod tests {
                 "the missing file must keep its own node"
             );
             assert_eq!(engine.trees.missing().contains(&report), missing);
+        }
+    }
+
+    #[test]
+    fn a_backup_seen_gone_only_after_its_tolerance_does_not_count() {
+        for (seen_ms, counts) in [(3_200, true), (3_250, false), (60_000, false)] {
+            let (_dir, mut engine) = mapper();
+            engine.trees.rules_scanned();
+            let docs = Observed::Created {
+                path: "docs".into(),
+                kind: EntryKind::Dir,
+                id: ino(1),
+                linked: false,
+                content: None,
+                marked_node: None,
+            };
+            engine.observe(&[docs, created("docs/report.txt", ino(2), false, 1)], 0);
+            synced_everywhere(&mut engine);
+            let (report, _, _) = holding(&engine, "docs/report.txt").unwrap();
+            engine.observe(
+                &[renamed("docs/report.txt", "docs/Thumbs.db", ino(2), false)],
+                1_000,
+            );
+            engine.observe(&[created("docs/report.txt", ino(5), false, 7)], 1_100);
+            assert_eq!(engine.holds_due(1_500), Some(3_000));
+            engine.end_backup_waits(3_100, |_, _| (Some(true), seen_ms));
+            assert_eq!(
+                engine.backup_gone.get(&report),
+                Some(&counts),
+                "seen at {seen_ms}"
+            );
         }
     }
 
