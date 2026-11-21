@@ -573,6 +573,7 @@ pub struct Journal {
     listed_before: bool,
     ids: IdGen,
     absent: TrackedMap<NodeId, Absent>,
+    lapsing: BTreeSet<(i64, NodeId)>,
     now_ms: u64,
 }
 
@@ -603,6 +604,7 @@ impl Journal {
             listed_before: false,
             ids,
             absent: TrackedMap::default(),
+            lapsing: BTreeSet::new(),
             now_ms: 0,
         }
     }
@@ -616,6 +618,9 @@ impl Journal {
             listed: state.listed,
             listed_before: state.listed,
             ids: self.ids.clone(),
+            lapsing: (state.absent.iter())
+                .map(|(node, absent)| (absent.since_ms, node.clone()))
+                .collect(),
             absent: state.absent.into(),
             now_ms: self.now_ms,
         };
@@ -663,9 +668,14 @@ impl Journal {
     /// for 30 days.
     pub fn set_clock(&mut self, now_ms: u64) {
         self.now_ms = now_ms;
-        let lapsed: Vec<NodeId> = (self.absent.iter())
-            .filter(|(_, absent)| now_ms as i64 - absent.since_ms >= ABSENT_FOR_MS)
-            .map(|(node, _)| node.clone())
+        let lapsed_by = now_ms as i64 - ABSENT_FOR_MS;
+        let lapsed: Vec<NodeId> = (self.lapsing.iter())
+            .take_while(|(since_ms, _)| {
+                #[cfg(test)]
+                tests::CLOCK_VISITS.with(|visits| visits.set(visits.get() + 1));
+                *since_ms <= lapsed_by
+            })
+            .map(|(_, node)| node.clone())
             .collect();
         for node in lapsed {
             self.end(&node, Field::Status);
@@ -685,7 +695,7 @@ impl Journal {
                 for field in Field::ALL {
                     self.history.remove(&(node.clone(), field));
                 }
-                self.absent.remove(&node);
+                self.drop_absent(&node);
             }
         }
     }
@@ -701,8 +711,8 @@ impl Journal {
     pub fn r_lacks(&mut self, node: &NodeId) {
         if self.absent.get(node).is_none() {
             let since_ms = self.now_ms as i64;
-            (self.absent).insert(
-                node.to_owned(),
+            self.put_absent(
+                node,
                 Absent {
                     since_ms,
                     purged: false,
@@ -713,13 +723,25 @@ impl Journal {
 
     pub fn superseded_as_purged(&mut self, node: &NodeId) {
         let since_ms = (self.absent.get(node)).map_or(self.now_ms as i64, |absent| absent.since_ms);
-        (self.absent).insert(
-            node.to_owned(),
+        self.put_absent(
+            node,
             Absent {
                 since_ms,
                 purged: true,
             },
         );
+    }
+
+    fn put_absent(&mut self, node: &NodeId, absent: Absent) {
+        self.drop_absent(node);
+        self.lapsing.insert((absent.since_ms, node.to_owned()));
+        self.absent.insert(node.to_owned(), absent);
+    }
+
+    fn drop_absent(&mut self, node: &NodeId) {
+        if let Some(absent) = self.absent.remove(node) {
+            self.lapsing.remove(&(absent.since_ms, node.to_owned()));
+        }
     }
 
     /// Whether the server answered a create of `node` `SUPERSEDED` because it purged it, and R has not held the node since.
@@ -728,7 +750,7 @@ impl Journal {
     }
 
     pub fn r_holds(&mut self, node: &NodeId) {
-        self.absent.remove(node);
+        self.drop_absent(node);
     }
 
     pub fn mint(&mut self) -> IntentId {
