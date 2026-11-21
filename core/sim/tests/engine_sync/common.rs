@@ -578,8 +578,9 @@ struct Device {
     acted: BTreeSet<NodeId>,
     acked: BTreeSet<NodeId>,
     removed_from: BTreeMap<NodeId, NodeId>,
-    arrivals: BTreeMap<NodeId, BTreeSet<NodeId>>,
-    between: Option<BTreeSet<NodeId>>,
+    placed: BTreeMap<NodeId, (bool, u64)>,
+    placements: u64,
+    taken_since: BTreeMap<NodeId, u64>,
     on_server_when_taken_along: BTreeMap<NodeId, BTreeMap<NodeId, NodeId>>,
     kept_back: BTreeSet<NodeId>,
     relocated: BTreeMap<NodeId, Relocation>,
@@ -622,78 +623,37 @@ impl Device {
         folders: impl IntoIterator<Item = &'a NodeId>,
         on_server: &BTreeMap<NodeId, NodeId>,
     ) {
+        let since = self.placements;
+        self.note_taken_along_since(folders, on_server, since);
+    }
+
+    fn note_taken_along_since<'a>(
+        &mut self,
+        folders: impl IntoIterator<Item = &'a NodeId>,
+        on_server: &BTreeMap<NodeId, NodeId>,
+        since: u64,
+    ) {
         for folder in folders {
             (self.on_server_when_taken_along).insert(folder.clone(), on_server.clone());
+            self.taken_since.insert(folder.clone(), since);
         }
     }
 
     fn note_taken_along_at_answer<'a>(
         &mut self,
         folders: impl IntoIterator<Item = &'a NodeId>,
-        at_answer: &BTreeMap<NodeId, NodeId>,
+        (at_answer, answered_at): &(BTreeMap<NodeId, NodeId>, u64),
     ) {
-        let between = self.between.take().unwrap_or_default();
         let mut on_server = self.on_server();
-        for id in &between {
+        for (id, _) in (self.placed.iter())
+            .filter(|(_, (by_other, at))| *by_other && at > answered_at)
+        {
             match at_answer.get(id) {
                 Some(parent) => on_server.insert(id.clone(), parent.clone()),
                 None => on_server.remove(id),
             };
         }
-        let folders: BTreeSet<NodeId> = folders.into_iter().cloned().collect();
-        self.note_taken_along_from(&folders, &on_server);
-        self.note_arrivals_in(between, &folders);
-    }
-
-    fn note_arrivals(&mut self, nodes: BTreeSet<NodeId>) {
-        let folders = self.on_server_when_taken_along.keys().cloned().collect();
-        self.note_arrivals_in(nodes, &folders);
-    }
-
-    fn note_arrivals_in(&mut self, nodes: BTreeSet<NodeId>, folders: &BTreeSet<NodeId>) {
-        let inside =
-            |from: &NodeId, parent: &dyn Fn(&NodeId) -> Option<NodeId>, folder: &NodeId| {
-                let mut seen = BTreeSet::new();
-                let mut current = Some(from.clone());
-                while let Some(at) = current.filter(|at| seen.insert(at.clone())) {
-                    if at == *folder {
-                        return true;
-                    }
-                    current = parent(&at);
-                }
-                false
-            };
-        let remote = |at: &NodeId| {
-            self.trees
-                .remote()
-                .live(at)
-                .map(|shape| shape.parent.clone())
-        };
-        let mut came = nodes;
-        let mut next: Vec<NodeId> = came.iter().cloned().collect();
-        while let Some(parent) = next.pop() {
-            for (id, _) in (self.trees.remote().iter())
-                .filter(|(_, child)| !child.trashed && child.shape.parent == parent)
-            {
-                if came.insert(id.clone()) {
-                    next.push(id.clone());
-                }
-            }
-        }
-        let mut arrived = Vec::new();
-        for (folder, baseline) in
-            (self.on_server_when_taken_along.iter()).filter(|(folder, _)| folders.contains(*folder))
-        {
-            for entry in came.iter().filter(|entry| {
-                inside(entry, &remote, folder)
-                    && !inside(entry, &|at| baseline.get(at).cloned(), folder)
-            }) {
-                arrived.push((entry.clone(), folder.clone()));
-            }
-        }
-        for (entry, folder) in arrived {
-            self.arrivals.entry(entry).or_default().insert(folder);
-        }
+        self.note_taken_along_since(folders, &on_server, *answered_at);
     }
 
     fn new(trees: Trees) -> Self {
@@ -707,8 +667,9 @@ impl Device {
             acted: BTreeSet::new(),
             acked: BTreeSet::new(),
             removed_from: BTreeMap::new(),
-            arrivals: BTreeMap::new(),
-            between: None,
+            placed: BTreeMap::new(),
+            placements: 0,
+            taken_since: BTreeMap::new(),
             on_server_when_taken_along: BTreeMap::new(),
             kept_back: BTreeSet::new(),
             relocated: BTreeMap::new(),
@@ -736,8 +697,13 @@ impl Device {
     }
 
     fn receive(&mut self, changes: &[ChangeRecord], answered: bool) {
-        let mut brought = BTreeSet::new();
         for change in changes {
+            let parent_before = match &change.change {
+                Some(change_record::Change::Node(state)) => (self.trees.remote())
+                    .live(&NodeId::from(&state.node_id))
+                    .map(|remote| remote.parent.clone()),
+                _ => None,
+            };
             apply(&mut self.trees, std::slice::from_ref(change));
             if let Some(change_record::Change::Purged(purged)) = &change.change {
                 self.acted.remove(&NodeId::from(&purged.node_id));
@@ -750,11 +716,9 @@ impl Device {
                 self.removed_from.remove(&node);
                 continue;
             };
-            if !answered {
-                brought.insert(node.clone());
-                if let Some(between) = &mut self.between {
-                    between.insert(node.clone());
-                }
+            if parent_before.as_ref() != Some(&remote.parent) {
+                self.placements += 1;
+                self.placed.insert(node.clone(), (!answered, self.placements));
             }
             let Some(moved) = self.relocated.get_mut(&node) else {
                 continue;
@@ -765,7 +729,6 @@ impl Device {
                 moved.from = remote;
             }
         }
-        self.note_arrivals(brought);
     }
 
     fn identity(&mut self) -> FileIdentity {
@@ -2116,8 +2079,21 @@ fn acted_below(
             .or_else(|| trees.remote().live(at).map(|remote| remote.parent.clone()))
     };
     let arrived = |entry: &NodeId| {
-        (device.arrivals.get(entry)).is_some_and(|folders| folders.contains(id))
-            && reaches(entry, &agreed)
+        let Some(since) = device.taken_since.get(id) else {
+            return false;
+        };
+        if !reaches(entry, &agreed) {
+            return false;
+        }
+        let mut seen = BTreeSet::new();
+        let mut current = Some(entry.to_owned());
+        while let Some(at) = current.filter(|at| at != id && seen.insert(at.clone())) {
+            if let Some((by_other, _)) = (device.placed.get(&at)).filter(|(_, when)| when > since) {
+                return *by_other;
+            }
+            current = agreed(&at);
+        }
+        false
     };
     let as_agreed = |entry: &NodeId| {
         let Some(local) = trees.local().get(entry) else {
@@ -2418,7 +2394,7 @@ fn run_ignoring_answering_after(
     type AtAnswer = (
         Question,
         BTreeMap<NodeId, koidrive_engine::tree::Shape>,
-        Option<BTreeMap<NodeId, NodeId>>,
+        Option<(BTreeMap<NodeId, NodeId>, u64)>,
     );
     let mut pending: Option<AtAnswer> = None;
     let mut during = during.iter();
@@ -2797,8 +2773,7 @@ fn run_ignoring_answering_after(
                     let sets = (&from_server, &placed_left_out);
                     let (at_answer, on_server) = if frozen {
                         let at_answer = taken_along(&device, &question.shown, sets, &discarded);
-                        device.between = Some(BTreeSet::new());
-                        (at_answer, Some(device.on_server()))
+                        (at_answer, Some((device.on_server(), device.placements)))
                     } else {
                         (BTreeMap::new(), None)
                     };

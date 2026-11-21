@@ -763,7 +763,8 @@ fn renaming_an_entry_another_device_brought_into_a_taken_along_folder_changes_th
         local.shape.name = "g2".into();
         device.trees.set_local(g.clone(), local);
         if brought {
-            device.note_arrivals(BTreeSet::from([g.clone()]));
+            device.placements += 1;
+            device.placed.insert(g.clone(), (true, device.placements));
         }
         device.acted.insert(g);
         assert_eq!(
@@ -1730,8 +1731,8 @@ fn a_batch_that_moves_a_folder_into_its_former_child_records_the_arrival_once_it
     device.receive(&seed, false);
     device.note_taken_along([&b.as_str().into()]);
     device.receive(&changes, false);
-    let arrival = device.arrivals.get(&a.as_str().into());
-    assert!(arrival.is_some_and(|folders| folders.contains(&b.as_str().into())));
+    let placed = device.placed.get(&a.as_str().into());
+    assert!(placed.is_some_and(|(by_other, _)| *by_other));
 }
 
 #[test]
@@ -1782,12 +1783,12 @@ fn renaming_an_entry_another_device_adds_between_the_answer_and_the_build_change
         let (mut device, kept, discarded) = a_file_in_a_taken_along_server_folder();
         let (s, arrival): (NodeId, NodeId) = ("s".into(), "arrival".into());
         let at_answer = device.on_server();
-        device.between = Some(BTreeSet::new());
+        let answered = (at_answer.clone(), device.placements);
         if between {
             an_arrival(&mut device, "s");
-            device.note_taken_along_at_answer([&s], &at_answer);
+            device.note_taken_along_at_answer([&s], &answered);
         } else {
-            device.note_taken_along_at_answer([&s], &at_answer);
+            device.note_taken_along_at_answer([&s], &answered);
             an_arrival(&mut device, "s");
         }
         place_dir(&mut device, "arrival", Some(("s", "arrival")), None);
@@ -1822,11 +1823,11 @@ fn renaming_an_entry_this_device_moved_in_and_the_server_confirmed_after_the_ans
             confirm(&mut device);
         }
         let at_answer = device.on_server();
-        device.between = Some(BTreeSet::new());
+        let answered = (at_answer.clone(), device.placements);
         if confirmed_after_answer {
             confirm(&mut device);
         }
-        device.note_taken_along_at_answer([&s], &at_answer);
+        device.note_taken_along_at_answer([&s], &answered);
         let synced = device.trees.remote().live(&g).cloned();
         device.trees.set_synced(g.clone(), synced);
         place_dir(&mut device, "g", Some(("s", "renamed")), None);
@@ -1836,4 +1837,86 @@ fn renaming_an_entry_this_device_moved_in_and_the_server_confirmed_after_the_ans
             "{confirmed_after_answer}"
         );
     }
+}
+
+fn a_dir_record(id: &str, parent: &str, meta_rev: u64) -> ChangeRecord {
+    ChangeRecord {
+        change: Some(change_record::Change::Node(NodeState {
+            node_id: id.into(),
+            parent_id: parent.into(),
+            name: id.into(),
+            kind: 1,
+            status: 1,
+            meta_rev,
+            ..Default::default()
+        })),
+    }
+}
+
+fn renames_after_sync(device: &mut Device, id: &str, parent: &str) {
+    let node: NodeId = id.into();
+    let synced = device.trees.remote().live(&node).cloned();
+    device.trees.set_synced(node.clone(), synced);
+    place_dir(device, id, Some((parent, "renamed")), None);
+    device.acted_on(node);
+}
+
+#[test]
+fn renaming_an_entry_this_device_moved_in_after_another_device_changed_it_in_place_changes_the_folder()
+{
+    for edited_by_another in [false, true] {
+        let (mut device, kept, discarded) = a_file_in_a_taken_along_server_folder();
+        let s: NodeId = "s".into();
+        place_dir(&mut device, "g", Some(("s", "g")), Some(("root", "g")));
+        let answered = (device.on_server(), device.placements);
+        if edited_by_another {
+            device.receive(&[a_dir_record("g", "root", 2)], false);
+        }
+        device.receive(&[a_dir_record("g", "s", 3)], true);
+        device.note_taken_along_at_answer([&s], &answered);
+        renames_after_sync(&mut device, "g", "s");
+        assert!(acted_below(&device, &s, &kept, &discarded), "{edited_by_another}");
+    }
+}
+
+#[test]
+fn renaming_an_entry_this_device_moved_in_after_another_device_edits_it_in_place_changes_the_folder()
+{
+    let (mut device, kept, discarded) = a_file_in_a_taken_along_server_folder();
+    let s: NodeId = "s".into();
+    place_dir(&mut device, "g", Some(("s", "g")), Some(("root", "g")));
+    device.note_taken_along([&s]);
+    device.receive(&[a_dir_record("g", "s", 2)], true);
+    device.receive(&[a_dir_record("g", "s", 3)], false);
+    renames_after_sync(&mut device, "g", "s");
+    assert!(acted_below(&device, &s, &kept, &discarded));
+}
+
+#[test]
+fn renaming_an_arrival_this_device_moved_out_and_back_changes_the_folder() {
+    let (mut device, kept, discarded) = a_file_in_a_taken_along_server_folder();
+    let s: NodeId = "s".into();
+    device.note_taken_along([&s]);
+    device.receive(&[a_dir_record("g", "s", 1)], false);
+    for (parent, meta_rev) in [("root", 2), ("s", 3)] {
+        place_dir(&mut device, "g", Some((parent, "g")), None);
+        device.receive(&[a_dir_record("g", parent, meta_rev)], true);
+    }
+    renames_after_sync(&mut device, "g", "s");
+    assert!(acted_below(&device, &s, &kept, &discarded));
+}
+
+#[test]
+fn renaming_an_entry_this_device_put_in_a_folder_before_another_device_brought_the_folder_in_changes_that_entry_alone()
+ {
+    let (mut device, kept, discarded) = a_file_in_a_taken_along_server_folder();
+    let s: NodeId = "s".into();
+    place_dir(&mut device, "x", Some(("root", "x")), Some(("root", "x")));
+    place_dir(&mut device, "g", Some(("x", "g")), Some(("root", "g")));
+    device.receive(&[a_dir_record("g", "x", 2)], true);
+    device.note_taken_along([&s]);
+    place_dir(&mut device, "x", Some(("s", "x")), None);
+    device.receive(&[a_dir_record("x", "s", 2)], false);
+    renames_after_sync(&mut device, "g", "x");
+    assert!(!acted_below(&device, &s, &kept, &discarded));
 }
