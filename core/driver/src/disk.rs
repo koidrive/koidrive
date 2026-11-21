@@ -1075,13 +1075,21 @@ impl Disk {
     }
 
     pub fn mark(&self, trees: &Trees, entries: impl IntoIterator<Item = (NodeId, NodeId)>) {
-        let marks = (entries.into_iter())
+        let t = std::time::Instant::now();
+        let marks: Vec<_> = (entries.into_iter())
             .filter_map(|(id, node)| {
                 let (at, expected) = self.place_of(trees, &id)?;
                 Some((at, expected, node.to_string()))
             })
             .collect();
-        for (node, err) in self.space.mark_all(marks) {
+        let placed = t.elapsed().as_millis();
+        let count = marks.len();
+        let failed = self.space.mark_all(marks);
+        let took = t.elapsed().as_millis();
+        if took >= 300 {
+            eprintln!("DISK_MARK place={placed} mark_all={} marks={count} failed={}", took - placed, failed.len());
+        }
+        for (node, err) in failed {
             tracing::warn!(space_id = self.space_id, node, %err, "could not mark an entry");
         }
     }

@@ -912,7 +912,13 @@ impl Folder {
         }
         self.questions = questions;
         let granted = self.engine.commits.take_granted();
+        let count = granted.len();
+        let t = std::time::Instant::now();
         self.mark_granted(granted);
+        let took = t.elapsed().as_millis();
+        if took >= 300 {
+            eprintln!("MARK_GRANTED took={took} granted={count}");
+        }
         #[cfg(test)]
         if let Some(left) = &mut self.crash_after {
             if *left == 0 {
