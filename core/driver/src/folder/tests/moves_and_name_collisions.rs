@@ -3470,7 +3470,6 @@ fn a_refused_folder_rename_does_not_adopt_into_a_stale_ignored_destination() {
     }
 }
 
-
 #[test]
 fn a_refused_folder_rename_out_of_a_removed_folder_keeps_every_node_inside_it() {
     for restart in [false, true] {
@@ -3528,7 +3527,11 @@ fn a_refused_folder_rename_out_of_a_removed_folder_keeps_every_node_inside_it() 
         a.rest(&mut remote);
         let after = server_nodes(&remote);
         for name in ["report.docx", "sub", "deep.docx", "other"] {
-            assert_eq!(live_id(&after, name), id(name), "{name} {restart} {after:?}");
+            assert_eq!(
+                live_id(&after, name),
+                id(name),
+                "{name} {restart} {after:?}"
+            );
         }
         assert_eq!(server_bytes(&remote, &id("deep.docx")), b"deep");
         let trashed: Vec<&str> = (after.iter())
@@ -3555,4 +3558,3 @@ fn a_folder_that_takes_a_saved_name_for_a_while_ends_the_save() {
     assert_eq!(server_bytes(&remote, &after), b"version two");
     assert_ne!(after, before, "{:?}", server_nodes(&remote));
 }
-
