@@ -3246,7 +3246,11 @@ fn a_folder_renamed_under_another_folders_mark_keeps_every_node_inside_it() {
         let id = |name| live_id(&before, name);
         fs::create_dir(site.root.join("archive")).unwrap();
         for name in ["report.docx", "sub"] {
-            fs::rename(site.root.join("docs").join(name), site.root.join("archive").join(name)).unwrap();
+            fs::rename(
+                site.root.join("docs").join(name),
+                site.root.join("archive").join(name),
+            )
+            .unwrap();
         }
         fs::remove_dir(site.root.join("docs")).unwrap();
         let archive = fs::File::open(site.root.join("archive")).unwrap();
@@ -3272,17 +3276,32 @@ fn a_folder_renamed_under_another_folders_mark_keeps_every_node_inside_it() {
         for name in ["report.docx", "sub", "deep.docx", "other"] {
             assert_eq!(live_id(&after, name), id(name), "{restart} {after:?}");
         }
-        assert_eq!(server_bytes(&remote, &id("report.docx")), b"report", "{restart}");
-        assert_eq!(server_bytes(&remote, &id("deep.docx")), b"deep", "{restart}");
+        assert_eq!(
+            server_bytes(&remote, &id("report.docx")),
+            b"report",
+            "{restart}"
+        );
+        assert_eq!(
+            server_bytes(&remote, &id("deep.docx")),
+            b"deep",
+            "{restart}"
+        );
         let archive = live_id(&after, "archive");
         assert_ne!(archive, id("docs"), "{restart} {after:?}");
         let parent = |node: &str| {
             let nodes = remote.space.nodes();
-            nodes.into_iter().find(|n| n.node_id == node).unwrap().parent_id
+            nodes
+                .into_iter()
+                .find(|n| n.node_id == node)
+                .unwrap()
+                .parent_id
         };
         assert_eq!(parent(&id("report.docx")), archive, "{restart}");
         assert_eq!(parent(&id("sub")), archive, "{restart}");
-        let trashed: Vec<&str> = (after.iter()).filter(|node| !node.2).map(|node| node.1.as_str()).collect();
+        let trashed: Vec<&str> = (after.iter())
+            .filter(|node| !node.2)
+            .map(|node| node.1.as_str())
+            .collect();
         assert_eq!(trashed, [id("docs").as_str()], "{restart} {after:?}");
     }
 }
