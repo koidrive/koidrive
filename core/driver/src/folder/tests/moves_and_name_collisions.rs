@@ -1356,6 +1356,10 @@ fn a_save_that_renames_the_file_away_and_writes_it_again_keeps_its_node() {
                 .map(|node| node.0)
                 .collect();
             assert_eq!(live, ["docs", name], "{shape}, sending {sending}");
+            if shape == "word" && sending {
+                synced_temp_save_assert(&remote, name, &before);
+                continue;
+            }
             assert_eq!(
                 live_id(&server_nodes(&remote), name),
                 before,
@@ -1442,6 +1446,17 @@ fn safe_save_assert(remote: &Remote, before: &str) {
     assert_eq!(after, before, "{:?}", server_nodes(remote));
 }
 
+fn synced_temp_save_assert(remote: &Remote, name: &str, before: &str) {
+    let nodes = server_nodes(remote);
+    let after = live_id(&nodes, name);
+    assert_ne!(after, before, "{nodes:?}");
+    assert_eq!(server_bytes(remote, &after), b"version two", "{nodes:?}");
+    assert!(
+        !nodes.iter().any(|node| node.1 == before && node.2),
+        "{nodes:?}"
+    );
+}
+
 #[test]
 fn a_safe_save_word_staged_early() {
     let (mut remote, site, mut a, before) = safe_save_fixture();
@@ -1457,7 +1472,7 @@ fn a_safe_save_word_staged_early() {
     a.rescan();
     a.scan_until(|_| local_holds(&site, "report.docx"));
     safe_save_cleanup(&site, &mut a, &mut remote);
-    safe_save_assert(&remote, &before);
+    synced_temp_save_assert(&remote, "report.docx", &before);
 }
 
 #[test]
@@ -1480,7 +1495,7 @@ fn a_safe_save_word_promotes_temp_after_backup_cleanup() {
     a.rescan();
     a.scan_until(|_| local_holds(&site, "report.docx"));
     a.rest(&mut remote);
-    safe_save_assert(&remote, &before);
+    synced_temp_save_assert(&remote, "report.docx", &before);
 }
 
 #[test]
@@ -1621,7 +1636,7 @@ fn a_safe_save_ignored_lock_file_does_not_break_word_swap() {
     a.create(&mut remote, &site.root.join(".koiignore"), b"~$*.docx\n");
     a.rest(&mut remote);
     fs::write(site.root.join("~$port.docx"), b"lock owner").unwrap();
-    a.create(&mut remote, &site.root.join("~WRD0000.tmp"), b"version two");
+    fs::write(site.root.join("~WRD0000.tmp"), b"version two").unwrap();
     safe_save_swap(&site, &mut a);
     fs::rename(
         site.root.join("~WRD0000.tmp"),
@@ -2049,7 +2064,7 @@ fn a_safe_save_promotes_a_temp_file_that_synced_before_its_last_write() {
     a.scan_until(|_| local_holds(&site, "report.docx"));
     safe_save_cleanup(&site, &mut a, &mut remote);
     assert_eq!(remote.names(), ["report.docx"]);
-    safe_save_assert(&remote, &before);
+    synced_temp_save_assert(&remote, "report.docx", &before);
 }
 
 #[test]
@@ -2061,8 +2076,9 @@ fn a_safe_save_overlapping_word_saves_cleaned_up_in_separate_scans_keep_the_node
         ("~WRD0000.tmp", "~WRL0001.tmp", b"version two".as_slice()),
         ("~WRD0002.tmp", "~WRL0003.tmp", b"version three".as_slice()),
     ] {
-        a.create(&mut remote, &docs.join(stage), bytes);
-        a.rest(&mut remote);
+        fs::write(docs.join(stage), bytes).unwrap();
+        a.rescan();
+        a.scan_until(|a| tracks(a, stage));
         clock::advance_to(clock::instant() + Duration::from_millis(100));
         fs::rename(&report, docs.join(backup)).unwrap();
         fs::rename(docs.join(stage), &report).unwrap();
@@ -2094,8 +2110,9 @@ fn a_safe_save_copy_then_overwrite_and_a_large_tmp_swap_keep_the_node() {
         let backup = docs.join("report.txt~");
         if large {
             let stage = docs.join("report.txt.tmp");
-            a.create(&mut remote, &stage, b"version two");
-            a.rest(&mut remote);
+            fs::write(&stage, b"version two").unwrap();
+            a.rescan();
+            a.scan_until(|a| tracks(a, "report.txt.tmp"));
             fs::rename(&report, &backup).unwrap();
             fs::rename(&stage, &report).unwrap();
         } else {
@@ -2117,8 +2134,15 @@ fn a_safe_save_copy_then_overwrite_and_a_large_tmp_swap_keep_the_node() {
 
 #[test]
 fn a_save_continuation_does_not_take_a_displaced_file_brought_back_to_the_saved_name() {
-    for (restart, via) in [(false, None), (true, None), (false, Some("notes.tmp"))] {
-        let case = format!("restart {restart}, via {via:?}");
+    let cases = [
+        "direct",
+        "direct after a restart",
+        "through notes.tmp after the swap",
+        "through notes.tmp before the swap",
+        "through notes.tmp, 4 s before the swap",
+        "through notes.tmp, restarted before the swap",
+    ];
+    for case in cases {
         clock::freeze();
         let mut remote = Remote::new();
         let (site, mut a) = linked(&mut remote, "a");
@@ -2142,7 +2166,7 @@ fn a_save_continuation_does_not_take_a_displaced_file_brought_back_to_the_saved_
         fs::write(site.root.join("notes.docx"), b"new notes").unwrap();
         a.settle();
         a.rest(&mut remote);
-        if restart {
+        if case == "direct after a restart" {
             drop(a);
             a = restarted(&site, &mut remote);
         }
@@ -2152,15 +2176,31 @@ fn a_save_continuation_does_not_take_a_displaced_file_brought_back_to_the_saved_
             "{case}"
         );
 
-        safe_save_swap(&site, &mut a);
-        a.rest(&mut remote);
         let mut at = site.root.join("dist/notes.docx");
-        for name in via.into_iter().chain(["report.docx"]) {
+        let mut bring = |a: &mut Device, name: &str| {
             fs::rename(&at, site.root.join(name)).unwrap();
             at = site.root.join(name);
             a.rescan();
             a.scan_until(|a| a.folder.engine.path_of(&node).as_deref() == Some(Path::new(name)));
+        };
+        let before_swap = case.contains("before the swap");
+        if before_swap {
+            bring(&mut a, "notes.tmp");
+            a.rest(&mut remote);
+            if case.contains("4 s") {
+                clock::advance_to(clock::instant() + Duration::from_millis(4001));
+            }
+            if case.contains("restarted") {
+                drop(a);
+                a = restarted(&site, &mut remote);
+            }
         }
+        safe_save_swap(&site, &mut a);
+        a.rest(&mut remote);
+        if case == "through notes.tmp after the swap" {
+            bring(&mut a, "notes.tmp");
+        }
+        bring(&mut a, "report.docx");
         safe_save_cleanup(&site, &mut a, &mut remote);
         let nodes = server_nodes(&remote);
         assert_eq!(
