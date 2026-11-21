@@ -598,6 +598,11 @@ fn generates<S: Strategy>(
 ) -> Vec<String> {
     let reds = RefCell::new(Reds::new(test, "case-"));
     let count = Cell::new(0);
+    let config = ProptestConfig {
+        fork: false,
+        timeout: 0,
+        ..config
+    };
     let result = TestRunner::new(config).run(strategy, |value| {
         let case = format!("case-{}", count.replace(count.get() + 1));
         reds.borrow_mut().case(&case, || run(value));
@@ -713,6 +718,8 @@ fn replays_in_mode<S: Strategy>(
         let mut runner = TestRunner::new(ProptestConfig {
             test_name: Some(test),
             failure_persistence: Some(Box::new(SavedCase(seed))),
+            fork: false,
+            timeout: 0,
             ..ProptestConfig::with_cases(0)
         });
         let result = runner.run(strategy, |value| {

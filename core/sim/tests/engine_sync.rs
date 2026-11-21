@@ -613,6 +613,8 @@ fn holds_with_field_intents<S: Strategy>(
         let mut runner = proptest::test_runner::TestRunner::new(ProptestConfig {
             test_name: Some(test),
             failure_persistence: Some(Box::new(SavedCase(seed))),
+            fork: false,
+            timeout: 0,
             ..ProptestConfig::with_cases(0)
         });
         let failure = std::cell::RefCell::new(None);
