@@ -2521,6 +2521,50 @@ fn a_late_conflict_copy_keeps_the_row_of_an_edit_made_on_the_copy() {
 }
 
 #[test]
+fn a_late_result_held_on_a_node_with_a_compact_row_keeps_that_row() {
+    for features in [&[][..], &["field_intents"][..]] {
+        for code in [op_result::Code::ConflictCopy, op_result::Code::Superseded] {
+            let mut trees = Trees::new(ROOT, &IdGen::new(0));
+            synced(&mut trees, "copy", file(ROOT, "a (copy)", 2), 4);
+            trees.set_local_changed("copy".into(), local(file(ROOT, "a (copy)", 3)));
+            let first = build(&mut trees, features, 1_600);
+            let own = sent(&trees, "copy", Field::Content);
+            let reported = proto::FieldIntents {
+                place: Some(wire(held(&trees, "copy", Field::Place), 1_000)),
+                content: Some(wire(own, 1_650)),
+                status: Some(wire(held(&trees, "copy", Field::Status), 1_000)),
+            };
+            let state = node_state("copy", &file(ROOT, "a (copy)", 3), 5, Some(reported));
+            trees.set_remote("copy".into(), RemoteNode::from_state(&state).unwrap().1);
+            let applied = answered(vec![outcome(op_result::Code::Applied)], vec![state]);
+            trees.record_results(&first, &applied);
+            assert!(
+                trees
+                    .journal()
+                    .compact_row(&"copy".into(), Field::Content)
+                    .is_some()
+            );
+            synced(&mut trees, "f", file(ROOT, "a", 1), 1);
+            trees.set_local_changed("f".into(), local(file(ROOT, "a", 2)));
+            let late = build(&mut trees, features, 1_700);
+            let replayed = proto::FieldIntents {
+                content: Some(wire(sent(&trees, "f", Field::Content), 1_900)),
+                ..Default::default()
+            };
+            let reported = (code == op_result::Code::Superseded).then_some(replayed);
+            let state = node_state("copy", &file(ROOT, "a (copy)", 3), 5, reported);
+            let result = proto::OpResult {
+                node_id: "copy".into(),
+                ..outcome(code)
+            };
+            trees.record_results(&late, &answered(vec![result], vec![state]));
+            let row = trees.journal_row(&"copy".into(), Field::Content).unwrap();
+            assert_eq!(row.intent, own, "{features:?} {code:?}");
+        }
+    }
+}
+
+#[test]
 fn a_superseded_replay_held_on_another_node_keeps_that_nodes_edit() {
     let mut trees = Trees::new(ROOT, &IdGen::new(0));
     synced(&mut trees, "f", file(ROOT, "a", 1), 1);

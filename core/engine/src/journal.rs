@@ -1088,7 +1088,9 @@ impl Journal {
             _ => None,
         };
         let held_at = (target.to_owned(), field);
-        if let Some(mut row) = moved.filter(|_| self.rows.get(&held_at).is_none()) {
+        let target_has_row =
+            self.rows.get(&held_at).is_some() || self.rows.get_compact(&held_at).is_some();
+        if let Some(mut row) = moved.filter(|_| !target_has_row) {
             row.state = RowState::Held {
                 held_as: sent,
                 version_id,
