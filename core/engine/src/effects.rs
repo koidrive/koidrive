@@ -475,19 +475,7 @@ impl Effects {
         let mut chosen = Vec::new();
         let mut claimed = BTreeSet::new();
         let mut bytes = 0;
-        let mut left_behind = Vec::new();
-        let mut folders: Vec<&NodeId> = (trees.dirty_others().into_iter())
-            .filter(|id| trees.left_behind(id))
-            .collect();
-        while let Some(folder) = folders.pop() {
-            for child in trees.local_children(folder) {
-                if trees.left_behind(child) && !trees.dirty().contains(child) {
-                    left_behind.push(child);
-                    folders.push(child);
-                }
-            }
-        }
-        for id in left_behind.into_iter().rev().chain(trees.dirty_others()) {
+        for id in trees.dirty_others() {
             if chosen.len() >= limit.effects {
                 break;
             }
@@ -1356,6 +1344,13 @@ impl<'a> View<'a> {
             return false;
         }
         let Some(after) = &record.after else {
+            if self.trees.remote().live(&record.node).is_some()
+                && self.trees.excluded(&record.node)
+                && !self.trees.left_behind(&record.node)
+                && !self.trees.trashed_while_parked(&record.node)
+            {
+                return false;
+            }
             let along = match &record.effect {
                 Effect::RemoveDir { along, .. } => along.as_slice(),
                 _ => &[],

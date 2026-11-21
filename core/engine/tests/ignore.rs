@@ -636,25 +636,8 @@ fn a_file_edited_or_moved_here_stays_when_another_device_moves_it_into_an_exclud
 }
 
 #[test]
-fn an_unchanged_folder_another_device_moves_into_an_excluded_folder_goes_to_the_local_trash() {
-    let mut trees = trees(&[
-        synced("f", dir(ROOT, "f")),
-        synced("u", file("f", "u.txt", 1)),
-        incoming("build", dir(ROOT, "build")),
-    ]);
-    trees.set_rules(&AT_ROOT, Source::Koiignore, rules("/build/\n"));
-    move_remote(&mut trees, "f", "build");
-    let done = effects(&mut trees);
-    assert!(
-        matches!(&done[..], [(file, Effect::RemoveFile { .. }), (folder, Effect::RemoveDir { .. })] if file == "u" && folder == "f"),
-        "{done:?}"
-    );
-    assert_eq!(ops(&mut trees), []);
-}
-
-#[test]
-fn a_folder_another_device_moves_into_an_excluded_folder_stays_with_what_was_edited_or_made_here() {
-    for made_here in [false, true] {
+fn a_folder_another_device_moves_into_an_excluded_folder_stays_with_its_files() {
+    for change in ["none", "edited", "made here"] {
         let mut trees = trees(&[
             synced("f", dir(ROOT, "f")),
             synced("u", file("f", "u.txt", 1)),
@@ -662,36 +645,28 @@ fn a_folder_another_device_moves_into_an_excluded_folder_stays_with_what_was_edi
             incoming("build", dir(ROOT, "build")),
         ]);
         trees.set_rules(&AT_ROOT, Source::Koiignore, rules("/build/\n"));
-        let kept = if made_here {
-            trees.set_local("n".into(), local(file("f", "n.txt", 3), 50));
-            "n"
-        } else {
-            let mut edited = trees.local().get(&"e".into()).unwrap().clone();
-            edited.shape.content = Some(content(9));
-            trees.set_local("e".into(), edited);
-            "e"
-        };
+        match change {
+            "edited" => {
+                let mut edited = trees.local().get(&"e".into()).unwrap().clone();
+                edited.shape.content = Some(content(9));
+                trees.set_local("e".into(), edited);
+            }
+            "made here" => trees.set_local("n".into(), local(file("f", "n.txt", 3), 50)),
+            _ => {}
+        }
         move_remote(&mut trees, "f", "build");
-        let done = effects(&mut trees);
-        let removed: BTreeSet<&str> = nodes(&done).into_iter().collect();
-        let expected: BTreeSet<&str> = if made_here {
-            ["e", "u"].into()
-        } else {
-            ["u"].into()
-        };
-        assert_eq!(removed, expected, "{made_here}: {done:?}");
-        assert!(
-            done.iter()
-                .all(|(_, effect)| matches!(effect, Effect::RemoveFile { .. })),
-            "{made_here}: {done:?}"
-        );
-        assert!(trees.local().get(&"f".into()).is_some(), "{made_here}");
-        assert!(trees.local().get(&kept.into()).is_some(), "{made_here}");
+        let mut done = effects(&mut trees);
+        set_content(&mut trees, "u", 8);
+        done.extend(effects(&mut trees));
+        assert_eq!(done, [], "{change}");
+        for id in ["f", "u", "e"] {
+            assert!(trees.local().get(&id.into()).is_some(), "{change}: {id}");
+        }
         assert!(
             !ops(&mut trees)
                 .iter()
                 .any(|op| matches!(op, op::Op::Delete(_))),
-            "{made_here}"
+            "{change}"
         );
     }
 }
@@ -1432,8 +1407,10 @@ fn what_a_folder_moved_into_a_folder_excluded_here_holds_stays_out_too() {
         trees.excluded(&"f".into()) && trees.excluded(&"c".into()) && trees.excluded(&"d".into())
     );
     assert_eq!(ops(&mut trees), []);
-    assert_eq!(nodes(&effects(&mut trees)), ["c", "f"]);
-    assert_eq!(ops(&mut trees), []);
+    assert_eq!(effects(&mut trees), []);
+    trees.remove_local(&"c".into());
+    trees.remove_local(&"f".into());
+    assert_eq!(ops(&mut trees), [], "deleting it later sends nothing");
 }
 
 #[test]
@@ -1458,8 +1435,9 @@ fn what_a_folder_whose_place_here_the_rules_exclude_holds_stays_out_too() {
     trees.set_rules(&AT_ROOT, Source::Koiignore, rules("ss/\n"));
     assert!(trees.excluded(&"p".into()) && trees.excluded(&"f".into()));
     assert!(trees.excluded(&"c".into()) && trees.excluded(&"d".into()));
-    assert_eq!(nodes(&effects(&mut trees)), ["c", "f"]);
-    assert_eq!(ops(&mut trees), []);
+    assert_eq!(effects(&mut trees), []);
+    trees.remove_local(&"c".into());
+    assert_eq!(ops(&mut trees), [], "deleting it later sends nothing");
 }
 
 #[test]
@@ -3597,4 +3575,94 @@ fn move_remote(trees: &mut Trees, id: &str, parent: &str) {
     node.shape.parent = parent.into();
     node.meta_rev += 1;
     trees.set_remote(id.into(), node);
+}
+
+#[test]
+fn a_file_moved_here_into_a_folder_another_device_moved_where_the_rules_leave_it_out_stays() {
+    let mut trees = trees(&[
+        synced("f", dir(ROOT, "f")),
+        synced("u", file("f", "u.txt", 1)),
+        synced("e", file("f", "e.txt", 2)),
+        synced("y", file(ROOT, "y.txt", 5)),
+        incoming("build", dir(ROOT, "build")),
+    ]);
+    trees.set_rules(&AT_ROOT, Source::Koiignore, rules("/build/\n"));
+    let mut edited = trees.local().get(&"e".into()).unwrap().clone();
+    edited.shape.content = Some(content(9));
+    trees.set_local("e".into(), edited);
+    move_remote(&mut trees, "f", "build");
+    effects(&mut trees);
+    assert!(trees.local().get(&"f".into()).is_some());
+    rename_here(&mut trees, "y", "f", "y.txt");
+    ops(&mut trees);
+    move_remote(&mut trees, "y", "f");
+    trees.settle(&Default::default());
+    let done = effects(&mut trees);
+    assert!(
+        !nodes(&done).contains(&"y"),
+        "a file the user just moved here went to the trash: {done:?}"
+    );
+    let mut trees = restarted(&trees);
+    trees.set_rules(&AT_ROOT, Source::Koiignore, rules("/build/\n"));
+    trees.rules_scanned();
+    let done = effects(&mut trees);
+    assert!(!nodes(&done).contains(&"y"), "after a restart: {done:?}");
+    assert!(trees.local().get(&"y".into()).is_some());
+}
+
+#[test]
+fn an_edited_file_renamed_here_in_a_folder_another_device_moved_where_the_rules_leave_it_out_stays()
+{
+    let mut trees = trees(&[
+        synced("f", dir(ROOT, "f")),
+        synced("u", file("f", "u.txt", 1)),
+        synced("e", file("f", "e.txt", 2)),
+        incoming("build", dir(ROOT, "build")),
+    ]);
+    trees.set_rules(&AT_ROOT, Source::Koiignore, rules("/build/\n"));
+    let mut edited = trees.local().get(&"e".into()).unwrap().clone();
+    edited.shape.content = Some(content(9));
+    trees.set_local("e".into(), edited);
+    move_remote(&mut trees, "f", "build");
+    effects(&mut trees);
+    rename_here(&mut trees, "e", "f", "e2.txt");
+    ops(&mut trees);
+    let mut node = trees.remote().get(&NodeId::from("e")).unwrap().clone();
+    node.shape.name = "e2.txt".into();
+    node.shape.content = Some(content(9));
+    node.meta_rev += 1;
+    node.content_rev += 1;
+    trees.set_remote("e".into(), node);
+    trees.settle(&Default::default());
+    let done = effects(&mut trees);
+    assert!(
+        !nodes(&done).contains(&"e"),
+        "an edited file the user just renamed went to the trash: {done:?}"
+    );
+    let mut trees = restarted(&trees);
+    trees.set_rules(&AT_ROOT, Source::Koiignore, rules("/build/\n"));
+    trees.rules_scanned();
+    let done = effects(&mut trees);
+    assert!(!nodes(&done).contains(&"e"), "after a restart: {done:?}");
+    assert!(trees.local().get(&"e".into()).is_some());
+}
+
+#[test]
+fn a_remote_change_below_a_folder_moved_into_an_ignored_folder_here_plans_no_removal() {
+    for moved in [false, true] {
+        let mut trees = trees(&[
+            synced("d", dir(ROOT, "d")),
+            synced("inner", dir("d", "inner")),
+            synced("b", file("inner", "b.txt", 2)),
+            incoming("build", dir(ROOT, "build")),
+        ]);
+        trees.set_rules(&AT_ROOT, Source::Koiignore, rules("/build/\n"));
+        trees.ignore_local(&"inner".into());
+        match moved {
+            true => move_remote(&mut trees, "b", "build"),
+            false => set_content(&mut trees, "b", 7),
+        }
+        let done = effects(&mut trees);
+        assert_eq!(done, [], "{moved}: {done:?}");
+    }
 }

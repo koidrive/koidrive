@@ -516,72 +516,37 @@ fn a_remote_delete_of_a_folder_holding_an_entry_l_does_not_know_keeps_the_folder
 }
 
 #[test]
-fn a_folder_another_device_moves_where_the_rules_leave_it_out_here_goes_to_the_local_trash_but_with_an_entry_l_does_not_know()
- {
-    for unknown in [None, Some("build.log"), Some("link")] {
-        let mut remote = Remote::new();
-        let (site_a, mut a) = linked(&mut remote, "a");
-        fs::create_dir(site_a.root.join("held")).unwrap();
-        fs::create_dir(site_a.root.join("archive")).unwrap();
-        a.create(&mut remote, &site_a.root.join("held/a.txt"), b"synced");
-        a.create(&mut remote, &site_a.root.join("archive/old.txt"), b"old");
-        let sync = SyncRules {
-            include: Vec::new(),
-            exclude: vec!["archive/".into(), "*.log".into()],
-            ..SyncRules::default()
-        };
-        let site = Site::new(&remote, "b");
-        let mut b = site.start_with(&sync);
-        b.connect(&remote);
-        b.scan_until(|b| b.folder.scanned);
-        b.run(&mut remote);
-        b.settle();
-        assert_eq!(names(&site.root), ["held"], "{unknown:?}");
-        assert_eq!(fs::read(site.root.join("held/a.txt")).unwrap(), b"synced");
-        let entry = unknown.map(|name| site.root.join("held").join(name));
-        match (unknown, &entry) {
-            (Some("link"), Some(entry)) => std::os::unix::fs::symlink("/etc/hosts", entry).unwrap(),
-            (_, Some(entry)) => fs::write(entry, b"left out").unwrap(),
-            (_, None) => {}
-        }
-        b.settle();
-        assert_eq!(b.state(), FolderState::UpToDate, "{unknown:?}");
+fn a_folder_another_device_moves_where_the_rules_leave_it_out_here_stays_with_its_files() {
+    let mut remote = Remote::new();
+    let (site_a, mut a) = linked(&mut remote, "a");
+    fs::create_dir(site_a.root.join("held")).unwrap();
+    fs::create_dir(site_a.root.join("archive")).unwrap();
+    a.create(&mut remote, &site_a.root.join("held/a.txt"), b"synced");
+    a.create(&mut remote, &site_a.root.join("archive/old.txt"), b"old");
+    let sync = SyncRules {
+        include: Vec::new(),
+        exclude: vec!["archive/".into()],
+        ..SyncRules::default()
+    };
+    let site = Site::new(&remote, "b");
+    let mut b = site.start_with(&sync);
+    b.connect(&remote);
+    b.scan_until(|b| b.folder.scanned);
+    b.run(&mut remote);
+    b.settle();
+    assert_eq!(fs::read(site.root.join("held/a.txt")).unwrap(), b"synced");
 
-        fs::rename(site_a.root.join("held"), site_a.root.join("archive/held")).unwrap();
-        a.scan_until(|a| !a.work.is_empty());
-        a.run(&mut remote);
-        b.pull(&remote);
-        let mut steps = 0;
-        while let Some(work) = b.work.pop_front() {
-            steps += 1;
-            assert!(
-                steps < 20,
-                "{unknown:?}: the removal is planned again and again"
-            );
-            b.perform(work, &mut remote).unwrap();
-        }
-        b.settle();
-        assert!(b.work.is_empty(), "{unknown:?}");
-        assert!(!site.root.join("held/a.txt").exists(), "{unknown:?}");
-        match &entry {
-            Some(entry) => assert!(fs::symlink_metadata(entry).is_ok(), "{unknown:?} is kept"),
-            None => assert!(!site.root.join("held").exists()),
-        }
-        assert!(!trashed(&site.root).is_empty(), "{unknown:?}");
-        let view = b.folder.view();
-        assert_eq!(
-            (view.state, view.problem),
-            (FolderState::UpToDate, None),
-            "{unknown:?}"
-        );
-        assert!(b.folder.stuck_effects.is_empty(), "{unknown:?}");
-        assert!(b.sent.is_empty(), "{unknown:?}");
-        assert_eq!(
-            remote.names(),
-            ["a.txt", "archive", "held", "old.txt"],
-            "{unknown:?}"
-        );
-    }
+    fs::rename(site_a.root.join("held"), site_a.root.join("archive/held")).unwrap();
+    a.scan_until(|a| !a.work.is_empty());
+    a.run(&mut remote);
+    b.pull(&remote);
+    b.run(&mut remote);
+    b.settle();
+    assert!(b.run(&mut remote).is_empty());
+    assert_eq!(fs::read(site.root.join("held/a.txt")).unwrap(), b"synced");
+    assert!(trashed(&site.root).is_empty());
+    assert!(b.sent.is_empty(), "{:?}", b.sent);
+    assert_eq!(b.folder.view().problem, None);
 }
 
 #[test]
@@ -2818,5 +2783,47 @@ fn deleted_while_stopped_next_to_a_folder_that_stays_unreadable(upgraded: bool) 
             .iter()
             .any(|(name, _, live)| name == "report.docx" && *live),
         "{nodes:?}"
+    );
+}
+
+#[test]
+fn a_copy_a_rule_added_here_excludes_where_it_sits_after_its_removal_was_planned_stays() {
+    let mut remote = Remote::new();
+    let (site_a, mut a) = linked(&mut remote, "a");
+    fs::create_dir(site_a.root.join("archive")).unwrap();
+    a.create(&mut remote, &site_a.root.join("archive/old.txt"), b"old");
+    a.create(&mut remote, &site_a.root.join("keep.txt"), b"keep");
+    let sync = SyncRules {
+        exclude: vec!["archive/".into()],
+        ..SyncRules::default()
+    };
+    let site = Site::new(&remote, "b");
+    let mut b = site.start_with(&sync);
+    b.connect(&remote);
+    b.scan_until(|b| b.folder.scanned);
+    b.run(&mut remote);
+    b.settle();
+    let keep = site.root.join("keep.txt");
+    assert_eq!(fs::read(&keep).unwrap(), b"keep");
+
+    fs::rename(site_a.root.join("keep.txt"), site_a.root.join("archive/keep.txt")).unwrap();
+    a.scan_until(|a| !a.work.is_empty());
+    a.run(&mut remote);
+    b.pull(&remote);
+    let Some(stage @ Work::Stage(_)) = b.work.pop_front() else {
+        panic!("the remote move must plan a local removal");
+    };
+    fs::write(site.root.join(".koiignore"), b"/keep.txt\n").unwrap();
+    b.scan_until(|b| b.folder.engine.trees.ignores(&["keep.txt"], Kind::File));
+    assert_eq!(fs::read(&keep).unwrap(), b"keep");
+    b.perform(stage, &mut remote).unwrap();
+
+    let trash: Vec<_> = trashed(&site.root)
+        .into_iter()
+        .map(|name| fs::read(site.root.join(koidrive_fs::PRIVATE_DIR).join("trash").join(name)).unwrap())
+        .collect();
+    assert_eq!(
+        (fs::read(&keep).ok(), trash),
+        (Some(b"keep".to_vec()), Vec::<Vec<u8>>::new()),
     );
 }

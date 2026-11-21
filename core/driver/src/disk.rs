@@ -2067,19 +2067,6 @@ fn settle(
                 );
                 Settled::Done
             }
-            Outcome::Failed {
-                reason: Reason::Holds(names),
-                ..
-            } if engine.trees.left_behind(&record.node) => {
-                (engine.effects)
-                    .failed(&mut engine.trees, &record.effect_id)
-                    .map_err(refused)?;
-                tracing::info!(
-                    entries = names.len(),
-                    "a folder another device moved where the rules leave it out stays here with what is left in it"
-                );
-                Settled::Done
-            }
             Outcome::Failed { reason, .. } => {
                 match reason {
                     Reason::Overtaken => {

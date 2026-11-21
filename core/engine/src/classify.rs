@@ -5280,24 +5280,23 @@ impl Trees {
         path(&self.r, id).is_some_and(|(names, kind)| self.ignores(&names, kind))
     }
 
-    /// Whether L holds the node unchanged at the place S holds, which the rules let in, while the server holds it at a
-    /// place the rules exclude here (section 5.10). Its copy goes to the local trash; a folder whose removal finds more
-    /// on the disk than what goes with it stays, and its failed removal is not a problem to report.
-    pub fn left_behind(&self, id: &NodeId) -> bool {
-        let (Some(local), Some(synced)) = (self.l.get(id), self.s.live(id)) else {
+    pub(crate) fn left_behind(&self, id: &NodeId) -> bool {
+        let (Some(local), Some(synced), Some(remote)) =
+            (self.l.get(id), self.s.live(id), self.r.live(id))
+        else {
             return false;
         };
-        !local.parked
+        local.shape.kind == Kind::File
+            && !local.parked
             && local.shape.same(synced)
+            && !remote.same_position(synced)
             && !self.edited(id)
             && !self.unsent_moves.contains(id)
-            && self.r.live(id).is_some()
             && self.excluded(id)
-            && !self.outside.contains(id)
+            && !self.recorded_local(id)
             && !self.displaced.contains_key(id)
             && path(&self.l, id).is_some_and(|(names, kind)| !self.ignores(&names, kind))
-            && (self.ignored_in_remote(id)
-                || (self.r.live(id)).is_some_and(|remote| self.excluded(&remote.parent)))
+            && (self.ignored_in_remote(id) || self.excluded(&remote.parent))
     }
 
     /// The name of a parked node's entry in the parked directory: its ID, or, for a node re-keyed
