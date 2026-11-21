@@ -763,7 +763,7 @@ fn renaming_an_entry_another_device_brought_into_a_taken_along_folder_changes_th
         local.shape.name = "g2".into();
         device.trees.set_local(g.clone(), local);
         if brought {
-            device.note_arrival(&g);
+            device.note_arrivals(BTreeSet::from([g.clone()]));
         }
         device.acted.insert(g);
         assert_eq!(
@@ -1659,4 +1659,100 @@ fn a_rename_of_an_entry_that_came_with_an_arrival_changes_that_entry_alone_after
         false,
     );
     assert!(!revive(&device, &discarded, &kept, &BTreeSet::new()).contains(&"h".into()));
+}
+
+fn another_device_commits(
+    space: &mut SpaceDo,
+    ids: &mut IdGen,
+    ops: Vec<op::Op>,
+) -> Vec<ChangeRecord> {
+    let other = session("other");
+    let commit = Commit {
+        commit_id: ids.uuid_v7(NOW as u64),
+        history_id: space.history_id().to_owned(),
+        device_seq: space.device_seq(&other.device_id) + 1,
+        base_seq: space.head_seq(),
+        ops: (ops.into_iter())
+            .map(|op| Op {
+                op: Some(op),
+                ..Default::default()
+            })
+            .collect(),
+        ..Default::default()
+    };
+    let result = space.commit(&other, NOW, &commit).unwrap().result;
+    assert!((result.results.iter()).all(|outcome| outcome.code == op_result::Code::Applied as i32));
+    result.changes
+}
+
+fn folder_moves(
+    ids: &mut IdGen,
+    final_parent_of_a: Option<&str>,
+) -> (SpaceDo, [String; 4], [Vec<ChangeRecord>; 2]) {
+    let mut space = SpaceDo::new(5, NOW);
+    let root = space.space_id().to_owned();
+    let [a, b, s] = [0; 3].map(|_| ids.uuid_v7(NOW as u64).to_string());
+    let dir = |id: &str, parent: &str, name: &str| {
+        op::Op::CreateDir(CreateDir {
+            node_id: id.into(),
+            parent_id: parent.into(),
+            name: name.into(),
+            ..Default::default()
+        })
+    };
+    let mv = |id: &str, parent: &str, name: &str| {
+        op::Op::Move(Move {
+            node_id: id.into(),
+            new_parent_id: parent.into(),
+            new_name: name.into(),
+            ..Default::default()
+        })
+    };
+    let seed = another_device_commits(
+        &mut space,
+        ids,
+        vec![dir(&a, &root, "a"), dir(&b, &a, "b"), dir(&s, &root, "s")],
+    );
+    let last = final_parent_of_a.map_or(b.clone(), |_| s.clone());
+    let changes = another_device_commits(
+        &mut space,
+        ids,
+        vec![mv(&a, &root, "a2"), mv(&b, &root, "b"), mv(&a, &last, "a2")],
+    );
+    (space, [root, a, b, s], [seed, changes])
+}
+
+#[test]
+fn a_batch_that_moves_a_folder_into_its_former_child_records_the_arrival_once_it_has_applied() {
+    let mut ids = IdGen::new(7);
+    let (_, [root, a, b, _], [seed, changes]) = folder_moves(&mut ids, None);
+    let mut device = Device::new(Trees::new(root));
+    device.receive(&seed, false);
+    device.note_taken_along([&b.as_str().into()]);
+    device.receive(&changes, false);
+    let arrival = device.arrivals.get(&a.as_str().into());
+    assert!(arrival.is_some_and(|folders| folders.contains(&b.as_str().into())));
+}
+
+#[test]
+fn a_child_a_batch_moves_out_before_its_folder_arrives_is_not_an_arrival() {
+    let mut ids = IdGen::new(7);
+    let (_, [root, a, b, s], [seed, changes]) = folder_moves(&mut ids, Some("s"));
+    let mut device = Device::new(Trees::new(root.clone()));
+    let (folder, child): (NodeId, NodeId) = (s.as_str().into(), b.as_str().into());
+    device.receive(&seed, false);
+    device.note_taken_along([&folder]);
+    device.receive(&changes, false);
+    let synced = device.trees.remote().live(&child).cloned();
+    device.trees.set_synced(child.clone(), synced);
+    place_dir(&mut device, "h", Some((&root, "h")), None);
+    place_dir(&mut device, &s, Some(("h", "s")), None);
+    place_dir(&mut device, &a, Some((&s, "a2")), None);
+    place_dir(&mut device, &b, Some((&s, "b")), None);
+    device.acted_on(child);
+    let shape = |id: &NodeId| device.trees.local().get(id).unwrap().shape.clone();
+    let held: NodeId = "h".into();
+    let kept = BTreeMap::from([(folder.clone(), shape(&folder))]);
+    let discarded = BTreeMap::from([(held.clone(), shape(&held))]);
+    assert!(revive(&device, &discarded, &kept, &BTreeSet::new()).contains(&held));
 }

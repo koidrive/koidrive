@@ -614,7 +614,7 @@ impl Device {
         }
     }
 
-    fn note_arrival(&mut self, node: &NodeId) {
+    fn note_arrivals(&mut self, nodes: BTreeSet<NodeId>) {
         let inside =
             |from: &NodeId, parent: &dyn Fn(&NodeId) -> Option<NodeId>, folder: &NodeId| {
                 let mut seen = BTreeSet::new();
@@ -633,15 +633,16 @@ impl Device {
                 .live(at)
                 .map(|shape| shape.parent.clone())
         };
-        let mut came = vec![node.clone()];
-        let mut at = 0;
-        while let Some(parent) = came.get(at).cloned() {
-            came.extend(
-                (self.trees.remote().iter())
-                    .filter(|(_, child)| !child.trashed && child.shape.parent == parent)
-                    .map(|(id, _)| id.clone()),
-            );
-            at += 1;
+        let mut came = nodes;
+        let mut next: Vec<NodeId> = came.iter().cloned().collect();
+        while let Some(parent) = next.pop() {
+            for (id, _) in (self.trees.remote().iter())
+                .filter(|(_, child)| !child.trashed && child.shape.parent == parent)
+            {
+                if came.insert(id.clone()) {
+                    next.push(id.clone());
+                }
+            }
         }
         let mut arrived = Vec::new();
         for (folder, baseline) in &self.on_server_when_taken_along {
@@ -696,6 +697,7 @@ impl Device {
     }
 
     fn receive(&mut self, changes: &[ChangeRecord], answered: bool) {
+        let mut brought = BTreeSet::new();
         for change in changes {
             apply(&mut self.trees, std::slice::from_ref(change));
             if let Some(change_record::Change::Purged(purged)) = &change.change {
@@ -710,7 +712,7 @@ impl Device {
                 continue;
             };
             if !answered {
-                self.note_arrival(&node);
+                brought.insert(node.clone());
             }
             let Some(moved) = self.relocated.get_mut(&node) else {
                 continue;
@@ -721,6 +723,7 @@ impl Device {
                 moved.from = remote;
             }
         }
+        self.note_arrivals(brought);
     }
 
     fn identity(&mut self) -> FileIdentity {
