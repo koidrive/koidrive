@@ -618,6 +618,7 @@ struct Device {
     acked: BTreeSet<NodeId>,
     removed_from: BTreeMap<NodeId, NodeId>,
     left_from: BTreeMap<NodeId, Vec<NodeId>>,
+    placed_elsewhere: BTreeSet<NodeId>,
     stays: BTreeMap<NodeId, BTreeMap<NodeId, (bool, u64)>>,
     last_other: BTreeMap<NodeId, u64>,
     placements: u64,
@@ -698,6 +699,7 @@ impl Device {
             acked: BTreeSet::new(),
             removed_from: BTreeMap::new(),
             left_from: BTreeMap::new(),
+            placed_elsewhere: BTreeSet::new(),
             stays: BTreeMap::new(),
             last_other: BTreeMap::new(),
             placements: 0,
@@ -721,6 +723,7 @@ impl Device {
         let chain = self.chain_above(&before.parent);
         if kept.is_none() {
             self.left_from.insert(id.to_owned(), chain.clone());
+            self.placed_elsewhere.remove(id);
         }
         let (from, origin, mut left) = kept.map_or_else(
             || {
@@ -806,6 +809,9 @@ impl Device {
                 if let Some(at) = place {
                     moved.left.drain(..=at);
                     self.left_from.insert(node.clone(), moved.left[0].1.clone());
+                    self.placed_elsewhere.remove(&node);
+                } else {
+                    self.placed_elsewhere.insert(node.clone());
                 }
                 moved.from = remote;
                 moved.origin = now;
@@ -980,6 +986,7 @@ impl Device {
     fn leave(&mut self, id: &NodeId, parent: &NodeId) {
         let chain = self.chain_above(parent);
         self.left_from.insert(id.to_owned(), chain);
+        self.placed_elsewhere.remove(id);
     }
 
     fn chain_above(&self, parent: &NodeId) -> Vec<NodeId> {
@@ -1971,27 +1978,44 @@ fn what_the_user_did_below(device: &Device, folder: &NodeId) -> &'static str {
     let below = |entry: &NodeId| reaches(trees.local().get(entry).map(|local| &local.shape.parent));
     let left_it =
         |entry: &NodeId| (device.left_from.get(entry)).is_some_and(|chain| chain.contains(folder));
+    let unsure = |entry: &NodeId| device.placed_elsewhere.contains(entry) && !below(entry);
+    let fact = |taken_out: Vec<&NodeId>| {
+        let changed: Vec<&NodeId> = (device.acted.iter())
+            .filter(|entry| below(entry))
+            .chain(taken_out.iter().copied())
+            .collect();
+        if taken_out
+            .iter()
+            .any(|entry| device.kept_back.contains(*entry))
+        {
+            "kept back an entry"
+        } else if changed.iter().any(|entry| arrived(entry)) {
+            "changed an entry another device brought in"
+        } else if !taken_out.is_empty() {
+            "took out an entry it held"
+        } else if !changed.is_empty() {
+            "changed an entry it holds"
+        } else {
+            "changed nothing"
+        }
+    };
     let taken_out: Vec<&NodeId> = (device.removed_from.keys())
         .filter(|entry| left_it(entry))
-        .chain((device.relocated.keys()).filter(|entry| left_it(entry) && !below(entry)))
+        .chain(
+            (device.relocated.keys())
+                .filter(|entry| left_it(entry) && !below(entry) && !unsure(entry)),
+        )
         .collect();
-    let changed: Vec<&NodeId> = (device.acted.iter())
-        .filter(|entry| below(entry))
-        .chain(taken_out.iter().copied())
-        .collect();
-    if taken_out
-        .iter()
-        .any(|entry| device.kept_back.contains(*entry))
-    {
-        "kept back an entry"
-    } else if changed.iter().any(|entry| arrived(entry)) {
-        "changed an entry another device brought in"
-    } else if !taken_out.is_empty() {
-        "took out an entry it held"
-    } else if !changed.is_empty() {
-        "changed an entry it holds"
+    let without = fact(taken_out.clone());
+    let with = fact(
+        (taken_out.into_iter())
+            .chain((device.relocated.keys()).filter(|entry| unsure(entry)))
+            .collect(),
+    );
+    if with == without {
+        without
     } else {
-        "changed nothing"
+        "moved an entry the server placed elsewhere"
     }
 }
 

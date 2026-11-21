@@ -1812,3 +1812,77 @@ fn a_discard_keeps_the_ancestry_an_entry_left_when_that_place_moves_before_the_s
         "changed an entry it holds"
     );
 }
+
+#[test]
+fn a_discard_names_no_departure_for_an_entry_the_server_placed_where_the_user_never_put_it() {
+    let (mut space, mut other) = seeded(&[act(0, 0, 0, 0, 0), act(0, 0, 1, 6, 0)]);
+    let root = space.space_id().to_owned();
+    let history = space.history_id().to_owned();
+    let seq = space.head_seq();
+    let mut device = Device::new(Trees::new(root.clone()));
+    for node in space.nodes().into_iter().filter(|n| n.node_id != root) {
+        let (id, remote) = RemoteNode::from_state(&node).unwrap();
+        let held = LocalNode {
+            shape: remote.shape.clone(),
+            identity: device.identity(),
+            parked: false,
+            chunks: Box::default(),
+            left_out_when_placed: false,
+            content_from_server: false,
+        };
+        device
+            .trees
+            .set_synced(id.clone(), Some(held.shape.clone()));
+        device.trees.set_local(id.clone(), held);
+        device.trees.set_remote(id, remote);
+    }
+    let named = |name: &str| {
+        (device.trees.local().iter())
+            .find(|(_, local)| local.shape.name == name)
+            .map(|(id, _)| id.clone())
+            .unwrap()
+    };
+    let (folder, item) = (named("a"), named("ss"));
+    device.rules.read(&mut device.trees);
+    let at = (device.trees.local().iter())
+        .position(|(id, _)| id == &item)
+        .unwrap();
+    device.act(&act(3, at, 0, 2, 0));
+    let mut commits = Commits::default();
+    device.trees.settle(commits.aliases());
+    let sent = commits
+        .build(
+            &mut device.trees,
+            &mut device.ids,
+            NOW as u64,
+            &history,
+            "me",
+            seq,
+        )
+        .unwrap()
+        .clone();
+    device.act(&act(3, at, 0, 3, 0));
+    assert_eq!(
+        what_the_user_did_below(&device, &folder),
+        "took out an entry it held"
+    );
+    remote_action(&mut space, &mut other, 2, &act(0, 0, 0, 2, 0));
+    let result = space.commit(&session("me"), NOW, &sent).unwrap().result;
+    assert_eq!(result.results[0].code(), op_result::Code::AppliedRenamed);
+    let resume = Resume {
+        since_seq: seq,
+        history_id: history,
+        ..Default::default()
+    };
+    for record in space.resume(&resume).unwrap() {
+        device.receive(&record.changes, record.seq == result.seq);
+    }
+    assert_eq!(
+        device.relocated.get(&item).unwrap().from.name,
+        result.results[0].name
+    );
+    assert_eq!(
+        what_the_user_did_below(&device, &folder),
+        "moved an entry the server placed elsewhere"
+    );
+}
