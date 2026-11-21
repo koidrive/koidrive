@@ -622,6 +622,7 @@ async fn small_file_benchmark() {
     ));
     let mut windows = Vec::new();
     let mut samples: HashMap<&str, (Vec<f64>, Vec<f64>)> = HashMap::new();
+    let started = epoch_ms();
     let sides = (1..=config.runs).flat_map(|run| {
         let order = [("bundles", true), ("puts", false)];
         let order = if run % 2 == 1 {
@@ -637,7 +638,7 @@ async fn small_file_benchmark() {
             .create_space(
                 &auth,
                 &CreateSpaceRequest {
-                    name: format!("Small-file benchmark {side} run {run}"),
+                    name: format!("Small-file benchmark {started} {side} run {run}"),
                     request_id: String::new(),
                 },
             )
