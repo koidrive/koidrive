@@ -3305,3 +3305,70 @@ fn a_folder_renamed_under_another_folders_mark_keeps_every_node_inside_it() {
         assert_eq!(trashed, [id("docs").as_str()], "{restart} {after:?}");
     }
 }
+
+#[test]
+fn a_refused_folder_rename_into_an_ignored_parent_keeps_the_children_on_the_server() {
+    for restart in [false, true] {
+        clock::freeze();
+        let mut remote = Remote::new();
+        let (site, mut a) = linked(&mut remote, "a");
+        a.create(&mut remote, &site.root.join(".koiignore"), b"hidden/\n");
+        fs::create_dir_all(site.root.join("docs/sub")).unwrap();
+        fs::create_dir(site.root.join("other")).unwrap();
+        a.create(&mut remote, &site.root.join("docs/report.docx"), b"report");
+        a.create(&mut remote, &site.root.join("docs/sub/deep.docx"), b"deep");
+        a.rest(&mut remote);
+        let before = server_nodes(&remote);
+        let id = |name| live_id(&before, name);
+        fs::create_dir_all(site.root.join("hidden/archive")).unwrap();
+        for name in ["report.docx", "sub"] {
+            fs::rename(
+                site.root.join("docs").join(name),
+                site.root.join("hidden/archive").join(name),
+            )
+            .unwrap();
+        }
+        fs::remove_dir(site.root.join("docs")).unwrap();
+        let archive = fs::File::open(site.root.join("hidden/archive")).unwrap();
+        observe(
+            &mut a,
+            vec![Observed::Renamed {
+                from: "docs".into(),
+                to: "hidden/archive".into(),
+                kind: EntryKind::Dir,
+                id: koidrive_fs::id_of(archive.as_fd()).unwrap(),
+                linked: false,
+                marked_node: Some(id("other")),
+            }],
+        );
+        if restart {
+            drop(a);
+            a = restarted(&site, &mut remote);
+        }
+        a.rescan();
+        a.settle();
+        a.rest(&mut remote);
+        let after = server_nodes(&remote);
+        for name in ["report.docx", "sub", "deep.docx", "other"] {
+            assert_eq!(live_id(&after, name), id(name), "{restart} {after:?}");
+        }
+        assert_eq!(
+            server_bytes(&remote, &id("report.docx")),
+            b"report",
+            "{restart}"
+        );
+        assert_eq!(
+            server_bytes(&remote, &id("deep.docx")),
+            b"deep",
+            "{restart}"
+        );
+        assert_eq!(
+            fs::read(site.root.join("hidden/archive/report.docx")).unwrap(),
+            b"report",
+        );
+        assert_eq!(
+            fs::read(site.root.join("hidden/archive/sub/deep.docx")).unwrap(),
+            b"deep",
+        );
+    }
+}

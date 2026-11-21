@@ -1343,13 +1343,14 @@ impl Engine {
                         );
                     }
                     let Some(held) = refused_folder else { continue };
-                    if let Some(folder) = local_at(&self.trees, to).filter(|folder| {
+                    let Some(folder) = local_at(&self.trees, to).filter(|folder| {
                         *folder != held
                             && (self.trees.local().get(folder))
                                 .is_some_and(|node| node.shape.kind == Kind::Dir)
-                    }) {
-                        self.adopt(&held, &folder, &moving, &mut touched);
-                    }
+                    }) else {
+                        continue;
+                    };
+                    self.adopt(&held, &folder, &moving, &mut touched);
                     self.lose(
                         &held,
                         from,
@@ -1698,7 +1699,7 @@ impl Engine {
         touched: &mut BTreeSet<NodeId>,
     ) {
         let children: Vec<NodeId> = (self.trees.local_children(from))
-            .filter(|child| !moving.contains(*child))
+            .filter(|child| !moving.contains(*child) && !self.trees.recorded_local(child))
             .cloned()
             .collect();
         for child in children {
@@ -2074,12 +2075,7 @@ impl Engine {
                     }
                     bound = held;
                 }
-                Some(None) => {
-                    if kind == Kind::Dir {
-                        self.adopt(&holder, bound.id(), moving, touched);
-                    }
-                    self.lose(&holder, path, false, false, now_ms, moving, touched, gone)
-                }
+                Some(None) => self.lose(&holder, path, false, false, now_ms, moving, touched, gone),
                 None => self.remove(&holder, moving, false, false, touched, gone),
             }
         }
@@ -4751,7 +4747,7 @@ mod tests {
     }
 
     #[test]
-    fn a_folder_arriving_under_another_folders_mark_over_a_kept_folder_keeps_its_contents() {
+    fn a_folder_arriving_under_another_folders_mark_over_a_kept_folder_keeps_its_records() {
         let (_dir, mut engine) = mapper();
         let (report, draft) = saved_report(&mut engine);
         let folder = |path: &str, id: u64, mark: Option<&NodeId>| Observed::Created {
@@ -4770,9 +4766,51 @@ mod tests {
         engine.observe(&[folder("docs", 9, Some(&other))], 1_000);
         let arrived = held(&engine, "docs");
         assert!(![docs.clone(), other.clone()].contains(&arrived));
-        assert!(engine.trees.local().get(&docs).is_none());
+        for node in [&docs, &report, &draft] {
+            assert!(engine.trees.local().get(node).is_none());
+            assert!(engine.trees.displaced_local().contains_key(node));
+        }
+        assert_eq!(engine.trees.check(), Ok(()));
+    }
+
+    #[test]
+    fn a_folder_renamed_under_another_folders_mark_leaves_its_recorded_entries_where_they_are() {
+        let (_dir, mut engine) = mapper();
+        let (report, draft) = saved_report(&mut engine);
+        let other = Observed::Created {
+            path: "other".into(),
+            kind: EntryKind::Dir,
+            id: ino(7),
+            linked: false,
+            content: None,
+            marked_node: None,
+        };
+        engine.observe(&[other], 100);
+        synced_everywhere(&mut engine);
+        let held = |engine: &Engine, path| holding(engine, path).unwrap().0;
+        let (docs, other) = (held(&engine, "docs"), held(&engine, "other"));
+        engine.trees.ignore_local(&draft);
+        let moved = |to: &str| Observed::Renamed {
+            from: "docs".into(),
+            to: to.into(),
+            kind: EntryKind::Dir,
+            id: ino(9),
+            linked: false,
+            marked_node: Some(other.to_string()),
+        };
+        engine.observe(&[moved("archive")], 1_000);
+        let archive = held(&engine, "archive");
+        assert_eq!(held(&engine, "archive/report.txt"), report);
+        assert_eq!(engine.trees.local().get(&draft).unwrap().shape.parent, docs);
+        assert!(engine.trees.ignored_local().contains(&draft));
+        assert!(engine.trees.lost_local().contains(&docs));
+        assert_ne!(archive, docs);
+        assert_eq!(engine.trees.check(), Ok(()));
+
+        let (_dir, mut engine) = mapper();
+        let (report, _) = saved_report(&mut engine);
+        engine.observe(&[moved("missing/archive")], 1_000);
         assert_eq!(held(&engine, "docs/report.txt"), report);
-        assert_eq!(held(&engine, "docs/draft.txt"), draft);
         assert_eq!(engine.trees.check(), Ok(()));
     }
 
