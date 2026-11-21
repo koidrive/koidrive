@@ -1693,15 +1693,15 @@ fn a_discard_judges_an_entry_taken_out_by_the_place_the_server_last_took_its_mov
             "folder",
             0,
             "root",
-            "took out an entry it held",
-            "changed nothing",
+            "below it the user took out an entry it held",
+            "below it the user changed nothing",
         ),
         (
             "root",
             1,
             "folder",
-            "changed nothing",
-            "took out an entry it held",
+            "below it the user changed nothing",
+            "below it the user took out an entry it held",
         ),
     ] {
         let mut trees = Trees::new("root");
@@ -1798,7 +1798,7 @@ fn a_discard_keeps_the_ancestry_an_entry_left_when_that_place_moves_before_the_s
     );
     assert_eq!(
         what_the_user_did_below(&device, &folder),
-        "changed an entry it holds"
+        "below it the user changed an entry it holds"
     );
     device.receive(
         &[ChangeRecord {
@@ -1809,7 +1809,7 @@ fn a_discard_keeps_the_ancestry_an_entry_left_when_that_place_moves_before_the_s
     assert_eq!(device.relocated.get(&item).unwrap().from.parent, parent);
     assert_eq!(
         what_the_user_did_below(&device, &folder),
-        "changed an entry it holds"
+        "below it the user changed an entry it holds"
     );
 }
 
@@ -1864,7 +1864,7 @@ fn a_discard_names_no_departure_for_an_entry_the_server_placed_where_the_user_ne
     device.act(&act(3, at, 0, 3, 0));
     assert_eq!(
         what_the_user_did_below(&device, &folder),
-        "took out an entry it held"
+        "below it the user took out an entry it held"
     );
     remote_action(&mut space, &mut other, 2, &act(0, 0, 0, 2, 0));
     let result = space.commit(&session("me"), NOW, &sent).unwrap().result;
@@ -1883,6 +1883,6 @@ fn a_discard_names_no_departure_for_an_entry_the_server_placed_where_the_user_ne
     );
     assert_eq!(
         what_the_user_did_below(&device, &folder),
-        "moved an entry the server placed elsewhere"
+        "the harness could not establish what changed below it"
     );
 }

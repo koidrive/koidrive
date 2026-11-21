@@ -37,8 +37,8 @@ HARNESS_OUTPUT = re.compile(r"^(running \d+ tests?$|test \S+ \.\.\.)")
 SILENT_CRASH = re.compile(r"^killed by signal \d+$")
 USER_FACT = re.compile(r"^(\S+ (?:was discarded and is created on the server with no later answer to publish it|was held and sent "
                        r"before the person said so)), and (?:below it the user (?:kept back an entry|changed an entry another device "
-                       r"brought in|took out an entry it held|changed an entry it holds|changed nothing|moved an entry the server "
-                       r"placed elsewhere)|the answer discarded it, but its user did not change it|no answer discarded it)"
+                       r"brought in|took out an entry it held|changed an entry it holds|changed nothing)|the harness could not "
+                       r"establish what changed below it|the answer discarded it, but its user did not change it|no answer discarded it)"
                        r"( at [\w./-]*\.rs:\d+(?::\d+)?\.?)$")
 
 

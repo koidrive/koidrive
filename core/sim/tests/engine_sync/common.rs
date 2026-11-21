@@ -1988,15 +1988,15 @@ fn what_the_user_did_below(device: &Device, folder: &NodeId) -> &'static str {
             .iter()
             .any(|entry| device.kept_back.contains(*entry))
         {
-            "kept back an entry"
+            "below it the user kept back an entry"
         } else if changed.iter().any(|entry| arrived(entry)) {
-            "changed an entry another device brought in"
+            "below it the user changed an entry another device brought in"
         } else if !taken_out.is_empty() {
-            "took out an entry it held"
+            "below it the user took out an entry it held"
         } else if !changed.is_empty() {
-            "changed an entry it holds"
+            "below it the user changed an entry it holds"
         } else {
-            "changed nothing"
+            "below it the user changed nothing"
         }
     };
     let taken_out: Vec<&NodeId> = (device.removed_from.keys())
@@ -2015,7 +2015,7 @@ fn what_the_user_did_below(device: &Device, folder: &NodeId) -> &'static str {
     if with == without {
         without
     } else {
-        "moved an entry the server placed elsewhere"
+        "the harness could not establish what changed below it"
     }
 }
 
@@ -2979,7 +2979,7 @@ fn run_ignoring_answering_after(
                 !matches!(op.op, Some(op::Op::CreateDir(_)))
                     || !discarded_folders.contains(id)
                     || revived_once.contains(id),
-                "{} was discarded and is created on the server with no later answer to publish it, and below it the user {}",
+                "{} was discarded and is created on the server with no later answer to publish it, and {}",
                 id,
                 what_the_user_did_below(&device, id)
             );
