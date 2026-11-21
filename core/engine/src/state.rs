@@ -857,7 +857,6 @@ pub enum StateError {
     /// A node is recorded as moved into an ignored folder, or as a folder the disk lost, but L does not hold it or the
     /// lost folder is not recorded.
     NotIgnoredLocal(NodeId),
-    /// A node is recorded as displaced, but L does not hold it or R holds it trashed, or as missing but not as displaced.
     NotDisplaced(NodeId),
     /// A file is recorded as edited by this device, but R does not hold the content of that
     /// commit.

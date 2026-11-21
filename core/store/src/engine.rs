@@ -1509,8 +1509,6 @@ impl Tx<'_> {
         Ok(())
     }
 
-    /// The rows of the nodes kept outside the synced folders and of the displaced ones, which share a table where a
-    /// node holds at most one row of each.
     fn write_recorded(
         &self,
         outside: &SetChanges<NodeId>,

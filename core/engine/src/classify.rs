@@ -692,8 +692,6 @@ pub struct Trees {
     outside: TrackedSet<NodeId>,
     lost: TrackedSet<NodeId>,
     found: TrackedMap<NodeId, PathBuf>,
-    /// The nodes of `outside`, and those L held under them, that hold no name in L because another entry took it
-    /// ([`Trees::displace_local`]), each with the identity L holds for it.
     displaced: TrackedMap<NodeId, FileIdentity>,
     displaced_while_creating: TrackedSet<NodeId>,
     missing: TrackedSet<NodeId>,
@@ -2676,9 +2674,6 @@ impl Trees {
         }
     }
 
-    /// Sets the local entries R does not hold that the open questions hold (the commit planner's
-    /// questions), which stay on disk as they are until the person answers, and the nodes whose
-    /// local copies a recovery Discard still moves to the local trash.
     pub fn set_asked(&mut self, asked: BTreeSet<NodeId>, discarding: BTreeSet<NodeId>) {
         self.forget_reclaims();
         self.relink |= !self.asked.is_subset(&asked);
@@ -3736,8 +3731,7 @@ impl Trees {
     }
 
     /// Moves a node from L to the displaced map when another entry takes its name and its copy stays in an ignored
-    /// folder. The node stays excluded until an observation places it again or R holds it trashed. The caller passes
-    /// a node [`Trees::recorded_local`] holds for.
+    /// folder. The node stays excluded until an observation places it again or R holds it trashed.
     pub fn displace_local(&mut self, id: &NodeId) {
         if !self.l.get(id).is_some_and(|node| node.is_placed()) {
             return;

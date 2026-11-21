@@ -2083,12 +2083,6 @@ impl Engine {
         }
     }
 
-    /// Removes `id` and every node placed under it from L, except the nodes in `moving`, which the batch moves
-    /// elsewhere, with what is placed under them, and adds each node it removes to `gone`. When the disk lost the
-    /// entry (`outside`), a node that [`Trees::ignore_local`] recorded keeps its entry with what is under it, and so
-    /// do the folders on its way to `id`, which are recorded too: the node's local copy is in an ignored folder, so
-    /// L must keep it and its folders for the server to keep them (design §5.10). When the disk did not lose the
-    /// entry, each recorded node gives up its name in L and stays recorded ([`Trees::displace_local`]).
     fn remove(
         &mut self,
         id: &NodeId,
