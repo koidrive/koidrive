@@ -30,7 +30,7 @@ mutation reverted-edit-guard $E 's/\n            && \(trees\.remote\(\)\.live\(i
 mutation reverted-delete $C 's/&& !needed\.contains\(id\)\n\}/\&\& !needed.contains(id)\n        \&\& !trees.reverted().contains(id)\n}/' both
 mutation reverted-no-create $C 's/if !trees\.reverted\(\)\.contains\(id\) && !trees\.is_discarded\(id\)/if !trees.is_discarded(id)/' both
 mutation reverted-no-move $C 's/\n            && !trees\.reverted\(\)\.contains\(id\)\n            && !trees\.reviving\(id\)/\n            \&\& !trees.reviving(id)/' both
-mutation reverted-parking $E 's/\(candidate\(trees, id\) \|\| trees\.waiting\(\)\.contains_key\(id\) \|\| trees\.reclaimed\(id\)\)/(trees.acknowledged_class(id) == Class::Remote || trees.waiting().contains_key(id) || trees.reclaimed(id))/' both
+mutation reverted-parking $E 's/\(candidate\(trees, id\) \|\| waits_for_position \|\| trees\.reclaimed\(id\)\)/(trees.acknowledged_class(id) == Class::Remote || waits_for_position || trees.reclaimed(id))/' both
 mutation pending-truncate $C 's/while nfc\(&named\(&stem\)\)\.len\(\) > MAX_NAME_BYTES/while false \&\& nfc(\&named(\&stem)).len() > MAX_NAME_BYTES/' both
 mutation keep-parked $L 's/\.is_some_and\(\|node\| node\.parked \|\| self\.reverted\.contains\(id\)\)/.is_some_and(|_| self.reverted.contains(id))/' both
 mutation parked-reverted-remove $E 's/!\(self\.trees\.reverted\(\)\.contains\(id\)\n                        \|\| self\.trees\.waiting\(\)\.contains_key\(id\)\)/!self.trees.waiting().contains_key(id)/' both

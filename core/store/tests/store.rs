@@ -392,6 +392,8 @@ fn a_store_written_by_alpha_1_upgrades_and_keeps_every_row() {
     expected.trees.lost_creates.clear();
     expected.trees.replaced_versions.clear();
     expected.trees.discarded.clear();
+    let (_, recorded) = kept.get_mut("recorded_nodes").unwrap();
+    recorded.retain(|row| !row.contains("Text(\"displaced\")"));
     let upgraded = MovedHere {
         history: None,
         seq: 9,
@@ -657,7 +659,6 @@ fn legacy_state() -> EngineState {
     state.trees.discarded = full.trees.discarded;
     state.trees.outside = full.trees.outside;
     state.trees.lost = full.trees.lost;
-    state.trees.displaced = full.trees.displaced;
     state.trees.edited_here = full.trees.edited_here;
     state.trees.unsent_edits = full.trees.unsent_edits;
     state.trees.resends = full.trees.resends;
@@ -726,6 +727,14 @@ fn populate(path: &Path) {
         .transaction(|tx| {
             tx.set_engine_state(&engine_state())?;
             tx.put_synced_node(&discarded_in_s())?;
+            tx.put_local_node(&LocalNode {
+                left_out_when_placed: false,
+                content_from_server: false,
+                node_id: "displaced".into(),
+                shape: file_shape("root", "displaced.txt"),
+                identity: FileId::stored(9, Some(-1), None),
+                parked: false,
+            })?;
             tx.put_synced_node(&SyncedNode {
                 node_id: "moved".into(),
                 shape: moved.clone(),
@@ -1389,6 +1398,8 @@ fn engine_state() -> EngineState {
                     handle: None,
                 },
             )]),
+            displaced_while_creating: Default::default(),
+            readmitted_from: Default::default(),
             missing: nodes(["displaced"]),
             edited_here: BTreeMap::from([("e".into(), 6)]),
             moved_here: BTreeMap::from([
@@ -2469,7 +2480,8 @@ fn a_store_from_before_nodes_in_ignored_folders_were_stored_opens_with_none_reco
 
     let mut store = Store::open(&path).unwrap();
     assert_eq!(applied(&path), all_migrations());
-    let after = before.clone();
+    let mut after = before.clone();
+    after.trees.displaced = engine_state().trees.displaced;
     before.trees.outside.clear();
     before.trees.lost.clear();
     before.trees.displaced.clear();
@@ -2870,6 +2882,43 @@ fn a_store_from_before_inodes_took_128_bits_keeps_every_identity() {
             Ok::<_, Error>(())
         })
         .unwrap();
+}
+
+#[test]
+fn a_displaced_record_waiting_for_its_create_survives_reopen_until_cleared() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.db");
+    let id = NodeId::from("n");
+    let mut state = EngineState::default();
+    state.trees.displaced.insert(
+        id.clone(),
+        FileIdentity {
+            ino: 3,
+            birth_ns: Some(4),
+            handle: None,
+        },
+    );
+    state.trees.displaced_while_creating.insert(id.clone());
+    Store::open(&path)
+        .unwrap()
+        .transaction(|tx| tx.set_engine_state(&state))
+        .unwrap();
+
+    let mut store = Store::open(&path).unwrap();
+    let changes = &mut state.trees;
+    changes.displaced.get_mut(&id).unwrap().handle = Some(5);
+    store
+        .transaction(|tx| {
+            tx.set_engine_state(&state)?;
+            assert_eq!(tx.engine_state()?, state);
+            Ok::<_, Error>(())
+        })
+        .unwrap();
+    state.trees.displaced_while_creating.clear();
+    store.transaction(|tx| tx.set_engine_state(&state)).unwrap();
+    drop(store);
+    let mut store = Store::open(&path).unwrap();
+    assert_eq!(store.transaction(|tx| tx.engine_state()).unwrap(), state);
 }
 
 #[test]
@@ -3402,6 +3451,39 @@ fn a_local_node_keeps_its_placement_and_where_its_bytes_came_from_across_a_reope
 
     let mut store = Store::open(&path).unwrap();
     assert_eq!(store.transaction(|tx| tx.local_nodes()).unwrap(), local);
+}
+
+#[test]
+fn a_readmission_parent_cannot_be_written_before_its_local_node() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.db");
+    let mut store = Store::open(&path).unwrap();
+    let mut state = EngineState::default();
+    state
+        .trees
+        .readmitted_from
+        .insert("file".into(), "displaced".into());
+    let result = store.transaction(|tx| {
+        tx.set_engine_state(&state)?;
+        tx.put_local_node(&placed("file", 9, false, false))
+    });
+    assert!(matches!(result, Err(Error::InvalidEngineState(_))));
+    store
+        .transaction(|tx| {
+            tx.put_local_node(&placed("file", 9, false, false))?;
+            tx.set_engine_state(&state)
+        })
+        .unwrap();
+    drop(store);
+    assert_eq!(
+        Store::open(&path)
+            .unwrap()
+            .transaction(|tx| tx.engine_state())
+            .unwrap()
+            .trees
+            .readmitted_from,
+        state.trees.readmitted_from
+    );
 }
 
 #[test]

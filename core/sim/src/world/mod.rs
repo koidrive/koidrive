@@ -80,7 +80,9 @@ use koidrive_engine::effects::{
 use koidrive_engine::first_link::{self, History, Log, LogRead, Marks};
 use koidrive_engine::ignore::Source;
 use koidrive_engine::names::{name_key, nfc, same_name};
-use koidrive_engine::question::{Answer, QuestionKind, RecoveryCause, RecoveryTrigger};
+use koidrive_engine::question::{
+    Answer, QuestionKind, RecoveryCause, RecoveryGroup, RecoveryTrigger,
+};
 use koidrive_engine::tree::{
     Content, ContentKey, FileIdentity, Kind, NodeId, RemoteNode, Shape, same, same_content,
 };
@@ -664,6 +666,7 @@ pub struct World {
     moment: u64,
     republished: BTreeSet<i64>,
     kept: Vec<BTreeMap<i64, BTreeMap<NodeId, u128>>>,
+    kept_since_restore_point: BTreeSet<(usize, NodeId)>,
     moved_since_rewind: BTreeSet<i64>,
     /// The writes a person discarded in answer to a recovery question, which go to the local trash.
     discarded: BTreeSet<i64>,
@@ -764,6 +767,7 @@ impl World {
             rule_texts: Vec::new(),
             overwrote: BTreeMap::new(),
             kept: vec![BTreeMap::new(); devices.len()],
+            kept_since_restore_point: BTreeSet::new(),
             devices,
             seen: BTreeMap::new(),
             trace: false,
@@ -1514,6 +1518,17 @@ impl World {
         let writes: BTreeSet<i64> = remote.iter().copied().collect();
         let root = NodeId::from(self.space.space_id());
         (self.intents).showed(d, self.moment, &shown, &writes, &root, &ids);
+        if answer == Answer::Keep
+            && matches!(
+                question.kind,
+                QuestionKind::Recovery {
+                    group: RecoveryGroup::CreatedAfterRestorePoint,
+                    ..
+                }
+            )
+        {
+            (self.kept_since_restore_point).extend(question.holds().map(|id| (d, id.clone())));
+        }
         let mut published: Vec<(u128, Value, Answered)> = Vec::new();
         if matches!(answer, Answer::Publish | Answer::Keep) {
             for (id, write, ino) in &held {
@@ -3504,6 +3519,32 @@ impl World {
             if engine.behind {
                 return fail("R waits for a listing".into());
             }
+            let trees = &engine.trees;
+            let in_history = |id: &NodeId, content: &ContentKey| {
+                (retained(&self.space, id).iter())
+                    .any(|digest| digest.as_slice() == content.manifest_digest())
+            };
+            let on_ignored_disk = |node: &koidrive_engine::tree::LocalNode,
+                                   content: &ContentKey| {
+                let ino = node.identity.ino;
+                disk::identity(ino) == node.identity
+                    && (device.disk.entries().get(&ino))
+                        .and_then(|entry| entry.content.as_ref())
+                        .is_some_and(|held| same_content(&key(held), content))
+                    && (device.disk.path(ino))
+                        .is_some_and(|path| trees.ignores(&path, node.shape.kind))
+            };
+            if let Some((id, _)) = (trees.local_entries()).find(|(id, node)| {
+                trees.local().get(id).is_none()
+                    && !rules::owned(trees, id, node)
+                    && !(node.shape.content.as_ref()).is_some_and(|content| {
+                        in_history(id, content) || on_ignored_disk(node, content)
+                    })
+            }) {
+                return fail(format!(
+                    "displaced {id} holds content absent from R, the device's owed writes, server history, and the ignored disk"
+                ));
+            }
             let left_out = &unsynced[d];
             let mut excused: BTreeSet<NodeId> = BTreeSet::new();
             let excuse = |nodes: &[&NodeId], check: Check, why: String| {
@@ -3858,8 +3899,9 @@ impl World {
                 .get(id)
                 .filter(|copy| !copy.permitted())?;
             let holds = (node.shape.content.as_ref()).is_some_and(|c| tag(c) == copy.write);
-            let excused =
-                self.exposed.contains_key(&copy.write) || self.copied.contains_key(&copy.write);
+            let excused = self.exposed.contains_key(&copy.write)
+                || self.copied.contains_key(&copy.write)
+                || (self.kept_since_restore_point).contains(&(copy.device, copy.source.clone()));
             (!node.trashed && holds && !excused).then_some((&node.shape.name, copy))
         });
         if let Some((name, copy)) = forbidden {

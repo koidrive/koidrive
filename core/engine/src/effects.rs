@@ -16,7 +16,7 @@ use crate::names::{name_key, same_name};
 use crate::state::{EffectsChanges, EffectsState, StateError};
 use crate::tracked::{Marked, TrackedMap};
 use crate::tree::{
-    Content, FileIdentity, Kind, LocalNode, NodeId, RemoteNode, Shape, same, same_content,
+    Content, FileIdentity, Kind, LocalNode, Node, NodeId, RemoteNode, Shape, same, same_content,
 };
 use koidrive_proto::v1::ChunkRef;
 
@@ -727,7 +727,8 @@ impl Effects {
             });
         for id in below.iter().rev() {
             if trees.recorded_local(id) {
-                trees.displace_local(id, in_flight.is_some_and(|flight| flight.creates(id)));
+                trees
+                    .displace_removed_local(id, in_flight.is_some_and(|flight| flight.creates(id)));
                 continue;
             }
             trees.give_up(id);
@@ -774,17 +775,22 @@ impl Effects {
         };
         match shape {
             None => trees.drop_local(&record.node),
-            Some(shape) => trees.place_local(
-                record.node.clone(),
-                LocalNode {
-                    left_out_when_placed: false,
-                    content_from_server: false,
-                    shape,
-                    identity,
-                    parked,
-                    chunks,
-                },
-            ),
+            Some(shape) => {
+                if !parked {
+                    trees.displace_recorded_at(&record.node, &shape);
+                }
+                trees.place_local(
+                    record.node.clone(),
+                    LocalNode {
+                        left_out_when_placed: false,
+                        content_from_server: false,
+                        shape,
+                        identity,
+                        parked,
+                        chunks,
+                    },
+                )
+            }
         }
         if matches!(record.effect, Effect::WriteFile { .. }) {
             trees.set_content_from_server(&record.node, true);
@@ -1098,11 +1104,19 @@ fn candidate(trees: &Trees, id: &NodeId) -> bool {
             && !trees.edited(id)
             && !changed_locally(trees, id))
         || trees.is_discarded(id)
+        || trees.discarding(id)
         || trees.left_behind(id);
     changed
         && !forgets
-        && (!trees.excluded(id) || trees.trashed_while_parked(id) || trees.left_behind(id))
+        && (!trees.excluded(id) || trashes_excluded_copy(trees, id, None))
         && !trees.reclaimed(id)
+}
+
+fn trashes_excluded_copy(trees: &Trees, id: &NodeId, in_flight: Option<&InFlight>) -> bool {
+    trees.trashed_while_parked(id)
+        || trees.left_for_displaced(id)
+        || trees.discarding(id)
+        || (trees.left_behind(id) && !in_flight.is_some_and(|flight| flight.positions(id)))
 }
 
 /// Why a node stays as it is for as long as this device's rules do (section 5.10).
@@ -1408,7 +1422,18 @@ impl<'a> View<'a> {
     }
 
     fn step(&self, id: &NodeId) -> Step {
+        if self.trees.discarding(id) {
+            return match self.trees.local().get(id) {
+                Some(local) => self.remove(id, local),
+                None => Step::Skip,
+            };
+        }
         if let Some(local) = (self.trees.local().get(id)).filter(|_| self.trees.left_behind(id)) {
+            return self.remove(id, local);
+        }
+        if let Some(local) =
+            (self.trees.local().get(id)).filter(|_| self.trees.left_for_displaced(id))
+        {
             return self.remove(id, local);
         }
         let destination = match (self.trees.local().get(id), self.trees.remote().live(id)) {
@@ -1507,7 +1532,7 @@ impl<'a> View<'a> {
         if self.trees.edited(id) && self.trees.ignored_in_remote(id) {
             return Step::Skip;
         }
-        if !local.parked
+        if local.is_placed()
             && local.shape.parent == remote.parent
             && name_key(&local.shape.name) == name_key(&remote.name)
         {
@@ -1560,13 +1585,10 @@ impl<'a> View<'a> {
             return false;
         }
         let Some(after) = &record.after else {
-            let left_behind = self.trees.left_behind(&record.node)
-                && !in_flight.is_some_and(|flight| flight.positions(&record.node));
             if matches!(record.effect, Effect::RemoveFile { .. })
                 && (self.trees.remote().live(&record.node).is_some()
                     || self.trees.excluded(&record.node))
-                && !left_behind
-                && !self.trees.trashed_while_parked(&record.node)
+                && !trashes_excluded_copy(self.trees, &record.node, in_flight)
             {
                 return false;
             }
@@ -1623,6 +1645,7 @@ impl<'a> View<'a> {
             && self.location_in(&after.parent, &after.name).is_some()
             && !(self.trees.local_holders(&after.parent, &after.name)).any(|other| {
                 *other != record.node
+                    && !self.trees.ignored_local().contains(other)
                     && local
                         .get(other)
                         .is_some_and(|node| node.shape.name == after.name)
@@ -1745,7 +1768,11 @@ impl<'a> View<'a> {
                     && name_key(&node.shape.name) == name_key(&remote.name)
             });
         (self.trees.local_holders(&remote.parent, &remote.name))
-            .filter(|other| *other != id && !(beside && merged(other)))
+            .filter(|other| {
+                *other != id
+                    && !(beside && merged(other))
+                    && !self.trees.ignored_local().contains(*other)
+            })
             .min_by_key(|other| (!self.trees.excluded(other), !merged(other)))
             .map(|holder| Step::Blocked(Some(holder.clone())))
     }
@@ -1789,7 +1816,7 @@ impl<'a> View<'a> {
                 return true;
             }
             match self.trees.local().get(current) {
-                Some(node) if !node.parked && node.shape.parent != *self.root() => {
+                Some(node) if node.is_placed() && node.shape.parent != *self.root() => {
                     current = &node.shape.parent;
                 }
                 _ => return false,
@@ -1807,7 +1834,7 @@ impl<'a> View<'a> {
             return false;
         }
         in_flight.is_some_and(|flight| flight.positions(id))
-            || (!local.parked
+            || (local.is_placed()
                 && !trees.reverted().contains(id)
                 && !trees.is_discarded(id)
                 && (trees.acknowledged(id)).is_some_and(|base| !local.shape.same_position(base)))
@@ -1815,14 +1842,20 @@ impl<'a> View<'a> {
 
     fn parkable(&self, id: &NodeId) -> bool {
         let trees = self.trees;
-        (candidate(trees, id) || trees.waiting().contains_key(id) || trees.reclaimed(id))
+        let Some(local) = trees.local().get(id).filter(|node| node.is_placed()) else {
+            return false;
+        };
+        let waits_for_position = trees.waiting().get(id).is_some_and(|waiting| {
+            waiting.origin != Origin::Released
+                || waiting
+                    .shape
+                    .as_ref()
+                    .is_none_or(|base| local.shape.same_position(base))
+        });
+        (candidate(trees, id) || waits_for_position || trees.reclaimed(id))
             && !trees.excluded(id)
             && !trees.held(id)
-            && trees.local().get(id).is_some_and(|node| {
-                !node.parked
-                    && !(trees.remote().live(id))
-                        .is_some_and(|remote| node.shape.same_position(remote))
-            })
+            && !(trees.remote().live(id)).is_some_and(|remote| local.shape.same_position(remote))
             && self.stuck(id, trees.local().len()).is_none()
             && !(trees.remote().live(id)).is_some_and(|remote| self.goes_home(id, remote))
             && !self.keeps_in_place(id)

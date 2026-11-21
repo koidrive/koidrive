@@ -942,10 +942,7 @@ impl Observer for FsObserver {
                 }
             }
             for path in self.find_unsettled(gone, &unsettled, &mut learned) {
-                if let Some(id) = replacements.remove(&path)
-                    && let Some(known) = self.recorded.get_mut(&path)
-                {
-                    known.id = id;
+                if let Some(id) = replacements.remove(&path) {
                     learned.push(Observed::Reidentified { path, id });
                     continue;
                 }
@@ -2326,10 +2323,24 @@ mod tests {
                 settled.changes.as_slice(),
                 [Observed::Removed { kind: EntryKind::File, path }] if *path == recorded
             )),
-            Looked::Replaced(id) => assert!(matches!(
-                settled.changes.as_slice(),
-                [Observed::Reidentified { path, id: applied }] if *path == recorded && *applied == id
-            )),
+            Looked::Replaced(replacement) => {
+                assert!(matches!(
+                    settled.changes.as_slice(),
+                    [Observed::Reidentified { path, id: applied }] if *path == recorded && *applied == replacement
+                ));
+                assert_eq!(observer.recorded[&recorded].id, id);
+                observer.seek(
+                    BTreeMap::from([(
+                        recorded.clone(),
+                        Known {
+                            kind,
+                            id: replacement,
+                        },
+                    )]),
+                    BTreeMap::new(),
+                );
+                assert_eq!(observer.recorded[&recorded].id, replacement);
+            }
             Looked::Found(_) => unreachable!(),
         }
     }

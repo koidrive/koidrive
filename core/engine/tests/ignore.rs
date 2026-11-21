@@ -388,10 +388,9 @@ fn a_node_whose_name_another_entry_took_stays_excluded_until_it_returns_or_is_tr
             .all(|id| trees.recorded_local(&NodeId::from(*id)))
     );
     for id in ["d", "a", "b"] {
-        trees.displace_local(&NodeId::from(id), false);
-        assert!(
-            trees.local().get(&NodeId::from(id)).is_none() && trees.excluded(&NodeId::from(id))
-        );
+        let id = NodeId::from(id);
+        trees.displace_local(&id);
+        assert!(trees.displaced_local().contains_key(&id) && trees.excluded(&id));
     }
     trees.set_local("new".into(), local(file(ROOT, "d", 3), 9));
     let sent = ops(&mut trees);
@@ -411,21 +410,21 @@ fn a_node_whose_name_another_entry_took_stays_excluded_until_it_returns_or_is_tr
             .all(|id| restored.ignored(&NodeId::from(*id)))
     );
 
-    assert_eq!(
-        trees.displaced_with_identity(&held, Kind::File),
-        Some(&"a".into())
-    );
+    assert_eq!(trees.local_with_identity(&held), Some(&"a".into()));
+    let reused = FileIdentity {
+        birth_ns: held.birth_ns.map(|birth| birth + 1),
+        ..held
+    };
+    assert_eq!(trees.local_with_identity(&reused), None);
     let undated = trees.displaced_local()[&"b".into()];
     assert_eq!(undated.birth_ns, None);
     assert_eq!(
-        trees.displaced_with_identity(&undated, Kind::File),
+        trees.local_with_identity(&undated),
         None,
         "a record without a birth time matches no file"
     );
     trees.set_local("a".into(), local(file(ROOT, "back.txt", 1), 2));
-    assert!(
-        !trees.excluded(&"a".into()) && trees.displaced_with_identity(&held, Kind::File).is_none()
-    );
+    assert!(!trees.excluded(&"a".into()) && !trees.displaced_local().contains_key(&"a".into()));
     trash(&mut trees, "b");
     assert!(!trees.excluded(&"b".into()));
     assert_eq!(
@@ -440,7 +439,7 @@ fn a_displaced_node_r_does_not_hold_live_is_not_recorded() {
     let mut trees = trees(&[synced("a", file(ROOT, "a.txt", 1))]);
     trees.ignore_local(&"a".into());
     trash(&mut trees, "a");
-    trees.displace_local(&NodeId::from("a"), false);
+    trees.displace_removed_local(&NodeId::from("a"), false);
     assert!(trees.local().get(&NodeId::from("a")).is_none() && trees.displaced_local().is_empty());
 }
 
@@ -3021,13 +3020,21 @@ fn a_moved_out_file_whose_create_is_in_flight_keeps_its_record_until_the_result_
         owners: BTreeMap::new(),
         result: None,
     };
-    let mut trees = removed_around_a_file_never_sent(Some(&flight));
-    assert!(
-        trees.displaced_local().contains_key(&NodeId::from("n"))
-            && trees.excluded(&NodeId::from("n"))
-    );
-    assert_eq!(ops(&mut trees), []);
-    assert!(trees.displaced_local().is_empty());
+    let id = NodeId::from("n");
+    for held_by_server in [false, true] {
+        let mut trees = removed_around_a_file_never_sent(Some(&flight));
+        assert!(trees.displaced_local().contains_key(&id) && trees.excluded(&id));
+        trees.restore(trees.state()).unwrap();
+        trees.rules_scanned();
+        if held_by_server {
+            let shape = trees.local_entry(&id).unwrap().shape.clone();
+            trees.set_remote(id.clone(), remote(shape));
+            trees.remove_remote(&id);
+        }
+        assert_eq!(ops(&mut trees), []);
+        assert_eq!(trees.local_entry(&id).is_some(), held_by_server);
+        assert_eq!(trees.displaced_local().contains_key(&id), held_by_server);
+    }
 }
 
 #[test]
@@ -3044,7 +3051,7 @@ fn a_moved_out_copy_trashed_before_its_create_answer_leaves_no_displaced_record(
     trees.ignore_local(&node);
     let creating = commits.in_flight().unwrap().creates(&node);
     assert!(creating);
-    trees.displace_local(&node, creating);
+    trees.displace_removed_local(&node, creating);
 
     trees.restore(trees.state()).unwrap();
     assert!(trees.displaced_local().is_empty());
@@ -4320,7 +4327,7 @@ fn a_parked_child_does_not_mark_its_displaced_parent_unobserved() {
         .unwrap();
     assert!(commits.in_flight().unwrap().creates(&d));
     trees.ignore_local(&d);
-    trees.displace_local(&d, commits.in_flight().unwrap().creates(&d));
+    trees.displace_removed_local(&d, commits.in_flight().unwrap().creates(&d));
     trees.settle(&Default::default());
     assert!(commits.abandon(&mut trees));
     assert!(trees.displaced_local().contains_key(&d));
@@ -4784,4 +4791,104 @@ fn a_copy_the_rules_leave_out_around_a_server_rename_waits_for_a_scan_once_they_
         assert!(trees.unobserved(&d), "{renamed_back_first}");
         assert!(!sends_delete_of_d(trees), "{renamed_back_first}");
     }
+}
+
+#[test]
+fn a_displaced_copy_keeps_its_id_and_chunks_when_the_server_loses_it() {
+    let id = NodeId::from("n");
+    let content = Content {
+        chunks: vec![proto::ChunkRef {
+            hash: vec![1; 32],
+            size: 3,
+            ..Default::default()
+        }],
+        chunk_count: 1,
+        size: 3,
+        manifest_digest: vec![1; 32],
+        ..Default::default()
+    };
+    let mut shape = file(ROOT, "n.txt", 1);
+    shape.content = Some(key(&content));
+    for lost_before_displacement in [false, true] {
+        let mut loaded = trees(&[synced("n", shape.clone())]);
+        let mut held = loaded.local_entry(&id).unwrap().clone();
+        held.chunks = content.chunks.clone().into();
+        loaded.set_local(id.clone(), held);
+        loaded.ignore_local(&id);
+        let forget_remote = |trees: &mut Trees| {
+            trees.remove_remote(&id);
+            trees.set_synced(id.clone(), None);
+        };
+        if lost_before_displacement {
+            forget_remote(&mut loaded);
+        }
+        loaded.displace_local(&id);
+        if !lost_before_displacement {
+            forget_remote(&mut loaded);
+        }
+        let displaced = loaded.local_entry(&id).unwrap().clone();
+        let mut reopened = Trees::new(ROOT);
+        reopened.set_local(id.clone(), displaced);
+        reopened.restore(loaded.state()).unwrap();
+        reopened.rules_scanned();
+        assert!(ops(&mut reopened).is_empty());
+        let mut found = reopened
+            .local_entry(&id)
+            .expect("the disk still holds the copy")
+            .clone();
+        assert!(
+            reopened
+                .locals_with_identity(&found.identity)
+                .any(|held| held == &id)
+        );
+        assert_eq!(found.content().as_ref(), Some(&content));
+        found.shape.name = "recovered.txt".into();
+        reopened.set_local_changed(id.clone(), found);
+        assert!(matches!(
+            ops(&mut reopened).as_slice(),
+            [op::Op::CreateFile(create)] if create.node_id == id && create.content.as_ref() == Some(&content)
+        ));
+    }
+}
+
+#[test]
+fn a_readmitted_file_with_a_waiting_position_can_be_removed() {
+    let mut trees = trees(&[
+        synced("d", dir(ROOT, "d")),
+        synced("x", dir(ROOT, "x")),
+        synced("f", file("d", "f.txt", 1)),
+        synced("g", file("x", "f.txt", 2)),
+    ]);
+    let (d, f) = (NodeId::from("d"), NodeId::from("f"));
+    let mut copy = trees.local().get(&f).unwrap().clone();
+    let mut upstream = trees.remote().get(&f).unwrap().clone();
+    trees.rules_scanned();
+    trees.ignore_local(&d);
+    trees.displace_local(&f);
+    trees.displace_local(&d);
+    trees.remove_local(&"g".into());
+    copy.shape.parent = "x".into();
+    trees.set_local_changed(f.clone(), copy.clone());
+    let mut state = trees.state();
+    assert_eq!(state.readmitted_from.get(&f), Some(&d));
+    state.waiting.insert(
+        f.clone(),
+        Waiting {
+            shape: Some(copy.shape),
+            origin: Origin::Commit(1),
+        },
+    );
+    trees.restore(state).unwrap();
+    trees.rules_scanned();
+    upstream.meta_rev += 1;
+    trees.set_remote(f.clone(), upstream);
+    trees.settle(&Default::default());
+    assert!(trees.check().is_ok());
+    assert!(trees.waiting().contains_key(&f) && trees.excluded(&f));
+    let mut planner = Effects::default();
+    let records = planner.plan(&trees, None, &mut IdGen::new(2), NOW, BatchLimit::ONE);
+    let record = records.iter().find(|record| record.node == f).unwrap();
+    assert!(matches!(record.effect, Effect::RemoveFile { .. }));
+    let id = record.effect_id.clone();
+    assert!(planner.done(&mut trees, None, &id, None).is_ok());
 }

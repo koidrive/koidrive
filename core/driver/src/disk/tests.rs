@@ -2894,6 +2894,87 @@ fn a_found_place_dropped_with_a_stale_batch_is_reported_again() {
     assert_eq!(running.engine.found(), place);
 }
 
+#[test]
+fn a_displaced_file_stays_held_through_rename_and_retires_after_its_last_unlink() {
+    let folder = Folder::new();
+    let path = folder.root.join("held.txt");
+    fs::write(&path, SYNCED).unwrap();
+    fs::write(folder.root.join(".koiignore"), "/build/\n").unwrap();
+    fs::create_dir(folder.root.join("build")).unwrap();
+    let mut running = folder.start_unobserved(no_hook()).unwrap();
+    let identity = koidrive_fs::id_of(File::open(&path).unwrap().as_fd()).unwrap();
+    let Some(volume) = running.engine.root_volume else {
+        return;
+    };
+    if identity.birth_ns.is_none() {
+        return;
+    }
+    running.engine.observe_verified(
+        &[Observed::Created {
+            path: "held.txt".into(),
+            kind: EntryKind::File,
+            id: identity,
+            linked: false,
+            content: Some(disk_content(&path)),
+            marked_node: None,
+        }],
+        0,
+        &|path, volume, id, linked| running.disk.space.verifies_copy(path, volume, id, linked),
+    );
+    let id = local_at(&running.engine.trees, Path::new("held.txt")).unwrap();
+    let ignored = folder.root.join("build/held.txt");
+    fs::rename(&path, &ignored).unwrap();
+    running.engine.trees.ignore_local(&id);
+    running
+        .engine
+        .trees
+        .find_local(&id, "build/held.txt".into());
+    running.engine.trees.displace_local(&id);
+    running
+        .store
+        .transaction(|tx| running.engine.checkpoint(tx))
+        .unwrap();
+    running.disk.record(&running.engine);
+
+    let moved = folder.root.join("build/renamed.txt");
+    fs::rename(&ignored, &moved).unwrap();
+    let last = folder.root.join("build/last-link.txt");
+    fs::hard_link(&moved, &last).unwrap();
+    for linked in [false, true] {
+        assert_eq!(
+            running.disk.space.verifies_copy(
+                Path::new("build/last-link.txt"),
+                volume,
+                identity,
+                linked
+            ),
+            linked
+        );
+    }
+    fs::remove_file(&moved).unwrap();
+    let mut watching = observer(&folder.root, Snapshot::default());
+    let sections = running.disk.sections();
+    for (name, retained) in [("check-one", true), ("check-two", false)] {
+        if !retained {
+            fs::remove_file(&last).unwrap();
+        }
+        fs::write(folder.root.join(name), "changed").unwrap();
+        let batch = observe_until(&mut watching, sections.stamp(), |seen| {
+            seen.iter().any(|change| matches!(change, Observed::Created { path, .. } if path == Path::new(name)))
+        });
+        running
+            .disk
+            .observed(batch, &mut running.engine, &mut running.store)
+            .unwrap();
+        let state = running
+            .store
+            .transaction(|tx| tx.engine_state())
+            .unwrap()
+            .trees;
+        assert_eq!(state.displaced.contains_key(&id), retained);
+    }
+}
+
 /// A file the disk trashed whose metadata alone changed afterwards, as `chmod -R` on the folder does, still holds
 /// the content its effect recorded, so reclamation deletes it when it is due instead of bringing it back.
 #[test]

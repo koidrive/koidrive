@@ -1922,14 +1922,42 @@ fn a_left_out_copy_moved_over_another_ones_found_place_while_stopped_keeps_both_
 
 #[test]
 fn a_displaced_copy_moved_over_another_ones_found_place_while_stopped_keeps_both_nodes() {
+    a_displaced_copy_moved_over_a_found_place(ReplacementSchedule::Restart);
+}
+
+#[test]
+fn a_displaced_copy_without_volume_proof_does_not_rebind_the_other_node() {
+    a_displaced_copy_moved_over_a_found_place(ReplacementSchedule::Legacy);
+}
+
+#[test]
+fn a_displaced_copy_moved_over_a_found_place_with_live_rules_keeps_both_nodes() {
+    a_displaced_copy_moved_over_a_found_place(ReplacementSchedule::Live);
+}
+
+enum ReplacementSchedule {
+    Restart,
+    Legacy,
+    Live,
+}
+
+fn a_displaced_copy_moved_over_a_found_place(schedule: ReplacementSchedule) {
+    let live = matches!(schedule, ReplacementSchedule::Live);
+    let legacy = matches!(schedule, ReplacementSchedule::Legacy);
     let mut remote = Remote::new();
     let (site, mut b) = linked(&mut remote, "b");
     fs::write(site.root.join("a.docx"), "a").unwrap();
     fs::write(site.root.join("x.docx"), "x").unwrap();
     b.settle();
     b.rest(&mut remote);
-    drop(b);
-    let mut b = started(&site, &mut remote, &dist_left_out());
+    if live {
+        fs::write(site.root.join(".koiignore"), "dist/\n").unwrap();
+        b.settle();
+        b.rest(&mut remote);
+    } else {
+        drop(b);
+        b = started(&site, &mut remote, &dist_left_out());
+    }
     fs::create_dir(site.root.join("dist")).unwrap();
     fs::rename(site.root.join("a.docx"), site.root.join("dist/a.docx")).unwrap();
     fs::rename(site.root.join("x.docx"), site.root.join("dist/x.docx")).unwrap();
@@ -1944,12 +1972,75 @@ fn a_displaced_copy_moved_over_another_ones_found_place_while_stopped_keeps_both
         b.settle();
         b.rest(&mut remote);
     }
-    drop(b);
+    let a = NodeId::from(ida.as_str());
+    let x = NodeId::from(idx.as_str());
+    let a_identity = b.folder.engine.trees.local_entry(&a).unwrap().identity;
+    assert!(b.folder.engine.trees.displaced_local().contains_key(&x));
+    let mut running = Some(b);
+    if !live {
+        drop(running.take());
+    }
+    if legacy {
+        Store::open(&site.db)
+            .unwrap()
+            .transaction(|tx| {
+                tx.set_local_copy_volume(&a, None)?;
+                tx.set_local_copy_volume(&x, None)
+            })
+            .unwrap();
+    }
     fs::rename(site.root.join("dist/x.docx"), site.root.join("dist/a.docx")).unwrap();
-    settled_after_a_start(&site, &mut remote, &dist_left_out());
-    settled_after_a_start(&site, &mut remote, &SyncRules::default());
+    let mut b = running.unwrap_or_else(|| started(&site, &mut remote, &dist_left_out()));
+    for _ in 0..3 {
+        b.settle();
+        b.rest(&mut remote);
+    }
+    if legacy {
+        assert_eq!(
+            b.folder.engine.trees.local_entry(&a).unwrap().identity,
+            a_identity
+        );
+    }
+    assert_eq!(b.folder.engine.trees.recorded_local(&a), legacy);
+    assert!(b.folder.engine.trees.displaced_local().contains_key(&x));
+    if live {
+        fs::remove_file(site.root.join(".koiignore")).unwrap();
+        for _ in 0..3 {
+            b.settle();
+            b.rest(&mut remote);
+        }
+    } else {
+        drop(b);
+        settled_after_a_start(&site, &mut remote, &SyncRules::default());
+    }
     assert_eq!(server_bytes(&remote, &ida), b"a");
     assert_eq!(server_bytes(&remote, &idx), b"x");
+    if legacy {
+        assert!(site.stored().trees.displaced_local().contains_key(&x));
+    }
+}
+
+#[test]
+fn an_unrelated_replacement_at_a_found_place_is_a_save_by_rename() {
+    let mut remote = Remote::new();
+    let (site, b) = moved_into_a_left_out_folder(&mut remote, "dist/report.docx");
+    let id = remote.tree()["report.docx"].clone();
+    drop(b);
+    let at = site.root.join("dist/report.docx");
+    fs::write(site.root.join("dist/replacement"), "edited").unwrap();
+    fs::rename(site.root.join("dist/replacement"), &at).unwrap();
+    let identity = koidrive_fs::id_of(fs::File::open(at).unwrap().as_fd()).unwrap();
+    settled_after_a_start(&site, &mut remote, &dist_left_out());
+    let engine = site.stored();
+    let node = NodeId::from(id.as_str());
+    assert_eq!(
+        engine.trees.local_entry(&node).unwrap().identity,
+        crate::engine::file_identity(identity)
+    );
+    assert_eq!(server_bytes(&remote, &id), b"report");
+    settled_after_a_start(&site, &mut remote, &SyncRules::default());
+    assert_eq!(remote.tree().get("dist/report.docx"), Some(&id));
+    assert_eq!(server_bytes(&remote, &id), b"edited");
 }
 
 #[test]

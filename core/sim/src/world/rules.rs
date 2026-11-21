@@ -4,11 +4,11 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use koidrive_engine::classify::Trees;
 use koidrive_engine::names::{name_key, nfc};
-use koidrive_engine::tree::{Content, Kind, NodeId, Shape};
+use koidrive_engine::tree::{Content, Kind, LocalNode, NodeId, Shape, same_content};
 use koidrive_proto::v1::{NodeKind, NodeState, NodeStatus, Op, op};
 
 use super::device::Ruling;
-use super::disk::Place;
+use super::disk::{Disk, Place};
 use super::{Act, Action, Failure, TEXTS, World, content};
 
 #[derive(Default)]
@@ -23,6 +23,25 @@ impl Unsynced {
         self.nodes.contains(id)
             || (trees.local().get(id)).is_some_and(|node| self.inos.contains(&node.identity.ino))
     }
+}
+
+fn included(disk: &Disk, left_out: &BTreeSet<u128>, ino: u128) -> bool {
+    (disk.entries().get(&ino)).is_some_and(|entry| {
+        disk.path(ino).is_some()
+            && !left_out.contains(&ino)
+            && !(left_out.iter()).any(|top| disk.inside(&entry.place, *top))
+    })
+}
+
+pub(super) fn owned(trees: &Trees, id: &NodeId, node: &LocalNode) -> bool {
+    let Some(content) = node.shape.content.as_ref() else {
+        return true;
+    };
+    (trees.remote().live(id))
+        .and_then(|remote| remote.content.as_ref())
+        .is_some_and(|remote| same_content(remote, content))
+        || trees.unsent_edits().contains(id)
+        || trees.remote().get(id).is_none()
 }
 
 fn path_in<'a>(
@@ -371,9 +390,16 @@ impl World {
                         .is_some_and(|path| trees.ignores(&path, node.shape.kind))
             })
             .map(|(id, _)| id)
-            .chain(trees.displaced_local().keys());
-        out.nodes.extend(kept_in_l.cloned());
-        let held: Vec<(u128, &NodeId)> = (trees.local().iter())
+            .chain(trees.displaced_local().keys())
+            .filter(|id| {
+                !(trees.local().get(id))
+                    .is_some_and(|node| included(disk, &out.inos, node.identity.ino))
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        out.nodes.extend(kept_in_l);
+        let held: Vec<(u128, &NodeId)> = (trees.local_entries())
+            .filter(|(id, node)| trees.local().get(id).is_some() || owned(trees, id, node))
             .map(|(id, node)| (node.identity.ino, id))
             .collect();
         loop {
@@ -413,7 +439,14 @@ impl World {
                 .take(live.len())
                 .any(|id| out.nodes.contains(&id))
             };
-            let below: Vec<NodeId> = (live.keys()).filter(|id| above(id)).cloned().collect();
+            let below: Vec<NodeId> = (live.keys())
+                .filter(|id| above(id))
+                .filter(|id| {
+                    !(trees.local().get(id))
+                        .is_some_and(|node| included(disk, &out.inos, node.identity.ino))
+                })
+                .cloned()
+                .collect();
             out.nodes.extend(below);
             let kept: Vec<NodeId> = (live.iter())
                 .filter(|(id, node)| {

@@ -130,6 +130,8 @@ fn trees_state() -> TreesState {
         lost: ["a".into()].into(),
         found: [("a".into(), "build/a".into())].into(),
         displaced: Default::default(),
+        displaced_while_creating: Default::default(),
+        readmitted_from: Default::default(),
         missing: Default::default(),
         edited_here: [("a".into(), 1)].into(),
         moved_here: [(
@@ -684,12 +686,12 @@ fn trees_restore_a_valid_state_and_refuse_each_broken_one() {
             StateError::NotIgnoredLocal("b".into()),
         ),
         (
-            "a displaced node that L holds",
+            "a displaced node that L does not hold",
             trees(),
             broken(trees_state(), |state| {
-                state.displaced.insert("a".into(), held);
+                state.displaced.insert("c".into(), held);
             }),
-            StateError::NotDisplaced("a".into()),
+            StateError::NotDisplaced("c".into()),
         ),
         (
             "a displaced node that R holds trashed",

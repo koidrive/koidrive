@@ -616,7 +616,7 @@ fn a_replaced_never_sent_folder_keeps_its_parked_file_parked() {
         },
     );
     trees.settle(&Default::default());
-    trees.displace_local(&"d".into(), false);
+    trees.displace_removed_local(&"d".into(), false);
     trees.settle(&Default::default());
     stays_parked_and_reported(&mut trees, "f");
 }
@@ -3178,7 +3178,7 @@ mod parked_nodes_and_rules {
             take_out(trees, &child, displace);
         }
         match displace {
-            true => trees.displace_local(id, false),
+            true => trees.displace_removed_local(id, false),
             false => trees.remove_local(id),
         }
     }

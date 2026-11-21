@@ -26,7 +26,7 @@ use koidrive_engine::state::{RenamedOver, StateError};
 
 use koidrive_engine::tracked::TrackedMap;
 use koidrive_engine::tree::{
-    ContentKey, FileIdentity, Kind, LocalNode, Names, NodeId, RemoteNode, Shape, same,
+    ContentKey, FileIdentity, Kind, LocalNode, Names, NodeId, RemoteNode, Shape, same, same_content,
 };
 
 use koidrive_proto::v1::{
@@ -130,11 +130,43 @@ fn upload(space: &mut SpaceDo, session: &Session, ops: &[Op]) -> Vec<UploadRecei
 
 /// The versions of a node, newest first, as an app lists them.
 fn versions(space: &SpaceDo, node_id: &str) -> Vec<VersionInfo> {
-    let request = ListVersions {
+    let mut request = ListVersions {
         node_id: node_id.to_owned(),
         ..Default::default()
     };
-    space.list_versions(&request).unwrap().versions
+    let mut all = Vec::new();
+    loop {
+        let page = space.list_versions(&request).unwrap();
+        all.extend(page.versions);
+        if page.next_cursor.is_empty() {
+            return all;
+        }
+        request.cursor = page.next_cursor;
+    }
+}
+
+#[test]
+fn a_versions_lookup_can_find_a_copy_older_than_one_page() {
+    let mut space = SpaceDo::new(1, NOW);
+    let mut ids = IdGen::new(2);
+    let mut edit = Action {
+        kind: 1,
+        target: 0,
+        parent: 0,
+        name: 0,
+        text: 0,
+    };
+    remote_action(&mut space, &mut ids, 1, &edit);
+    let node = nodes_with(&space, 1, Some(2)).pop().unwrap();
+    let original = versions(&space, &node)[0].version_id.clone();
+    edit.kind = 2;
+    for text in 1..=101 {
+        edit.text = text;
+        remote_action(&mut space, &mut ids, 1, &edit);
+    }
+    let all = versions(&space, &node);
+    assert_eq!(all.len(), 102);
+    assert_eq!(all.last().unwrap().version_id, original);
 }
 
 /// The server's nodes with this status (1 live, 2 trashed) and, when given, this kind (1 folder,
@@ -890,6 +922,13 @@ impl Device {
     }
 
     fn place_found(&mut self, holder: &NodeId, name: &str, entry: DiskEntry) -> NodeId {
+        let displaced = entry
+            .original
+            .as_ref()
+            .filter(|(id, identity)| {
+                entry.kind == Kind::File && self.trees.displaced_local().get(id) == Some(identity)
+            })
+            .map(|(id, _)| id.clone());
         let original = entry.original.filter(|(id, _)| {
             self.trees.local().get(id).is_some() && self.trees.recorded_local(id)
         });
@@ -914,6 +953,9 @@ impl Device {
         self.acted_on(id.clone());
         self.off_disk.remove(&id);
         self.trees.set_local_changed(id.clone(), node);
+        if let Some(old) = displaced {
+            self.trees.remove_local(&old);
+        }
         let mut above = left;
         while let Some(folder) = above.filter(|folder| {
             self.trees.lost_local().contains(folder)
@@ -939,6 +981,44 @@ impl Device {
         let mut path = local_path(&self.trees, holder);
         path.extend_from_slice(below);
         Some(path)
+    }
+
+    fn ignored_disk_path(&self, holder: &NodeId, below: &[String]) -> Option<Vec<String>> {
+        let mut path: Vec<String> = below.iter().rev().cloned().collect();
+        let mut current = holder;
+        let trees = &self.trees;
+        for _ in 0..=trees.local().len() + trees.displaced_local().len() {
+            if *current == trees.local().root {
+                path.reverse();
+                return Some(path);
+            }
+            if self.off_disk.contains(current) {
+                return None;
+            }
+            let node = trees.local_entry(current)?;
+            if node.parked {
+                return None;
+            }
+            path.push(node.shape.name.clone());
+            current = &node.shape.parent;
+        }
+        None
+    }
+
+    fn in_parked_folder(&self, id: &NodeId) -> bool {
+        let trees = &self.trees;
+        let mut current = id;
+        for _ in 0..=trees.local().len() + trees.displaced_local().len() {
+            if self.off_disk.contains(current) {
+                return false;
+            }
+            match trees.local_entry(current) {
+                Some(node) if node.parked => return true,
+                Some(node) => current = &node.shape.parent,
+                None => return false,
+            }
+        }
+        false
     }
 
     fn on_disk(&self, id: &NodeId) -> bool {
@@ -1027,14 +1107,6 @@ impl Device {
         }
     }
 
-    /// One change the user makes on disk, as the next rescan reports it. The user sees no parked
-    /// node and nothing under one. A scan leaves out ignored paths, so a change at one is not
-    /// reported, except a move across the boundary: a node moved to an ignored name keeps its
-    /// identity and is reported at that name, one moved into an ignored folder is found there by
-    /// its identity, and one moved out is reported where it now is. L keeps the entries of
-    /// ignored nodes, so here it still stands for the disk; a node moved into an ignored folder
-    /// is out of the user's reach after that, and the user puts nothing where it was: an entry
-    /// that takes the path of such a node replaces it, which is a deletion the user made.
     fn act(&mut self, action: &Action) {
         let root = self.trees.local().root.clone();
         let local = self.trees.local();
@@ -1506,10 +1578,20 @@ fn acknowledged_shape<'a>(trees: &'a Trees, id: &NodeId) -> Option<&'a Shape> {
     }
 }
 
+fn owned(trees: &Trees, id: &NodeId, node: &LocalNode) -> bool {
+    let Some(content) = node.shape.content.as_ref() else {
+        return true;
+    };
+    (trees.remote().live(id))
+        .and_then(|remote| remote.content.as_ref())
+        .is_some_and(|remote| same_content(remote, content))
+        || trees.unsent_edits().contains(id)
+        || trees.remote().get(id).is_none()
+}
+
 fn held(trees: &Trees) -> BTreeSet<(String, Vec<u8>)> {
     trees
-        .local()
-        .iter()
+        .local_entries()
         .filter_map(|(id, node)| {
             Some((
                 id.to_string(),
@@ -1555,7 +1637,7 @@ fn reload(
     for (id, node) in trees.remote().iter() {
         loaded.set_remote(id.clone(), node.clone());
     }
-    for (id, node) in trees.local().iter() {
+    for (id, node) in trees.local_entries() {
         loaded.set_local(id.clone(), node.clone());
     }
     for (id, shape) in trees.synced().iter() {
@@ -3343,7 +3425,7 @@ fn run_ignoring_answering_after(
         })
         .collect();
     let mut ids: BTreeSet<&NodeId> = server.iter().map(|(id, _)| id).collect();
-    ids.extend(device.trees.local().iter().map(|(id, _)| id));
+    ids.extend(device.trees.local_entries().map(|(id, _)| id));
     ids.extend(device.trees.synced().iter().map(|(id, _)| id));
     for id in ids {
         let on_server = server
@@ -3375,6 +3457,34 @@ fn run_ignoring_answering_after(
             same(device.trees.remote().live(id), on_server),
             "R of {}",
             id
+        );
+    }
+    let trees = &device.trees;
+    let in_history = |id: &NodeId, content: &ContentKey| {
+        (versions(&space, &id.to_string()).iter()).any(|version| {
+            (version.content.as_ref())
+                .and_then(|held| ContentKey::try_from(held).ok())
+                .is_some_and(|held| same_content(&held, content))
+        })
+    };
+    let on_ignored_disk =
+        |id: &NodeId, node: &LocalNode| {
+            device.ignored.iter().any(|((holder, below), entry)| {
+                entry.original.as_ref().is_some_and(|(original, identity)| {
+                    original == id && *identity == node.identity
+                }) && entry.content == node.shape.content
+                    && device
+                        .ignored_disk_path(holder, below)
+                        .is_some_and(|path| trees.ignores(&path, entry.kind))
+            })
+        };
+    for (id, node) in trees.local_entries() {
+        prop_assert!(
+            trees.local().get(id).is_some()
+                || owned(trees, id, node)
+                || on_ignored_disk(id, node)
+                || (node.shape.content.as_ref()).is_some_and(|content| in_history(id, content)),
+            "displaced {id} holds content absent from R, the device's owed writes, server history, and the ignored disk"
         );
     }
     local_writes_check(&device, &server, &waiting, &local_writes)?;
@@ -3573,13 +3683,24 @@ fn local_writes_check(
     waiting: &BTreeSet<NodeId>,
     local_writes: &BTreeSet<Vec<u8>>,
 ) -> Result<(), TestCaseError> {
-    let unsent = (device.trees.local().iter())
-        .filter(|(id, _)| (device.trees.ignored(id) || waiting.contains(*id)) && device.on_disk(id))
+    let trees = &device.trees;
+    let unsent = (trees.local_entries())
+        .filter(|(id, node)| {
+            if trees.local().get(id).is_some() {
+                device.on_disk(id)
+            } else {
+                owned(trees, id, node)
+            }
+        })
+        .filter(|(id, _)| trees.ignored(id) || waiting.contains(*id))
         .map(|(_, node)| node.shape.content);
     let in_ignored_folders = (device.ignored.iter())
         .filter(|((holder, below), entry)| {
-            (device.disk_path(holder, below))
-                .is_some_and(|path| device.trees.ignores(&path, entry.kind))
+            match device.in_parked_folder(holder) {
+                true => device.disk_path(holder, below),
+                false => device.ignored_disk_path(holder, below),
+            }
+            .is_some_and(|path| device.trees.ignores(&path, entry.kind))
         })
         .map(|(_, entry)| entry.content);
     let kept = written(

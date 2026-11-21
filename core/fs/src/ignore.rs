@@ -14,8 +14,8 @@ use koidrive_ignore::Source;
 
 use crate::git::Spelled;
 use crate::{
-    Cut, Entry, EntryKind, FileId, GitIndex, Stat, is_gone, open_attached, open_dir_at, stat_at,
-    stat_fd,
+    Cut, Entry, EntryKind, FileId, GitIndex, Space, Stat, VolumeId, is_gone, open_attached,
+    open_dir_at, stat_at, stat_fd,
 };
 
 const MAX_RULES: u64 = 1 << 20;
@@ -1819,6 +1819,102 @@ pub(crate) fn path_of(root: BorrowedFd<'_>, ino: u128) -> io::Result<Option<Path
             .ok()
             .map(Path::to_path_buf)
     }))
+}
+
+impl Space {
+    /// Whether the exact identity is at this path on the given volume.
+    pub fn verifies_copy(
+        &self,
+        at: &Path,
+        volume: VolumeId,
+        identity: FileId,
+        linked: bool,
+    ) -> bool {
+        self.copy_at(at).is_some_and(|(dir, stat)| {
+            identity.birth_ns.is_some()
+                && stat.id == identity
+                && (stat.file_type != FileType::RegularFile || linked || stat.nlink == 1)
+                && crate::root::volume_id(dir.as_fd()) == Some(volume)
+        })
+    }
+
+    fn copy_at(&self, path: &Path) -> Option<(OwnedFd, Stat)> {
+        if !path
+            .components()
+            .all(|part| matches!(part, std::path::Component::Normal(_)))
+        {
+            return None;
+        }
+        let (dir, _) = open_attached(self.root(), path.parent()?, &mut |_| {})
+            .ok()
+            .flatten()?;
+        let stat = stat_at(dir.as_fd(), path.file_name()?).ok()?;
+        (stat.dev == stat_fd(dir.as_fd()).ok()?.dev).then_some((dir, stat))
+    }
+
+    /// Holds the exact file only after it can be opened on its recorded volume.
+    /// An unsuccessful lookup does not prove that the file is gone.
+    pub fn hold_copy(
+        &self,
+        at: Option<&Path>,
+        mount: &Path,
+        volume: VolumeId,
+        identity: FileId,
+    ) -> Option<std::fs::File> {
+        let open = |path: &Path| {
+            let (dir, before) = self.copy_at(path)?;
+            let dir = dir.as_fd();
+            let name = path.file_name()?;
+            if crate::root::volume_id(dir) != Some(volume)
+                || before.file_type != FileType::RegularFile
+                || before.id != identity
+            {
+                return None;
+            }
+            #[cfg(target_os = "linux")]
+            let access = OFlags::PATH;
+            #[cfg(not(target_os = "linux"))]
+            let access = OFlags::RDONLY | OFlags::NONBLOCK;
+            let file = rustix::fs::openat(
+                dir,
+                name,
+                access | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                Mode::empty(),
+            )
+            .ok()?;
+            let stat = stat_fd(file.as_fd()).ok()?;
+            (stat.file_type == FileType::RegularFile
+                && stat.dev == before.dev
+                && stat.id == identity)
+                .then(|| std::fs::File::from(file))
+        };
+        identity.birth_ns?;
+        if let Some(file) = at.and_then(open) {
+            return Some(file);
+        }
+        #[cfg(target_os = "macos")]
+        {
+            if !mount
+                .components()
+                .all(|part| matches!(part, std::path::Component::Normal(_)))
+            {
+                return None;
+            }
+            let (dir, _) = open_attached(self.root(), mount, &mut |_| {})
+                .ok()
+                .flatten()?;
+            if crate::root::volume_id(dir.as_fd()) != Some(volume) {
+                return None;
+            }
+            let found = path_of(dir.as_fd(), identity.ino).ok().flatten()?;
+            open(&mount.join(found))
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = mount;
+            None
+        }
+    }
 }
 
 fn holds(root: BorrowedFd<'_>, path: &Path, key: Key) -> bool {

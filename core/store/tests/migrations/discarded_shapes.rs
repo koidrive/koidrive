@@ -25,7 +25,11 @@ fn a_store_from_before_discarded_shapes_were_recorded_takes_them_from_the_waitin
                 shape: file_shape("root", "w-before.txt"),
                 pending_for: String::new(),
             })?;
-            for (node_id, name) in [("d", "d-edited.txt"), ("l", "l.txt")] {
+            for (node_id, name) in [
+                ("d", "d-edited.txt"),
+                ("l", "l.txt"),
+                ("displaced", "displaced.txt"),
+            ] {
                 tx.put_local_node(&LocalNode {
                     left_out_when_placed: false,
                     content_from_server: false,

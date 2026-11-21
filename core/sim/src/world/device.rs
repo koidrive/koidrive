@@ -72,7 +72,7 @@ impl Engine {
             trees.set_remote(id.clone(), node.clone());
             trees.set_remote_place_id(id, self.trees.remote_place_id(id));
         }
-        for (id, node) in self.trees.local().iter() {
+        for (id, node) in self.trees.local_entries() {
             trees.set_local(id.clone(), node.clone());
         }
         for (id, shape) in self.trees.synced().iter() {
@@ -169,11 +169,11 @@ impl Engine {
             )
             .collect();
         let root = self.trees.local().root.clone();
-        let known: BTreeMap<u128, NodeId> = (self.trees.local().iter())
+        let known: BTreeMap<u128, NodeId> = (self.trees.local_entries())
+            .filter(|(id, node)| {
+                self.trees.local().get(id).is_some() || node.identity.birth_ns.is_some()
+            })
             .map(|(id, node)| (node.identity.ino, id.clone()))
-            .collect();
-        let displaced: BTreeMap<u128, NodeId> = (self.trees.displaced_local().iter())
-            .map(|(id, identity)| (identity.ino, id.clone()))
             .collect();
         let mut nodes: BTreeMap<u128, NodeId> = BTreeMap::new();
         let mut queue: VecDeque<u128> = (entries.iter().copied())
@@ -212,7 +212,7 @@ impl Engine {
                         && self.trees.remote().get(node).is_none()
                         && !nodes.values().any(|taken| taken == node)
                 });
-            let id = match known.get(&ino).or_else(|| displaced.get(&ino)) {
+            let id = match known.get(&ino) {
                 Some(id) => id.clone(),
                 None => marked.unwrap_or_else(|| NodeId::from(self.ids.uuid_v7(NOW as u64))),
             };
@@ -272,7 +272,7 @@ impl Engine {
         known: &BTreeMap<u128, NodeId>,
     ) -> bool {
         let entry = &disk.entries()[&ino];
-        let held = self.trees.local().get(id).expect("known in L").clone();
+        let held = self.trees.local_entry(id).expect("known in L").clone();
         let (parent, folder_left_out) = match &entry.place {
             Place::Root => (Some(self.trees.local().root.clone()), false),
             Place::In(parent) => (
@@ -358,11 +358,7 @@ impl Engine {
                 .collect();
             for (id, recorded) in doomed.iter().zip(recorded).rev() {
                 match recorded {
-                    true => {
-                        let created =
-                            (self.commits.in_flight()).is_some_and(|flight| flight.creates(id));
-                        self.trees.displace_local(id, created)
-                    }
+                    true => self.trees.displace_local(id),
                     false => self.trees.remove_local(id),
                 }
             }
@@ -408,7 +404,7 @@ impl Engine {
 
     fn drop_lost_folders(&mut self) {
         while let Some(folder) = (self.trees.lost_local().iter())
-            .find(|folder| self.trees.local_children(folder).next().is_none())
+            .find(|folder| !self.trees.holds_local_children(folder))
             .cloned()
         {
             self.trees.remove_local(&folder);

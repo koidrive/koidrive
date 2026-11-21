@@ -67,7 +67,7 @@ use koidrive_store::{EffectCounter, Link, Store, Tx};
 use prost::Message;
 use rustix::fs::{Mode, OFlags};
 
-use crate::engine::{Engine, file_id, file_identity, local_at, pending};
+use crate::engine::{CopyProof, Engine, file_id, file_identity, local_at, pending};
 use crate::failures::{self, Failure};
 use crate::observe::{FsObserver, Observation, Observed, Observer, Reset};
 use crate::policy::{self, Disposition};
@@ -78,6 +78,7 @@ use crate::status::WaitKind;
 /// How many effect sections [`Disk`] remembers for batches that span them. A batch older than all of them is dropped
 /// whole, and the observer rescans the whole tree.
 const SPANS: usize = 1024;
+const HELD_DISPLACED_COPIES: usize = 64;
 /// The wait before staging again after a transfer failed for now, when the server named none.
 const STAGE_AGAIN: Duration = Duration::from_secs(30);
 /// The most effects one batch holds: as many as one call for download targets takes chunks, with the contents of its
@@ -384,6 +385,7 @@ pub(crate) struct Disk {
     sections: Arc<Sections>,
     recorded: BTreeMap<PathBuf, Known>,
     found: BTreeMap<PathBuf, PathBuf>,
+    displaced_copies: BTreeMap<NodeId, (CopyProof, File)>,
     /// The paths of the latest effect sections, each with the epoch its section ended at, oldest first.
     spans: VecDeque<(u64, Vec<PathBuf>)>,
     /// The end epoch of the latest section that `spans` no longer holds.
@@ -532,6 +534,7 @@ impl Disk {
             sections,
             recorded: BTreeMap::new(),
             found: BTreeMap::new(),
+            displaced_copies: BTreeMap::new(),
             spans: VecDeque::new(),
             forgotten: 0,
             unscanned: Unscanned::default(),
@@ -550,6 +553,7 @@ impl Disk {
         let counter = counted(&engine.effects);
         store.check_stamp()?;
         let (found, opened) = store.read(|tx| marker_standing(&disk.space, link, tx, counter))?;
+        engine.root_volume = disk.space.root_at()?.volume;
         let recovered = matches!(opened, Standing::StoreOlder);
         if recovered {
             tracing::warn!(
@@ -597,7 +601,7 @@ impl Disk {
             acknowledge(
                 &outcomes,
                 true,
-                &link.space_id,
+                (&link.space_id, &disk.space),
                 pending(&disk.unscanned.all(&[]), &BTreeMap::new()),
                 engine,
                 store,
@@ -629,6 +633,28 @@ impl Disk {
         if recorded != self.recorded || found != self.found {
             *self.sections.recorded.lock().unwrap() = Some((recorded.clone(), found.clone()));
             (self.recorded, self.found) = (recorded, found);
+        }
+        self.hold_displaced_copies(engine);
+    }
+
+    fn hold_displaced_copies(&mut self, engine: &Engine) {
+        self.displaced_copies
+            .retain(|id, (proof, _)| engine.displaced_copy(id) == Some(*proof));
+        for (id, proof) in engine.displaced_copies() {
+            if self.displaced_copies.len() == HELD_DISPLACED_COPIES {
+                break;
+            }
+            if !self.displaced_copies.contains_key(id)
+                && let Some(mount) = engine.mount_of(proof.volume)
+                && let Some(file) = self.space.hold_copy(
+                    engine.found_displaced_path(id).as_deref(),
+                    mount,
+                    proof.volume,
+                    file_id(proof.identity),
+                )
+            {
+                self.displaced_copies.insert(id.clone(), (proof, file));
+            }
         }
     }
 
@@ -826,7 +852,7 @@ impl Disk {
         let settled = acknowledge(
             &outcomes,
             false,
-            &self.link.space_id,
+            (&self.link.space_id, &self.space),
             pending,
             engine,
             store,
@@ -856,6 +882,7 @@ impl Disk {
             self.awaited_scans.push((requested, awaited));
         }
         self.hold(engine);
+        self.hold_displaced_copies(engine);
         self.spans.push_back((end, scopes_of_batch));
         while self.spans.len() > SPANS {
             if let Some((end, _)) = self.spans.pop_front() {
@@ -977,10 +1004,15 @@ impl Disk {
         let dropped: Vec<PathBuf> = dropped.into_iter().collect();
         let pending = pending(&self.unscanned.all(&dropped), &observation.waiting);
         let emptied = |trees: &Trees| emptied_kept_folders(&self.space, trees, &listed);
+        let unlinked: Vec<_> = (self.displaced_copies.iter())
+            .filter(|(_, (_, file))| file.metadata().is_ok_and(|stat| stat.nlink() == 0))
+            .map(|(id, (proof, _))| (id.clone(), *proof))
+            .collect();
         if !changes.is_empty()
             || mounts.is_some()
             || unread.is_some()
             || !ctimes.is_empty()
+            || !unlinked.is_empty()
             || !emptied(&engine.trees)?.is_empty()
             || engine.sees_unobserved(&listed, &pending)
         {
@@ -994,7 +1026,14 @@ impl Disk {
                     tx.set_unread_folders(&unread)?;
                     engine.unread = Some(unread);
                 }
-                engine.observe(&changes, now_ms);
+                engine.observe_verified(&changes, now_ms, &|path, volume, identity, linked| {
+                    self.space.verifies_copy(path, volume, identity, linked)
+                });
+                for (id, proof) in &unlinked {
+                    if engine.displaced_copy(id) == Some(*proof) {
+                        engine.trees.remove_local(id);
+                    }
+                }
                 engine.read(&read, &observation.unreadable);
                 engine.listed(&listed, pending);
                 for folder in emptied(&engine.trees)? {
@@ -1997,7 +2036,7 @@ fn halt(error: io::Error) -> Stall {
 fn acknowledge(
     outcomes: &[(&EffectRecord, Outcome)],
     retry: bool,
-    space_id: &str,
+    (space_id, space): (&str, &Space),
     pending: koidrive_engine::classify::Pending,
     engine: &mut Engine,
     store: &mut Store,
@@ -2005,7 +2044,7 @@ fn acknowledge(
 ) -> Result<Vec<Settled>, Stop> {
     let settled = store.transaction(|tx| -> Result<_, Stop> {
         let settled = (outcomes.iter())
-            .map(|(record, outcome)| settle(record, outcome, retry, engine))
+            .map(|(record, outcome)| settle(record, outcome, retry, engine, space))
             .collect::<Result<Vec<_>, Stop>>()?;
         engine.ask(tx, space_id)?;
         engine.listed(&[], pending);
@@ -2023,6 +2062,7 @@ fn settle(
     outcome: &Outcome,
     retry: bool,
     engine: &mut Engine,
+    space: &Space,
 ) -> Result<Settled, Stop> {
     let refused = |error| Stop::Record {
         effect_id: record.effect_id.clone(),
@@ -2068,6 +2108,18 @@ fn settle(
                         identity.map(file_identity),
                     )
                     .map_err(refused)?;
+                if matches!(
+                    record.effect,
+                    EngineEffect::CreateDir { .. } | EngineEffect::WriteFile { .. }
+                ) {
+                    let volume = engine.path_of(&record.node).and_then(|path| {
+                        let volume = engine.volume_at(&path)?;
+                        space
+                            .verifies_copy(&path, volume, (*identity)?, false)
+                            .then_some(volume)
+                    });
+                    engine.note_placed_copy(&record.node, volume);
+                }
                 if let Some(removal) = removal {
                     let now_ms = crate::clock::unix_ms();
                     let Engine {

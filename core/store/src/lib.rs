@@ -70,10 +70,13 @@ pub mod migrations {
     include!(concat!(env!("OUT_DIR"), "/migrations.rs"));
 
     pub fn register_functions(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
+        use std::fmt::Write;
+
         use koidrive_engine::classify::temp_name;
         use koidrive_engine::names::same_name;
         use koidrive_engine::tree::{ContentKey, same_content};
-        use koidrive_proto::v1::Content;
+        use koidrive_proto::v1::{Commit, Content, NodeKind, VersionInfo, op};
+        use prost::Message;
         use rusqlite::functions::FunctionFlags;
 
         let flags = FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC;
@@ -96,6 +99,60 @@ pub mod migrations {
                 (Some(a), Some(b)) => same_content(&a, &b),
                 (a, b) => a.is_none() && b.is_none(),
             })
+        })?;
+        conn.create_scalar_function("matching_current_content", 2, flags, |ctx| {
+            let to_sql = |error| rusqlite::Error::UserFunctionError(Box::new(error));
+            let Some(synced) = super::engine::content_key(ctx.get(0)?).map_err(to_sql)? else {
+                return Ok(None);
+            };
+            let Some(content) = super::decode::<VersionInfo>(ctx.get(1)?)
+                .map_err(to_sql)?
+                .and_then(|version| version.content)
+            else {
+                return Ok(None);
+            };
+            if content.chunks.len() != content.chunk_count as usize
+                || ContentKey::try_from(&content) != Ok(synced)
+            {
+                return Ok(None);
+            }
+            Ok(Some(content.encode_to_vec()))
+        })?;
+        conn.create_scalar_function("in_flight_creates", 1, flags, |ctx| {
+            let commit = Commit::decode(ctx.get::<Vec<u8>>(0)?.as_slice())
+                .map_err(|error| rusqlite::Error::UserFunctionError(Box::new(error)))?;
+            let creates: Vec<_> = commit
+                .ops
+                .into_iter()
+                .filter_map(|entry| {
+                    let (id, parent, name, kind, content) = match entry.op? {
+                        op::Op::CreateDir(create) => (
+                            create.node_id,
+                            create.parent_id,
+                            create.name,
+                            NodeKind::Dir,
+                            None,
+                        ),
+                        op::Op::CreateFile(create) => (
+                            create.node_id,
+                            create.parent_id,
+                            create.name,
+                            NodeKind::File,
+                            Some(create.content?.encode_to_vec()),
+                        ),
+                        _ => return None,
+                    };
+                    let content = content.map(|bytes| {
+                        let mut encoded = String::with_capacity(bytes.len() * 2);
+                        for byte in bytes {
+                            write!(encoded, "{byte:02x}").unwrap();
+                        }
+                        encoded
+                    });
+                    Some(serde_json::json!([id, parent, name, kind as i32, content]))
+                })
+                .collect();
+            Ok(serde_json::Value::Array(creates).to_string())
         })
     }
 
@@ -841,6 +898,11 @@ impl Tx<'_> {
                  ON CONFLICT (node_id) DO UPDATE SET parent_id = excluded.parent_id,
                   name = excluded.name, kind = excluded.kind, content = excluded.content,
                   ino = excluded.ino, ino_high = excluded.ino_high, birth_ns = excluded.birth_ns,
+                  copy_volume = CASE WHEN local_nodes.ino = excluded.ino
+                                      AND local_nodes.ino_high = excluded.ino_high
+                                      AND local_nodes.birth_ns IS excluded.birth_ns
+                                      AND local_nodes.handle IS excluded.handle
+                                     THEN local_nodes.copy_volume END,
                   parked = excluded.parked, left_out_when_placed = excluded.left_out_when_placed,
                   content_from_server = excluded.content_from_server, handle = excluded.handle",
             )?
@@ -863,6 +925,36 @@ impl Tx<'_> {
 
     pub fn remove_local_node(&self, node_id: &str) -> Result<bool> {
         self.remove("local_nodes", node_id)
+    }
+
+    pub fn each_local_copy_volume<B>(
+        &self,
+        mut each: impl FnMut(NodeId, VolumeId) -> ControlFlow<B>,
+    ) -> Result<Option<B>> {
+        let mut stmt = self.0.prepare_cached(
+            "SELECT node_id, copy_volume FROM local_nodes WHERE copy_volume IS NOT NULL",
+        )?;
+        let mut rows = stmt.query([])?;
+        while let Some(row) = rows.next()? {
+            let id: String = row.get(0)?;
+            let bytes: Vec<u8> = row.get(1)?;
+            let volume = VolumeId::from_bytes(&bytes)
+                .ok_or_else(|| Error::InvalidEngineState(format!("copy volume of {id}")))?;
+            if let ControlFlow::Break(stopped) = each(id.into(), volume) {
+                return Ok(Some(stopped));
+            }
+        }
+        Ok(None)
+    }
+
+    pub fn set_local_copy_volume(&self, id: &NodeId, volume: Option<VolumeId>) -> Result<()> {
+        self.0
+            .prepare_cached("UPDATE local_nodes SET copy_volume = ?2 WHERE node_id = ?1")?
+            .execute(params![
+                id.to_string(),
+                volume.as_ref().map(VolumeId::as_bytes)
+            ])?;
+        Ok(())
     }
 
     /// For each local node that has one, the latest change time its file can have while it still holds what L records:
