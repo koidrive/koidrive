@@ -576,7 +576,11 @@ fn a_folder_another_device_moves_where_the_rules_leave_it_out_here_goes_to_the_l
         );
         assert!(b.folder.stuck_effects.is_empty(), "{unknown:?}");
         assert!(b.sent.is_empty(), "{unknown:?}");
-        assert_eq!(remote.names(), ["a.txt", "archive", "held", "old.txt"], "{unknown:?}");
+        assert_eq!(
+            remote.names(),
+            ["a.txt", "archive", "held", "old.txt"],
+            "{unknown:?}"
+        );
     }
 }
 
@@ -837,7 +841,8 @@ fn a_folder_to_remove_that_holds_a_file_an_excluded_entry_keeps_out_lets_the_fol
 }
 
 #[test]
-fn a_file_another_device_moves_where_the_rules_leave_it_out_here_frees_its_name_for_a_folder_made_there() {
+fn a_file_another_device_moves_where_the_rules_leave_it_out_here_frees_its_name_for_a_folder_made_there()
+ {
     let mut remote = Remote::new();
     let (site_a, mut a) = linked(&mut remote, "a");
     a.create(&mut remote, &site_a.root.join("foo"), b"kept on b");
@@ -868,7 +873,10 @@ fn a_file_another_device_moves_where_the_rules_leave_it_out_here_frees_its_name_
 
     let view = b.folder.view();
     assert_eq!((view.state, view.problem), (FolderState::UpToDate, None));
-    assert_eq!(fs::read(site.root.join("foo/child")).unwrap(), b"written on a");
+    assert_eq!(
+        fs::read(site.root.join("foo/child")).unwrap(),
+        b"written on a"
+    );
     assert_eq!(trashed(&site.root).len(), 1);
     assert!(b.sent.is_empty(), "{:?}", b.sent);
     assert_eq!(remote.names(), ["child", "foo", "foo", "skip"]);
