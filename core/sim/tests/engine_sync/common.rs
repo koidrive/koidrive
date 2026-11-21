@@ -564,6 +564,8 @@ fn left_behind(trees: &Trees, id: &NodeId) -> bool {
                 local.shape.kind == Kind::File
                     && synced.same(&local.shape)
                     && !remote.same_position(synced)
+                    && !trees.edited(id)
+                    && !trees.recorded_local(id)
                     && !trees.ignores(&local_path(trees, id), local.shape.kind)
             })
 }
