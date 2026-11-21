@@ -1150,6 +1150,10 @@ impl Commits {
                 let question = &mut self.questions.get_mut()[index];
                 question.answer = Some(answer);
                 question.frozen = frozen;
+                let answered: Vec<NodeId> = (question.shown.keys().chain(question.holds()))
+                    .cloned()
+                    .collect();
+                trees.discard_answered(answered);
             }
             _ => self.questions.get_mut()[index].answer = Some(answer),
         }
@@ -1503,7 +1507,12 @@ impl Commits {
             let held = recovery::asks(question).then(|| question.holds());
             question.shown.keys().chain(held.into_iter().flatten())
         });
-        trees.set_asked(shown.cloned().collect());
+        let answered = (self.questions.iter())
+            .filter(|question| {
+                question.answer == Some(Answer::Discard) && first_link::asks(question)
+            })
+            .flat_map(|question| question.shown.keys().chain(question.holds()));
+        trees.set_asked(shown.cloned().collect(), answered.cloned().collect());
     }
 
     fn given_up_files(&self, trees: &Trees) -> u64 {
@@ -1696,7 +1705,11 @@ impl Commits {
         let cause = self.questions.iter().find_map(Question::cause).cloned();
         let left = self.ask_again(trees, ids, now_ms);
         let released = self.ask_recovery(trees, cause, left, ids, now_ms);
-        let reclaimed = trees.reclaim(|_| true);
+        let held: BTreeSet<NodeId> = (self.questions.iter())
+            .flat_map(|question| question.holds().cloned())
+            .collect();
+        let asked = trees.discarded_within(&held);
+        let reclaimed = trees.reclaim(|id| !asked.contains(id));
         let discardable = reclaimed
             .into_iter()
             .filter(|id| !holds_server_entry(trees, id));

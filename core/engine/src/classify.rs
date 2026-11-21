@@ -633,6 +633,7 @@ pub struct Trees {
     unobserved: TrackedSet<NodeId>,
     born_as_temp: TrackedMap<NodeId, TempBirth>,
     discard_members: TrackedMap<NodeId, NodeId>,
+    discard_changed: TrackedSet<NodeId>,
     left_out_by_server: TrackedSet<NodeId>,
     rules_changed: BTreeSet<Vec<String>>,
     relist: BTreeSet<NodeId>,
@@ -703,6 +704,7 @@ pub struct Trees {
     unknown_rules: CountedSet<NodeId>,
     /// The local entries the open questions hold ([`Trees::set_asked`]).
     asked: BTreeSet<NodeId>,
+    answered: BTreeSet<NodeId>,
     /// Dirty nodes marked since the last settle, the only ones whose class can have changed.
     unsettled: BTreeSet<NodeId>,
     relink: bool,
@@ -776,6 +778,7 @@ impl Trees {
             unobserved: TrackedSet::default(),
             born_as_temp: TrackedMap::default(),
             discard_members: TrackedMap::default(),
+            discard_changed: TrackedSet::default(),
             left_out_by_server: TrackedSet::default(),
             rules_changed: BTreeSet::new(),
             relist: BTreeSet::new(),
@@ -827,6 +830,7 @@ impl Trees {
             rules_known: true,
             unknown_rules: CountedSet::default(),
             asked: BTreeSet::new(),
+            answered: BTreeSet::new(),
             unsettled: BTreeSet::new(),
             relink: false,
             unwatched: BTreeSet::new(),
@@ -2114,6 +2118,9 @@ impl Trees {
             return;
         };
         content.mtime_ns = mtime_ns;
+        if self.discard_watches(id) {
+            self.discard_changed.insert(id.clone());
+        }
         self.l.insert(id.clone(), node);
         self.mark(id);
     }
@@ -2267,6 +2274,13 @@ impl Trees {
         {
             return;
         }
+        if self.discard_watches(&id)
+            && (self.l.get(&id)).is_some_and(|old| {
+                old.parked == node.parked && !old.shape.same_untouched(&node.shape)
+            })
+        {
+            self.discard_changed.insert(id.clone());
+        }
         let relist = node.shape.kind == Kind::Dir
             && !node.parked
             && !self.unobserved.is_empty()
@@ -2370,6 +2384,9 @@ impl Trees {
     /// rules let sync and that the device observes is recorded with the folder L held it in
     /// ([`TreesState::removed_from`]); an unobserved one downloads again (section 5.10).
     pub fn remove_local(&mut self, id: &NodeId) {
+        if self.discard_watches(id) && self.l.get(id).is_some() {
+            self.discard_changed.insert(id.clone());
+        }
         let left_out = self.excluded(id) && self.ignored_in_remote(id);
         let unobserved = self.unobserved.contains(id) || self.left_out_by_new_rules(id);
         let removed =
@@ -2585,11 +2602,29 @@ impl Trees {
     }
 
     /// Sets the local entries R does not hold that the open questions hold (the commit planner's
-    /// questions), which stay on disk as they are until the person answers.
-    pub fn set_asked(&mut self, asked: BTreeSet<NodeId>) {
+    /// questions), which stay on disk as they are until the person answers, and those of them a
+    /// Discard answer holds, which a change of the user keeps from the local trash.
+    pub fn set_asked(&mut self, asked: BTreeSet<NodeId>, answered: BTreeSet<NodeId>) {
         self.forget_reclaims();
         self.relink |= !self.asked.is_subset(&asked);
         self.asked = asked;
+        self.answered = answered;
+    }
+
+    pub(crate) fn discard_answered(&mut self, ids: impl IntoIterator<Item = NodeId>) {
+        self.forget_reclaims();
+        for id in ids {
+            self.discard_changed.remove(&id);
+            self.answered.insert(id);
+        }
+    }
+
+    pub(crate) fn discard_changed(&self, id: &NodeId) -> bool {
+        self.discard_changed.contains(id)
+    }
+
+    fn discard_watches(&self, id: &NodeId) -> bool {
+        (self.discarded.contains_key(id) || self.answered.contains(id)) && self.r.get(id).is_none()
     }
 
     /// Whether the node is set aside ([`Trees::set_aside`]), or L, S or R places it at or below a node that awaits a
@@ -2673,7 +2708,7 @@ impl Trees {
         if self.r.get(id).is_some() || !judged.insert(id) {
             return None;
         }
-        let mut changed = !local.shape.same(discarded);
+        let mut changed = self.discard_changed.contains(id) || !local.shape.same(discarded);
         let mut holds_excluded = false;
         for child in self.local_children_placed_or_parked(id) {
             if changed {
@@ -2905,9 +2940,10 @@ impl Trees {
         if self.r.get(id).is_some() {
             return self.left_as_discarded_within(id, judged);
         }
-        let unchanged = (self.l.get(id)).is_some_and(|local| {
-            (self.discarded.get(id)).is_some_and(|shape| local.shape.same(shape))
-        });
+        let unchanged = !self.discard_changed.contains(id)
+            && (self.l.get(id)).is_some_and(|local| {
+                (self.discarded.get(id)).is_some_and(|shape| local.shape.same(shape))
+            });
         unchanged
             && (self.local_children_placed_or_parked(id))
                 .all(|child| self.kept_as_discarded_in(child, id, judged))
@@ -3118,6 +3154,9 @@ impl Trees {
 
     pub(crate) fn rekey_discarded(&mut self, from: &NodeId, to: &NodeId) {
         self.forget_reclaims();
+        if self.discard_changed.remove(from) {
+            self.discard_changed.insert(to.to_owned());
+        }
         if let Some(shape) = self.discarded.remove(from) {
             self.unsort(to);
             self.discarded.insert(to.to_owned(), shape);
@@ -3406,9 +3445,19 @@ impl Trees {
         }
     }
 
+    pub(crate) fn discarded_within(&self, folders: &BTreeSet<NodeId>) -> BTreeSet<NodeId> {
+        (self.discarded.keys())
+            .filter(|id| self.local_chain(id).any(|at| folders.contains(at)))
+            .cloned()
+            .collect()
+    }
+
     pub(crate) fn reclaim(&mut self, among: impl Fn(&NodeId) -> bool) -> Vec<NodeId> {
         let reclaimed: BTreeSet<NodeId> = (self.discarded.keys())
-            .filter(|id| among(id) && self.reclaimed(id))
+            .filter(|id| {
+                among(id)
+                    && (self.reclaimed(id) || self.s.get(id).is_none() && self.the_users_again(id))
+            })
             .cloned()
             .collect();
         let below_reclaimed = |id: &NodeId| {
@@ -3487,8 +3536,12 @@ impl Trees {
         for (id, base) in bases {
             self.wait(id, Some(base), Origin::Other);
         }
-        for id in released {
-            self.discarded.remove(id);
+        let retired: Vec<NodeId> = (dropped.iter())
+            .filter(|id| released.contains(id) || self.the_users_again(id))
+            .cloned()
+            .collect();
+        for id in retired {
+            self.discarded.remove(&id);
         }
         self.forget_reclaims();
         let (l, s, waiting) = (&self.l, &self.s, &self.waiting);
@@ -7799,6 +7852,7 @@ impl Trees {
             unobserved: self.unobserved.to_set(),
             born_as_temp: self.born_as_temp.to_map(),
             discard_members: self.discard_members.to_map(),
+            discard_changed: self.discard_changed.to_set(),
             left_out_by_server: self.left_out_by_server.to_set(),
             parked_as: self.parked_as.to_map(),
             waiting: self.waiting.to_map(),
@@ -7842,6 +7896,8 @@ impl Trees {
 
     /// What changed in [`Trees::state`] since the last call, for the store to write.
     pub fn take_changes(&mut self) -> TreesChanges {
+        let (discarded, answered) = (&self.discarded, &self.answered);
+        (self.discard_changed).retain(|id| discarded.contains_key(id) || answered.contains(id));
         let Self {
             r,
             place_ids: _,
@@ -7857,6 +7913,7 @@ impl Trees {
             unobserved,
             born_as_temp,
             discard_members,
+            discard_changed,
             left_out_by_server,
             rules_changed: _,
             relist: _,
@@ -7908,6 +7965,7 @@ impl Trees {
             rules_known: _,
             unknown_rules: _,
             asked: _,
+            answered: _,
             unsettled: _,
             relink: _,
             unwatched: _,
@@ -7945,6 +8003,7 @@ impl Trees {
             unobserved: unobserved.take_changes(),
             born_as_temp: born_as_temp.take_changes(),
             discard_members: discard_members.take_changes(),
+            discard_changed: discard_changed.take_changes(),
             left_out_by_server: left_out_by_server.take_changes(),
             parked_as: parked_as.take_changes(),
             waiting: waiting.take_changes(),
@@ -8197,6 +8256,7 @@ impl Trees {
             unobserved,
             born_as_temp,
             discard_members,
+            discard_changed,
             left_out_by_server,
             parked_as,
             waiting,
@@ -8249,6 +8309,7 @@ impl Trees {
         self.unobserved = unobserved.into();
         self.born_as_temp = born_as_temp.into();
         self.discard_members = discard_members.into();
+        self.discard_changed = discard_changed.into();
         self.left_out_by_server = left_out_by_server.into();
         self.copies_gone = (self.unobserved.iter())
             .filter(|id| self.l.get(id).is_none())

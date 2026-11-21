@@ -42,6 +42,7 @@ mutation keep-revert-blocked $C 's/if !trees\.set_synced_if_valid\(node\.clone\(
 mutation quota-retry $C 's/            Ok\(Code::QuotaExceeded\) if error\.retry_after_ms > 0 => Failure::Resend,\n//' unit
 mutation refused-reconnect $C 's/_ if policy && w >= a => return Reconnect::Idle,/_ if policy \&\& w >= a => return Reconnect::Resend,/' unit
 mutation unknown-resend $C 's/            _ => Failure::Halted\(Halt::Policy \{ code: error\.code \}\),/            Err(_) => Failure::Resend,\n            _ => Failure::Halted(Halt::Policy { code: error.code }),/' unit
+mutation reclaimed-left-out $L 's/\(self\.reclaimed\(id\) \|\| self\.s\.get\(id\)\.is_none\(\) && self\.the_users_again\(id\)\)/(self.reclaimed(id))/' prop
 mutation parked-name $L 's/self\.parked_as\.get\(id\)\.unwrap_or\(id\)/{ let _ = \&self.parked_as; id }/' unit
 mutation rekey-park-as $C 's/        trees\.park_as\(to\.to_owned\(\), parked_name\);\n//' unit
 mutation digest-dedupe $E 's/    let changed = remote_only\(trees, id\)\n/    let changed = trees.local().get(id).is_some_and(|node| {\n        let digest = |node: \&LocalNode| node.shape.content.map(|content| content.manifest_digest().to_vec());\n        let twin = |(other, twin): (\&NodeId, \&LocalNode)| other < id \&\& digest(twin) == digest(node);\n        digest(node).is_some() \&\& trees.synced().live(id).is_none() \&\& trees.remote().live(id).is_none() \&\& trees.local().iter().any(twin)\n    }) || remote_only(trees, id)\n/' devices

@@ -257,6 +257,9 @@ pub struct TreesState {
     /// The server entries below each folder a Discard took along, as R held them when the Discard was carried out, each
     /// with that folder, which is its own member. Removing an entry that is not a member is a change to that entry alone.
     pub discard_members: BTreeMap<NodeId, NodeId>,
+    /// The discarded entries this device's user wrote, moved or removed since the Discard answer, recorded when L first
+    /// takes the change. Each is also in `discarded`, and stays the user's after a change back to the recorded shape.
+    pub discard_changed: BTreeSet<NodeId>,
     /// The unobserved nodes that only a server change left out, so their local copy stayed at an included position the
     /// scans watch. Each is also in `unobserved`, and each stops being unobserved once that change no longer excludes
     /// it. Every other unobserved node waits for an event or a scan.
@@ -537,6 +540,7 @@ pub struct TreesChanges {
     pub unobserved: SetChanges<NodeId>,
     pub born_as_temp: MapChanges<NodeId, TempBirth>,
     pub discard_members: MapChanges<NodeId, NodeId>,
+    pub discard_changed: SetChanges<NodeId>,
     pub left_out_by_server: SetChanges<NodeId>,
     pub parked_as: MapChanges<NodeId, NodeId>,
     pub waiting: MapChanges<NodeId, Waiting>,
@@ -588,6 +592,7 @@ impl TreesChanges {
             unobserved,
             born_as_temp,
             discard_members,
+            discard_changed,
             left_out_by_server,
             parked_as,
             waiting,
@@ -635,6 +640,7 @@ impl TreesChanges {
             unobserved: set_changes(&before.unobserved, unobserved),
             born_as_temp: map_changes(&before.born_as_temp, born_as_temp),
             discard_members: map_changes(&before.discard_members, discard_members),
+            discard_changed: set_changes(&before.discard_changed, discard_changed),
             left_out_by_server: set_changes(&before.left_out_by_server, left_out_by_server),
             parked_as: map_changes(&before.parked_as, parked_as),
             waiting: map_changes(&before.waiting, waiting),

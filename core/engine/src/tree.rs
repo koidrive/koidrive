@@ -409,6 +409,14 @@ impl Shape {
             }
     }
 
+    /// [`Shape::same`], and for a file also the same modification time: a rewrite of the same bytes
+    /// is a change.
+    pub fn same_untouched(&self, other: &Shape) -> bool {
+        self.same(other)
+            && (self.content.as_ref()).map(|content| content.mtime_ns)
+                == (other.content.as_ref()).map(|content| content.mtime_ns)
+    }
+
     pub fn same_position(&self, other: &Shape) -> bool {
         self.parent == other.parent && same_name(&self.name, &other.name)
     }

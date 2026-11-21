@@ -1347,6 +1347,7 @@ fn engine_state() -> EngineState {
                 ("v".into(), TempBirth::Upgraded),
             ]),
             discard_members: BTreeMap::from([("m".into(), "f".into())]),
+            discard_changed: nodes(["d"]),
             left_out_by_server: nodes(["u"]),
             parked_as: BTreeMap::from([("p".into(), "p-before".into())]),
             waiting: BTreeMap::from([
