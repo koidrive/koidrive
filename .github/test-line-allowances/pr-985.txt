@@ -1,3 +1,4 @@
-376
+428
 # The sim model decides whether an entry under a folder taken along on a first-link Discard arrived from another device: the record that began the entry's current stay in the folder decides. Each clause of that rule has its own test that fails when the clause is mutated away: the stay begun by the entry's own record or inherited from the folder it came in with, a move within the folder keeping the stay, an agreed place outside the folder ending it, a return beginning a new stay, whose record began it, a user's move into the folder that another device matched first (same place or another), and entries another device adds between the answer and the build.
 # The other tests pin moves outside the folder, departures through an ancestor, unsynced departures, batches, nested arrivals, re-entry and this device's moves confirmed after the answer, which earlier versions of the model got wrong.
+# Two tests pin the window baseline after another device moves an entry out of the folder between the answer and the build, and a user's move whose origin another device later brought into the folder.
