@@ -829,10 +829,10 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
         private async answer(session: Session, request: RpcRequest): Promise<{ response: RpcResponse; record?: CommitRecord }> {
       const reqId = request.reqId;
       try {
-        this.checkOpen();
         const call = request.call;
         const items = call.case === "commit" ? call.value.ops.length : call.case === "prepareUpload" ? call.value.chunks.length : call.case === "getDownloadTargets" ? call.value.hashes.length : 0;
         console.log({ koidrive_rpc: call.case ?? "empty", koidrive_items: items });
+        this.checkOpen();
         switch (call.case) {
           case "commit": {
             const { result, record } = await this.commit(session, call.value);

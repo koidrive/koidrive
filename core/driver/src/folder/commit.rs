@@ -100,21 +100,19 @@ impl Folder {
     fn landed(&mut self, commit: &Commit) {
         let now = clock::instant();
         let since_last = self.landed_at.replace(now);
-        let Some(cycle) = self
+        let timed = (self
             .cycle
-            .take_if(|cycle| cycle.commit_id == commit.commit_id)
-        else {
-            return;
-        };
-        let uploaded = cycle.uploaded.unwrap_or(now);
+            .take_if(|cycle| cycle.commit_id == commit.commit_id))
+        .map(|cycle| (cycle.chunks, cycle.started, cycle.uploaded.unwrap_or(now)));
         let ms = |from: Instant, to: Instant| to.saturating_duration_since(from).as_millis() as u64;
         tracing::info!(
-            space_id = self.link.space_id,
             ops = commit.ops.len(),
-            chunks = cycle.chunks,
-            since_last_ms = since_last.map(|at| ms(at, cycle.started)),
-            upload_ms = ms(cycle.started, uploaded),
-            send_ms = ms(uploaded, now),
+            chunks = timed.map(|(chunks, ..)| chunks),
+            since_last_ms = since_last
+                .zip(timed)
+                .map(|(at, (_, started, _))| ms(at, started)),
+            upload_ms = timed.map(|(_, started, uploaded)| ms(started, uploaded)),
+            send_ms = timed.map(|(.., uploaded)| ms(uploaded, now)),
             "koidrive commit landed"
         );
     }
