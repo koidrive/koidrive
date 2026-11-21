@@ -4850,3 +4850,45 @@ fn a_displaced_copy_keeps_its_id_and_chunks_when_the_server_loses_it() {
         ));
     }
 }
+
+#[test]
+fn a_readmitted_file_with_a_waiting_position_can_be_removed() {
+    let mut trees = trees(&[
+        synced("d", dir(ROOT, "d")),
+        synced("x", dir(ROOT, "x")),
+        synced("f", file("d", "f.txt", 1)),
+        synced("g", file("x", "f.txt", 2)),
+    ]);
+    let (d, f) = (NodeId::from("d"), NodeId::from("f"));
+    let mut copy = trees.local().get(&f).unwrap().clone();
+    let mut upstream = trees.remote().get(&f).unwrap().clone();
+    trees.rules_scanned();
+    trees.ignore_local(&d);
+    trees.displace_local(&f);
+    trees.displace_local(&d);
+    trees.remove_local(&"g".into());
+    copy.shape.parent = "x".into();
+    trees.set_local_changed(f.clone(), copy.clone());
+    let mut state = trees.state();
+    assert_eq!(state.readmitted_from.get(&f), Some(&d));
+    state.waiting.insert(
+        f.clone(),
+        Waiting {
+            shape: Some(copy.shape),
+            origin: Origin::Commit(1),
+        },
+    );
+    trees.restore(state).unwrap();
+    trees.rules_scanned();
+    upstream.meta_rev += 1;
+    trees.set_remote(f.clone(), upstream);
+    trees.settle(&Default::default());
+    assert!(trees.check().is_ok());
+    assert!(trees.waiting().contains_key(&f) && trees.excluded(&f));
+    let mut planner = Effects::default();
+    let records = planner.plan(&trees, None, &mut IdGen::new(2), NOW, BatchLimit::ONE);
+    let record = records.iter().find(|record| record.node == f).unwrap();
+    assert!(matches!(record.effect, Effect::RemoveFile { .. }));
+    let id = record.effect_id.clone();
+    assert!(planner.done(&mut trees, None, &id, None).is_ok());
+}
