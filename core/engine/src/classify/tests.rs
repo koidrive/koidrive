@@ -1706,3 +1706,89 @@ fn a_listing_that_moves_or_trashes_a_file_whose_name_was_left_out_ends_the_recor
         assert_eq!(trees.check(), Ok(()));
     }
 }
+
+fn discarded_cycle_holding_a_file(
+    id: &str,
+    changed: bool,
+    above_a: &str,
+    on_server: bool,
+) -> Trees {
+    let mut trees = Trees::new("root");
+    let file = |digest: u8| Shape {
+        parent: "a".into(),
+        name: id.into(),
+        kind: Kind::File,
+        content: Some(key(&Content {
+            size: 1,
+            manifest_digest: vec![digest; 32],
+            ..Content::default()
+        })),
+    };
+    for (node, shape) in [
+        ("a", dir(&"root".into(), "a")),
+        ("b", dir(&"a".into(), "b")),
+        ("c", dir(&"b".into(), "c")),
+    ] {
+        if on_server {
+            trees.set_remote(node.into(), remote(shape));
+        }
+    }
+    let locals = [
+        ("b", dir(&"a".into(), "b"), true),
+        ("c", dir(&"b".into(), "c"), false),
+        ("p", dir(&"c".into(), "p"), false),
+        ("a", dir(&above_a.into(), "a"), false),
+        (id, file(if changed { 2 } else { 1 }), true),
+    ];
+    let placed = locals
+        .into_iter()
+        .filter(|(node, ..)| *node != "p" || above_a == "p");
+    for (ino, (node, shape, parked)) in placed.enumerate() {
+        let local = LocalNode {
+            left_out_when_placed: false,
+            content_from_server: false,
+            shape,
+            identity: FileIdentity {
+                ino: ino as u128 + 1,
+                birth_ns: Some(0),
+                handle: None,
+            },
+            parked,
+            chunks: Box::default(),
+        };
+        trees.set_local(node.into(), local);
+    }
+    let mut state = trees.state();
+    for (node, shape) in [
+        ("a", dir(&above_a.into(), "a")),
+        ("b", dir(&"a".into(), "b")),
+        ("c", dir(&"b".into(), "c")),
+        ("p", dir(&"c".into(), "p")),
+        (id, file(1)),
+    ] {
+        if node == "p" && above_a != "p" {
+            continue;
+        }
+        state.discarded.insert(node.into(), shape);
+    }
+    trees.restore(state).unwrap();
+    trees
+}
+
+#[test]
+fn a_discarded_folder_on_a_parked_cycle_is_judged_by_each_entry_whatever_their_order() {
+    let (a, b): (NodeId, NodeId) = ("a".into(), "b".into());
+    let mut cycle_first = BTreeSet::new();
+    for n in 0..400 {
+        let id = format!("y{n}");
+        for (changed, above_a) in [(true, "p"), (false, "p"), (true, "c"), (false, "c")] {
+            let trees = discarded_cycle_holding_a_file(&id, changed, above_a, true);
+            cycle_first.insert(trees.local_children_placed_or_parked(&a).next() == Some(&b));
+            let left = trees.left_as_discarded(&a);
+            assert_eq!(left, !changed, "{id} {changed} {above_a}");
+            let held = discarded_cycle_holding_a_file(&id, changed, above_a, false);
+            assert_eq!(held.reclaimed(&a), changed, "{id} {changed} {above_a}");
+        }
+    }
+    assert_eq!(cycle_first.len(), 2);
+}

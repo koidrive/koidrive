@@ -2643,10 +2643,18 @@ impl Trees {
     }
 
     fn discard_state(&self, id: &NodeId) -> Option<Discard> {
+        self.discard_state_within(id, &mut BTreeSet::new())
+    }
+
+    fn discard_state_within<'a>(
+        &'a self,
+        id: &'a NodeId,
+        judged: &mut BTreeSet<&'a NodeId>,
+    ) -> Option<Discard> {
         let (Some(local), Some(discarded)) = (self.l.get(id), self.discarded.get(id)) else {
             return None;
         };
-        if self.r.get(id).is_some() {
+        if self.r.get(id).is_some() || !judged.insert(id) {
             return None;
         }
         let mut changed = !local.shape.same(discarded);
@@ -2655,7 +2663,7 @@ impl Trees {
             if changed {
                 break;
             }
-            let state = self.discard_state(child);
+            let state = self.discard_state_within(child, judged);
             let excluded = !self.parked(child)
                 && (state == Some(Discard::Kept)
                     || self.ignored_in_place(child)
@@ -2803,6 +2811,14 @@ impl Trees {
     }
 
     fn left_as_discarded(&self, id: &NodeId) -> bool {
+        self.left_as_discarded_within(id, &mut BTreeSet::from([id]))
+    }
+
+    fn left_as_discarded_within<'a>(
+        &'a self,
+        id: &'a NodeId,
+        judged: &mut BTreeSet<&'a NodeId>,
+    ) -> bool {
         if self.r.get(id).is_none() {
             return true;
         }
@@ -2812,7 +2828,7 @@ impl Trees {
         let mut seen = BTreeSet::new();
         unchanged
             && (self.local_children_placed_or_parked(id)).all(|child| {
-                self.kept_as_discarded_in(child, id)
+                self.kept_as_discarded_in(child, id, judged)
                     || self.held_folder_discarded_in(child, id)
                     || self.held(child)
                     || self.as_the_server_holds(child, &mut seen)
@@ -2858,19 +2874,27 @@ impl Trees {
         false
     }
 
-    fn kept_as_discarded_in(&self, id: &NodeId, folder: &NodeId) -> bool {
+    fn kept_as_discarded_in<'a>(
+        &'a self,
+        id: &'a NodeId,
+        folder: &NodeId,
+        judged: &mut BTreeSet<&'a NodeId>,
+    ) -> bool {
         if !(self.discarded.get(id)).is_some_and(|shape| shape.parent == *folder) {
             return false;
         }
+        if !judged.insert(id) {
+            return true;
+        }
         if self.r.get(id).is_some() {
-            return self.left_as_discarded(id);
+            return self.left_as_discarded_within(id, judged);
         }
         let unchanged = (self.l.get(id)).is_some_and(|local| {
             (self.discarded.get(id)).is_some_and(|shape| local.shape.same(shape))
         });
         unchanged
             && (self.local_children_placed_or_parked(id))
-                .all(|child| self.kept_as_discarded_in(child, id))
+                .all(|child| self.kept_as_discarded_in(child, id, judged))
     }
 
     fn as_the_server_holds<'a>(&'a self, id: &'a NodeId, seen: &mut BTreeSet<&'a NodeId>) -> bool {
@@ -3125,7 +3149,7 @@ impl Trees {
         for folder in shown.keys() {
             for child in self.local_children(folder) {
                 if !shown.contains_key(child) && left_out(child) {
-                    self.server_copy(child, shown, landing, &mut kept);
+                    self.server_copy(child, shown, landing, &mut kept, &mut BTreeSet::new());
                 }
             }
         }
@@ -3137,7 +3161,7 @@ impl Trees {
         {
             for child in self.local_children(folder) {
                 if !shown.contains_key(child) && !left_out(child) {
-                    self.server_copy(child, shown, landing, &mut kept);
+                    self.server_copy(child, shown, landing, &mut kept, &mut BTreeSet::new());
                 }
             }
         }
@@ -3179,9 +3203,10 @@ impl Trees {
                 .map(|(id, shape)| (id.clone(), frozen(shape, true)))
                 .collect();
         let mut at: Vec<&NodeId> = shown.keys().collect();
+        let mut walked = BTreeSet::new();
         while let Some(id) = at.pop() {
             for child in self.local_children_placed_or_parked(id) {
-                if !shown.contains_key(child) {
+                if !shown.contains_key(child) && walked.insert(child) {
                     let shape = &self.l.get(child).expect("a local child is in L").shape;
                     below
                         .entry(child.clone())
@@ -3203,9 +3228,10 @@ impl Trees {
         let mut kept = Vec::new();
         let mut at: Vec<&NodeId> = shown.keys().collect();
         let mut seen = BTreeSet::new();
+        let mut walked = BTreeSet::new();
         while let Some(parent) = at.pop() {
             for id in self.local_children_placed_or_parked(parent) {
-                if shown.contains_key(id) {
+                if shown.contains_key(id) || !walked.insert(id) {
                     continue;
                 }
                 let local = &self.l.get(id).expect("a local child is in L").shape;
@@ -3215,7 +3241,7 @@ impl Trees {
                         return None;
                     }
                     if frozen.get(parent).is_some_and(|parent| parent.taken)
-                        && !self.server_copy(id, shown, landing, &mut kept)
+                        && !self.server_copy(id, shown, landing, &mut kept, &mut BTreeSet::new())
                     {
                         return None;
                     }
@@ -3296,16 +3322,20 @@ impl Trees {
         true
     }
 
-    fn server_copy(
-        &self,
-        id: &NodeId,
+    fn server_copy<'a>(
+        &'a self,
+        id: &'a NodeId,
         shown: &BTreeMap<NodeId, Shape>,
         landing: &Landing,
         kept: &mut Vec<(NodeId, Shape)>,
+        walked: &mut BTreeSet<&'a NodeId>,
     ) -> bool {
         let Some(local) = self.l.get(id) else {
             return false;
         };
+        if !walked.insert(id) {
+            return true;
+        }
         let Some(remote) = (landing.contents.get(id).map(Option::as_ref))
             .or_else(|| Some(self.r.get(id)?.shape.content.as_ref()))
             .or_else(|| {
@@ -3330,9 +3360,9 @@ impl Trees {
                 self.keeps_the_synced_children(id, &landing.deleted, &mut BTreeSet::new())
                     && children.into_iter().all(|child| {
                         shown.contains_key(child)
-                            || self.kept_as_discarded_in(child, id)
+                            || self.kept_as_discarded_in(child, id, &mut BTreeSet::new())
                             || self.held_folder_discarded_in(child, id)
-                            || self.server_copy(child, shown, landing, kept)
+                            || self.server_copy(child, shown, landing, kept, walked)
                     })
             }
         };
@@ -4549,7 +4579,7 @@ impl Trees {
                         let folder = &local.shape.parent;
                         self.r.get(folder).is_none()
                             && self.discarded.contains_key(folder)
-                            && self.kept_as_discarded_in(id, folder)
+                            && self.kept_as_discarded_in(id, folder, &mut BTreeSet::new())
                     })
             })
     }
@@ -4576,7 +4606,8 @@ impl Trees {
             .and_then(|folder| self.l.get(folder))
             .map(|node| node.shape.parent.clone())
             .filter(|parent| {
-                self.kept_folder(parent)
+                !chain.contains(parent)
+                    && self.kept_folder(parent)
                     && (self.local_children_placed_or_parked(parent)).all(|child| {
                         chain.last() == Some(child) || self.unedited_kept_rules_file(child)
                     })
@@ -4656,7 +4687,11 @@ impl Trees {
 
     pub(crate) fn take_kept_entries(&mut self, folder: &NodeId) {
         let mut folders = vec![folder.to_owned()];
+        let mut walked = BTreeSet::new();
         while let Some(folder) = folders.pop() {
+            if !walked.insert(folder.clone()) {
+                continue;
+            }
             folders.extend(
                 (self.local_children_placed_or_parked(&folder))
                     .filter(|child| {
