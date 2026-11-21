@@ -598,7 +598,6 @@ struct Device {
     removed_from: BTreeMap<NodeId, NodeId>,
     placed: BTreeMap<NodeId, Vec<Placement>>,
     placements: u64,
-    taken_since: BTreeMap<NodeId, u64>,
     on_server_when_taken_along: BTreeMap<NodeId, BTreeMap<NodeId, NodeId>>,
     kept_back: BTreeSet<NodeId>,
     relocated: BTreeMap<NodeId, Relocation>,
@@ -641,19 +640,8 @@ impl Device {
         folders: impl IntoIterator<Item = &'a NodeId>,
         on_server: &BTreeMap<NodeId, NodeId>,
     ) {
-        let since = self.placements;
-        self.note_taken_along_since(folders, on_server, since);
-    }
-
-    fn note_taken_along_since<'a>(
-        &mut self,
-        folders: impl IntoIterator<Item = &'a NodeId>,
-        on_server: &BTreeMap<NodeId, NodeId>,
-        since: u64,
-    ) {
         for folder in folders {
             (self.on_server_when_taken_along).insert(folder.clone(), on_server.clone());
-            self.taken_since.insert(folder.clone(), since);
         }
     }
 
@@ -677,7 +665,7 @@ impl Device {
                 None => on_server.remove(id),
             };
         }
-        self.note_taken_along_since(folders, &on_server, *answered_at);
+        self.note_taken_along_from(folders, &on_server);
     }
 
     fn new(trees: Trees) -> Self {
@@ -693,7 +681,6 @@ impl Device {
             removed_from: BTreeMap::new(),
             placed: BTreeMap::new(),
             placements: 0,
-            taken_since: BTreeMap::new(),
             on_server_when_taken_along: BTreeMap::new(),
             kept_back: BTreeSet::new(),
             relocated: BTreeMap::new(),
@@ -2111,10 +2098,7 @@ fn acted_below(
             .or_else(|| trees.remote().live(at).map(|remote| remote.parent.clone()))
     };
     let arrived = |entry: &NodeId| {
-        let Some(since) = device.taken_since.get(id) else {
-            return false;
-        };
-        if !reaches(entry, &agreed) {
+        if !device.on_server_when_taken_along.contains_key(id) {
             return false;
         }
         let history = |at: &NodeId| device.placed.get(at).map_or(&[][..], Vec::as_slice);
@@ -2122,17 +2106,20 @@ fn acted_below(
         let (mut at, mut parent) = (entry.to_owned(), agreed(entry));
         let mut placements = history(&at);
         while at != *id {
-            match placements
-                .split_last()
-                .filter(|(last, _)| last.order > *since)
-            {
+            match placements.split_last() {
                 Some((last, earlier))
                     if !last.by_other && last.from.contains(id) && last.to.contains(id) =>
                 {
                     parent = last.from.first().cloned();
                     placements = earlier;
                 }
-                Some((last, _)) if !last.by_other && !last.to.contains(id) => placements = &[],
+                Some((last, earlier)) if !last.to.contains(id) => {
+                    placements = if parent == last.to.first().cloned() {
+                        &[]
+                    } else {
+                        earlier
+                    };
+                }
                 Some((last, _)) => return last.by_other,
                 None => {
                     let Some(next) = parent.filter(|next| seen.insert(next.clone())) else {

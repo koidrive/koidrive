@@ -2078,3 +2078,25 @@ fn renaming_an_entry_another_device_put_in_a_folder_before_this_device_brought_t
     renames_after_sync(&mut device, "g", "x");
     assert!(acted_below(&device, &s, &kept, &discarded));
 }
+
+#[test]
+fn renaming_an_entry_another_device_moved_into_a_folder_this_device_then_brought_in_changes_the_folder()
+ {
+    for in_window in [false, true] {
+        let (mut device, kept, discarded) = a_file_in_a_taken_along_server_folder();
+        let s: NodeId = "s".into();
+        place_dir(&mut device, "y", Some(("s", "y")), Some(("root", "y")));
+        place_dir(&mut device, "m", Some(("y", "m")), Some(("root", "m")));
+        let answered = (device.on_server(), device.placements);
+        if !in_window {
+            device.note_taken_along([&s]);
+        }
+        device.receive(&[a_dir_record("m", "y", 2)], false);
+        device.receive(&[a_dir_record("y", "s", 2)], true);
+        if in_window {
+            device.note_taken_along_at_answer([&s], &answered);
+        }
+        renames_after_sync(&mut device, "m", "y");
+        assert!(acted_below(&device, &s, &kept, &discarded), "{in_window}");
+    }
+}
