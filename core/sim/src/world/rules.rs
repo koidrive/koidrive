@@ -435,20 +435,22 @@ impl World {
             }
         }
         let keys = |path: &[String]| path.iter().map(|name| name_key(name)).collect::<Vec<_>>();
-        let holders: BTreeMap<Vec<String>, &NodeId> = (held.iter())
-            .filter(|(ino, id)| out.inos.contains(ino) || out.nodes.contains(*id))
-            .flat_map(|(ino, id)| {
-                [disk.path(*ino), path_in(local, &root, id)]
-                    .into_iter()
-                    .flatten()
-                    .map(move |path| (keys(&path), *id))
-            })
-            .collect();
+        let mut holders: BTreeMap<Vec<String>, BTreeSet<&NodeId>> = BTreeMap::new();
+        for (ino, id) in
+            (held.iter()).filter(|(ino, id)| out.inos.contains(ino) || out.nodes.contains(*id))
+        {
+            for path in [disk.path(*ino), path_in(local, &root, id)]
+                .into_iter()
+                .flatten()
+            {
+                holders.entry(keys(&path)).or_default().insert(*id);
+            }
+        }
         out.waiting = (live.keys())
             .filter(|id| quiet && !out.nodes.contains(*id))
             .filter(|id| {
                 (server_path(id).and_then(|path| holders.get(&keys(&path))))
-                    .is_some_and(|holder| holder != id)
+                    .is_some_and(|holders| holders.iter().any(|holder| holder != id))
             })
             .cloned()
             .collect();

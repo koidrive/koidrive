@@ -543,6 +543,12 @@
             "null"
           ]
         },
+        "merged_folders": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "path": {
           "type": "string"
         },

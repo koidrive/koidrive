@@ -47,8 +47,8 @@ use koidrive_chunk::ChunkerConfig;
 use koidrive_engine::classify::Trees;
 use koidrive_engine::effects::{
     Base as EngineBase, BatchLimit, Dir as EngineDir, Displaced as EngineDisplaced,
-    Effect as EngineEffect, EffectRecord, Effects, Location as EngineLocation, location_in,
-    location_of,
+    Effect as EngineEffect, EffectRecord, Effects, Location as EngineLocation, MergeResidue,
+    location_in, location_of,
 };
 use koidrive_engine::first_link::{self, Marks};
 use koidrive_engine::ignore::is_rules_file;
@@ -391,6 +391,7 @@ pub(crate) struct Disk {
     current: Option<String>,
     next: Option<NextToken>,
     unwritable: Option<String>,
+    merge_residue: MergeResidue,
     #[cfg(test)]
     flush_fails: bool,
 }
@@ -536,6 +537,7 @@ impl Disk {
             current: None,
             next: None,
             unwritable: None,
+            merge_residue: MergeResidue::default(),
             #[cfg(test)]
             flush_fails: false,
         };
@@ -647,17 +649,19 @@ impl Disk {
     ) -> Result<Option<Pending>, Stop> {
         let now_ms = crate::clock::unix_ms();
         let (space, batch) = (&self.space, self.batch);
+        self.merge_residue = observe_merge_residue(space, engine)?;
         let hook = &mut self.hook;
         let pending = store.transaction(|tx| -> Result<_, Stop> {
             let blocked = engine.effects.blocked().len();
             let listed = list_kept_folders(space, &mut engine.trees)?;
             let records = (engine.effects)
-                .plan(
+                .plan_on_disk(
                     &engine.trees,
                     engine.commits.in_flight(),
                     &mut engine.ids,
                     now_ms,
                     batch,
+                    &self.merge_residue,
                 )
                 .to_vec();
             if records.is_empty() {
@@ -723,6 +727,7 @@ impl Disk {
         if !self.space.held()? {
             return Err(Stop::Withdrawn(self.path.clone()));
         }
+        self.merge_residue = observe_merge_residue(&self.space, engine)?;
         let staged: Vec<_> = (effects.iter())
             .filter_map(|(planned, _)| match planned.effect.action {
                 Action::WriteFile {
@@ -755,6 +760,7 @@ impl Disk {
         let mut applied = Vec::with_capacity(effects.len());
         for (planned, unfetchable) in &mut effects {
             let applies = unfetchable.is_none()
+                && self.merge_residue.permits(&engine.trees, &planned.record)
                 && (planned.record).applies(&engine.trees, engine.commits.in_flight());
             match applies {
                 true => section.apply(&planned.effect, &mut planned.contents, now)?,
@@ -1231,6 +1237,10 @@ impl Disk {
 
     pub fn unwritable(&self) -> Option<&str> {
         self.unwritable.as_deref()
+    }
+
+    pub fn merge_residue(&self) -> &MergeResidue {
+        &self.merge_residue
     }
 
     #[cfg(test)]
@@ -2140,6 +2150,37 @@ fn list_kept_folders(space: &Space, trees: &mut Trees) -> Result<bool, Stop> {
         trees.list_kept_folder(folder, entries);
     }
     Ok(!folders.is_empty())
+}
+
+fn observe_merge_residue(space: &Space, engine: &Engine) -> Result<MergeResidue, Stop> {
+    let trees = &engine.trees;
+    MergeResidue::observe(trees, engine.commits.aliases(), |source, _| {
+        let Some((base, dirs)) = folder_at(trees, source) else {
+            return Ok(false);
+        };
+        let entries = match space.entries(&base, &dirs) {
+            Ok(entries) => entries,
+            Err(
+                Unresolved::Missing(_) | Unresolved::NotAFolder(_) | Unresolved::Replaced { .. },
+            ) => {
+                return Ok(false);
+            }
+            Err(unresolved) => return Err(Stop::Io(unresolved.into())),
+        };
+        let entries = entries
+            .iter()
+            .filter(|(name, kind)| !platform_file(name, *kind))
+            .map(|(name, kind)| {
+                (
+                    name.to_str(),
+                    kind.map(|kind| match kind {
+                        EntryKind::File => Kind::File,
+                        EntryKind::Dir => Kind::Dir,
+                    }),
+                )
+            });
+        Ok(MergeResidue::holds_left_out(trees, source, entries))
+    })
 }
 
 fn emptied_kept_folders(

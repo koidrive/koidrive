@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use koidrive_engine::effects::Effect;
+use koidrive_engine::effects::{Effect, Stuck};
 
 use super::*;
 
@@ -155,35 +155,36 @@ fn a_file_at_a_name_another_spelling_of_which_its_rules_came_to_exclude_waits_fo
 }
 
 #[test]
-fn a_folder_the_server_refuses_waits_to_be_removed_around_the_files_its_rules_exclude() {
-    let _red = expect_red(
-        Check::RemoveLeftOut,
-        "device 0 is quiet, but it waits to remove the folders of [\"01a1c2c0-39a0-7cdc-8389-c4663807ce68\"], which hold entries its rules leave out",
-    );
-    let phases = [
-        vec![(0, folder("a"))],
-        vec![
-            (0, folder("c.txt")),
-            (0, user(1, 0, 2, "c.txt")),
-            (0, rename(1, 0, "A")),
-        ],
-    ];
-    removes_only_the_refused_folder(
-        &converge_excluding(&[vec!["*.txt"], vec![]], &phases).unwrap(),
-        1,
-    );
+fn a_folder_the_server_refuses_stays_in_place_and_is_reported() {
+    let mut world = refused_beside_a(None);
+    let source = reported_merge(&world);
+    let kept = content_on(&world, 0, "c.txt");
+    let before = world.folder_effects[0].len();
+    world
+        .phase(2, &[(0, Step::Crash), (0, Step::Connect)])
+        .unwrap();
+    assert_eq!(reported_merge(&world), source);
+    assert_eq!(content_on(&world, 0, "c.txt"), kept);
+    assert_eq!(world.folder_effects[0].len(), before);
 }
 
-fn removes_only_the_refused_folder(world: &World, attempts: usize) {
-    let refused = NodeId::from("01a1c2c0-39a0-7cdc-8389-c4663807ce68");
-    let ran = &world.folder_effects[0];
-    assert!(
-        ran.len() == attempts
-            && ran.iter().all(|record| {
-                record.node == refused && matches!(record.effect, Effect::RemoveDir { .. })
-            }),
-        "{ran:?}"
+fn reported_merge(world: &World) -> NodeId {
+    let source = held_at(world, 0, &["A"]).unwrap();
+    let survivor = NodeId::from("01a1c2c0-39a0-7510-83bc-38d6c6b89fe4");
+    assert_eq!(
+        world.reported_problems(0).get(&source),
+        Some(&Stuck::MergedInto(survivor))
     );
+    ino_at(world, 0, &["A", "c.txt"]);
+    assert!(!world.devices[0].engine.trees.kept_folder(&source));
+    assert!(!world.folder_effects[0].iter().any(|record| {
+        record.node == source
+            && matches!(
+                record.effect,
+                Effect::CreateDir { .. } | Effect::RemoveDir { .. }
+            )
+    }));
+    source
 }
 
 #[test]
@@ -348,35 +349,624 @@ fn a_folder_kept_for_excluded_entries_goes_at_the_restart_after_they_go() {
     assert!(!kept);
 }
 
-fn refused_beside_a(last: (usize, Step)) -> Result<World, Failure> {
-    let _red = expect_red(
-        Check::RemoveLeftOut,
-        "device 0 is quiet, but it waits to remove the folders of [\"01a1c2c0-39a0-7cdc-8389-c4663807ce68\"], which hold entries its rules leave out",
-    );
-    let phases = [
+fn refused_beside_a(last: Option<(usize, Step)>) -> World {
+    let mut phases = vec![
         vec![(0, folder("a"))],
         vec![
             (0, folder("c.txt")),
             (0, user(1, 0, 2, "c.txt")),
             (0, rename(1, 0, "A")),
         ],
-        vec![last],
     ];
-    converge_excluding(&[vec!["*.txt"], vec![]], &phases)
+    if let Some(last) = last {
+        phases.push(vec![last]);
+    }
+    converge_excluding(&[vec!["*.txt"], vec![]], &phases).unwrap()
+}
+
+fn freeing_the_name_key_uploads_a_reported_merge_folder_as_new(
+    free: impl Fn(&World) -> Vec<(usize, Step)>,
+) -> World {
+    let mut world = refused_beside_a(None);
+    let source = reported_merge(&world);
+    let schedule = free(&world);
+    world.phase(2, &schedule).unwrap();
+    assert_eq!(live_node_at(&world, &["a"]), None);
+    assert!(world.reported_problems(0).is_empty());
+    let created: Vec<String> = (world.space().nodes().into_iter())
+        .filter(|node| node.name == "A")
+        .map(|node| node.node_id)
+        .collect();
+    assert_eq!(created.len(), 1);
+    assert_ne!(created[0], source.to_string());
+    assert_eq!(
+        held_at(&world, 0, &["A"]),
+        Some(NodeId::from(created[0].clone()))
+    );
+    assert!(
+        world
+            .space()
+            .nodes()
+            .iter()
+            .all(|node| node.name != "c.txt")
+    );
+    ino_at(&world, 0, &["A", "c.txt"]);
+    let empty = ino_at(&world, 1, &["A"]);
+    assert_eq!(
+        world.devices[1].disk.child(&Place::In(empty), "c.txt"),
+        None
+    );
+    world.phase(3, &[]).unwrap();
+    assert_eq!(live_node_at(&world, &["A"]), Some(created[0].clone()));
+    assert_eq!(
+        (world.space().nodes().iter())
+            .filter(|node| node.name == "A")
+            .count(),
+        1
+    );
+    let uploaded = NodeId::from(created[0].clone());
+    assert!(!world.folder_effects[0].iter().any(|record| {
+        record.node == uploaded
+            && matches!(
+                record.effect,
+                Effect::CreateDir { .. } | Effect::RemoveDir { .. }
+            )
+    }));
+    world
+}
+
+fn on_the_live_folder(
+    device: usize,
+    step: fn(usize) -> Step,
+) -> impl Fn(&World) -> Vec<(usize, Step)> {
+    move |world| vec![(device, step(target(world, device, &["a"])))]
 }
 
 #[test]
-fn a_folder_deleted_beside_a_refused_folder_of_its_name_in_another_case_is_deleted_everywhere() {
-    removes_only_the_refused_folder(&refused_beside_a((0, delete(0))).unwrap(), 2);
+fn a_folder_deleted_beside_a_reported_merge_folder_frees_it_to_upload_as_a_new_folder() {
+    freeing_the_name_key_uploads_a_reported_merge_folder_as_new(on_the_live_folder(0, delete));
+}
+
+#[test]
+fn a_folder_another_device_deletes_beside_a_reported_merge_folder_frees_it_to_upload_as_a_new_folder()
+ {
+    freeing_the_name_key_uploads_a_reported_merge_folder_as_new(on_the_live_folder(1, delete));
+}
+
+fn moved_away_keeping_its_id(free: impl Fn(&World) -> Vec<(usize, Step)>, to: &[&str]) {
+    let original = std::cell::RefCell::new(None);
+    let world = freeing_the_name_key_uploads_a_reported_merge_folder_as_new(|world| {
+        *original.borrow_mut() = live_node_at(world, &["a"]);
+        free(world)
+    });
+    let original = original.into_inner();
+    assert!(original.is_some());
+    assert_eq!(live_node_at(&world, to), original);
+}
+
+#[test]
+fn a_folder_renamed_here_away_from_a_reported_merge_folder_frees_it_to_upload_as_a_new_folder() {
+    moved_away_keeping_its_id(
+        |world| vec![(0, rename(target(world, 0, &["a"]), 0, "b"))],
+        &["b"],
+    );
+}
+
+#[test]
+fn a_folder_another_device_renames_away_from_a_reported_merge_folder_frees_it_to_upload_as_a_new_folder()
+ {
+    moved_away_keeping_its_id(on_the_live_folder(1, |live| rename(live, 0, "b")), &["b"]);
+}
+
+#[test]
+fn a_folder_another_device_moves_away_from_a_reported_merge_folder_frees_it_to_upload_as_a_new_folder()
+ {
+    moved_away_keeping_its_id(
+        |world| {
+            let live = target(world, 1, &["a"]);
+            vec![(1, folder("b")), (1, rename(live, 2, "a"))]
+        },
+        &["b", "a"],
+    );
+}
+
+#[test]
+fn a_file_made_offline_in_a_reported_merge_folder_uploads_in_it_when_the_live_folder_was_renamed_meanwhile()
+ {
+    let mut world = refused_beside_a(None);
+    reported_merge(&world);
+    let live = target(&world, 1, &["a"]);
+    let merged = folder_number(&world, 0, &["A"]);
+    let mut steps = vec![(0, Step::Drop), (1, rename(live, 0, "b"))];
+    steps.extend(commit(1));
+    steps.extend([(0, user(1, 0, merged, "ss")), (0, Step::Connect)]);
+    world.phase(2, &steps).unwrap();
+    assert!(world.reported_problems(0).is_empty());
+    assert!(live_node_at(&world, &["A", "ss"]).is_some());
+    assert_eq!(live_node_at(&world, &["b", "ss"]), None);
+    assert_eq!(live_node_at(&world, &["A", "c.txt"]), None);
+}
+
+fn no_live_file_named(world: &World, name: &str) {
+    let live: Vec<_> = (world.space().nodes().into_iter())
+        .filter(|node| node.status == NodeStatus::Live as i32 && node.name == name)
+        .collect();
+    assert!(live.is_empty(), "{live:?}");
+}
+
+#[test]
+fn a_live_file_at_the_name_key_keeps_a_reported_merge_folder_until_the_file_goes() {
+    let _red = expect_red(
+        Check::NameLeftOut,
+        "device 0 is quiet, but nodes [\"01a1c2c0-39a0-796a-8df8-fb6da7904e2f\"] wait for names that entries its rules leave out hold",
+    );
+    let mut world = refused_beside_a(None);
+    let source = reported_merge(&world);
+    let live = target(&world, 1, &["a"]);
+    let mut steps = vec![(0, Step::Drop), (1, rename(live, 0, "b")), (1, file("a"))];
+    steps.extend(commit(1));
+    steps.push((0, Step::Connect));
+    world.phase(2, &steps).unwrap();
+    let file = NodeId::from(&live_node_at(&world, &["a"]).unwrap());
+    assert_eq!(
+        world.reported_problems(0).get(&source),
+        Some(&Stuck::MergedInto(file))
+    );
+    assert_eq!(live_node_at(&world, &["A"]), None);
+    ino_at(&world, 0, &["A", "c.txt"]);
+    let file = target(&world, 1, &["a"]);
+    world.phase(3, &[(1, delete(file))]).unwrap();
+    assert!(world.reported_problems(0).is_empty());
+    assert!(live_node_at(&world, &["A"]).is_some());
+    ino_at(&world, 1, &["A"]);
+    no_live_file_named(&world, "c.txt");
+}
+
+#[test]
+fn a_live_file_at_the_name_key_keeps_out_what_an_anchored_rule_leaves_out_in_a_reported_merge_folder()
+ {
+    let _red = expect_red(
+        Check::NameLeftOut,
+        "device 0 is quiet, but nodes [\"01a1c2c0-39a0-796a-8df8-fb6da7904e2f\"] wait for names that entries its rules leave out hold",
+    );
+    let mut world = refused_beside_a(None);
+    world.rule(0, &Ruling::Exclude(vec!["/A/c.txt"])).unwrap();
+    world.phase(2, &[]).unwrap();
+    let source = reported_merge(&world);
+    let live = target(&world, 1, &["a"]);
+    let mut steps = vec![(0, Step::Drop), (1, rename(live, 0, "b")), (1, file("a"))];
+    steps.extend(commit(1));
+    steps.push((0, Step::Connect));
+    world.phase(3, &steps).unwrap();
+    let file = NodeId::from(&live_node_at(&world, &["a"]).unwrap());
+    assert_eq!(
+        world.reported_problems(0).get(&source),
+        Some(&Stuck::MergedInto(file))
+    );
+    no_live_file_named(&world, "c.txt");
+    assert!((world.space().nodes().iter()).all(|node| !node.name.starts_with("A (conflict from")));
+}
+
+fn merge_folders_beside_a_live_folder_made_again(
+    live: &str,
+    merged: [&str; 2],
+    made: &str,
+) -> (World, [NodeId; 2], NodeId) {
+    let phases = [
+        vec![(0, folder(live))],
+        vec![
+            (0, folder("c.txt")),
+            (0, user(1, 0, 2, "c.txt")),
+            (0, rename(1, 0, merged[0])),
+            (0, folder("b")),
+            (0, user(1, 0, 3, "c.txt")),
+            (0, rename(3, 0, merged[1])),
+        ],
+    ];
+    let mut world = converge_excluding(&[vec!["*.txt"], vec![]], &phases).unwrap();
+    let ids = merged.map(|name| held_at(&world, 0, &[name]).unwrap());
+    let removed = target(&world, 1, &[live]);
+    world
+        .phase(2, &[(1, delete(removed)), (1, folder(made))])
+        .unwrap();
+    let live = NodeId::from(&live_node_at(&world, &[made]).unwrap());
+    (world, ids, live)
+}
+
+fn sends_nothing_more(world: &mut World, phase: usize) {
+    let server = |world: &World| {
+        (world.space().nodes().into_iter())
+            .map(|node| {
+                (
+                    node.node_id,
+                    node.parent_id,
+                    node.name,
+                    node.status,
+                    node.meta_rev,
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    let (before, seq) = (server(world), world.space().head_seq());
+    world
+        .phase(phase, &[(0, SCAN), (0, COMMIT), (0, COMMIT)])
+        .unwrap();
+    assert_eq!(server(world), before);
+    assert_eq!(world.space().head_seq(), seq);
+}
+
+fn left_out_files(world: &World) -> Vec<Vec<String>> {
+    let disk = &world.devices[0].disk;
+    let mut paths: Vec<Vec<String>> = (disk.entries().iter())
+        .filter(|(_, entry)| entry.name == "c.txt")
+        .map(|(ino, _)| disk.path(*ino).expect("c.txt is not parked"))
+        .collect();
+    paths.sort();
+    paths
+}
+
+fn one_takes_over(world: &mut World, merged: &[NodeId; 2], live: &NodeId, made: &str) -> usize {
+    let problems = world.reported_problems(0);
+    let reported: Vec<usize> = (0..2)
+        .filter(|&i| problems.get(&merged[i]) == Some(&Stuck::MergedInto(live.clone())))
+        .collect();
+    let [loser] = reported[..] else {
+        panic!("{problems:?}");
+    };
+    assert_eq!(problems.len(), 1, "{problems:?}");
+    assert_eq!(held_at(world, 0, &[made]).as_ref(), Some(live));
+    assert_eq!(left_out_files(world).len(), 2);
+    sends_nothing_more(world, 3);
+    1 - loser
+}
+
+fn made_again_around_the_commit_build(
+    live: &str,
+    merged: &[&str],
+    settle_first: bool,
+) -> (World, Vec<NodeId>, NodeId) {
+    let mut made = vec![
+        (0, folder("c.txt")),
+        (0, user(1, 0, 2, "c.txt")),
+        (0, rename(1, 0, merged[0])),
+    ];
+    if let [_, second] = merged {
+        made.extend([
+            (0, folder("b")),
+            (0, user(1, 0, 3, "c.txt")),
+            (0, rename(3, 0, second)),
+        ]);
+    }
+    let phases = [vec![(0, folder(live))], made];
+    let mut world = converge_excluding(&[vec!["*.txt"], vec![]], &phases).unwrap();
+    let ids = (merged.iter())
+        .map(|name| held_at(&world, 0, &[name]).unwrap())
+        .collect();
+    let removed = target(&world, 1, &[live]);
+    let mut steps = vec![(1, delete(removed)), (1, folder(live))];
+    steps.extend(commit(1));
+    steps.extend([(0, DELIVER); 8]);
+    if settle_first {
+        steps.push((0, COMMIT));
+    }
+    steps.extend([(0, EFFECT); 4]);
+    world.phase(2, &steps).unwrap();
+    let live = NodeId::from(&live_node_at(&world, &[live]).unwrap());
+    (world, ids, live)
+}
+
+#[test]
+fn a_live_folder_made_again_takes_a_merged_folder_over_whether_effects_run_before_or_after_the_commit_build()
+ {
+    for settle_first in [false, true] {
+        let (mut world, _, live) = made_again_around_the_commit_build("a", &["A"], settle_first);
+        assert!(world.reported_problems(0).is_empty());
+        assert_eq!(held_at(&world, 0, &["a"]), Some(live));
+        assert!(world.devices[0].disk.child(&Place::Root, "A").is_none());
+        ino_at(&world, 0, &["a", "c.txt"]);
+        sends_nothing_more(&mut world, 3);
+        let (mut world, ids, live) =
+            made_again_around_the_commit_build("\u{e9}", &["\u{c9}", "E\u{301}"], settle_first);
+        one_takes_over(
+            &mut world,
+            &[ids[0].clone(), ids[1].clone()],
+            &live,
+            "\u{e9}",
+        );
+    }
+}
+
+#[test]
+fn of_two_merge_folders_of_one_key_the_one_named_like_the_live_folder_made_again_takes_it_over() {
+    for merged in [["\u{c9}", "E\u{301}"], ["E\u{301}", "\u{c9}"]] {
+        let (mut world, ids, live) =
+            merge_folders_beside_a_live_folder_made_again("\u{e9}", merged, "\u{c9}");
+        let winner = one_takes_over(&mut world, &ids, &live, "\u{c9}");
+        assert_eq!(merged[winner], "\u{c9}");
+    }
+}
+
+#[test]
+fn of_two_merge_folders_of_one_key_named_unlike_the_live_folder_made_again_the_lowest_id_takes_it_over()
+ {
+    for merged in [["\u{c9}", "E\u{301}"], ["E\u{301}", "\u{c9}"]] {
+        let (mut world, ids, live) =
+            merge_folders_beside_a_live_folder_made_again("\u{e9}", merged, "\u{e9}");
+        let winner = one_takes_over(&mut world, &ids, &live, "\u{e9}");
+        assert_eq!(ids[winner], ids[0].clone().min(ids[1].clone()));
+        assert_eq!(
+            left_out_files(&world),
+            [[merged[1 - winner], "c.txt"], ["\u{e9}", "c.txt"]]
+        );
+    }
+}
+
+#[test]
+fn a_merge_folder_left_beside_one_that_took_the_live_folder_over_uploads_once_moved_away() {
+    let (mut world, ids, live) =
+        merge_folders_beside_a_live_folder_made_again("\u{e9}", ["\u{c9}", "E\u{301}"], "\u{e9}");
+    let loser = 1 - one_takes_over(&mut world, &ids, &live, "\u{e9}");
+    let name = ["\u{c9}", "E\u{301}"][loser];
+    let moved = target(&world, 0, &[name]);
+    world.phase(4, &[(0, rename(moved, 0, "b"))]).unwrap();
+    assert!(world.reported_problems(0).is_empty());
+    assert_eq!(
+        left_out_files(&world),
+        [["b", "c.txt"], ["\u{e9}", "c.txt"]]
+    );
+    assert!(live_node_at(&world, &["b"]).is_some());
+    no_live_file_named(&world, "c.txt");
+}
+
+#[test]
+fn a_merge_folder_left_beside_one_that_took_the_live_folder_over_goes_once_deleted() {
+    let (mut world, ids, live) =
+        merge_folders_beside_a_live_folder_made_again("\u{e9}", ["\u{c9}", "E\u{301}"], "\u{e9}");
+    let loser = 1 - one_takes_over(&mut world, &ids, &live, "\u{e9}");
+    let name = ["\u{c9}", "E\u{301}"][loser];
+    let removed = target(&world, 0, &[name]);
+    world.phase(4, &[(0, delete(removed))]).unwrap();
+    assert!(world.reported_problems(0).is_empty());
+    assert_eq!(left_out_files(&world), [["\u{e9}", "c.txt"]]);
+    no_live_file_named(&world, "c.txt");
+}
+
+#[test]
+fn a_merge_folder_spelled_like_the_live_folder_made_again_in_another_form_takes_it_over_without_a_rename()
+ {
+    for merged in [["\u{e9}", "E\u{301}"], ["E\u{301}", "\u{e9}"]] {
+        let (mut world, ids, live) =
+            merge_folders_beside_a_live_folder_made_again("\u{c9}", merged, "\u{c9}");
+        let loser = merged.iter().position(|name| *name == "\u{e9}").unwrap();
+        assert_eq!(
+            world.reported_problems(0),
+            [(ids[loser].clone(), Stuck::MergedInto(live.clone()))].into()
+        );
+        assert_eq!(held_at(&world, 0, &["E\u{301}"]), Some(live));
+        assert_eq!(
+            left_out_files(&world),
+            [["E\u{301}", "c.txt"], ["\u{e9}", "c.txt"]]
+        );
+        sends_nothing_more(&mut world, 3);
+    }
+}
+
+#[test]
+#[ignore = "a file that claims the name after a freed merge folder's create is built still gets the folder conflict-renamed, and its excluded child is published (GUN-1431)"]
+fn a_file_made_at_the_name_after_a_freed_merge_folders_create_is_built_leaves_its_left_out_file_unsent()
+ {
+    let mut world = refused_beside_a(None);
+    world.rule(0, &Ruling::Exclude(vec!["/A/c.txt"])).unwrap();
+    world.phase(2, &[]).unwrap();
+    let source = reported_merge(&world);
+    let survivor = target(&world, 1, &["a"]);
+    world.run(3, &[(1, rename(survivor, 0, "b"))]).unwrap();
+    world.run(3, &commit(1)).unwrap();
+    assert!(live_node_at(&world, &["a"]).is_none());
+    world
+        .run(
+            3,
+            &[
+                (0, DELIVER),
+                (0, DELIVER),
+                (0, EFFECT),
+                (0, EFFECT),
+                (0, COMMIT),
+            ],
+        )
+        .unwrap();
+    let flight = world.devices[0]
+        .engine
+        .commits
+        .in_flight()
+        .expect("built the residue create");
+    let ops = &flight.commit.ops;
+    let [op] = ops.as_slice() else {
+        panic!("unexpected ops: {ops:?}");
+    };
+    let Some(koidrive_proto::v1::op::Op::CreateDir(created)) = &op.op else {
+        panic!("{op:?}");
+    };
+    assert_eq!(created.name, "A");
+    assert_ne!(created.node_id, source.to_string());
+    assert!(live_node_at(&world, &["A"]).is_none());
+    world.run(3, &[(1, file("a"))]).unwrap();
+    world.run(3, &commit(1)).unwrap();
+    assert!(live_node_at(&world, &["a"]).is_some());
+    let quiet = world.phase(3, &[(0, COMMIT)]);
+    let nodes = world.space().nodes();
+    let copied = nodes
+        .iter()
+        .find(|node| node.status == NodeStatus::Live as i32 && node.name == "c.txt");
+    let conflict = nodes.iter().find(|node| {
+        node.status == NodeStatus::Live as i32 && node.name.starts_with("A (conflict from")
+    });
+    assert!(
+        copied.is_none(),
+        "excluded copy: {:?}; conflict folder: {:?}; {quiet:?}",
+        copied.map(|n| (&n.name, &n.parent_id)),
+        conflict.map(|n| (&n.name, &n.node_id))
+    );
+    quiet.unwrap();
+}
+
+#[test]
+fn a_kept_folder_takes_over_a_new_live_folder_of_its_name_while_a_merge_folder_beside_it_stays_reported()
+ {
+    let phases = [
+        vec![(0, folder("a"))],
+        vec![
+            (0, user(1, 0, 1, "c.txt")),
+            (0, folder("c.txt")),
+            (0, user(1, 0, 2, "c.txt")),
+            (0, rename(2, 0, "A")),
+        ],
+    ];
+    let mut world = converge_excluding(&[vec!["*.txt"], vec![]], &phases).unwrap();
+    let source = reported_merge(&world);
+    let live = target(&world, 1, &["a"]);
+    world
+        .phase(2, &[(1, delete(live)), (1, folder("a"))])
+        .unwrap();
+    let replacement = NodeId::from(live_node_at(&world, &["a"]).unwrap());
+    assert_eq!(held_at(&world, 0, &["a"]), Some(replacement.clone()));
+    assert_eq!(
+        world.reported_problems(0).get(&source),
+        Some(&Stuck::MergedInto(replacement))
+    );
+    ino_at(&world, 0, &["a", "c.txt"]);
+    ino_at(&world, 0, &["A", "c.txt"]);
+}
+
+#[test]
+fn moving_the_live_folder_into_a_reported_merge_folder_uploads_the_merge_folder_holding_it() {
+    let mut world = refused_beside_a(None);
+    let source = reported_merge(&world);
+    let live = target(&world, 0, &["a"]);
+    let merged = folder_number(&world, 0, &["A"]);
+    world.phase(2, &[(0, rename(live, merged, "a"))]).unwrap();
+    assert!(world.reported_problems(0).is_empty());
+    let uploaded = live_node_at(&world, &["A"]).unwrap();
+    assert_ne!(uploaded, source.to_string());
+    assert!(live_node_at(&world, &["A", "a"]).is_some());
+    ino_at(&world, 0, &["A", "c.txt"]);
+    ino_at(&world, 1, &["A", "a"]);
+}
+
+#[test]
+fn a_live_folder_made_at_the_name_after_the_live_folder_goes_takes_a_reported_merge_folder_over() {
+    let mut world = refused_beside_a(None);
+    reported_merge(&world);
+    let live = target(&world, 1, &["a"]);
+    world
+        .phase(2, &[(1, delete(live)), (1, folder("A"))])
+        .unwrap();
+    assert!(world.reported_problems(0).is_empty());
+    let made = live_node_at(&world, &["A"]).unwrap();
+    assert_eq!(held_at(&world, 0, &["A"]), Some(NodeId::from(made)));
+    assert_eq!(live_node_at(&world, &["a"]), None);
+    ino_at(&world, 0, &["A", "c.txt"]);
+}
+
+#[test]
+fn two_devices_with_the_same_merge_folder_end_with_one_folder_once_the_live_folder_goes() {
+    let phases = [
+        vec![(0, folder("a"))],
+        vec![
+            (0, folder("c.txt")),
+            (0, user(1, 0, 2, "c.txt")),
+            (0, rename(1, 0, "A")),
+            (1, folder("c.txt")),
+            (1, user(1, 0, 2, "c.txt")),
+            (1, rename(1, 0, "A")),
+        ],
+    ];
+    let mut world = converge_excluding(&[vec!["*.txt"], vec!["*.txt"], vec![]], &phases).unwrap();
+    let live = target(&world, 2, &["a"]);
+    world.phase(2, &[(2, delete(live))]).unwrap();
+    let folder = live_node_at(&world, &["A"]).unwrap();
+    for device in 0..2 {
+        assert!(world.reported_problems(device).is_empty());
+        assert_eq!(
+            held_at(&world, device, &["A"]),
+            Some(NodeId::from(folder.clone()))
+        );
+        ino_at(&world, device, &["A", "c.txt"]);
+    }
+    assert_eq!(
+        world
+            .space()
+            .nodes()
+            .iter()
+            .filter(|node| node.name.starts_with('A'))
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn a_nested_merge_folder_uploads_under_its_freed_parent_and_the_deleted_live_folder_stays_deleted()
+{
+    let phases = [
+        vec![(0, folder("a")), (0, user(0, 0, 1, "b"))],
+        vec![
+            (0, folder("c.txt")),
+            (0, user(0, 0, 3, "b")),
+            (0, user(1, 0, 4, "c.txt")),
+            (0, rename(2, 0, "A")),
+        ],
+    ];
+    let mut world = converge_excluding(&[vec!["*.txt"], vec![]], &phases).unwrap();
+    assert_eq!(world.reported_problems(0).len(), 2);
+    let live = target(&world, 1, &["a"]);
+    world.phase(2, &[(1, delete(live))]).unwrap();
+    assert!(world.reported_problems(0).is_empty());
+    assert_eq!(live_node_at(&world, &["a"]), None);
+    assert!(live_node_at(&world, &["A", "b"]).is_some());
+    ino_at(&world, 0, &["A", "b", "c.txt"]);
+    ino_at(&world, 1, &["A", "b"]);
 }
 
 #[test]
 fn a_folder_renamed_elsewhere_to_the_case_of_a_refused_folder_beside_it_is_renamed_here() {
-    let _parked = expect_red(
-        Check::RemoveLeftOut,
-        "device 0 is quiet, but it keeps the folders of [\"01a1c2c0-39a0-7cdc-8389-c4663807ce68\"] parked, which hold entries its rules leave out",
+    let mut world = refused_beside_a(Some((1, rename(0, 0, "A"))));
+    let source = reported_merge(&world);
+    let survivor = held_at(&world, 0, &["a"]).unwrap();
+    assert_eq!(
+        world.reported_problems(0).get(&survivor),
+        Some(&Stuck::Behind(source))
     );
-    removes_only_the_refused_folder(&refused_beside_a((1, rename(0, 0, "A"))).unwrap(), 2);
+    assert_eq!(live_node_at(&world, &["A"]), Some(survivor.to_string()));
+    let remove = target(&world, 0, &["A"]);
+    world.phase(3, &[(0, delete(remove))]).unwrap();
+    assert!(world.reported_problems(0).is_empty());
+    assert_eq!(held_at(&world, 0, &["A"]), Some(survivor));
+}
+
+#[test]
+fn moving_a_reported_merge_folder_away_clears_the_problem() {
+    let mut world = refused_beside_a(None);
+    reported_merge(&world);
+    let content = content_on(&world, 0, "c.txt");
+    let source = target(&world, 0, &["A"]);
+    world.phase(2, &[(0, rename(source, 0, "b"))]).unwrap();
+    assert!(world.reported_problems(0).is_empty());
+    ino_at(&world, 0, &["b", "c.txt"]);
+    assert_eq!(content_on(&world, 0, "c.txt"), content);
+}
+
+#[test]
+fn a_rule_lift_syncs_the_left_out_file_of_a_reported_merge_folder() {
+    let mut world = refused_beside_a(None);
+    reported_merge(&world);
+    let content = content_on(&world, 0, "c.txt");
+    world.rule(0, &Ruling::Exclude(vec![])).unwrap();
+    world.phase(2, &[]).unwrap();
+    assert!(world.reported_problems(0).is_empty());
+    assert_eq!(world.devices[0].disk.child(&Place::Root, "A"), None);
+    ino_at(&world, 0, &["a", "c.txt"]);
+    assert_eq!(content_on(&world, 0, "c.txt"), content);
+    assert!(live_node_at(&world, &["a", "c.txt"]).is_some());
 }
 
 fn deleted_while_its_rules_leave_a_file_out(during: Vec<(usize, Step)>) -> Result<World, Failure> {
@@ -955,4 +1545,923 @@ fn a_file_made_in_a_folder_its_include_list_takes_syncs_through_the_folders_pend
     phase.extend([(1, user(1, 0, 2, "b")), work, (1, rename(0, 0, "a"))]);
     let rulings = [(0, 1, Ruling::Include(vec!["ss/"]))];
     converge_ruled(&[vec![], vec![]], &rulings, &[phase]).unwrap();
+}
+
+#[test]
+fn a_park_queued_before_its_folder_falls_behind_a_merged_folder_keeps_it_in_place_until_the_chain_goes()
+ {
+    let mut world = refused_beside_a(None);
+    let merged = reported_merge(&world);
+    world
+        .phase(2, &[(1, folder("b")), (1, folder("ß")), (1, folder("É"))])
+        .unwrap();
+    let [sharp, accent] = ["ß", "É"].map(|name| held_at(&world, 0, &[name]).unwrap());
+    for (from, to) in [("ß", "c.txt"), ("É", "ß"), ("c.txt", "É")] {
+        let entry = target(&world, 1, &[from]);
+        world.run(3, &[(1, rename(entry, 0, to))]).unwrap();
+        world.run(3, &commit(1)).unwrap();
+    }
+    assert_eq!(live_node_at(&world, &["É"]), Some(sharp.to_string()));
+    assert_eq!(live_node_at(&world, &["ß"]), Some(accent.to_string()));
+    world.run(3, &[(0, DELIVER); 8]).unwrap();
+    world.run(3, &[(0, EFFECT)]).unwrap();
+    let [park] = world.devices[0].engine.effects.in_flight() else {
+        panic!(
+            "expected a park for the swap, got {:?}",
+            world.devices[0].engine.effects.in_flight()
+        );
+    };
+    assert!(
+        matches!(
+            &park.effect,
+            Effect::Move {
+                to: koidrive_engine::effects::Location::Parked(_),
+                ..
+            }
+        ),
+        "{park:?}"
+    );
+    let parked = park.node.clone();
+    let visible = if parked == sharp {
+        "ß"
+    } else {
+        assert_eq!(parked, accent);
+        "É"
+    };
+    let ino = ino_at(&world, 0, &[visible]);
+    let survivor = target(&world, 1, &["a"]);
+    world.run(4, &[(1, delete(survivor))]).unwrap();
+    world.run(4, &commit(1)).unwrap();
+    for (from, to) in [("b", "A"), (visible, "b")] {
+        let entry = target(&world, 1, &[from]);
+        world.run(4, &[(1, rename(entry, 0, to))]).unwrap();
+        world.run(4, &commit(1)).unwrap();
+    }
+    world.run(4, &[(0, DELIVER); 8]).unwrap();
+    assert_eq!(
+        world.reported_problems(0).get(&parked),
+        Some(&Stuck::Behind(merged.clone()))
+    );
+    world.run(4, &[(0, EFFECT)]).unwrap();
+    assert_eq!(
+        world.devices[0].disk.child(&Place::Root, visible),
+        Some(ino),
+        "an in-flight park hid a folder already reported as waiting behind {merged}"
+    );
+    assert!(world.devices[0].engine.effects.blocked().is_empty());
+    let holder = target(&world, 1, &["A"]);
+    world.run(5, &[(1, delete(holder))]).unwrap();
+    world.run(5, &commit(1)).unwrap();
+    world.phase(6, &[]).unwrap();
+    assert!(world.reported_problems(0).is_empty());
+    let back = live_node_at(&world, &["b"]).unwrap();
+    assert_eq!(held_at(&world, 0, &["b"]), Some(NodeId::from(back)));
+}
+
+fn parked_ids_on(world: &World, d: usize) -> Vec<NodeId> {
+    (world.devices[d].engine.trees.local().iter())
+        .filter(|(_, node)| node.parked)
+        .map(|(id, _)| id.clone())
+        .collect()
+}
+
+#[test]
+fn a_park_planned_in_a_swap_does_not_apply_once_the_chain_reaches_a_merged_folder() {
+    let _red = expect_red(
+        Check::NameLeftOut,
+        "device 0 is quiet, but nodes [\"01a1c2c0-39a0-7735-80db-d7e668859a70\", \"01a1c2c0-39a0-7cdc-8389-c4663807ce68\"] wait for names that entries its rules leave out hold",
+    );
+    let mut world = converge_excluding(
+        &[vec!["*.txt"], vec![]],
+        &[vec![
+            (0, folder("a")),
+            (0, folder("b")),
+            (0, folder("\u{df}")),
+        ]],
+    )
+    .unwrap();
+    let mut steps = vec![
+        (0, folder("c.txt")),
+        (0, user(1, 0, 4, "c.txt")),
+        (0, rename(3, 0, "A")),
+    ];
+    world.phase(1, &steps).unwrap();
+    let (tb, tss) = (target(&world, 1, &["b"]), target(&world, 1, &["\u{df}"]));
+    steps = vec![
+        (1, rename(tb, 0, "\u{e9}")),
+        (1, rename(tss, 0, "b")),
+        (1, rename(tb, 0, "\u{df}")),
+    ];
+    steps.extend(commit(1));
+    steps.extend([(0, DELIVER); 8]);
+    steps.push((0, EFFECT));
+    world.run(2, &steps).unwrap();
+    let flight = world.devices[0].engine.effects.in_flight().to_vec();
+    let parked = flight
+        .iter()
+        .find(|r| {
+            matches!(
+                r.effect,
+                koidrive_engine::effects::Effect::Move {
+                    to: koidrive_engine::effects::Location::Parked(_),
+                    ..
+                }
+            )
+        })
+        .expect("the swap plans a park")
+        .node
+        .clone();
+    let other = ["b", "\u{df}"]
+        .into_iter()
+        .find(|n| held_at(&world, 0, &[n]) != Some(parked.clone()))
+        .unwrap();
+    let moving = live_node_at(&world, &[other]).unwrap();
+    world
+        .run(3, &[(1, delete(target(&world, 1, &["a"])))])
+        .unwrap();
+    world
+        .run(3, &[(1, rename(target(&world, 1, &[other]), 0, "A"))])
+        .unwrap();
+    world.run(3, &commit(1)).unwrap();
+    assert_eq!(live_node_at(&world, &["A"]), Some(moving.clone()));
+    steps = vec![(0, DELIVER); 8];
+    steps.push((0, EFFECT));
+    world.run(3, &steps).unwrap();
+    world.phase(4, &[]).unwrap();
+    let report = world.reported_problems(0);
+    let held = Stuck::MergedInto(moving.into());
+    let merged: Vec<&NodeId> = (report.iter())
+        .filter(|(_, reason)| **reason == held)
+        .map(|(id, _)| id)
+        .collect();
+    let [merged] = merged[..] else {
+        panic!("{report:?}");
+    };
+    assert_eq!(report.len(), 3, "{report:?}");
+    for (id, reason) in &report {
+        assert!(
+            id == merged || *reason == Stuck::Behind(merged.clone()),
+            "{report:?}"
+        );
+    }
+    assert!(!parked_ids_on(&world, 0).contains(&parked));
+}
+
+#[test]
+fn a_swap_at_a_merged_folders_name_key_keeps_both_folders_in_place() {
+    let _red = expect_red(
+        Check::NameLeftOut,
+        "device 0 is quiet, but nodes [\"01a1c2c0-39a0-7510-83bc-38d6c6b89fe4\", \"01a1c2c0-39a0-796a-8df8-fb6da7904e2f\"] wait for names that entries its rules leave out hold",
+    );
+    let mut world = refused_beside_a(None);
+    let merged = reported_merge(&world);
+    world.phase(2, &[(1, folder("b"))]).unwrap();
+    let a = held_at(&world, 0, &["a"]).unwrap();
+    let b = held_at(&world, 0, &["b"]).unwrap();
+    let a_ino = ino_at(&world, 0, &["a"]);
+    let b_ino = ino_at(&world, 0, &["b"]);
+    let ta = target(&world, 1, &["a"]);
+    let tb = target(&world, 1, &["b"]);
+    let mut steps = vec![
+        (1, rename(ta, 0, "É")),
+        (1, rename(tb, 0, "a")),
+        (1, rename(ta, 0, "b")),
+    ];
+    steps.extend(commit(1));
+    steps.extend([(0, DELIVER); 8]);
+    world.run(3, &steps).unwrap();
+    assert_eq!(live_node_at(&world, &["a"]), Some(b.to_string()));
+    assert_eq!(live_node_at(&world, &["b"]), Some(a.to_string()));
+    assert_eq!(
+        world.reported_problems(0).get(&merged),
+        Some(&Stuck::MergedInto(b.clone()))
+    );
+    world.run(3, &[(0, EFFECT), (0, EFFECT)]).unwrap();
+    world.phase(4, &[]).unwrap();
+    let disk = &world.devices[0].disk;
+    assert_eq!(
+        [disk.child(&Place::Root, "a"), disk.child(&Place::Root, "b")],
+        [Some(a_ino), Some(b_ino)],
+        "a swap cannot finish while the merged folder still holds the name key: {:?}",
+        world.reported_problems(0),
+    );
+    let report = world.reported_problems(0);
+    for id in [a, b] {
+        assert_eq!(report.get(&id), Some(&Stuck::Behind(merged.clone())));
+    }
+}
+
+#[test]
+fn a_parked_file_goes_home_past_an_excluded_folder_when_its_exact_server_name_is_a_merged_folder() {
+    let mut world = refused_beside_a(None);
+    let merged = reported_merge(&world);
+    world.phase(2, &[(1, file("b")), (1, file("ß"))]).unwrap();
+    let excluded = held_at(&world, 0, &["a"]).unwrap();
+    let a = target(&world, 1, &["a"]);
+    let b = target(&world, 1, &["b"]);
+    let sharp = target(&world, 1, &["ß"]);
+    let mut steps = vec![
+        (1, rename(b, 0, "É")),
+        (1, rename(sharp, 0, "b")),
+        (1, rename(b, 0, "ß")),
+    ];
+    steps.extend(commit(1));
+    steps.extend([(0, DELIVER); 8]);
+    world.run(3, &steps).unwrap();
+    world.run(3, &[(0, EFFECT)]).unwrap();
+    let [park] = world.devices[0].engine.effects.in_flight() else {
+        panic!("expected one park for the swap");
+    };
+    assert!(
+        matches!(
+            park.effect,
+            Effect::Move {
+                to: koidrive_engine::effects::Location::Parked(_),
+                ..
+            }
+        ),
+        "{park:?}"
+    );
+    let parked = park.node.clone();
+    let home = park.after.as_ref().unwrap().name.clone();
+    let old_ino = ino_at(&world, 0, &[&home]);
+    let other = if home == "b" {
+        "ß"
+    } else {
+        assert_eq!(home, "ß");
+        "b"
+    };
+    let p = target(&world, 1, &[other]);
+    let d = target(&world, 1, &[&home]);
+    world.run(3, &[(0, EFFECT)]).unwrap();
+    assert!(parked_ids_on(&world, 0).contains(&parked));
+    let mut steps = vec![
+        (1, rename(a, 0, "c.txt")),
+        (1, rename(p, 0, "A")),
+        (1, rename(d, 0, other)),
+    ];
+    steps.extend(commit(1));
+    steps.extend([(0, DELIVER); 8]);
+    world.run(4, &steps).unwrap();
+    assert_eq!(live_node_at(&world, &["A"]), Some(parked.to_string()));
+    assert_eq!(held_at(&world, 0, &["a"]), Some(excluded.clone()));
+    assert!(world.devices[0].engine.trees.excluded(&excluded));
+    assert_eq!(
+        world.reported_problems(0).get(&merged),
+        Some(&Stuck::MergedInto(parked.clone()))
+    );
+    world.run(4, &[(0, EFFECT), (0, EFFECT)]).unwrap();
+    assert_eq!(
+        world.devices[0].disk.child(&Place::Root, &home),
+        Some(old_ino),
+        "the excluded folder at the server key should send the parked file back to its free home: {:?}",
+        world.reported_problems(0)
+    );
+}
+
+fn moved_out_below_a_merged_folder(offline: Vec<(usize, Step)>) -> (World, NodeId, u128) {
+    let phases = [vec![
+        (0, folder("b")),
+        (0, user(0, 0, 1, "ß")),
+        (0, user(1, 0, 2, "ß")),
+    ]];
+    let mut world = converge_excluding(&[vec!["*.txt"], vec![]], &phases).unwrap();
+    let live = held_at(&world, 0, &["b", "ß"]).unwrap();
+    let file = ino_at(&world, 0, &["b", "ß", "ß"]);
+    let b = target(&world, 0, &["b"]);
+    let moved = target(&world, 1, &["b", "ß"]);
+    let mut steps = vec![
+        (0, Step::Drop),
+        (0, folder("ss")),
+        (0, user(1, 0, 3, "c.txt")),
+        (0, rename(b, 3, "b")),
+    ];
+    steps.extend(offline);
+    steps.push((1, rename(moved, 0, "ss")));
+    steps.extend(commit(1));
+    world.run(2, &steps).unwrap();
+    (world, live, file)
+}
+
+fn live_children(world: &World, path: &[&str]) -> Vec<String> {
+    let Some(parent) = live_node_at(world, path) else {
+        return Vec::new();
+    };
+    let mut names: Vec<String> = (world.space().nodes().into_iter())
+        .filter(|node| node.status == NodeStatus::Live as i32 && node.parent_id == parent)
+        .map(|node| node.name)
+        .collect();
+    names.sort();
+    names
+}
+
+fn taken_over(world: &mut World, live: &NodeId, file: u128) {
+    assert_eq!(held_at(world, 0, &["ss"]).as_ref(), Some(live));
+    assert_eq!(ino_at(world, 0, &["ss", "ß"]), file);
+    ino_at(world, 0, &["ss", "c.txt"]);
+    let b = ino_at(world, 0, &["ss", "b"]);
+    assert_eq!(world.devices[0].disk.child(&Place::In(b), "ß"), None);
+    assert_eq!(live_node_at(world, &["ss"]), Some(live.to_string()));
+    assert_eq!(live_children(world, &["ss"]), ["b", "ß"]);
+    assert!(live_children(world, &["ss", "b"]).is_empty());
+    sends_nothing_more(world, 9);
+}
+
+#[test]
+fn a_merged_folder_takes_over_a_live_folder_another_device_moved_out_from_below_it() {
+    let (mut world, live, file) = moved_out_below_a_merged_folder(vec![]);
+    world.phase(3, &[(0, Step::Connect)]).unwrap();
+    assert!(world.reported_problems(0).is_empty());
+    assert!(world.folder_effects[0].iter().any(|record| {
+        matches!(record.effect, Effect::RemoveDir { .. }) && record.node != live
+    }));
+    taken_over(&mut world, &live, file);
+}
+
+#[test]
+fn a_file_made_in_the_nested_copy_before_the_takeover_keeps_it_there_and_uploads_it_under_a_new_id()
+{
+    let (mut world, live, file) = moved_out_below_a_merged_folder(vec![]);
+    world.run(3, &[(0, Step::Connect)]).unwrap();
+    for _ in 0..200 {
+        if !world.devices[0].engine.commits.aliases().is_empty() {
+            break;
+        }
+        world.run(3, &[(0, Step::Work(0))]).unwrap();
+    }
+    assert!(!world.devices[0].engine.commits.aliases().is_empty());
+    let nested = folder_number(&world, 0, &["ss", "b", "ß"]);
+    world.phase(4, &[(0, user(1, 0, nested, "a"))]).unwrap();
+    assert_eq!(held_at(&world, 0, &["ss"]), Some(live.clone()));
+    assert_eq!(ino_at(&world, 0, &["ss", "ß"]), file);
+    let copy = live_node_at(&world, &["ss", "b", "ß"]).unwrap();
+    assert_ne!(copy, live.to_string());
+    assert_eq!(live_children(&world, &["ss", "b", "ß"]), ["a"]);
+    assert_eq!(live_children(&world, &["ss", "b"]), ["ß"]);
+    assert_eq!(live_children(&world, &["ss"]), ["b", "ß"]);
+    sends_nothing_more(&mut world, 9);
+}
+
+#[test]
+fn a_nested_copy_that_holds_a_left_out_entry_stays_with_it_after_a_takeover() {
+    let (mut world, live, file) =
+        moved_out_below_a_merged_folder(vec![(0, user(1, 0, 2, "c.txt"))]);
+    world.phase(3, &[(0, Step::Connect)]).unwrap();
+    assert_eq!(held_at(&world, 0, &["ss"]), Some(live.clone()));
+    assert_eq!(ino_at(&world, 0, &["ss", "ß"]), file);
+    ino_at(&world, 0, &["ss", "b", "ß", "c.txt"]);
+    ino_at(&world, 0, &["ss", "c.txt"]);
+    assert_eq!(live_children(&world, &["ss"]), ["b", "ß"]);
+    assert!(live_children(&world, &["ss", "b"]).is_empty());
+}
+
+#[test]
+fn a_file_made_in_the_merged_folder_at_the_name_of_a_moved_up_entry_is_kept_as_a_conflict_copy() {
+    let (mut world, live, file) = moved_out_below_a_merged_folder(vec![(0, user(1, 0, 3, "ß"))]);
+    world.phase(3, &[(0, Step::Connect)]).unwrap();
+    assert_eq!(held_at(&world, 0, &["ss"]), Some(live.clone()));
+    assert_eq!(ino_at(&world, 0, &["ss", "ß"]), file);
+    assert_eq!(
+        live_children(&world, &["ss"]),
+        ["b", "ß", "ß (conflict from device-0 2026-11-09)"]
+    );
+}
+
+#[test]
+fn a_file_written_into_the_nested_copy_before_its_removal_applies_keeps_it_and_uploads() {
+    let (mut world, live, file) = moved_out_below_a_merged_folder(vec![]);
+    world.run(3, &[(0, Step::Connect)]).unwrap();
+    let removes = |world: &World| {
+        (world.devices[0].engine.effects.in_flight().iter())
+            .any(|record| matches!(record.effect, Effect::RemoveDir { .. }))
+    };
+    for _ in 0..200 {
+        if removes(&world) {
+            break;
+        }
+        world.run(3, &[(0, Step::Work(0))]).unwrap();
+    }
+    assert!(removes(&world));
+    let nested = folder_number(&world, 0, &["ss", "b", "ß"]);
+    world.phase(4, &[(0, user(1, 0, nested, "a"))]).unwrap();
+    assert_eq!(held_at(&world, 0, &["ss"]), Some(live.clone()));
+    assert_eq!(ino_at(&world, 0, &["ss", "ß"]), file);
+    ino_at(&world, 0, &["ss", "b", "ß", "a"]);
+    let copy = live_node_at(&world, &["ss", "b", "ß"]).unwrap();
+    assert_ne!(copy, live.to_string());
+    assert_eq!(live_children(&world, &["ss", "b", "ß"]), ["a"]);
+    assert_eq!(live_children(&world, &["ss", "b"]), ["ß"]);
+    assert_eq!(live_children(&world, &["ss"]), ["b", "ß"]);
+    sends_nothing_more(&mut world, 9);
+}
+
+#[test]
+fn a_takeover_of_a_live_folder_below_a_merged_folder_converges_after_a_crash_at_any_step() {
+    for k in 0..40 {
+        let (mut world, live, file) = moved_out_below_a_merged_folder(vec![]);
+        world.run(3, &[(0, Step::Connect)]).unwrap();
+        world.run(3, &vec![(0, Step::Work(0)); k]).unwrap();
+        let crash = match world.devices[0].engine.effects.in_flight().is_empty() {
+            true => Step::Crash,
+            false => CRASH,
+        };
+        world
+            .phase(4, &[(0, crash), (0, Step::Connect)])
+            .unwrap_or_else(|failure| panic!("crash after {k} steps: {failure:?}"));
+        taken_over(&mut world, &live, file);
+    }
+}
+
+#[test]
+fn the_merged_folder_named_like_the_live_folder_takes_it_over_from_below_another_at_its_key_which_stays_reported()
+ {
+    let phases = [vec![
+        (0, folder("b")),
+        (0, user(0, 0, 1, "ß")),
+        (0, user(1, 0, 2, "ß")),
+    ]];
+    let mut world = converge_excluding(&[vec!["*.txt"], vec![]], &phases).unwrap();
+    let live = held_at(&world, 0, &["b", "ß"]).unwrap();
+    let file = ino_at(&world, 0, &["b", "ß", "ß"]);
+    let b = target(&world, 0, &["b"]);
+    let moved = target(&world, 1, &["b", "ß"]);
+    let offline = [
+        (0, Step::Drop),
+        (0, folder("ss")),
+        (0, rename(b, 3, "b")),
+        (0, folder("ß")),
+    ];
+    world.run(2, &offline).unwrap();
+    let containing = folder_number(&world, 0, &["ss"]);
+    let preferred = folder_number(&world, 0, &["ß"]);
+    let mut steps = vec![
+        (0, user(1, 0, containing, "c.txt")),
+        (0, user(1, 0, preferred, "c.txt")),
+        (1, rename(moved, 0, "ß")),
+    ];
+    steps.extend(commit(1));
+    world.run(2, &steps).unwrap();
+    world.phase(3, &[(0, Step::Connect)]).unwrap();
+    assert_eq!(live_node_at(&world, &["ß"]), Some(live.to_string()));
+    assert_eq!(held_at(&world, 0, &["ß"]), Some(live.clone()));
+    assert_eq!(ino_at(&world, 0, &["ß", "ß"]), file);
+    ino_at(&world, 0, &["ss", "c.txt"]);
+    ino_at(&world, 0, &["ß", "c.txt"]);
+    assert!(live_children(&world, &["ss", "b"]).is_empty());
+    let held = held_at(&world, 0, &["ss"]).unwrap();
+    assert_eq!(
+        world.reported_problems(0),
+        [(held, Stuck::MergedInto(live))].into()
+    );
+    sends_nothing_more(&mut world, 4);
+}
+
+fn nested_with_two_files(swap: bool) -> (World, NodeId, [NodeId; 3], [u128; 2]) {
+    let phases = [vec![
+        (0, folder("b")),
+        (0, user(0, 0, 1, "ß")),
+        (0, user(0, 0, 2, "É")),
+        (0, user(1, 0, 3, "ß")),
+        (0, user(1, 0, 3, "a")),
+    ]];
+    let mut world = converge_excluding(&[vec!["/ss/c.txt"], vec![]], &phases).unwrap();
+    let live = held_at(&world, 0, &["b", "ß"]).unwrap();
+    let nodes = [["É"].as_slice(), &["É", "ß"], &["É", "a"]]
+        .map(|path| held_at(&world, 0, &[&["b", "ß"], path].concat()).unwrap());
+    let files =
+        [["É", "ß"], ["É", "a"]].map(|path| ino_at(&world, 0, &[&["b", "ß"], &path[..]].concat()));
+    let b = target(&world, 0, &["b"]);
+    let moved = target(&world, 1, &["b", "ß"]);
+    let mut steps = vec![
+        (0, Step::Drop),
+        (0, folder("ss")),
+        (0, user(1, 0, 4, "c.txt")),
+        (0, rename(b, 4, "b")),
+    ];
+    if swap {
+        let [a, s] = [["É", "a"], ["É", "ß"]]
+            .map(|path| target(&world, 1, &[&["b", "ß"], &path[..]].concat()));
+        let folder = folder_number(&world, 1, &["b", "ß", "É"]);
+        steps.extend([
+            (1, rename(a, folder, "b")),
+            (1, rename(s, folder, "a")),
+            (1, rename(a, folder, "ß")),
+        ]);
+    }
+    steps.push((1, rename(moved, 0, "ss")));
+    steps.extend(commit(1));
+    world.run(2, &steps).unwrap();
+    (world, live, nodes, files)
+}
+
+fn merged_and_unsettled(world: &mut World) {
+    world.run(3, &[(0, Step::Connect)]).unwrap();
+    for _ in 0..200 {
+        if !world.devices[0].engine.commits.aliases().is_empty() {
+            break;
+        }
+        world.run(3, &[(0, Step::Work(0))]).unwrap();
+    }
+    assert!(!world.devices[0].engine.commits.aliases().is_empty());
+}
+
+fn lost(
+    world: &World,
+    live: &NodeId,
+    nodes: &[NodeId; 3],
+    files: [u128; 2],
+    deleted: &[usize],
+) -> Vec<String> {
+    let mut lost = Vec::new();
+    if held_at(world, 0, &["ss"]).as_ref() != Some(live) {
+        lost.push("the live ID is not at ss".to_string());
+    }
+    let server = world.space().nodes();
+    for (i, id) in nodes.iter().enumerate() {
+        let on_server = (server.iter())
+            .any(|node| node.node_id == *id && node.status == NodeStatus::Live as i32);
+        if on_server == deleted.contains(&i) {
+            lost.push(format!("node {i} live on the server: {on_server}"));
+        }
+    }
+    for (i, ino) in files.into_iter().enumerate() {
+        let on_disk = (world.devices[0].disk.entries().keys()).any(|at| *at == ino);
+        if !on_disk && !deleted.contains(&(i + 1)) {
+            lost.push(format!("file {i} is gone from the disk"));
+        }
+    }
+    lost
+}
+
+fn after_a_pending_change(change: &str, after: bool) -> Vec<String> {
+    let (mut world, live, nodes, files) = nested_with_two_files(false);
+    if after {
+        merged_and_unsettled(&mut world);
+    }
+    let a = target(&world, 0, &["ss", "b", "ß", "É", "a"]);
+    let folder = target(&world, 0, &["ss", "b", "ß", "É"]);
+    let [copy, inside, merged] = [&["ss", "b", "ß"][..], &["ss", "b", "ß", "É"], &["ss"]]
+        .map(|path| folder_number(&world, 0, path));
+    let original = world.devices[0].disk.entries()[&files[1]].content.clone();
+    let moved = match after {
+        true => vec!["ss", "b", "ß", "a"],
+        false => vec!["ss", "a"],
+    };
+    let (step, deleted, at) = match change {
+        "file deleted" => (delete(a), &[2][..], None),
+        "file edited" => (overwrite(a), &[][..], None),
+        "file moved within the copy" => (rename(a, copy, "a"), &[][..], Some((moved, 2))),
+        "file moved out of the copy" => (rename(a, 0, "a"), &[][..], Some((vec!["a"], 2))),
+        "file moved into the merged folder" => {
+            (rename(a, merged, "a"), &[][..], Some((vec!["ss", "a"], 2)))
+        }
+        "file created" => (user(1, 0, inside, "b"), &[][..], None),
+        "folder deleted" => (delete(folder), &[0, 1, 2][..], None),
+        "folder renamed" => (rename(folder, copy, "a"), &[][..], Some((moved, 0))),
+        "folder moved out of the copy" => (rename(folder, 0, "É"), &[][..], Some((vec!["É"], 0))),
+        "folder moved into the merged folder" => (
+            rename(folder, merged, "a"),
+            &[][..],
+            Some((vec!["ss", "a"], 0)),
+        ),
+        _ => unreachable!(),
+    };
+    world.run(if after { 4 } else { 2 }, &[(0, step)]).unwrap();
+    let written = (change == "file edited")
+        .then(|| world.devices[0].disk.entries()[&files[1]].content.clone());
+    let quiet = match after {
+        true => world.phase(4, &[]),
+        false => world.phase(3, &[(0, Step::Connect)]),
+    };
+    let mut failed = lost(&world, &live, &nodes, files, deleted);
+    if let Err(failure) = quiet {
+        failed.push(format!("{failure:?}"));
+    }
+    if let Some((path, node)) = at
+        && live_node_at(&world, &path) != Some(nodes[node].to_string())
+    {
+        failed.push(format!(
+            "{path:?} on the server is {:?}",
+            live_node_at(&world, &path)
+        ));
+    }
+    let content = |device: usize, path: &[&str]| {
+        let disk = &world.devices[device].disk;
+        (disk.entries().get(&ino_at(&world, device, path))).and_then(|entry| entry.content.clone())
+    };
+    if let Some(written) = written {
+        let kept = (world.devices[0].disk.entries().get(&files[1]))
+            .and_then(|entry| entry.content.clone());
+        if written == original || kept != written || content(1, &["ss", "É", "a"]) != written {
+            failed.push("the edit did not reach both devices".to_string());
+        }
+    }
+    if change == "file created"
+        && (live_node_at(&world, &["ss", "É", "b"]).is_none()
+            || content(0, &["ss", "É", "b"]).is_none())
+    {
+        failed.push(format!(
+            "the new file is not at [ss, É, b]: {:?}",
+            live_node_at(&world, &["ss", "É", "b"])
+        ));
+    }
+    failed
+}
+
+#[test]
+fn a_change_pending_in_the_nested_copy_before_or_after_the_merge_result_survives_the_takeover() {
+    let mut failed = Vec::new();
+    for change in [
+        "file deleted",
+        "file edited",
+        "file moved within the copy",
+        "file moved out of the copy",
+        "file moved into the merged folder",
+        "file created",
+        "folder deleted",
+        "folder renamed",
+        "folder moved out of the copy",
+        "folder moved into the merged folder",
+    ] {
+        for after in [false, true] {
+            let cell = after_a_pending_change(change, after);
+            if !cell.is_empty() {
+                failed.push(format!(
+                    "{change}, after the merge result: {after}: {cell:?}"
+                ));
+            }
+        }
+    }
+    assert!(failed.is_empty(), "{failed:#?}");
+}
+
+#[test]
+fn a_takeover_loses_nothing_when_the_nested_copy_is_parked_rejected_or_left_out_by_a_rule_change() {
+    for state in ["parked", "rejected", "excluded", "edited, then excluded"] {
+        let (mut world, live, nodes, files) = nested_with_two_files(state == "parked");
+        if state == "parked" {
+            world.run(3, &[(0, Step::Connect)]).unwrap();
+        } else {
+            merged_and_unsettled(&mut world);
+            let a = target(&world, 0, &["ss", "b", "ß", "É", "a"]);
+            let refused = Step::Commit(Reply::Refused(error::Code::LimitExceeded));
+            match state {
+                "rejected" => world.run(
+                    4,
+                    &[(0, overwrite(a)), (0, SCAN), (0, refused), (0, refused)],
+                ),
+                "edited, then excluded" => world.run(4, &[(0, overwrite(a))]),
+                _ => Ok(()),
+            }
+            .unwrap();
+            if state.ends_with("excluded") {
+                world
+                    .rule(0, &Ruling::Exclude(vec!["/ss/c.txt", "a"]))
+                    .unwrap();
+            }
+        }
+        for _ in 0..400 {
+            if held_at(&world, 0, &["ss"]).as_ref() == Some(&live) {
+                break;
+            }
+            world.run(5, &[(0, Step::Work(0))]).unwrap();
+        }
+        world
+            .phase(6, &[(0, Step::Work(0))])
+            .unwrap_or_else(|failure| panic!("{state}: {failure:?}"));
+        assert_eq!(
+            lost(&world, &live, &nodes, files, &[]),
+            Vec::<String>::new(),
+            "{state}"
+        );
+    }
+}
+
+#[test]
+fn a_takeover_goes_ahead_while_an_edit_below_the_nested_copy_is_refused_and_loses_nothing_once_the_refusals_stop()
+ {
+    let (mut world, live, nodes, files) = nested_with_two_files(false);
+    merged_and_unsettled(&mut world);
+    let a = target(&world, 0, &["ss", "b", "ß", "É", "a"]);
+    world.run(4, &[(0, overwrite(a))]).unwrap();
+    let edited = world.devices[0].disk.entries()[&files[1]].content.clone();
+    assert!(edited.is_some());
+    let refused = Step::Commit(Reply::Refused(error::Code::LimitExceeded));
+    world
+        .run(
+            4,
+            &[
+                (0, SCAN),
+                (0, refused),
+                (0, refused),
+                (0, refused),
+                (0, refused),
+            ],
+        )
+        .unwrap();
+    assert_eq!(held_at(&world, 0, &["ss"]), Some(live.clone()));
+    assert!(world.devices[0].engine.commits.in_flight().is_some());
+    world.phase(5, &[(0, Step::Work(0))]).unwrap();
+    assert_eq!(
+        lost(&world, &live, &nodes, files, &[]),
+        Vec::<String>::new()
+    );
+    let content = |device: usize| {
+        let disk = &world.devices[device].disk;
+        disk.entries()[&ino_at(&world, device, &["ss", "É", "a"])]
+            .content
+            .clone()
+    };
+    assert_eq!(content(0), edited);
+    assert_eq!(content(1), edited);
+}
+
+fn renamed_elsewhere_then(world: &mut World, made: Step) {
+    let survivor = target(world, 1, &["a"]);
+    world.run(3, &[(1, rename(survivor, 0, "b"))]).unwrap();
+    world.run(3, &commit(1)).unwrap();
+    let steps = [(0, DELIVER), (0, DELIVER), (0, EFFECT), (0, EFFECT)];
+    world.run(3, &steps).unwrap();
+    world.run(3, &[(0, made), (0, SCAN)]).unwrap();
+}
+
+fn renamed_here_then(world: &mut World, made: Step) {
+    let live = target(world, 0, &["a"]);
+    world
+        .run(3, &[(0, rename(live, 0, "b")), (0, made), (0, SCAN)])
+        .unwrap();
+}
+
+fn waits_while_a_local_entry_holds_the_freed_name_key(free: fn(&mut World, Step), made: Step) {
+    let mut world = refused_beside_a(None);
+    world.rule(0, &Ruling::Exclude(vec!["/A/c.txt"])).unwrap();
+    world.phase(2, &[]).unwrap();
+    let source = reported_merge(&world);
+    free(&mut world, made);
+    world.phase(4, &[]).unwrap();
+    let leaked = |world: &World| (world.space().nodes().iter()).any(|node| node.name == "c.txt");
+    assert!(!leaked(&world));
+    let holder = NodeId::from(live_node_at(&world, &["a"]).unwrap());
+    assert_eq!(
+        world.reported_problems(0),
+        [(source.clone(), Stuck::MergedInto(holder))].into()
+    );
+    assert!(live_node_at(&world, &["A"]).is_none());
+    world
+        .phase(5, &[(0, delete(target(&world, 0, &["a"])))])
+        .unwrap();
+    assert!(!leaked(&world));
+    let created = live_node_at(&world, &["A"]).unwrap();
+    assert_ne!(created, source.to_string());
+    assert_eq!(held_at(&world, 0, &["A"]), Some(NodeId::from(created)));
+    ino_at(&world, 0, &["A", "c.txt"]);
+    assert!(world.reported_problems(0).is_empty());
+    sends_nothing_more(&mut world, 6);
+}
+
+#[test]
+fn a_reported_merge_folder_waits_while_a_local_file_holds_its_freed_name_key() {
+    waits_while_a_local_entry_holds_the_freed_name_key(renamed_elsewhere_then, file("a"));
+}
+
+#[test]
+fn a_reported_merge_folder_waits_while_a_local_folder_holds_its_freed_name_key() {
+    waits_while_a_local_entry_holds_the_freed_name_key(renamed_elsewhere_then, folder("a"));
+}
+
+#[test]
+fn a_reported_merge_folder_waits_while_a_local_file_takes_the_name_of_the_live_folder_renamed_here()
+{
+    waits_while_a_local_entry_holds_the_freed_name_key(renamed_here_then, file("a"));
+}
+
+#[test]
+fn a_reported_merge_folder_waits_while_a_local_folder_takes_the_name_of_the_live_folder_renamed_here()
+ {
+    waits_while_a_local_entry_holds_the_freed_name_key(renamed_here_then, folder("a"));
+}
+
+#[test]
+fn a_nested_copy_renamed_to_another_spelling_of_its_name_is_still_taken_over() {
+    let phases = [vec![
+        (0, folder("b")),
+        (0, user(0, 0, 1, "\u{c9}")),
+        (0, user(1, 0, 2, "\u{df}")),
+    ]];
+    let mut world = converge_excluding(&[vec!["*.txt"], vec![]], &phases).unwrap();
+    let live = held_at(&world, 0, &["b", "\u{c9}"]).unwrap();
+    let file = ino_at(&world, 0, &["b", "\u{c9}", "\u{df}"]);
+    let moved = target(&world, 1, &["b", "\u{c9}"]);
+    world.run(2, &[(0, Step::Drop)]).unwrap();
+    let nested = target(&world, 0, &["b", "\u{c9}"]);
+    let b = folder_number(&world, 0, &["b"]);
+    world.run(2, &[(0, rename(nested, b, "E\u{301}"))]).unwrap();
+    world.run(2, &[(0, folder("\u{c9}"))]).unwrap();
+    let made = folder_number(&world, 0, &["\u{c9}"]);
+    let b = target(&world, 0, &["b"]);
+    let offline = [(0, user(1, 0, made, "c.txt")), (0, rename(b, made, "b"))];
+    world.run(2, &offline).unwrap();
+    let mut steps = vec![(1, rename(moved, 0, "\u{c9}"))];
+    steps.extend(commit(1));
+    world.run(2, &steps).unwrap();
+    world.phase(3, &[(0, Step::Connect)]).unwrap();
+    assert_eq!(held_at(&world, 0, &["\u{c9}"]), Some(live.clone()));
+    assert_eq!(live_node_at(&world, &["\u{c9}"]), Some(live.to_string()));
+    assert_eq!(ino_at(&world, 0, &["\u{c9}", "\u{df}"]), file);
+    ino_at(&world, 0, &["\u{c9}", "c.txt"]);
+    assert!(world.reported_problems(0).is_empty());
+    sends_nothing_more(&mut world, 9);
+}
+
+#[test]
+fn a_merged_folder_uploads_beside_a_kept_folder_once_another_device_deletes_the_live_folder() {
+    let phases = vec![
+        vec![(0, folder("a")), (0, user(1, 0, 1, "c.txt"))],
+        vec![
+            (0, folder("c.txt")),
+            (0, user(1, 0, 2, "c.txt")),
+            (0, rename(2, 0, "A")),
+        ],
+    ];
+    let mut world = converge_excluding(&[vec!["*.txt"], vec![]], &phases).unwrap();
+    let source = held_at(&world, 0, &["A"]).unwrap();
+    let kept = held_at(&world, 0, &["a"]).unwrap();
+    let live = target(&world, 1, &["a"]);
+    world.phase(2, &[(1, delete(live))]).unwrap();
+    assert!(live_node_at(&world, &["a"]).is_none());
+    let created = live_node_at(&world, &["A"]).unwrap();
+    assert_ne!(created, source.to_string());
+    let created = NodeId::from(created);
+    assert_eq!(held_at(&world, 0, &["A"]), Some(created.clone()));
+    ino_at(&world, 0, &["A", "c.txt"]);
+    ino_at(&world, 0, &["a", "c.txt"]);
+    assert!((world.space().nodes().iter()).all(|node| node.name != "c.txt"));
+    let rekeyed = held_at(&world, 0, &["a"]).unwrap();
+    assert_ne!(rekeyed, kept);
+    assert_eq!(
+        world.reported_problems(0),
+        [(rekeyed, Stuck::MergedInto(created))].into()
+    );
+    sends_nothing_more(&mut world, 3);
+}
+
+#[test]
+fn a_deep_merged_folder_settles_once_another_device_deletes_the_live_folder() {
+    let phases = vec![
+        vec![
+            (0, folder("a")),
+            (0, user(0, 0, 1, "b")),
+            (0, user(0, 0, 2, "c.txt")),
+        ],
+        vec![
+            (0, folder("C.TXT")),
+            (0, user(0, 0, 4, "b")),
+            (0, user(0, 0, 5, "c.txt")),
+            (0, user(1, 0, 6, "c.txt")),
+            (0, rename(3, 0, "A")),
+        ],
+    ];
+    let mut world = converge_excluding(&[vec!["*.txt"], vec![]], &phases).unwrap();
+    let live = target(&world, 1, &["a"]);
+    world.phase(2, &[(1, delete(live))]).unwrap();
+    assert!(live_node_at(&world, &["a"]).is_none());
+    assert!(live_node_at(&world, &["A", "b"]).is_some());
+    assert!((world.space().nodes().iter()).all(|node| node.name != "c.txt"));
+    sends_nothing_more(&mut world, 3);
+}
+
+#[test]
+fn merged_folders_settle_once_another_device_deletes_the_folder_that_took_one_over() {
+    let phases = vec![
+        vec![(0, folder("\u{e9}"))],
+        vec![
+            (0, folder("c.txt")),
+            (0, user(1, 0, 2, "c.txt")),
+            (0, rename(1, 0, "\u{c9}")),
+            (0, folder("b")),
+            (0, user(1, 0, 3, "c.txt")),
+            (0, rename(3, 0, "E\u{301}")),
+        ],
+    ];
+    let mut world = converge_excluding(&[vec!["*.txt"], vec![]], &phases).unwrap();
+    let live = target(&world, 1, &["\u{e9}"]);
+    world
+        .phase(2, &[(1, delete(live)), (1, folder("\u{e9}"))])
+        .unwrap();
+    let live = target(&world, 1, &["\u{e9}"]);
+    world.phase(3, &[(1, delete(live))]).unwrap();
+    let uploaded = NodeId::from(live_node_at(&world, &["\u{c9}"]).unwrap());
+    assert_eq!(held_at(&world, 0, &["E\u{301}"]), Some(uploaded.clone()));
+    let other = held_at(&world, 0, &["\u{e9}"]).unwrap();
+    assert_eq!(
+        world.reported_problems(0),
+        [(other, Stuck::MergedInto(uploaded))].into()
+    );
+    let kept: Vec<Vec<String>> = [["E\u{301}", "c.txt"], ["\u{e9}", "c.txt"]]
+        .iter()
+        .map(|path| path.iter().map(|name| name.to_string()).collect())
+        .collect();
+    assert_eq!(left_out_files(&world), kept);
+    assert!((world.space().nodes().iter()).all(|node| node.name != "c.txt"));
+    sends_nothing_more(&mut world, 4);
 }

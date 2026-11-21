@@ -74,7 +74,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use koidrive_engine::classify::Trees;
 use koidrive_engine::commit::{self, Base, Reconnect};
-use koidrive_engine::effects::{BatchLimit, Effect, EffectRecord, location_of};
+use koidrive_engine::effects::{
+    self, BatchLimit, Effect, EffectRecord, MergeResidue, Stuck, location_of,
+};
 use koidrive_engine::first_link::{self, History, Log, LogRead, Marks};
 use koidrive_engine::ignore::Source;
 use koidrive_engine::names::{name_key, nfc, same_name};
@@ -672,7 +674,49 @@ pub struct World {
     answers: usize,
 }
 
+fn merge_residue(disk: &Disk, trees: &Trees, commits: &commit::Commits) -> MergeResidue {
+    MergeResidue::observe(trees, commits.aliases(), |source, local| {
+        let ino = local.identity.ino;
+        let path = disk
+            .path(ino)
+            .map(|path| path.iter().collect::<std::path::PathBuf>());
+        if path.is_none() || path != trees.local().path(source) {
+            return Ok(false);
+        }
+        let place = Place::In(ino);
+        let entries = disk.children(&place).map(|ino| {
+            let entry = &disk.entries()[&ino];
+            let kind = if entry.content.is_some() {
+                Kind::File
+            } else {
+                Kind::Dir
+            };
+            (Some(entry.name.as_str()), Some(kind))
+        });
+        Ok(MergeResidue::holds_left_out(trees, source, entries))
+    })
+    .unwrap_or_else(|never: std::convert::Infallible| match never {})
+}
+
 impl World {
+    pub fn reported_problems(&self, d: usize) -> BTreeMap<NodeId, Stuck> {
+        let device = &self.devices[d];
+        let Engine {
+            trees,
+            effects,
+            commits,
+            ..
+        } = &device.engine;
+        let residue = merge_residue(&device.disk, trees, commits);
+        effects::stuck_on_disk(
+            trees,
+            effects,
+            commits.in_flight(),
+            &commits.renaming(trees, NOW as u64),
+            &residue,
+        )
+    }
+
     /// Devices with empty disks, connected to an empty space.
     pub fn new(devices: usize) -> Self {
         Self::on(&vec![Precision::Fine; devices])
@@ -1814,8 +1858,10 @@ impl World {
                 effects: size as usize,
                 bytes: u64::MAX,
             };
-            let planned =
-                !(effects.plan(trees, commits.in_flight(), ids, NOW as u64, limit)).is_empty();
+            let residue = merge_residue(&device.disk, trees, commits);
+            let planned = !effects
+                .plan_on_disk(trees, commits.in_flight(), ids, NOW as u64, limit, &residue)
+                .is_empty();
             device.persist()?;
             return Ok(planned);
         }
@@ -1844,7 +1890,10 @@ impl World {
             };
             let kept = self.left_out_on_disk(d);
             let device = &mut self.devices[d];
-            let applies = record.applies(&device.engine.trees, device.engine.commits.in_flight());
+            let engine = &device.engine;
+            let residue = merge_residue(&device.disk, &engine.trees, &engine.commits);
+            let applies = residue.permits(&engine.trees, record)
+                && record.applies(&engine.trees, engine.commits.in_flight());
             let until = match outcome {
                 Outcome::Run if applies => Some(Cut::Done),
                 Outcome::Crash(cut) if applies => Some(cut),
@@ -2646,6 +2695,8 @@ impl World {
                 ..
             } = engine;
             let device_id = &device.session.device_id;
+            let residue = merge_residue(&device.disk, trees, commits);
+            commits.settle_merge_residue(trees, ids, NOW as u64, &residue);
             if commits.due(trees, device_id) {
                 let inos: BTreeMap<u128, NodeId> = (trees.local().iter())
                     .map(|(id, node)| (node.identity.ino, id.clone()))
@@ -3467,6 +3518,70 @@ impl World {
                 let mut children = device.disk.children(&folder).peekable();
                 children.peek().is_some() && children.all(|child| left_out.inos.contains(&child))
             };
+            let reported = if engine.commits.aliases().is_empty() {
+                BTreeMap::new()
+            } else {
+                self.reported_problems(d)
+            };
+            let mut merged = BTreeSet::new();
+            for (source, problem) in &reported {
+                let Stuck::MergedInto(target) = problem else {
+                    continue;
+                };
+                let source_on_server = nodes.iter().any(|(id, node)| id == source && !node.trashed);
+                if source_on_server
+                    || !engine.commits.aliases().contains_key(source)
+                    || !engine.trees.local().get(source).is_some_and(|local| {
+                        engine.commits.aliases().contains_key(&local.shape.parent)
+                            && engine.commits.aliases().get(source) == Some(target)
+                            || engine.trees.remote().live(target).is_some_and(|live| {
+                                live.parent == local.shape.parent
+                                    && name_key(&live.name) == name_key(&local.shape.name)
+                            })
+                    })
+                    || engine.trees.kept_folder(source)
+                    || engine.trees.local().get(source).is_none_or(|local| {
+                        local.parked || !holds_only_left_out_inos(local.identity.ino)
+                    })
+                {
+                    return fail(format!(
+                        "reports a merged folder {source} without left-out disk entries"
+                    ));
+                }
+                merged.insert(source.clone());
+            }
+            let delayed: BTreeMap<_, _> = reported
+                .iter()
+                .filter_map(|(id, problem)| {
+                    let Stuck::Behind(source) = problem else {
+                        return None;
+                    };
+                    if !merged.contains(source) {
+                        return None;
+                    }
+                    let here = engine.trees.local().get(id)?;
+                    let blocked = engine.trees.local().get(source)?;
+                    let there = engine.trees.remote().live(id)?;
+                    if here.parked
+                        || here.shape.kind != Kind::Dir
+                        || there.kind != Kind::Dir
+                        || !blocked.shape.same_position(there)
+                        || here.shape.parent != there.parent
+                        || name_key(&here.shape.name) != name_key(&there.name)
+                        || here.shape.name == there.name
+                    {
+                        return None;
+                    }
+                    let from = device.disk.path(here.identity.ino)?;
+                    let to = engine.trees.remote().path(id)?;
+                    let to = to
+                        .components()
+                        .map(|part| part.as_os_str().to_string_lossy().into_owned())
+                        .collect::<Vec<_>>();
+                    Some((id.clone(), (from, to)))
+                })
+                .collect();
+            excused.extend(merged.iter().cloned());
             let blocked = engine.effects.blocked();
             let held_out = |effect: &Effect| {
                 let at = match effect {
@@ -3485,7 +3600,9 @@ impl World {
                 .map(|(id, _)| id)
                 .collect();
             let removing: Vec<&NodeId> = (blocked.iter())
-                .filter(|(_, effect)| !held_out(effect) && emptied_of_left_out(effect))
+                .filter(|(id, effect)| {
+                    !merged.contains(*id) && !held_out(effect) && emptied_of_left_out(effect)
+                })
                 .map(|(id, _)| id)
                 .collect();
             let other: BTreeMap<&NodeId, &Effect> = (blocked.iter())
@@ -3545,22 +3662,28 @@ impl World {
             let mut trees = engine.trees.clone();
             trees.settle(engine.commits.aliases());
             let unsettled: Vec<_> = (trees.work().into_iter())
-                .filter(|(id, _)| !left_out.holds(&trees, id))
+                .filter(|(id, _)| !left_out.holds(&trees, id) && !delayed.contains_key(id))
                 .collect();
             let waiting_on_kept = self.waiting_on(d, &excused);
             let waiting: Vec<&NodeId> = (left_out.waiting.iter())
                 .chain(&waiting_on_kept)
                 .collect::<BTreeSet<_>>()
                 .into_iter()
-                .filter(|id| !excused.contains(*id))
+                .filter(|id| !excused.contains(*id) && !delayed.contains_key(*id))
                 .filter(|id| {
+                    let at_name = |shape: Option<&Shape>| {
+                        shape.map(|shape| Shape {
+                            name: nfc(&shape.name),
+                            ..shape.clone()
+                        })
+                    };
                     let shapes = [
                         trees.local().get(id).map(|node| &node.shape),
                         trees.synced().live(id),
                         trees.remote().live(id),
                     ];
                     unsettled.iter().any(|(other, _)| other == *id)
-                        || shapes.iter().any(|shape| shape != &shapes[2])
+                        || (shapes.iter()).any(|shape| at_name(*shape) != at_name(shapes[2]))
                 })
                 .collect();
             let holds_name_of = |holder: &NodeId, id: &NodeId| {
@@ -3637,7 +3760,15 @@ impl World {
                 let Some(path) = device.disk.path(*ino) else {
                     return fail("its parked directory is not empty".into());
                 };
-                let normal: Vec<String> = path.iter().map(|name| nfc(name)).collect();
+                let normal: Vec<String> = if let Some((tail, to)) = delayed
+                    .values()
+                    .filter_map(|(from, to)| Some((path.strip_prefix(from.as_slice())?, to)))
+                    .min_by_key(|(tail, _)| tail.len())
+                {
+                    to.iter().chain(tail).map(|name| nfc(name)).collect()
+                } else {
+                    path.iter().map(|name| nfc(name)).collect()
+                };
                 if disk.insert(normal, entry.content.clone()).is_some() {
                     return fail(format!("its disk has two entries named {path:?} in NFC"));
                 }
@@ -3677,7 +3808,15 @@ impl World {
                     ('S', trees.synced().live(id)),
                     ('R', trees.remote().live(id)),
                 ] {
-                    if !same(shape, on_server) && (tree == 'R' || !only_r) {
+                    let delayed_name = tree != 'R'
+                        && delayed.contains_key(id)
+                        && shape.zip(on_server).is_some_and(|(shape, remote)| {
+                            shape.kind == remote.kind
+                                && shape.parent == remote.parent
+                                && shape.content == remote.content
+                                && name_key(&shape.name) == name_key(&remote.name)
+                        });
+                    if !same(shape, on_server) && !delayed_name && (tree == 'R' || !only_r) {
                         return fail(format!(
                             "{tree} has {shape:?} for node {id} and the server has {on_server:?}"
                         ));

@@ -1,5 +1,5 @@
 class = "R"
-issue = "GUN-1216"
+issue = "GUN-1280"
 tests = ["devices_with_rules_converge_once_the_faults_stop", "devices_with_rules_lose_no_write"]
 message = '''(after phase <n>: after the faults stopped, on device <n>: a commit of device <n> places node <id> at \[.*\], which the rules of device <n> leave out\.|not recorded: devices::\S+ \S+ SentLeftOut a commit of device <n> places node <id> at \[(?:(?! not recorded: ).)*\], which the rules of device <n> leave out( not recorded: devices::\S+ \S+ SentLeftOut (?:(?! not recorded: ).)+?leave out)*)'''
 examples = [

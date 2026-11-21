@@ -190,6 +190,7 @@ fn stopped_status(space_id: &str) -> FolderStatus {
         activity: None,
         bytes_moved: 0,
         kept_entries: Vec::new(),
+        merged_folders: Vec::new(),
     }
 }
 

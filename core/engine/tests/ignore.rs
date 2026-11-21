@@ -4,7 +4,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use koidrive_engine::classify::{Origin, Pending, Trees, Waiting};
 use koidrive_engine::commit::{Commits, InFlight};
-use koidrive_engine::effects::{self, Base, BatchLimit, Effect, Effects, Location, Stuck};
+use koidrive_engine::effects::{
+    self, Base, BatchLimit, Effect, EffectRecord, Effects, Location, Stuck,
+};
 use koidrive_engine::first_link::{LogRead, Marks};
 use koidrive_engine::ids::IdGen;
 use koidrive_engine::ignore::{LocalRules, RuleFile, Source};
@@ -3049,6 +3051,789 @@ fn a_moved_out_copy_trashed_before_its_create_answer_leaves_no_displaced_record(
 }
 
 #[test]
+fn of_three_folders_merged_into_one_live_folder_one_takes_over_the_live_folder_made_again() {
+    let acute = ["\u{c9}", "E\u{301}", "e\u{301}"];
+    let dotted = ["\u{1ec7}", "\u{1eb8}\u{302}", "E\u{323}\u{302}"];
+    for (names, made, winner) in [
+        (acute, "e\u{301}", "m3"),
+        (["AB", "Ab", "aB"], "ab", "m1"),
+        (acute, "\u{e9}", "m3"),
+        (dotted, "\u{1ec6}", "m2"),
+    ] {
+        let mut trees = trees(&[
+            synced("b", dir(ROOT, made)),
+            ("m1", Some(dir(ROOT, names[0])), None, None),
+            ("m2", Some(dir(ROOT, names[1])), None, None),
+            ("m3", Some(dir(ROOT, names[2])), None, None),
+            ("c1", Some(file("m1", "c.txt", 1)), None, None),
+            ("c2", Some(file("m2", "c.txt", 2)), None, None),
+            ("c3", Some(file("m3", "c.txt", 3)), None, None),
+        ]);
+        trees.set_rules(&AT_ROOT, Source::Koiignore, rules("*.txt\n"));
+        trees.settle(&Default::default());
+        let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+        let sent = commits
+            .build(&mut trees, &mut ids, NOW, HISTORY, "me", 7)
+            .cloned()
+            .unwrap();
+        assert_eq!(sent.ops.len(), 3);
+        let merged = proto::OpResult {
+            code: proto::op_result::Code::MergedInto as i32,
+            node_id: "b".into(),
+            ..Default::default()
+        };
+        let result = proto::CommitResult {
+            seq: 1,
+            results: vec![merged; 3],
+            ..Default::default()
+        };
+        commits.received(result).unwrap();
+        assert!(commits.acknowledge(&mut trees, 1));
+        trees.settle(commits.aliases());
+        trash(&mut trees, "b");
+        trees.remove_local(&NodeId::from("b"));
+        trees.set_synced("b".into(), None);
+        trees.set_remote("n".into(), remote(dir(ROOT, made)));
+        let settle = |commits: &mut Commits, trees: &mut Trees, ids: &mut IdGen| {
+            let residue = effects::MergeResidue::observe(trees, commits.aliases(), |_, _| {
+                Ok::<_, std::convert::Infallible>(true)
+            })
+            .unwrap();
+            commits.settle_merge_residue(trees, ids, NOW, &residue)
+        };
+        assert!(settle(&mut commits, &mut trees, &mut ids));
+        let at = |id: &str| {
+            trees
+                .local()
+                .get(&NodeId::from(id))
+                .map(|n| n.shape.name.clone())
+        };
+        let folders = [("m1", names[0]), ("m2", names[1]), ("m3", names[2])];
+        let won = folders.iter().find(|(id, _)| *id == winner).unwrap().1;
+        assert_eq!(at("n").as_deref(), Some(won));
+        for (id, name) in folders.iter().filter(|(id, _)| *id != winner) {
+            assert_eq!(at(id).as_deref(), Some(*name));
+            assert_eq!(
+                commits.aliases().get(&NodeId::from(*id)),
+                Some(&NodeId::from("b"))
+            );
+        }
+        assert!(!settle(&mut commits, &mut trees, &mut ids));
+        assert!(
+            commits
+                .build(&mut trees, &mut ids, NOW, HISTORY, "me", 7)
+                .is_none()
+        );
+    }
+}
+
+#[test]
+fn a_live_folder_made_again_beside_merged_folders_of_its_key_is_not_made_beside_them_but_taken_over()
+ {
+    for (names, made) in [(&["A"][..], "a"), (&["\u{c9}", "E\u{301}"][..], "\u{e9}")] {
+        let ids_of = ["m1", "m2"];
+        let mut rows = vec![synced("b", dir(ROOT, made))];
+        for (i, name) in names.iter().enumerate() {
+            rows.push((ids_of[i], Some(dir(ROOT, name)), None, None));
+            rows.push((
+                ["c1", "c2"][i],
+                Some(file(ids_of[i], "c.txt", 1)),
+                None,
+                None,
+            ));
+        }
+        let mut trees = trees(&rows);
+        trees.set_rules(&AT_ROOT, Source::Koiignore, rules("*.txt\n"));
+        trees.settle(&Default::default());
+        let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+        let sent = commits
+            .build(&mut trees, &mut ids, NOW, HISTORY, "me", 7)
+            .cloned()
+            .unwrap();
+        let merged = proto::OpResult {
+            code: proto::op_result::Code::MergedInto as i32,
+            node_id: "b".into(),
+            ..Default::default()
+        };
+        let result = proto::CommitResult {
+            seq: 1,
+            results: vec![merged; sent.ops.len()],
+            ..Default::default()
+        };
+        commits.received(result).unwrap();
+        assert!(commits.acknowledge(&mut trees, 1));
+        trees.settle(commits.aliases());
+        trash(&mut trees, "b");
+        trees.remove_local(&NodeId::from("b"));
+        trees.set_synced("b".into(), None);
+        trees.set_remote("n".into(), remote(dir(ROOT, made)));
+        trees.settle(commits.aliases());
+        let residue = |trees: &Trees, commits: &Commits| {
+            effects::MergeResidue::observe(trees, commits.aliases(), |_, _| {
+                Ok::<_, std::convert::Infallible>(true)
+            })
+            .unwrap()
+        };
+        let plan = |trees: &Trees, commits: &Commits, ids: &mut IdGen| {
+            let residue = residue(trees, commits);
+            (Effects::default())
+                .plan_on_disk(trees, None, ids, NOW, BatchLimit::ONE, &residue)
+                .iter()
+                .map(|record| record.effect.clone())
+                .collect::<Vec<_>>()
+        };
+        let early = plan(&trees, &commits, &mut ids);
+        assert!(
+            !early
+                .iter()
+                .any(|effect| matches!(effect, Effect::CreateDir { .. })),
+            "{early:?}"
+        );
+        let observed = residue(&trees, &commits);
+        assert!(commits.settle_merge_residue(&mut trees, &mut ids, NOW, &observed));
+        trees.settle(commits.aliases());
+        assert!(trees.local().get(&NodeId::from("n")).is_some());
+        let late = plan(&trees, &commits, &mut ids);
+        assert!(matches!(&late[..], [Effect::Move { .. }]), "{late:?}");
+    }
+}
+
+#[test]
+fn a_file_at_the_name_key_holds_a_merged_folder_where_it_is_beside_the_live_folder_made_again() {
+    for (merged_name, file_name, made) in [("A", "a", "a"), ("AB", "Ab", "ab")] {
+        let mut trees = trees(&[
+            synced("b", dir(ROOT, made)),
+            ("m1", Some(dir(ROOT, merged_name)), None, None),
+            ("c1", Some(file("m1", "c.txt", 1)), None, None),
+        ]);
+        trees.set_rules(&AT_ROOT, Source::Koiignore, rules("*.txt\n"));
+        trees.settle(&Default::default());
+        let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+        let sent = commits
+            .build(&mut trees, &mut ids, NOW, HISTORY, "me", 7)
+            .cloned()
+            .unwrap();
+        assert_eq!(sent.ops.len(), 1);
+        let merged = proto::OpResult {
+            code: proto::op_result::Code::MergedInto as i32,
+            node_id: "b".into(),
+            ..Default::default()
+        };
+        let result = proto::CommitResult {
+            seq: 1,
+            results: vec![merged],
+            ..Default::default()
+        };
+        commits.received(result).unwrap();
+        assert!(commits.acknowledge(&mut trees, 1));
+        trees.settle(commits.aliases());
+        trash(&mut trees, "b");
+        trees.remove_local(&NodeId::from("b"));
+        trees.set_synced("b".into(), None);
+        trees.set_local("f".into(), local(file(ROOT, file_name, 9), 9));
+        trees.set_remote("n".into(), remote(dir(ROOT, made)));
+        trees.settle(commits.aliases());
+        let residue = effects::MergeResidue::observe(&trees, commits.aliases(), |_, _| {
+            Ok::<_, std::convert::Infallible>(true)
+        })
+        .unwrap();
+        assert!(!commits.settle_merge_residue(&mut trees, &mut ids, NOW, &residue));
+        let held = trees.local().get(&NodeId::from("m1")).unwrap();
+        assert_eq!(
+            (held.shape.name.as_str(), held.parked),
+            (merged_name, false)
+        );
+        assert_eq!(
+            commits.aliases().get(&NodeId::from("m1")),
+            Some(&NodeId::from("b"))
+        );
+        assert!(trees.local().get(&NodeId::from("n")).is_none());
+        let planned = (Effects::default())
+            .plan_on_disk(&trees, None, &mut ids, NOW, BatchLimit::ONE, &residue)
+            .to_vec();
+        assert!(planned.is_empty(), "{planned:?}");
+        assert_eq!(
+            effects::stuck_on_disk(
+                &trees,
+                &Effects::default(),
+                None,
+                &Default::default(),
+                &residue
+            )
+            .get(&NodeId::from("m1")),
+            Some(&Stuck::MergedInto(NodeId::from("n")))
+        );
+    }
+}
+
+#[test]
+fn a_merged_folder_uploads_under_a_new_id_after_the_move_when_the_live_folder_moved_away_here() {
+    let mut trees = trees(&[
+        synced("t", dir(ROOT, "a")),
+        ("m1", Some(dir(ROOT, "A")), None, None),
+        ("c1", Some(file("m1", "c.txt", 1)), None, None),
+    ]);
+    trees.set_rules(&AT_ROOT, Source::Koiignore, rules("*.txt\n"));
+    trees.settle(&Default::default());
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    let sent = commits
+        .build(&mut trees, &mut ids, NOW, HISTORY, "me", 7)
+        .cloned()
+        .unwrap();
+    assert_eq!(sent.ops.len(), 1);
+    let merged = proto::OpResult {
+        code: proto::op_result::Code::MergedInto as i32,
+        node_id: "t".into(),
+        ..Default::default()
+    };
+    let result = proto::CommitResult {
+        seq: 1,
+        results: vec![merged],
+        ..Default::default()
+    };
+    commits.received(result).unwrap();
+    assert!(commits.acknowledge(&mut trees, 1));
+    trees.settle(commits.aliases());
+    trees.set_local("t".into(), local(dir(ROOT, "z"), 1));
+    trees.settle(commits.aliases());
+    let residue = effects::MergeResidue::observe(&trees, commits.aliases(), |_, _| {
+        Ok::<_, std::convert::Infallible>(true)
+    })
+    .unwrap();
+    assert!(commits.settle_merge_residue(&mut trees, &mut ids, NOW, &residue));
+    trees.settle(commits.aliases());
+    let sent = commits
+        .build(&mut trees, &mut ids, NOW, HISTORY, "me", 7)
+        .cloned()
+        .unwrap();
+    let ops: Vec<op::Op> = sent.ops.into_iter().map(|op| op.op.unwrap()).collect();
+    let [op::Op::Move(moved), op::Op::CreateDir(created)] = &ops[..] else {
+        panic!("the move, then the create: {ops:?}");
+    };
+    assert_eq!(
+        (moved.node_id.as_str(), moved.new_name.as_str()),
+        ("t", "z")
+    );
+    assert_eq!(created.name, "A");
+    let made = NodeId::from(created.node_id.clone());
+    assert!(made != "t" && made != "m1");
+    assert_eq!(trees.local().get(&made).unwrap().shape.name, "A");
+    assert_eq!(
+        trees.local().get(&NodeId::from("c1")).unwrap().shape.parent,
+        made
+    );
+    assert!(commits.aliases().is_empty());
+    let applied = proto::OpResult {
+        code: proto::op_result::Code::Applied as i32,
+        ..Default::default()
+    };
+    let result = proto::CommitResult {
+        seq: 2,
+        results: vec![applied; 2],
+        ..Default::default()
+    };
+    commits.received(result).unwrap();
+    trees.set_remote("t".into(), remote(dir(ROOT, "z")));
+    trees.set_remote(made.clone(), remote(dir(ROOT, "A")));
+    assert!(commits.acknowledge(&mut trees, 2));
+    trees.settle(commits.aliases());
+    assert!(
+        commits
+            .build(&mut trees, &mut ids, NOW, HISTORY, "me", 7)
+            .is_none()
+    );
+}
+
+#[test]
+fn a_parked_node_the_rules_leave_out_goes_back_to_its_free_place_while_a_merged_folder_holds_its_server_name()
+ {
+    let mut trees = trees(&[
+        synced("b", dir(ROOT, "a")),
+        ("m1", Some(dir(ROOT, "A")), None, None),
+        ("c1", Some(file("m1", "c.txt", 1)), None, None),
+    ]);
+    trees.set_rules(&AT_ROOT, Source::Koiignore, rules("*.txt\n"));
+    trees.settle(&Default::default());
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    let sent = commits
+        .build(&mut trees, &mut ids, NOW, HISTORY, "me", 7)
+        .cloned()
+        .unwrap();
+    assert_eq!(sent.ops.len(), 1);
+    let merged = proto::OpResult {
+        code: proto::op_result::Code::MergedInto as i32,
+        node_id: "b".into(),
+        ..Default::default()
+    };
+    let result = proto::CommitResult {
+        seq: 1,
+        results: vec![merged],
+        ..Default::default()
+    };
+    commits.received(result).unwrap();
+    assert!(commits.acknowledge(&mut trees, 1));
+    trees.settle(commits.aliases());
+    trash(&mut trees, "b");
+    trees.remove_local(&NodeId::from("b"));
+    trees.set_synced("b".into(), None);
+    trees.set_synced("x".into(), Some(file(ROOT, "x.txt", 7)));
+    trees.set_remote("x".into(), remote(file(ROOT, "A", 7)));
+    let parked = LocalNode {
+        parked: true,
+        ..local(file(ROOT, "x.txt", 7), 50)
+    };
+    trees.set_local("x".into(), parked);
+    trees.settle(commits.aliases());
+    assert!(trees.ignored(&"x".into()));
+    let residue = effects::MergeResidue::observe(&trees, commits.aliases(), |_, _| {
+        Ok::<_, std::convert::Infallible>(true)
+    })
+    .unwrap();
+    assert!(!commits.settle_merge_residue(&mut trees, &mut ids, NOW, &residue));
+    let planned = (Effects::default())
+        .plan_on_disk(&trees, None, &mut ids, NOW, BatchLimit::ONE, &residue)
+        .to_vec();
+    let [record] = &planned[..] else {
+        panic!("one move out of the parked area: {planned:?}");
+    };
+    assert_eq!(record.node, NodeId::from("x"));
+    let Effect::Move { from, to, .. } = &record.effect else {
+        panic!("{planned:?}");
+    };
+    assert_eq!(from, &Location::Parked("x".into()));
+    let home = Location::At {
+        base: Base::Root,
+        dirs: vec![],
+        name: "x.txt".into(),
+    };
+    assert_eq!(to, &home);
+    assert!(residue.permits(&trees, record));
+    let stuck = effects::stuck_on_disk(
+        &trees,
+        &Effects::default(),
+        None,
+        &Default::default(),
+        &residue,
+    );
+    assert_eq!(
+        stuck,
+        BTreeMap::from([(NodeId::from("m1"), Stuck::MergedInto("x".into()))])
+    );
+}
+
+#[test]
+fn a_merged_folder_uploads_under_a_new_id_after_the_delete_when_the_live_folder_was_deleted_here() {
+    let mut trees = trees(&[
+        synced("t", dir(ROOT, "a")),
+        ("m1", Some(dir(ROOT, "A")), None, None),
+        ("c1", Some(file("m1", "c.txt", 1)), None, None),
+    ]);
+    trees.set_rules(&AT_ROOT, Source::Koiignore, rules("*.txt\n"));
+    trees.settle(&Default::default());
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    let sent = commits
+        .build(&mut trees, &mut ids, NOW, HISTORY, "me", 7)
+        .cloned()
+        .unwrap();
+    assert_eq!(sent.ops.len(), 1);
+    let merged = proto::OpResult {
+        code: proto::op_result::Code::MergedInto as i32,
+        node_id: "t".into(),
+        ..Default::default()
+    };
+    let result = proto::CommitResult {
+        seq: 1,
+        results: vec![merged],
+        ..Default::default()
+    };
+    commits.received(result).unwrap();
+    assert!(commits.acknowledge(&mut trees, 1));
+    trees.settle(commits.aliases());
+    trees.remove_local(&NodeId::from("t"));
+    trees.settle(commits.aliases());
+    let observe = |trees: &Trees, commits: &Commits| {
+        effects::MergeResidue::observe(trees, commits.aliases(), |_, _| {
+            Ok::<_, std::convert::Infallible>(true)
+        })
+        .unwrap()
+    };
+    let residue = observe(&trees, &commits);
+    assert!(!commits.settle_merge_residue(&mut trees, &mut ids, NOW, &residue));
+    let sent = commits
+        .build(&mut trees, &mut ids, NOW, HISTORY, "me", 7)
+        .cloned()
+        .unwrap();
+    let ops: Vec<op::Op> = sent.ops.into_iter().map(|op| op.op.unwrap()).collect();
+    assert!(
+        matches!(&ops[..], [op::Op::Delete(delete)] if delete.node_id == "t"),
+        "{ops:?}"
+    );
+    let residue = observe(&trees, &commits);
+    assert!(!commits.settle_merge_residue(&mut trees, &mut ids, NOW, &residue));
+    assert_eq!(
+        effects::stuck_on_disk(
+            &trees,
+            &Effects::default(),
+            None,
+            &Default::default(),
+            &residue
+        )
+        .get(&NodeId::from("m1")),
+        Some(&Stuck::MergedInto("t".into()))
+    );
+    let applied = proto::OpResult {
+        code: proto::op_result::Code::Applied as i32,
+        ..Default::default()
+    };
+    let result = proto::CommitResult {
+        seq: 2,
+        results: vec![applied.clone()],
+        ..Default::default()
+    };
+    commits.received(result).unwrap();
+    trash(&mut trees, "t");
+    assert!(commits.acknowledge(&mut trees, 2));
+    trees.settle(commits.aliases());
+    let residue = observe(&trees, &commits);
+    assert!(commits.settle_merge_residue(&mut trees, &mut ids, NOW, &residue));
+    trees.settle(commits.aliases());
+    let sent = commits
+        .build(&mut trees, &mut ids, NOW, HISTORY, "me", 7)
+        .cloned()
+        .unwrap();
+    let ops: Vec<op::Op> = sent.ops.into_iter().map(|op| op.op.unwrap()).collect();
+    let [op::Op::CreateDir(created)] = &ops[..] else {
+        panic!("the create under a new ID: {ops:?}");
+    };
+    assert_eq!(created.name, "A");
+    let made = NodeId::from(created.node_id.clone());
+    assert!(made != "t" && made != "m1");
+    assert_eq!(
+        trees.local().get(&NodeId::from("c1")).unwrap().shape.parent,
+        made
+    );
+    let result = proto::CommitResult {
+        seq: 3,
+        results: vec![applied],
+        ..Default::default()
+    };
+    commits.received(result).unwrap();
+    trees.set_remote(made, remote(dir(ROOT, "A")));
+    assert!(commits.acknowledge(&mut trees, 3));
+    trees.settle(commits.aliases());
+    assert!(
+        commits
+            .build(&mut trees, &mut ids, NOW, HISTORY, "me", 7)
+            .is_none()
+    );
+}
+
+fn merged_beside_a_trashed_folder(extra: Vec<Row>) -> (Trees, Commits, IdGen) {
+    let mut rows = vec![synced("t", dir(ROOT, "a"))];
+    rows.extend(extra);
+    rows.push(("m1", Some(dir(ROOT, "A")), None, None));
+    rows.push(("c1", Some(file("m1", "c.txt", 1)), None, None));
+    let mut trees = trees(&rows);
+    trees.set_rules(&AT_ROOT, Source::Koiignore, rules("*.txt\n"));
+    trees.settle(&Default::default());
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    let sent = commits
+        .build(&mut trees, &mut ids, NOW, HISTORY, "me", 7)
+        .cloned()
+        .unwrap();
+    assert_eq!(sent.ops.len(), 1);
+    let merged = proto::OpResult {
+        code: proto::op_result::Code::MergedInto as i32,
+        node_id: "t".into(),
+        ..Default::default()
+    };
+    let result = proto::CommitResult {
+        seq: 1,
+        results: vec![merged],
+        ..Default::default()
+    };
+    commits.received(result).unwrap();
+    assert!(commits.acknowledge(&mut trees, 1));
+    trees.settle(commits.aliases());
+    trash(&mut trees, "t");
+    trees.remove_local(&NodeId::from("t"));
+    trees.set_synced("t".into(), None);
+    (trees, commits, ids)
+}
+
+fn observed_residue(trees: &Trees, commits: &Commits) -> effects::MergeResidue {
+    effects::MergeResidue::observe(trees, commits.aliases(), |_, _| {
+        Ok::<_, std::convert::Infallible>(true)
+    })
+    .unwrap()
+}
+
+fn merge_report(trees: &Trees, residue: &effects::MergeResidue) -> BTreeMap<NodeId, Stuck> {
+    effects::stuck_on_disk(
+        trees,
+        &Effects::default(),
+        None,
+        &Default::default(),
+        residue,
+    )
+}
+
+fn plan_beside(
+    trees: &Trees,
+    ids: &mut IdGen,
+    residue: &effects::MergeResidue,
+) -> Vec<EffectRecord> {
+    (Effects::default())
+        .plan_on_disk(trees, None, ids, NOW, BatchLimit::ONE, residue)
+        .to_vec()
+}
+
+#[test]
+fn every_folder_of_a_chain_of_moves_onto_a_merged_folder_stays_unparked_and_waits_behind_it() {
+    for length in [2, 3, 5, 20] {
+        let chain: &'static [(String, String)] = Box::leak(
+            (0..length)
+                .map(|i| (format!("N{i:02}"), format!("n{i:02}")))
+                .collect(),
+        );
+        let (mut trees, mut commits, mut ids) = merged_beside_a_trashed_folder(
+            (chain.iter())
+                .map(|(id, name)| synced(id, dir(ROOT, name)))
+                .collect(),
+        );
+        for (i, (id, _)) in chain.iter().enumerate() {
+            let onto = if i == 0 { "A" } else { &chain[i - 1].1 };
+            trees.set_remote(id.as_str().into(), remote(dir(ROOT, onto)));
+        }
+        trees.settle(commits.aliases());
+        let residue = observed_residue(&trees, &commits);
+        assert!(!commits.settle_merge_residue(&mut trees, &mut ids, NOW, &residue));
+        let planned = plan_beside(&trees, &mut ids, &residue);
+        assert!(planned.is_empty(), "{length}: {planned:?}");
+        let mut expected: BTreeMap<NodeId, Stuck> = (chain.iter())
+            .map(|(id, _)| (NodeId::from(id.as_str()), Stuck::Behind("m1".into())))
+            .collect();
+        expected.insert("m1".into(), Stuck::MergedInto("N00".into()));
+        assert_eq!(merge_report(&trees, &residue), expected, "{length}");
+    }
+}
+
+#[test]
+fn a_park_planned_before_its_folder_falls_behind_a_merged_folder_through_a_chain_waits_until_the_chain_goes()
+ {
+    let (mut trees, commits, mut ids) = merged_beside_a_trashed_folder(vec![
+        synced("B", dir(ROOT, "b")),
+        synced("C", dir(ROOT, "c")),
+        synced("D", dir(ROOT, "d")),
+    ]);
+    trees.set_remote("C".into(), remote(dir(ROOT, "d")));
+    trees.set_remote("D".into(), remote(dir(ROOT, "c")));
+    trees.settle(commits.aliases());
+    let residue = observed_residue(&trees, &commits);
+    let planned = plan_beside(&trees, &mut ids, &residue);
+    let [park] = &planned[..] else {
+        panic!("one park for the swap: {planned:?}");
+    };
+    assert!(
+        matches!(
+            &park.effect,
+            Effect::Move {
+                to: Location::Parked(_),
+                ..
+            }
+        ),
+        "{park:?}"
+    );
+    assert!(residue.permits(&trees, park));
+    trees.set_remote("B".into(), remote(dir(ROOT, "A")));
+    trees.set_remote(park.node.clone(), remote(dir(ROOT, "b")));
+    trees.settle(commits.aliases());
+    let residue = observed_residue(&trees, &commits);
+    assert!(!residue.permits(&trees, park));
+    assert_eq!(
+        merge_report(&trees, &residue).get(&park.node),
+        Some(&Stuck::Behind("m1".into()))
+    );
+    trees.set_remote("B".into(), remote(dir(ROOT, "e")));
+    trees.settle(commits.aliases());
+    let residue = observed_residue(&trees, &commits);
+    assert!(residue.permits(&trees, park));
+    assert!(!plan_beside(&trees, &mut ids, &residue).is_empty());
+    let stuck = merge_report(&trees, &residue);
+    assert!(
+        !stuck
+            .values()
+            .any(|stuck| matches!(stuck, Stuck::Behind(_))),
+        "{stuck:?}"
+    );
+}
+
+#[test]
+fn a_swap_beside_a_chain_onto_a_merged_folder_still_resolves() {
+    let (mut trees, mut commits, mut ids) = merged_beside_a_trashed_folder(vec![
+        synced("B", dir(ROOT, "b")),
+        synced("C", dir(ROOT, "c")),
+        synced("D", dir(ROOT, "d")),
+        synced("E", dir(ROOT, "e")),
+        synced("F", dir(ROOT, "f")),
+    ]);
+    trees.set_remote("B".into(), remote(dir(ROOT, "A")));
+    trees.set_remote("E".into(), remote(dir(ROOT, "b")));
+    trees.set_remote("C".into(), remote(dir(ROOT, "d")));
+    trees.set_remote("D".into(), remote(dir(ROOT, "c")));
+    trees.set_remote("F".into(), remote(dir(ROOT, "c")));
+    trees.settle(commits.aliases());
+    let residue = observed_residue(&trees, &commits);
+    assert!(!commits.settle_merge_residue(&mut trees, &mut ids, NOW, &residue));
+    let planned = plan_beside(&trees, &mut ids, &residue);
+    let stuck = merge_report(&trees, &residue);
+    for id in ["B", "E"] {
+        assert_eq!(
+            stuck.get(&NodeId::from(id)),
+            Some(&Stuck::Behind("m1".into()))
+        );
+    }
+    assert!(!stuck.contains_key(&NodeId::from("C")) && !stuck.contains_key(&NodeId::from("D")));
+    assert!(
+        planned.iter().any(|r| r.node == "C" || r.node == "D"),
+        "the swap does not resolve: {planned:?}"
+    );
+    assert!(planned.iter().all(|r| r.node != "B" && r.node != "E"));
+}
+
+#[test]
+fn a_chain_through_an_excluded_folder_onto_a_merged_folder_is_reported_held_by_the_excluded_folder()
+{
+    let (mut trees, mut commits, mut ids) = merged_beside_a_trashed_folder(vec![
+        synced("X", dir(ROOT, "x")),
+        synced("D", file(ROOT, "d", 2)),
+    ]);
+    trees.set_rules(&AT_ROOT, Source::Koiignore, rules("*.txt\nx/\n"));
+    trees.settle(commits.aliases());
+    trees.set_remote("X".into(), remote(dir(ROOT, "A")));
+    trees.set_remote("D".into(), remote(file(ROOT, "x", 2)));
+    trees.settle(commits.aliases());
+    let residue = observed_residue(&trees, &commits);
+    assert!(!commits.settle_merge_residue(&mut trees, &mut ids, NOW, &residue));
+    let planned = plan_beside(&trees, &mut ids, &residue);
+    assert!(planned.iter().all(|r| r.node != "D"), "{planned:?}");
+    assert_eq!(
+        merge_report(&trees, &residue).get(&NodeId::from("D")),
+        Some(&Stuck::HeldBy("X".into()))
+    );
+}
+
+#[test]
+fn a_parked_node_the_rules_leave_out_is_not_unparked_onto_a_merged_folder() {
+    let (mut trees, mut commits, mut ids) = merged_beside_a_trashed_folder(vec![]);
+    trees.set_rules(&AT_ROOT, Source::Koiignore, rules("*.txt\n/a/\n"));
+    trees.set_synced("P".into(), Some(dir(ROOT, "a")));
+    trees.set_remote("P".into(), remote(dir(ROOT, "A")));
+    let parked = LocalNode {
+        parked: true,
+        ..local(dir(ROOT, "a"), 60)
+    };
+    trees.set_local("P".into(), parked);
+    trees.revert("P".into());
+    trees.settle(commits.aliases());
+    assert!(trees.ignored(&"P".into()));
+    let residue = observed_residue(&trees, &commits);
+    assert!(!commits.settle_merge_residue(&mut trees, &mut ids, NOW, &residue));
+    let planned = plan_beside(&trees, &mut ids, &residue);
+    assert!(planned.is_empty(), "{planned:?}");
+    assert_eq!(
+        merge_report(&trees, &residue).get(&NodeId::from("P")),
+        Some(&Stuck::Behind("m1".into()))
+    );
+}
+
+#[test]
+fn only_destination_checks_ask_directly_whether_a_merged_folder_holds_a_place() {
+    let mut current = "";
+    let mut callers: BTreeMap<&str, usize> = BTreeMap::new();
+    for line in include_str!("../src/effects.rs").lines() {
+        let declared = ["fn ", "pub fn ", "pub(crate) fn ", "pub(super) fn "]
+            .iter()
+            .find_map(|start| line.trim_start().strip_prefix(start));
+        if let Some(rest) = declared {
+            current = &rest[..rest.find(['(', '<']).unwrap_or(rest.len())];
+            continue;
+        }
+        let calls = line.matches("holds_place(").count();
+        if calls > 0 {
+            *callers.entry(current).or_default() += calls;
+        }
+    }
+    assert_eq!(
+        callers,
+        BTreeMap::from([("choose", 1), ("permits", 1), ("step", 1)]),
+        "View::holds_place only says whether a merged folder sits at a destination. A node that may not move or park because a merged folder holds its place, directly or through a chain, must ask View::keeps_in_place."
+    );
+}
+
+#[test]
+fn the_folder_holding_the_live_id_waits_behind_a_merged_folder_to_move_into_its_key_from_another_folder()
+ {
+    let mut trees = trees(&[
+        synced("p", dir(ROOT, "p")),
+        (
+            "b",
+            Some(dir("p", "a")),
+            Some(dir("p", "a")),
+            Some(dir(ROOT, "a")),
+        ),
+        ("m1", Some(dir(ROOT, "A")), None, None),
+        ("c1", Some(file("m1", "c.txt", 1)), None, None),
+    ]);
+    trees.set_rules(&AT_ROOT, Source::Koiignore, rules("*.txt\n"));
+    trees.settle(&Default::default());
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    let sent = commits
+        .build(&mut trees, &mut ids, NOW, HISTORY, "me", 7)
+        .cloned()
+        .unwrap();
+    assert_eq!(sent.ops.len(), 1);
+    let merged = proto::OpResult {
+        code: proto::op_result::Code::MergedInto as i32,
+        node_id: "b".into(),
+        ..Default::default()
+    };
+    let result = proto::CommitResult {
+        seq: 1,
+        results: vec![merged],
+        ..Default::default()
+    };
+    commits.received(result).unwrap();
+    assert!(commits.acknowledge(&mut trees, 1));
+    trees.settle(commits.aliases());
+    let residue = effects::MergeResidue::observe(&trees, commits.aliases(), |_, _| {
+        Ok::<_, std::convert::Infallible>(true)
+    })
+    .unwrap();
+    assert!(!commits.settle_merge_residue(&mut trees, &mut ids, NOW, &residue));
+    let planned = (Effects::default())
+        .plan_on_disk(&trees, None, &mut ids, NOW, BatchLimit::ONE, &residue)
+        .to_vec();
+    assert!(planned.is_empty(), "{planned:?}");
+    assert_eq!(
+        effects::stuck_on_disk(
+            &trees,
+            &Effects::default(),
+            None,
+            &Default::default(),
+            &residue
+        )
+        .get(&NodeId::from("b")),
+        Some(&Stuck::Behind(NodeId::from("m1")))
+    );
+    assert!(
+        commits
+            .build(&mut trees, &mut ids, NOW, HISTORY, "me", 7)
+            .is_none()
+    );
+}
+
+#[test]
 fn a_folder_the_server_merges_into_a_live_folder_of_its_name_key_is_taken_over_under_the_live_name()
 {
     let mut trees = trees(&[
@@ -3668,6 +4453,28 @@ fn a_remote_change_below_a_folder_moved_into_an_ignored_folder_here_plans_no_rem
 }
 
 #[test]
+fn a_swap_at_a_merged_folders_name_key_parks_neither_folder() {
+    let (mut trees, mut commits, mut ids) =
+        merged_beside_a_trashed_folder(vec![synced("Sb", dir(ROOT, "b"))]);
+    trees.set_synced("Sa".into(), Some(dir(ROOT, "a")));
+    trees.set_local("Sa".into(), local(dir(ROOT, "a"), 70));
+    trees.set_remote("Sa".into(), remote(dir(ROOT, "b")));
+    trees.set_remote("Sb".into(), remote(dir(ROOT, "a")));
+    trees.settle(commits.aliases());
+    let residue = observed_residue(&trees, &commits);
+    assert!(!commits.settle_merge_residue(&mut trees, &mut ids, NOW, &residue));
+    let planned = plan_beside(&trees, &mut ids, &residue);
+    assert!(planned.is_empty(), "{planned:?}");
+    let report = merge_report(&trees, &residue);
+    for id in ["Sa", "Sb"] {
+        assert_eq!(
+            report.get(&NodeId::from(id)),
+            Some(&Stuck::Behind("m1".into()))
+        );
+    }
+}
+
+#[test]
 fn a_file_this_device_moved_back_before_its_own_move_was_served_stays() {
     let mut trees = trees(&[
         synced("a", file(ROOT, "a.txt", 1)),
@@ -3779,4 +4586,46 @@ fn a_removal_planned_for_a_moved_file_is_not_taken_once_a_rule_excludes_the_copy
     assert!(trees.excluded(&"a".into()));
     assert!(trees.remote().live(&"a".into()).is_none());
     assert!(!record.applies(&trees, None));
+}
+
+#[test]
+fn a_parked_file_goes_home_when_an_excluded_folder_shares_its_server_name_key_with_a_merged_folder()
+{
+    for merged_excluded_too in [false, true] {
+        let (mut trees, mut commits, mut ids) = merged_beside_a_trashed_folder(vec![]);
+        if merged_excluded_too {
+            trees.set_rules(&AT_ROOT, Source::Koiignore, rules("*.txt\n/A/\n"));
+        }
+        trees.set_synced("X".into(), Some(dir(ROOT, "a")));
+        trees.set_local("X".into(), local(dir(ROOT, "a"), 70));
+        trees.set_remote("X".into(), remote(dir(ROOT, "x.txt")));
+        trees.set_synced("Q".into(), Some(file(ROOT, "q", 2)));
+        trees.set_local("Q".into(), local(file(ROOT, "q", 2), 71));
+        trees.set_remote("Q".into(), remote(file(ROOT, "a", 2)));
+        trees.set_synced("P".into(), Some(file(ROOT, "p", 3)));
+        let parked = LocalNode {
+            parked: true,
+            ..local(file(ROOT, "p", 3), 72)
+        };
+        trees.set_local("P".into(), parked);
+        trees.set_remote("P".into(), remote(file(ROOT, "a", 3)));
+        trees.settle(commits.aliases());
+        assert_eq!(trees.excluded(&"m1".into()), merged_excluded_too);
+        let residue = observed_residue(&trees, &commits);
+        assert!(!commits.settle_merge_residue(&mut trees, &mut ids, NOW, &residue));
+        let planned = plan_beside(&trees, &mut ids, &residue);
+        assert!(
+            matches!(&planned[..], [record] if record.node == "P"
+                && record.after.as_ref().is_some_and(|after| after.name == "p")),
+            "{planned:?}"
+        );
+        let held = match merged_excluded_too {
+            false => Stuck::HeldBy("X".into()),
+            true => Stuck::Behind("m1".into()),
+        };
+        assert_eq!(
+            merge_report(&trees, &residue).get(&NodeId::from("Q")),
+            Some(&held)
+        );
+    }
 }

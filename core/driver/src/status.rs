@@ -131,6 +131,8 @@ pub struct FolderStatus {
     /// rules of the deleted folder they were in, until the person deletes or makes them again (design §5.10).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub kept_entries: Vec<koidrive_fs::ItemPath>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub merged_folders: Vec<koidrive_fs::ItemPath>,
 }
 
 /// A disk inside a folder whose files stay on the server as they were and do not sync until it is back.

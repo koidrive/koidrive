@@ -633,6 +633,7 @@ impl FolderTask {
             recovery: status.recovery,
             held_disks: status.held_disks.clone(),
             kept_entries: status.kept_entries.clone(),
+            merged_folders: status.merged_folders.clone(),
         };
         if shown == view && status.activity == activity && !asked && !began_or_ended {
             return;
@@ -651,6 +652,7 @@ impl FolderTask {
         status.recovery = view.recovery;
         status.held_disks = view.held_disks;
         status.kept_entries = view.kept_entries;
+        status.merged_folders = view.merged_folders;
         drop(status);
         self.changed.send_replace(());
     }

@@ -6,7 +6,9 @@ use koidrive_engine::classify::{Pending, Trees};
 
 use koidrive_engine::commit::{Commits, Failure, Halt, MAX_CONFLICT_ATTEMPTS, MAX_OPS, Reconnect};
 
-use koidrive_engine::effects::{Base, BatchLimit, Effect, EffectRecord, Effects, Location};
+use koidrive_engine::effects::{
+    Base, BatchLimit, Effect, EffectRecord, Effects, Location, MergeResidue, Stuck,
+};
 
 use koidrive_engine::first_link::PriorSync;
 
@@ -22,6 +24,7 @@ use koidrive_engine::restore::{Outcome, Rejection, Resolved, RestoreIntent};
 
 use koidrive_engine::state::{RenamedOver, StateError};
 
+use koidrive_engine::tracked::TrackedMap;
 use koidrive_engine::tree::{
     ContentKey, FileIdentity, Kind, LocalNode, Names, NodeId, RemoteNode, Shape, same,
 };
@@ -1176,7 +1179,7 @@ impl Device {
     fn follow_rekeys(&mut self) {
         let local = self.trees.local();
         let rekeyed: BTreeMap<NodeId, NodeId> = (self.anchors.iter())
-            .filter(|(id, _)| local.get(id).is_none())
+            .filter(|(id, identity)| local.get(id).is_none_or(|node| node.identity != **identity))
             .filter_map(|(id, identity)| {
                 Some((
                     id.clone(),
@@ -2433,13 +2436,15 @@ fn run_ignoring_answering_after(
             effects.unblock(id);
             false
         });
+        let merge_residue = observed_merge_residue(&device, &commits);
         if let Some(record) = effects
-            .plan(
+            .plan_on_disk(
                 &device.trees,
                 commits.in_flight(),
                 &mut device.ids,
                 NOW as u64,
                 BatchLimit::ONE,
+                &merge_residue,
             )
             .first()
             .cloned()
@@ -2597,6 +2602,8 @@ fn run_ignoring_answering_after(
             release_taken_along(&device.trees, &mut kept_with, &freed);
             continue;
         }
+        let residue = observed_merge_residue(&device, &commits);
+        commits.settle_merge_residue(&mut device.trees, &mut device.ids, NOW as u64, &residue);
         let mut before = (device.trees.clone(), commits.questions().to_vec());
         let built = commits.build(
             &mut device.trees,
@@ -2929,12 +2936,37 @@ fn run_ignoring_answering_after(
         .map(|(id, _)| id)
         .filter(|id| !outside(id))
         .collect();
-    let refused_merges: BTreeSet<NodeId> = (effects.blocked().iter())
-        .filter_map(|(id, effect)| {
-            let Effect::RemoveDir { along, .. } = effect else {
+    let renaming = commits.renaming(&device.trees, NOW as u64);
+    let reported = koidrive_engine::effects::stuck_on_disk(
+        &device.trees,
+        &effects,
+        commits.in_flight(),
+        &renaming,
+        &observed_merge_residue(&device, &commits),
+    );
+    let refused_merges: BTreeSet<NodeId> = reported
+        .iter()
+        .filter_map(|(id, reason)| {
+            if !commits.aliases().contains_key(id) {
                 return None;
+            }
+            let along = match (reason, effects.blocked().get(id)) {
+                (Stuck::MergedInto(into), _)
+                    if holds_the_merged_folder(&device.trees, commits.aliases(), id, into) =>
+                {
+                    &[][..]
+                }
+                (
+                    Stuck::Parked,
+                    Some(Effect::RemoveDir {
+                        at: Location::Parked(_),
+                        along,
+                        ..
+                    }),
+                ) => along,
+                _ => return None,
             };
-            if !commits.aliases().contains_key(id) || !device.on_disk(id) {
+            if !device.on_disk(id) {
                 return None;
             }
             let held = held_on_disk(&device, id, along);
@@ -2977,6 +3009,10 @@ fn run_ignoring_answering_after(
         })
     };
     let mut waiting = refused_merges.clone();
+    waiting.extend(reported.iter().filter_map(|(id, reason)| match reason {
+        Stuck::Behind(source) if refused_merges.contains(source) => Some(id.clone()),
+        _ => None,
+    }));
     loop {
         let more: Vec<NodeId> = (unsettled.iter())
             .filter(|id| {
@@ -3003,9 +3039,6 @@ fn run_ignoring_answering_after(
         "{:?}",
         effects.blocked()
     );
-    let renaming = commits.renaming(&device.trees, NOW as u64);
-    let reported =
-        koidrive_engine::effects::stuck(&device.trees, &effects, commits.in_flight(), &renaming);
     let local = device.trees.local();
     let inside_itself = |id: &NodeId, folder: &NodeId| {
         folder == id
@@ -3132,6 +3165,144 @@ const CUTS: [Cut; 5] = [
     Cut::Answered,
     Cut::Effect,
 ];
+
+fn observed_merge_residue(device: &Device, commits: &Commits) -> MergeResidue {
+    MergeResidue::observe(&device.trees, commits.aliases(), |source, _| {
+        let held = held_on_disk(device, source, &[]);
+        Ok(device.on_disk(source)
+            && MergeResidue::holds_left_out(
+                &device.trees,
+                source,
+                held.iter().map(|(name, kind)| (Some(name.as_str()), *kind)),
+            ))
+    })
+    .unwrap_or_else(|never: std::convert::Infallible| match never {})
+}
+
+fn holds_the_merged_folder(
+    trees: &Trees,
+    aliases: &TrackedMap<NodeId, NodeId>,
+    folder: &NodeId,
+    into: &NodeId,
+) -> bool {
+    trees.local().get(folder).is_some_and(|local| {
+        aliases.contains_key(&local.shape.parent) && aliases.get(folder) == Some(into)
+            || trees.remote().live(into).is_some_and(|live| {
+                live.parent == local.shape.parent
+                    && name_key(&live.name) == name_key(&local.shape.name)
+            })
+    })
+}
+
+#[test]
+fn a_merged_folder_is_held_by_its_key_holder_or_its_alias_under_a_merged_parent() {
+    let root = NodeId::from("root");
+    let shape = |name: &str| Shape {
+        parent: root.clone(),
+        name: name.into(),
+        kind: Kind::Dir,
+        content: None,
+    };
+    let remote = |shape| RemoteNode {
+        shape,
+        trashed: false,
+        content_rev: 1,
+        meta_rev: 1,
+        meta_edit_rev: 1,
+        trash_group: String::new(),
+        version_id: String::new(),
+        made_over: Vec::new(),
+        edit_rev: 1,
+        pending_for: None,
+        pending_by: None,
+        chunks: Box::default(),
+    };
+    let mut trees = Trees::new(root.clone());
+    let local = LocalNode {
+        left_out_when_placed: false,
+        content_from_server: false,
+        shape: shape("ss"),
+        identity: FileIdentity {
+            ino: 1,
+            birth_ns: Some(0),
+            handle: None,
+        },
+        parked: false,
+        chunks: Box::default(),
+    };
+    let inner = LocalNode {
+        shape: Shape {
+            parent: "p".into(),
+            ..shape("in")
+        },
+        identity: FileIdentity {
+            ino: 3,
+            ..local.identity
+        },
+        ..local.clone()
+    };
+    let parent = LocalNode {
+        shape: shape("p"),
+        identity: FileIdentity {
+            ino: 2,
+            ..local.identity
+        },
+        ..local.clone()
+    };
+    trees.set_local("merged".into(), local);
+    trees.set_local("p".into(), parent);
+    trees.set_local("inner".into(), inner);
+    trees.set_remote("holder".into(), remote(shape("SS")));
+    trees.set_remote("other".into(), remote(shape("b")));
+    trees.settle(&Default::default());
+    let aliases = TrackedMap::from(BTreeMap::from([
+        (NodeId::from("merged"), NodeId::from("other")),
+        (NodeId::from("p"), NodeId::from("holder")),
+        (NodeId::from("inner"), NodeId::from("gone")),
+    ]));
+    let holds = |folder: &str, into: &str| {
+        holds_the_merged_folder(&trees, &aliases, &folder.into(), &into.into())
+    };
+    assert!(holds("merged", "holder"));
+    assert!(!holds("merged", "other"));
+    assert!(holds("inner", "gone"));
+    assert!(!holds("inner", "other"));
+}
+
+#[test]
+fn an_ignored_entry_follows_its_folder_when_another_folder_takes_the_folders_id() {
+    let root = NodeId::from("root");
+    let folder = |ino: u64| LocalNode {
+        left_out_when_placed: false,
+        content_from_server: false,
+        shape: Shape {
+            parent: root.clone(),
+            name: "ss".into(),
+            kind: Kind::Dir,
+            content: None,
+        },
+        identity: identity(ino),
+        parked: false,
+        chunks: Box::default(),
+    };
+    let mut device = Device::new(Trees::new(root.clone()));
+    device.trees.set_local("live".into(), folder(1));
+    device.ignored.insert(
+        ("live".into(), vec!["c.txt".into()]),
+        DiskEntry {
+            kind: Kind::File,
+            content: None,
+            chunks: Box::default(),
+            original: None,
+        },
+    );
+    device.follow_rekeys();
+    device.trees.set_local("copy".into(), folder(1));
+    device.trees.set_local("live".into(), folder(2));
+    device.follow_rekeys();
+    let anchors: Vec<&NodeId> = device.ignored.keys().map(|(anchor, _)| anchor).collect();
+    assert_eq!(anchors, [&NodeId::from("copy")]);
+}
 
 fn held_on_disk(
     device: &Device,

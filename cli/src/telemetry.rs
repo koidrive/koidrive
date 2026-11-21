@@ -978,6 +978,7 @@ mod tests {
             bytes_moved: 0,
             held_disks: Vec::new(),
             kept_entries: Vec::new(),
+            merged_folders: Vec::new(),
             wait: None,
         };
         let status = Status {

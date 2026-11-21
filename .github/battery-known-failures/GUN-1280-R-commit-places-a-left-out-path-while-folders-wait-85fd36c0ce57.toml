@@ -1,5 +1,5 @@
 class = "R"
-issue = "GUN-1216"
+issue = "GUN-1280"
 tests = ["devices_with_rules_converge_once_the_faults_stop"]
 message = '''not recorded: devices::devices_with_rules_converge_once_the_faults_stop \S+ SentLeftOut a commit of device <n> places node <id> at \["E\\u\{<n>\}", "c\.txt", "E\\u\{<n>\}"\], which the rules of device <n> leave out not recorded: devices::devices_with_rules_converge_once_the_faults_stop \S+ RemoveLeftOut device <n> is quiet, but it waits to settle the folders of \["<id>"\], which hold only nodes its rules leave out'''
 examples = [

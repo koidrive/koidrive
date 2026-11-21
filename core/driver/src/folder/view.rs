@@ -85,10 +85,18 @@ impl Folder {
                 )
         };
         let mut reasons: BTreeMap<&NodeId, Vec<String>> = BTreeMap::new();
+        let merged = |id: &NodeId| match held.get(id) {
+            Some(Stuck::MergedInto(_)) => true,
+            Some(Stuck::Behind(folder)) => matches!(held.get(folder), Some(Stuck::MergedInto(_))),
+            _ => false,
+        };
         let mut restart = (self.engine.effects.blocked().keys())
-            .any(|node| !self.denied.contains_key(node))
-            || held.keys().any(|id| !trees.stays_parked(id));
+            .any(|node| !self.denied.contains_key(node) && !merged(node))
+            || held.keys().any(|id| !trees.stays_parked(id) && !merged(id));
         for id in self.engine.effects.blocked().keys() {
+            if merged(id) {
+                continue;
+            }
             let why = (self.effect_failures.get(id)).map_or("it failed earlier", |(_, why)| why);
             let why = format!("the server's change could not be made here: {why}");
             reasons.entry(id).or_default().push(why);
@@ -146,11 +154,17 @@ impl Folder {
                     kept.unwrap_or_default()
                 ),
                 Stuck::Parked => format!("it has no free place here; {}", kept.unwrap_or_default()),
+                Stuck::MergedInto(_) => {
+                    "it was merged into another folder on the server and still holds entries this device does not sync".into()
+                }
                 Stuck::Behind(node) if held.get(node) == Some(&Stuck::Parked) => format!(
                     "waits for {}, which has no free place here; {}",
                     quoted_item(node),
                     kept_in(node).unwrap_or_default()
                 ),
+                Stuck::Behind(node) if merged(node) => {
+                    format!("waits for {} to leave this place", quoted_item(node))
+                }
                 Stuck::Behind(node) => format!(
                     "waits for {}, whose name here is taken by an entry this device's rules exclude",
                     quoted_item(node)
@@ -291,6 +305,13 @@ impl Folder {
             kept_entries: (self.engine.trees.kept_entry_paths().into_iter())
                 .map(|names| names.join("/").into())
                 .collect(),
+            merged_folders: held
+                .iter()
+                .filter_map(|(id, problem)| match problem {
+                    Stuck::MergedInto(_) => self.item_path(id)?.to_str().map(Into::into),
+                    _ => None,
+                })
+                .collect(),
         }
     }
 
@@ -340,7 +361,13 @@ impl Folder {
                 let now_ms = (SystemTime::now().duration_since(UNIX_EPOCH))
                     .map_or(0, |since| since.as_millis() as u64);
                 let renaming = self.engine.commits.renaming(&self.engine.trees, now_ms);
-                effects::stuck(&self.engine.trees, &self.engine.effects, None, &renaming)
+                effects::stuck_on_disk(
+                    &self.engine.trees,
+                    &self.engine.effects,
+                    None,
+                    &renaming,
+                    self.disk.merge_residue(),
+                )
             }
             _ => BTreeMap::new(),
         }

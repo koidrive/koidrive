@@ -16,7 +16,7 @@ use crate::effects;
 use crate::first_link::{self, LogRead, Marks, PriorSync};
 use crate::guard::{self, Guard, RemoteRemoval};
 use crate::ids::{IdGen, unix_ms};
-use crate::names::{MAX_NAME_BYTES, conflict_name, name_key, nfc};
+use crate::names::{MAX_NAME_BYTES, conflict_name, name_key, nfc, same_name};
 use crate::question::{
     Answer, ConflictFile, Question, QuestionKind, RecoveryCause, RecoveryGroup, RecoveryTrigger,
     Revisions,
@@ -666,6 +666,140 @@ impl Commits {
     /// Folders merged into one L holds elsewhere, by the folder they were merged into.
     pub fn aliases(&self) -> &TrackedMap<NodeId, NodeId> {
         &self.aliases
+    }
+
+    /// Settles each folder of `residue` against the live node of the server that holds its name key now (filesystem §5.10). With none, or a folder this device's user moved away, the folder gets a new ID and uploads as a new folder. With a folder this device never synced, while every other folder of this device at the key is merged too, the merged folder whose name is the live folder's takes its ID, otherwise one whose name differs from it only in Unicode normalization, otherwise any of them, and among equals the one with the lowest ID. Otherwise, and while its parent is still merged, the folder stays merged.
+    pub fn settle_merge_residue(
+        &mut self,
+        trees: &mut Trees,
+        ids: &mut IdGen,
+        now_ms: u64,
+        residue: &effects::MergeResidue,
+    ) -> bool {
+        let mut settled = false;
+        loop {
+            let next = (residue.0.keys())
+                .filter(|id| self.aliases.contains_key(*id))
+                .find_map(|id| {
+                    let local = trees.local().get(id)?;
+                    if self.aliases.contains_key(&local.shape.parent) {
+                        return None;
+                    }
+                    let holder = (trees
+                        .remote_holders_of_key(&local.shape.parent, &name_key(&local.shape.name)))
+                    .find_map(|holder| Some((holder, trees.remote().live(holder)?.kind)));
+                    let held_by_a_synced_entry = || {
+                        (trees.local_holders(&local.shape.parent, &local.shape.name))
+                            .any(|other| !residue.0.contains_key(other) && !trees.excluded(other))
+                    };
+                    let to = match holder {
+                        None if held_by_a_synced_entry() => return None,
+                        None => None,
+                        Some((_, Kind::File)) => return None,
+                        Some((holder, Kind::Dir)) => {
+                            let synced = trees.synced().get(holder);
+                            let takes_over = || {
+                                let Some(live) = trees.remote().live(holder) else {
+                                    return false;
+                                };
+                                let at_key: Vec<(&NodeId, &str)> = (trees
+                                    .local_holders(&local.shape.parent, &local.shape.name))
+                                .filter_map(|other| {
+                                    Some((other, trees.local().get(other)?.shape.name.as_str()))
+                                })
+                                .collect();
+                                let pick = (at_key.iter()).min_by_key(|(other, name)| {
+                                    (*name != live.name, !same_name(name, &live.name), *other)
+                                });
+                                pick.is_some_and(|(pick, _)| *pick == id)
+                                    && (at_key.iter())
+                                        .all(|(other, _)| residue.0.contains_key(*other))
+                            };
+                            let below_merged = |node: &LocalNode| {
+                                let mut parent = &node.shape.parent;
+                                for _ in 0..trees.local().len() {
+                                    if (trees.local_holders(&local.shape.parent, &local.shape.name))
+                                        .any(|other| other == parent)
+                                    {
+                                        return true;
+                                    }
+                                    match trees.local().get(parent) {
+                                        Some(above) if !above.parked => {
+                                            parent = &above.shape.parent
+                                        }
+                                        _ => return false,
+                                    }
+                                }
+                                false
+                            };
+                            match trees.local().get(holder) {
+                                None if synced.is_none() && takes_over() => Some(holder.clone()),
+                                Some(node)
+                                    if !node.parked
+                                        && synced.is_some_and(|synced| {
+                                            synced.parent == node.shape.parent
+                                                && same_name(&synced.name, &node.shape.name)
+                                        })
+                                        && below_merged(node)
+                                        && takes_over() =>
+                                {
+                                    Some(holder.clone())
+                                }
+                                Some(node)
+                                    if !node.parked
+                                        && synced.is_some_and(|synced| {
+                                            synced.parent != node.shape.parent
+                                                || !same_name(&synced.name, &node.shape.name)
+                                        })
+                                        && (node.shape.parent != local.shape.parent
+                                            || name_key(&node.shape.name)
+                                                != name_key(&local.shape.name))
+                                        && !held_by_a_synced_entry() =>
+                                {
+                                    None
+                                }
+                                _ => return None,
+                            }
+                        }
+                    };
+                    Some((id.clone(), local.shape.clone(), to))
+                });
+            let Some((id, shape, to)) = next else {
+                return settled;
+            };
+            self.aliases.remove(&id);
+            match to {
+                Some(holder) => {
+                    let mut synced = vec![(holder.clone(), Some(shape))];
+                    if trees.local().get(&holder).is_some() {
+                        let copy = NodeId::from(ids.uuid_v7(now_ms));
+                        synced.push((copy.clone(), trees.synced().get(&holder).cloned()));
+                        rekey(trees, &holder, &copy);
+                        synced.extend((trees.local_children(&copy)).filter_map(|child| {
+                            let shape = (trees.synced().get(child))
+                                .filter(|synced| synced.parent == holder)?;
+                            let shape = Shape {
+                                parent: copy.clone(),
+                                ..shape.clone()
+                            };
+                            Some((child.clone(), Some(shape)))
+                        }));
+                    }
+                    rekey(trees, &id, &holder);
+                    match trees.fits_synced_together(&synced) {
+                        true => synced
+                            .into_iter()
+                            .for_each(|(id, shape)| trees.set_synced(id, shape)),
+                        false => {
+                            let (holder, shape) = synced.swap_remove(0);
+                            trees.set_synced_if_valid(holder, shape);
+                        }
+                    }
+                }
+                None => rekey(trees, &id, &NodeId::from(ids.uuid_v7(now_ms))),
+            }
+            settled = true;
+        }
     }
 
     pub fn in_flight(&self) -> Option<&InFlight> {
