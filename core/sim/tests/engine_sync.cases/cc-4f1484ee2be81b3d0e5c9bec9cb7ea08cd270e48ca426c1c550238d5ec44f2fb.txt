@@ -1,0 +1,1 @@
+cc 4f1484ee2be81b3d0e5c9bec9cb7ea08cd270e48ca426c1c550238d5ec44f2fb # shrinks to seed = [], local = [], remote = [Action { kind: 3, target: 0, parent: 0, name: 1, text: 0 }], moved = 0, during = [(true, [Action { kind: 0, target: 0, parent: 0, name: 0, text: 0 }]), (false, [Action { kind: 3, target: 0, parent: 0, name: 0, text: 0 }])], rulings = [File(["a"])]
