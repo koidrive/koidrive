@@ -69,7 +69,8 @@ if 'KOIDRIVE_TEST_SERVER' in os.environ:
     result = Path(os.environ['RESULT'])
     result.write_text(json.dumps({'KOIDRIVE_TEST_SERVER': os.environ['KOIDRIVE_TEST_SERVER']}))
     if os.environ.get('CARGO_MODE') == 'hang':
-        result.with_suffix('.cargo').write_text(str(os.getpid()))
+        result.with_suffix('.cargo.tmp').write_text(str(os.getpid()))
+        os.replace(result.with_suffix('.cargo.tmp'), result.with_suffix('.cargo'))
         time.sleep(60)
     sys.exit(int(os.environ.get('CARGO_STATUS', '0')))
 """)

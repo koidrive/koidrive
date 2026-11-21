@@ -70,7 +70,9 @@ record = dict(pid=os.getpid(), args=sys.argv[1:], cwd=os.getcwd(),
               server=os.environ.get('KOIDRIVE_TEST_SERVER'),
               manifest=os.environ.get('CARGO_MANIFEST_DIR'),
               capture=os.environ.get('STRESS_TEST_CAPTURE'))
-(probe / (seed + ('-2' if second else '') + '.start')).write_text(json.dumps(record))
+start = probe / (seed + ('-2' if second else '') + '.start')
+start.with_name(start.name + '.tmp').write_text(json.dumps(record))
+os.replace(start.with_name(start.name + '.tmp'), start)
 deadline = time.monotonic() + 5
 while len(list(probe.glob('*.start'))) < int(os.environ.get('BARRIER', '1')):
     if time.monotonic() > deadline:
