@@ -185,7 +185,15 @@ async fn a_finished_upload_logs_its_chunks_units_bundles_and_where_its_time_went
         .filter(|line| line.contains("koidrive chunk upload finished"))
         .collect();
     assert_eq!(finished.len(), 1, "{log}");
-    for field in ["chunks=40", "units=2", "bundles=2", "peak=", "prepare_ms=", "busy_ms=", " ms="] {
+    for field in [
+        "chunks=40",
+        "units=2",
+        "bundles=2",
+        "peak=",
+        "prepare_ms=",
+        "busy_ms=",
+        " ms=",
+    ] {
         assert!(finished[0].contains(field), "{field} in {log}");
     }
 }
