@@ -2453,3 +2453,73 @@ fn an_edit_saved_while_its_file_is_parked_survives_a_folder_taking_its_name() {
         trees.waiting().keys().collect::<Vec<_>>()
     );
 }
+
+#[test]
+fn a_refused_remote_destination_does_not_revert_a_parked_files_free_kept_name() {
+    use koidrive_engine::ignore::{RuleFile, Source};
+
+    let id = NodeId::from("f");
+    let (mut trees, mut disk) = space(&[(
+        "f",
+        Some(file(ROOT, "home", 1)),
+        Some(file(ROOT, "HOME", 1)),
+    )]);
+    disk.add(Area::Root, "blocked".into(), Kind::Dir, None);
+    trees.set_rules::<&str>(
+        &[],
+        Source::Koiignore,
+        Some(RuleFile::parse(b"blocked/\nignored\n")),
+    );
+    trees.rules_scanned();
+    let (mut effects, mut ids) = (Effects::default(), IdGen::new(1));
+    trees.settle(&Default::default());
+    let park = effects.plan(&trees, None, &mut ids, NOW, BatchLimit::ONE)[0].clone();
+    assert!(matches!(
+        park.effect,
+        Effect::Move {
+            to: Location::Parked(_),
+            ..
+        }
+    ));
+    let result = disk.apply(&park.effect).unwrap();
+    effects
+        .done(&mut trees, None, &park.effect_id, result)
+        .unwrap();
+
+    let renamed = |name: &str, rev| RemoteNode {
+        meta_rev: rev,
+        meta_edit_rev: rev,
+        ..remote(file(ROOT, name, 1))
+    };
+    trees.set_remote(id.clone(), renamed("blocked", 2));
+    trees.settle(&Default::default());
+    let refused = effects.plan(&trees, None, &mut ids, NOW, BatchLimit::ONE)[0].clone();
+    assert!(
+        matches!(&refused.effect, Effect::Move { from: Location::Parked(_), to, .. } if *to == root_at("blocked"))
+    );
+    assert!(
+        disk.apply(&refused.effect)
+            .unwrap_err()
+            .contains("is taken")
+    );
+    effects
+        .taken(&mut trees, &refused.effect_id, Some(Kind::Dir))
+        .unwrap();
+
+    trees.set_rules::<&str>(
+        &[],
+        Source::Koiignore,
+        Some(RuleFile::parse(b"blocked/\nhome\n")),
+    );
+    trees.rules_scanned();
+    trees.set_remote(id.clone(), renamed("next", 3));
+    trees.settle(&Default::default());
+    assert!(trees.ignored(&id));
+    assert!(disk.find(Area::Root, "home").is_none());
+    let out = effects.plan(&trees, None, &mut ids, NOW, BatchLimit::ONE)[0].clone();
+    assert!(
+        matches!(&out.effect, Effect::Move { from: Location::Parked(_), to, .. } if *to == root_at("home")),
+        "{:?}",
+        out.effect
+    );
+}

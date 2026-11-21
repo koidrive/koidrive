@@ -741,7 +741,8 @@ impl Effects {
     /// fails it as [`Effects::failed`] does. When that entry is a folder L does not hold that the rules leave out, and
     /// the effect writes or moves a file R holds there, the place stays the folder's and the commits give the file a conflict
     /// name (RFC 0001 section 5).
-    /// When the effect moves a parked node there and R holds the node, the node is reverted, so it goes to its R position.
+    /// When the effect moves a parked node back to the place L keeps for it and R holds the node, the node is reverted, so it
+    /// goes to its R position instead.
     pub fn taken(
         &mut self,
         trees: &mut Trees,
@@ -771,8 +772,11 @@ impl Effects {
                 from: Location::Parked(_),
                 ..
             }
-        ) && left_out_place.is_some()
-            && remote.is_some();
+        ) && remote.is_some()
+            && left_out_place.is_some_and(|after| {
+                (trees.local().get(&record.node))
+                    .is_some_and(|local| local.parked && local.shape.same_position(after))
+            });
         let node = record.node.clone();
         self.failed(trees, effect_id)?;
         if left_out {
