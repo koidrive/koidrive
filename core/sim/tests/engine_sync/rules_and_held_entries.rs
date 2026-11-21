@@ -1756,3 +1756,21 @@ fn a_child_a_batch_moves_out_before_its_folder_arrives_is_not_an_arrival() {
     let discarded = BTreeMap::from([(held.clone(), shape(&held))]);
     assert!(revive(&device, &discarded, &kept, &BTreeSet::new()).contains(&held));
 }
+
+#[test]
+fn moving_in_an_entry_another_device_brought_in_and_took_out_again_makes_the_discarded_folder_the_users()
+ {
+    let (mut device, kept, discarded) = a_file_in_a_taken_along_server_folder();
+    let (s, arrival): (NodeId, NodeId) = ("s".into(), "arrival".into());
+    device.note_taken_along([&s]);
+    for parent in ["s", "root"] {
+        an_arrival(&mut device, parent);
+        place_dir(&mut device, "arrival", Some((parent, "arrival")), None);
+        let synced = device.trees.remote().live(&arrival).cloned();
+        device.trees.set_synced(arrival.clone(), synced);
+    }
+    assert!(!acted_below(&device, &s, &kept, &discarded));
+    place_dir(&mut device, "arrival", Some(("s", "arrival")), None);
+    device.acted_on(arrival);
+    assert!(revive(&device, &discarded, &kept, &BTreeSet::new()).contains(&"h".into()));
+}

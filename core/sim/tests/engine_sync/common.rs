@@ -2069,8 +2069,14 @@ fn acted_below(
             })
     };
     let belongs_here = |entry: &NodeId| !kept_with.contains_key(id) || reaches(entry, &at_discard);
-    let arrived =
-        |entry: &NodeId| (device.arrivals.get(entry)).is_some_and(|folders| folders.contains(id));
+    let agreed = |at: &NodeId| {
+        (acknowledged_shape(trees, at).map(|shape| shape.parent.clone()))
+            .or_else(|| trees.remote().live(at).map(|remote| remote.parent.clone()))
+    };
+    let arrived = |entry: &NodeId| {
+        (device.arrivals.get(entry)).is_some_and(|folders| folders.contains(id))
+            && reaches(entry, &agreed)
+    };
     let as_agreed = |entry: &NodeId| {
         let Some(local) = trees.local().get(entry) else {
             return trees.remote().live(entry).is_none();
