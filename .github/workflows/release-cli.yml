@@ -235,7 +235,13 @@ jobs:
         run: |
           mkdir -p dist package
           cp "target/$TARGET/release/koi" package/koi
-          tar -czf "dist/koidrive-$TARGET.tar.gz" -C package koi
+          files=(koi)
+          if [[ "$TARGET" == *linux-musl ]]; then
+            cp cli/THIRD-PARTY-NOTICES package/THIRD-PARTY-NOTICES
+            files+=(THIRD-PARTY-NOTICES)
+          fi
+          tar -czf "dist/koidrive-$TARGET.tar.gz" -C package "${files[@]}"
+          tar -tzf "dist/koidrive-$TARGET.tar.gz"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: cli-${{ matrix.target }}
