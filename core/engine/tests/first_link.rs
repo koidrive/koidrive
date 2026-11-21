@@ -6513,6 +6513,37 @@ mod a_server_file_moved_into_an_asked_folder {
         assert!(t.local().get(&"f".into()).is_none());
         assert_eq!(t.local().get(&"sn".into()).unwrap().shape.parent, "sf");
     }
+    #[test]
+    fn a_normalization_only_change_before_a_discard_keeps_its_answer_frozen() {
+        for (spelling, left_out) in [
+            ("café", true),
+            ("cafe\u{301}", false),
+            ("cafe\u{301}", true),
+        ] {
+            let (mut c, mut t, mut i) = server_folder_moved_in_while_left_out();
+            on_the_server(&mut t, "sm", |node| node.shape = dir(ROOT, "moved"));
+            by_the_user(&mut t, "e", |shape| shape.name = "café".into());
+            assert_eq!(settle(&mut c, &mut t, &mut i), []);
+            let asked = question(&c).id;
+            by_the_user(&mut t, "e", |shape| shape.name = spelling.into());
+            assert!(c.decide(&mut t, &asked, Answer::Discard));
+            if left_out {
+                set_rules(&mut t, Some(b"/new/moved\n"));
+            }
+            by_the_user(&mut t, "sm", |shape| shape.parent = "f".into());
+            let sent = settle(&mut c, &mut t, &mut i);
+            assert!(
+                sent.iter()
+                    .all(|(_, id)| !["f", "e", "sf", "sm"].contains(&id.as_str())),
+                "{spelling:?}, {left_out}: {sent:?}"
+            );
+            let [again] = c.questions() else {
+                panic!("{spelling:?}, {left_out}: {:?}", local(&t));
+            };
+            assert!(again.id != asked && again.answer.is_none());
+            assert!(t.local().get(&"f".into()).is_some());
+        }
+    }
 }
 
 fn drive_until_quiet(

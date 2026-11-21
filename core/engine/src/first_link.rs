@@ -828,16 +828,7 @@ pub(crate) fn ask(
     now_ms: u64,
 ) -> Option<Question> {
     let (held, shown) = held_now(trees, tops)?;
-    let untouched = |asked: &Question| {
-        asked.held == held
-            && asked.shown.len() == shown.len()
-            && (asked.shown.iter().zip(&shown)).all(|((id, was), (now_id, now))| {
-                id == now_id
-                    && was.same_untouched(now)
-                    && (asked.answer != Some(Answer::Discard) || !trees.discard_changed(id))
-            })
-    };
-    if let Some(asked) = asked.filter(|asked| untouched(asked)) {
+    if let Some(asked) = asked.filter(|asked| shows(trees, asked, &held, &shown)) {
         return Some(asked.clone());
     }
     Some(Question {
@@ -857,7 +848,22 @@ pub(crate) fn ask(
 
 pub(crate) fn still_shown(trees: &Trees, question: &Question) -> bool {
     held_now(trees, question.holds().cloned())
-        .is_some_and(|(held, shown)| question.held == held && question.shown == shown)
+        .is_some_and(|(held, shown)| shows(trees, question, &held, &shown))
+}
+
+fn shows(
+    trees: &Trees,
+    question: &Question,
+    held: &BTreeMap<NodeId, Held>,
+    shown: &BTreeMap<NodeId, Shape>,
+) -> bool {
+    question.held == *held
+        && question.shown.len() == shown.len()
+        && (question.shown.iter().zip(shown)).all(|((id, was), (now_id, now))| {
+            id == now_id
+                && was.same_untouched(now)
+                && (question.answer != Some(Answer::Discard) || !trees.discard_changed(id))
+        })
 }
 
 type HeldNow = (BTreeMap<NodeId, Held>, BTreeMap<NodeId, Shape>);

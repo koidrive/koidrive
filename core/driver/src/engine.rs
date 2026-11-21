@@ -5617,4 +5617,37 @@ mod tests {
         assert_eq!(holding(&state, "mine").unwrap().0, id);
         assert!(!trashes(&mut state).contains(&id));
     }
+
+    #[test]
+    fn a_first_link_discard_keeps_a_mark_taken_before_its_record_across_checkpoints() {
+        let (_dir, mut store) = store();
+        let mut state = store.transaction(|tx| Engine::load(tx, ROOT)).unwrap();
+        state.observe(&[created("mine", ino(7), false, 9)], 1);
+        state.trees.rules_scanned();
+        let id = holding(&state, "mine").unwrap().0;
+        let shown = koidrive_engine::first_link::PriorSync::Shown;
+        (state.commits).first_link(&mut state.trees, &mut state.ids, 2, shown);
+        let question = state.commits.questions()[0].id.clone();
+        assert!(
+            state
+                .commits
+                .decide(&mut state.trees, &question, engine::Answer::Discard)
+        );
+        store.transaction(|tx| state.checkpoint(tx)).unwrap();
+        let rename = |from: &str, to: &str| Observed::Renamed {
+            from: from.into(),
+            to: to.into(),
+            kind: EntryKind::File,
+            id: ino(7),
+            linked: false,
+        };
+        state.observe(&[rename("mine", "other")], 4);
+        store.transaction(|tx| state.checkpoint(tx)).unwrap();
+        state.observe(&[rename("other", "mine")], 5);
+        store.transaction(|tx| state.checkpoint(tx)).unwrap();
+        let _ = state
+            .commits
+            .build(&mut state.trees, &mut state.ids, 6, "h", "me", 1);
+        assert!(!trashes(&mut state).contains(&id));
+    }
 }
