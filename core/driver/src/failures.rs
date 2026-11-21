@@ -144,6 +144,7 @@ pub(crate) fn halted(stop: &Stop) -> Halted {
         Stop::Root(_) => Halted::Root,
         Stop::NoReplace => Halted::NoReplace,
         Stop::DiskBehind { .. } => Halted::DiskBehind,
+        Stop::StoreBehind => Halted::StoreBehind,
         Stop::OtherRoot => Halted::OtherRoot,
         Stop::Record { .. } => Halted::Record,
         Stop::Store(_) => Halted::Store,

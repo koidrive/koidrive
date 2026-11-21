@@ -305,6 +305,7 @@ A store restored to before it applied a remote change, with no commit of its own
 - A batch that stages a download records each staged file's identity before the batch's first rename. After the transaction that clears that batch, the driver writes the marker again with a new root token, which the store records as pending first. A store copied while the batch was in flight lacks that token, so it reads as older than the disk and enters recovery (§6.4) instead of recovering a batch the disk already finished.
 - On startup, before recovering the effects in flight (§5.3) and before planning from a rescan, the driver compares the two. When *m* is above *e* plus the number of effects recorded in flight, the store is older than the disk: nothing is recovered or planned from it, and the space enters recovery (§6.4) with the store as evidence.
 - When *m* is below *e*, the disk or its marker was restored from an older state. The space pauses with a problem (§6.2) instead of reading the older files as local edits.
+- The driver makes the same comparison again, with the same outcomes, before it writes the marker for a batch and before the engine plans from a rescan, so a store replaced while the device runs is caught before anything is planned from it or written to the disk.
 
 ### The commit in flight follows its history
 

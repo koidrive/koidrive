@@ -32,7 +32,7 @@ use super::*;
 
 use crate::config::SyncRules;
 
-use crate::disk::tests::{Server, ready};
+use crate::disk::tests::{Server, copy_store_while_open, ready};
 
 use crate::driver::{DriverError, lift_halt};
 

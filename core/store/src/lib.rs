@@ -35,7 +35,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-pub use engine::{EngineChanges, EngineState};
+pub use engine::{EffectCounter, EngineChanges, EngineState};
 use koidrive_engine::commit::Base;
 use koidrive_engine::tree::NodeId;
 use koidrive_fs::{FileId, Minted, Mount, RootAt, RootTokens, VolumeId};

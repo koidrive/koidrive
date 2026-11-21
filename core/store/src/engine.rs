@@ -36,6 +36,13 @@ pub struct EngineState {
     pub effects: EffectsState,
 }
 
+/// The effect counter and the number of effects in flight, as the store holds them (design §2.8).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct EffectCounter {
+    pub cleared: u64,
+    pub in_flight: u64,
+}
+
 /// What changed in the engine state since it was last written, as [`Tx::write_engine_changes`] takes it.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct EngineChanges {
@@ -80,6 +87,21 @@ fn node_maps(state: &mut EngineState) -> [(&'static str, &mut BTreeMap<NodeId, N
 }
 
 impl Tx<'_> {
+    /// The effect counter and the number of effects in flight, without reading the rest of the engine state.
+    pub fn effect_counter(&self) -> Result<EffectCounter> {
+        let cleared = (self.0)
+            .query_row("SELECT cleared FROM effect_state WHERE id = 1", [], |row| {
+                row.get::<_, u64>(0)
+            })
+            .optional()?
+            .unwrap_or_default();
+        let in_flight =
+            (self.0).query_row("SELECT COUNT(*) FROM effects_in_flight", [], |row| {
+                row.get::<_, u64>(0)
+            })?;
+        Ok(EffectCounter { cleared, in_flight })
+    }
+
     /// The stored engine state, or the default state of a space that never stored one.
     pub fn engine_state(&self) -> Result<EngineState> {
         let mut state = EngineState::default();

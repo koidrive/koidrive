@@ -1397,7 +1397,7 @@ fn a_marker_from_before_tokens_halts_as_a_copy_unless_it_counts_more_than_the_st
             effects,
             token: None,
         };
-        match standing(&marker, &tokens, &engine.effects, || false) {
+        match standing(&marker, &tokens, counted(&engine.effects), || false) {
             Ok(Standing::StoreOlder) => assert!(newer, "{effects}"),
             Err(Stop::Root(RootProblem::Copy)) => assert!(!newer, "{effects}"),
             _ => panic!("marker at {effects}"),
@@ -3637,4 +3637,162 @@ fn a_store_restored_from_before_a_write_that_failed_does_not_take_its_download_a
         let user = BTreeMap::from([(PathBuf::from("report.txt"), Some(saved.to_vec()))]);
         assert_eq!(visible(&folder), user, "{}", scenario.name);
     }
+}
+
+pub(crate) fn copy_store_while_open(from: &Path, to: &Path) {
+    for db in [from, to].into_iter().filter(|db| db.exists()) {
+        let busy: i64 = rusqlite::Connection::open(db)
+            .unwrap()
+            .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(
+            busy, 0,
+            "the store's log is written back before the store is copied"
+        );
+    }
+    fs::copy(from, to).unwrap();
+}
+
+const FIRST: &str = "0190f0a0-0000-7000-8000-0000000000b1";
+const SECOND: &str = "0190f0a0-0000-7000-8000-0000000000b2";
+
+fn two_batches_ahead() -> (Folder, Running) {
+    let folder = Folder::new();
+    let folders = [remote(FIRST, "first", None), remote(SECOND, "second", None)];
+    folder.seed(&folders, &[], 0);
+    let mut running = folder.start(no_hook()).unwrap();
+    running.disk.batch = BatchLimit {
+        effects: 1,
+        bytes: BATCH.bytes,
+    };
+    (folder, running)
+}
+
+#[test]
+fn a_store_swapped_for_an_older_copy_between_two_batches_halts_before_the_second_marker_write() {
+    let (folder, mut running) = two_batches_ahead();
+    let server = Server::default();
+    let copy = folder.dir.path().join("copy.sqlite");
+    copy_store_while_open(&folder.db, &copy);
+    assert_eq!(running.step(&server), Some(Settled::Done));
+    assert_eq!(folder.marker(), 1);
+    let pending = (running.disk)
+        .next(&mut running.engine, &mut running.store)
+        .unwrap()
+        .unwrap();
+    let staged = ready(pending.stage(&server)).unwrap();
+    copy_store_while_open(&copy, &folder.db);
+    let before = tree(&folder.root);
+    let stop = (running.disk)
+        .apply(staged, &mut running.engine, &mut running.store)
+        .err();
+    assert!(matches!(stop, Some(Stop::StoreBehind)), "{stop:?}");
+    assert_eq!(tree(&folder.root), before);
+}
+
+#[test]
+fn a_store_swapped_for_an_older_copy_before_a_rescan_halts_with_nothing_planned() {
+    let (folder, mut running) = two_batches_ahead();
+    let server = Server::default();
+    let copy = folder.dir.path().join("copy.sqlite");
+    copy_store_while_open(&folder.db, &copy);
+    assert_eq!(running.step(&server), Some(Settled::Done));
+    let sections = running.disk.sections();
+    let mut watching = observer(&folder.root, Snapshot::scan(&folder.root).unwrap());
+    copy_store_while_open(&copy, &folder.db);
+    fs::write(folder.root.join("new.txt"), b"new").unwrap();
+    running.disk.rescan(&mut running.engine, None);
+    catch_up(&mut watching, &sections);
+    let seen = observe_until(&mut watching, sections.stamp(), |seen| {
+        created(seen, "new.txt").is_some()
+    });
+    (running.disk)
+        .observed(seen, &mut running.engine, &mut running.store)
+        .unwrap();
+    let tokens = |store: &mut Store| store.read(|tx| tx.root_tokens()).unwrap();
+    let before = (tree(&folder.root), tokens(&mut running.store));
+    let planned = (running.disk)
+        .next(&mut running.engine, &mut running.store)
+        .err();
+    let built = running.disk.rotate_before_build(&mut running.store).err();
+    assert!(matches!(planned, Some(Stop::StoreBehind)), "{planned:?}");
+    assert!(matches!(built, Some(Stop::StoreBehind)), "{built:?}");
+    assert!(running.engine.effects.in_flight().is_empty());
+    assert!(folder.open().1.effects.in_flight().is_empty());
+    assert_eq!((tree(&folder.root), tokens(&mut running.store)), before);
+}
+
+#[test]
+fn a_marker_rolled_back_while_the_folder_runs_pauses_without_writing() {
+    for during_staging in [false, true] {
+        let (folder, mut running) = two_batches_ahead();
+        let server = Server::default();
+        let marker = folder.root.join(PRIVATE_DIR).join("space.json");
+        let older = fs::read(&marker).unwrap();
+        assert_eq!(running.step(&server), Some(Settled::Done));
+        let staged = during_staging.then(|| {
+            let pending = (running.disk)
+                .next(&mut running.engine, &mut running.store)
+                .unwrap()
+                .unwrap();
+            ready(pending.stage(&server)).unwrap()
+        });
+        fs::write(&marker, &older).unwrap();
+        let before = tree(&folder.root);
+        let stop = match staged {
+            Some(staged) => (running.disk)
+                .apply(staged, &mut running.engine, &mut running.store)
+                .err(),
+            None => (running.disk)
+                .next(&mut running.engine, &mut running.store)
+                .err(),
+        };
+        assert!(
+            matches!(
+                stop,
+                Some(Stop::DiskBehind {
+                    marker: 0,
+                    cleared: 1
+                })
+            ),
+            "{during_staging}: {stop:?}"
+        );
+        assert_eq!(tree(&folder.root), before, "{during_staging}");
+    }
+}
+
+#[test]
+fn a_store_copied_mid_download_that_only_the_token_tells_apart_enters_recovery() {
+    let folder = Folder::new();
+    let mut server = Server::default();
+    let content = server.hold(REMOTE, ChunkerConfig::V0);
+    folder.seed(&[remote(NODE, "report.txt", Some(content))], &[], 0);
+    let copy = folder.dir.path().join("copy.sqlite");
+    let (db, taken) = (folder.db.clone(), copy.clone());
+    let mut first = true;
+    let hook: Hook = Box::new(move |cut| {
+        if first && matches!(cut, Cut::Step(_)) {
+            first = false;
+            copy_store_while_open(&db, &taken);
+        }
+    });
+    let mut running = folder.start(Some(hook)).unwrap();
+    assert_eq!(running.step(&server), Some(Settled::Done));
+    copy_store_while_open(&copy, &folder.db);
+    let effects = folder.open().1.effects;
+    let accounted = effects.cleared() + effects.in_flight().len() as u64;
+    assert_eq!((folder.marker(), accounted), (1, 1));
+    let stop = (running.disk)
+        .next(&mut running.engine, &mut running.store)
+        .err();
+    assert!(matches!(stop, Some(Stop::StoreBehind)), "{stop:?}");
+    drop(running);
+    let running = folder.start(no_hook()).unwrap();
+    assert!(matches!(
+        running.engine.commits.halted(),
+        Some(CommitHalt::Recovery { .. })
+    ));
+    assert!(running.engine.effects.in_flight().is_empty());
+    let downloaded = BTreeMap::from([(PathBuf::from("report.txt"), Some(REMOTE.to_vec()))]);
+    assert_eq!(visible(&folder), downloaded);
 }
