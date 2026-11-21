@@ -9,32 +9,41 @@ set -euo pipefail
 set -m
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+wrangler="$root/server/node_modules/.bin/wrangler"
+if [ ! -x "$wrangler" ]; then
+  echo "error: $wrangler is missing; run 'pnpm install' in server/ first." >&2
+  exit 1
+fi
 if [ -d /dev/shm ]; then
   export TMPDIR=/dev/shm
 fi
 work="$(mktemp -d)"
 port="${KOIDRIVE_TEST_PORT:-0}"
 log="$work/wrangler.log"
-wrangler="$root/server/node_modules/.bin/wrangler"
-
-if [ ! -x "$wrangler" ]; then
-  echo "error: $wrangler is missing; run 'pnpm install' in server/ first." >&2
-  exit 1
-fi
 
 cleanup() {
-  status=$?
-  if [ -n "${server_pid:-}" ]; then
-    kill -TERM -- "-$server_pid" 2>/dev/null || true
-    wait "$server_pid" 2>/dev/null || true
-  fi
+  trap '' HUP INT TERM
+  status=$1
+  for pid in ${job_pid:-} ${server_pid:-}; do
+    kill -TERM -- "-$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+  done
   if [ "$status" -ne 0 ]; then
     echo "--- wrangler dev output ($log) ---" >&2
     tail -n 200 "$log" >&2 || true
   fi
   rm -rf "$work"
 }
-trap cleanup EXIT
+trap 'cleanup $?' EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+run() {
+  "$@" &
+  job_pid=$!
+  wait "$job_pid"
+}
 
 # set -m puts the server in its own process group, so cleanup stops workerd with it.
 (cd "$root/server" && WRANGLER_SEND_METRICS=false exec "$wrangler" dev --ip 127.0.0.1 --port "$port" \
@@ -63,4 +72,4 @@ fi
 
 cd "$root"
 KOIDRIVE_TEST_SERVER="$server_url" KOIDRIVE_TEST_SERVER_LOG="$log" \
-  cargo test -p koidrive-driver --locked --test "${KOIDRIVE_DRIVER_TEST:-sync}" -- --ignored "$@"
+  run cargo test -p koidrive-driver --locked --test "${KOIDRIVE_DRIVER_TEST:-sync}" -- --ignored "$@"

@@ -11,6 +11,8 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -349,8 +351,13 @@ while True:
         self.assertEqual((record["result"], record["exit_code"]), ("fail", 101))
         self.assertEqual((record["test_binaries"], record["finished_binaries"]), (2, 2))
 
+    def run_until_the_probe_hangs(self, args):
+        clock = SimpleNamespace(monotonic=lambda: 3600.0 if any(self.probes.glob("*.start")) else 0.0, sleep=time.sleep)
+        with patch.object(stress, "time", clock):
+            return self.run_tests(args, PROBE_MODE="hang")[0]
+
     def test_timeout_kills_processes(self):
-        record = self.run_tests(self.args("--timeout-seconds", "1"), PROBE_MODE="hang")[0]
+        record = self.run_until_the_probe_hangs(self.args("--timeout-seconds", "1"))
         self.assertEqual(record["result"], "timeout")
         pid = json.loads((self.probes / "17.start").read_text())["pid"]
         with self.assertRaises(ProcessLookupError):
@@ -358,7 +365,7 @@ while True:
 
     def test_worker_timeout_kills_nested_process_groups(self):
         self.worker_fixture()
-        record = self.run_tests(self.args("--mode", "worker", "--timeout-seconds", "3"), PROBE_MODE="hang")[0]
+        record = self.run_until_the_probe_hangs(self.args("--mode", "worker", "--timeout-seconds", "3"))
         self.assertEqual(record["result"], "timeout")
         worker = json.loads((self.probes / "17.worker").read_text())
         for pid in (worker["pid"], worker["child"]):

@@ -11,6 +11,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 
@@ -62,10 +63,14 @@ class WorkerLaunchers(unittest.TestCase):
         if parser.exists():
             shutil.copyfile(parser, self.root / "scripts" / parser.name)
         self.executable(self.bin / "cargo", """
-import json, os, sys
+import json, os, sys, time
 from pathlib import Path
 if 'KOIDRIVE_TEST_SERVER' in os.environ:
-    Path(os.environ['RESULT']).write_text(json.dumps({'KOIDRIVE_TEST_SERVER': os.environ['KOIDRIVE_TEST_SERVER']}))
+    result = Path(os.environ['RESULT'])
+    result.write_text(json.dumps({'KOIDRIVE_TEST_SERVER': os.environ['KOIDRIVE_TEST_SERVER']}))
+    if os.environ.get('CARGO_MODE') == 'hang':
+        result.with_suffix('.cargo').write_text(str(os.getpid()))
+        time.sleep(60)
     sys.exit(int(os.environ.get('CARGO_STATUS', '0')))
 """)
         self.executable(self.root / "server/node_modules/.bin/wrangler", """
@@ -76,6 +81,12 @@ child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])
 record = {'argv': sys.argv[1:], 'pid': os.getpid(), 'child': child.pid}
 result.with_suffix('.worker').write_text(json.dumps(record))
 def stop(*_):
+    gate = os.environ.get('STOP_GATE')
+    if gate:
+        Path(gate + '.stopping').write_text('')
+        deadline = time.monotonic() + 20
+        while not Path(gate + '.released').exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
     child.wait(timeout=5)
     sys.exit(0)
 signal.signal(signal.SIGTERM, stop)
@@ -117,14 +128,18 @@ while True:
         path.write_text("#!" + sys.executable + "\n" + code)
         path.chmod(0o755)
 
-    def launch(self, launcher, **overrides):
+    def environment(self, **overrides):
         result = self.root / "result.json"
-        result.unlink(missing_ok=True)
-        result.with_suffix(".worker").unlink(missing_ok=True)
+        for suffix in (".json", ".worker", ".cargo"):
+            result.with_suffix(suffix).unlink(missing_ok=True)
         env = {**os.environ, "PATH": str(self.bin) + os.pathsep + os.environ["PATH"],
                "RESULT": str(result), "PYTHONDONTWRITEBYTECODE": "1"}
         env.pop("KOIDRIVE_TEST_PORT", None)
         env.update(overrides)
+        return env, result
+
+    def launch(self, launcher, **overrides):
+        env, result = self.environment(**overrides)
         worker_path = result.with_suffix(".worker")
         try:
             run = subprocess.run(["bash", self.root / launcher, "focused-filter"], env=env,
@@ -137,17 +152,51 @@ while True:
                     pass
             raise
         if worker_path.exists():
-            worker = json.loads(worker_path.read_text())
-            try:
-                os.killpg(worker["pid"], 0)
-            except ProcessLookupError:
-                pass
-            else:
-                os.killpg(worker["pid"], signal.SIGKILL)
-                self.fail("Launcher left its Worker process group running")
-            state = Path(worker["argv"][worker["argv"].index("--persist-to") + 1])
-            self.assertFalse(state.parent.exists(), "Launcher left its temporary directory")
+            self.assert_cleaned(json.loads(worker_path.read_text()))
         return run, result, json.loads(worker_path.read_text()) if worker_path.exists() else None
+
+    def assert_cleaned(self, worker):
+        try:
+            os.killpg(worker["pid"], 0)
+        except ProcessLookupError:
+            pass
+        else:
+            os.killpg(worker["pid"], signal.SIGKILL)
+            self.fail("Launcher left its Worker process group running")
+        state = Path(worker["argv"][worker["argv"].index("--persist-to") + 1])
+        self.assertFalse(state.parent.exists(), "Launcher left its temporary directory")
+
+    def wait_for(self, path, launcher):
+        deadline = time.monotonic() + 20
+        while not path.exists():
+            self.assertIsNone(launcher.poll(), f"the launcher exited before {path.name} appeared")
+            self.assertLess(time.monotonic(), deadline, f"{path.name} never appeared")
+            time.sleep(0.01)
+
+    def test_a_stop_signal_stops_the_tests_and_never_cuts_cleanup_short(self):
+        stopping, released = self.root / "gate.stopping", self.root / "gate.released"
+        for launcher in LAUNCHERS:
+            for stop in (signal.SIGHUP, signal.SIGINT, signal.SIGTERM):
+                for tests_end_first in (True, False):
+                    with self.subTest(launcher=launcher, signal=stop.name, tests_end_first=tests_end_first):
+                        stopping.unlink(missing_ok=True)
+                        released.unlink(missing_ok=True)
+                        env, result = self.environment(CARGO_MODE="hang", STOP_GATE=str(self.root / "gate"))
+                        run = subprocess.Popen(["bash", self.root / launcher], env=env, start_new_session=True,
+                                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                        try:
+                            self.wait_for(result.with_suffix(".cargo"), run)
+                            tests = int(result.with_suffix(".cargo").read_text())
+                            if tests_end_first:
+                                os.killpg(tests, signal.SIGTERM)
+                                self.wait_for(stopping, run)
+                            os.kill(run.pid, stop)
+                        finally:
+                            released.write_text("")
+                            run.wait(timeout=20)
+                        with self.assertRaises(ProcessLookupError):
+                            os.killpg(tests, 0)
+                        self.assert_cleaned(json.loads(result.with_suffix(".worker").read_text()))
 
     def test_assigned_port_is_forwarded_and_process_group_is_cleaned(self):
         for launcher in LAUNCHERS:
