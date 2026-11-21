@@ -409,7 +409,7 @@ jobs:
       && (needs.sign-macos.result == 'success' || (github.event_name != 'push' && needs.sign-macos.result == 'skipped'))
       && (needs.macos-app.result == 'success' || (github.event_name != 'push' && needs.macos-app.result == 'skipped'))
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 15
     steps:
       - id: download_cli_linux_musl_try
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -520,7 +520,7 @@ jobs:
     needs: [release-ref, checksums]
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     environment: release-signing
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -553,7 +553,7 @@ jobs:
     needs: [release-ref, checksums, sign-checksums]
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     concurrency:
       group: release-cli-publish
       cancel-in-progress: false

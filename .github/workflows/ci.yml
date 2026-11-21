@@ -186,7 +186,15 @@ jobs:
             exit 0
           fi
           if [ -n "$run" ]; then
-            gh run download "$run" --repo "$GITHUB_REPOSITORY" --pattern 'coverage-map-*' --dir "$RUNNER_TEMP/coverage-map"
+            for attempt in 1 2; do
+              rm -rf "$RUNNER_TEMP/coverage-map" && mkdir "$RUNNER_TEMP/coverage-map"
+              if timeout 60 gh run download "$run" --repo "$GITHUB_REPOSITORY" --pattern 'coverage-map-*' --dir "$RUNNER_TEMP/coverage-map"; then break; fi
+              if [ "$attempt" = 2 ]; then
+                echo "::warning::Downloading the coverage map of run $run failed twice (see the errors above), so the shadow selection keeps every test."
+                jq -n '{map: null, everything: "downloading the newest coverage map failed", changed: [], skipped: []}' > "$RUNNER_TEMP/test-selection/selection.json"
+                exit 0
+              fi
+            done
           fi
           map="$(find "$RUNNER_TEMP/coverage-map" -name coverage-map.json | head -n 1)"
           env -u GITHUB_STEP_SUMMARY scripts/ci-select/target/debug/ci-select .github/ci-select.toml "$RUNNER_TEMP/base" . "$RUNNER_TEMP/changed" \
@@ -603,7 +611,7 @@ jobs:
     needs: [changes, rust-build-linux, rust-build-macos, rust-tests-linux, rust-tests-macos]
     if: ${{ !cancelled() && needs.changes.outputs.site_only != 'true' && needs.changes.outputs.rust_archive == 'true' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

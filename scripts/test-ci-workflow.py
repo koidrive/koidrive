@@ -423,6 +423,11 @@ def download_steps(text):
     return steps
 
 
+def workflow_jobs(text):
+    parts = re.split(r"(?m)^  ([A-Za-z0-9_-]+):\n", text.split("\njobs:\n", 1)[1])
+    return dict(zip(parts[1::2], parts[2::2]))
+
+
 class ArtifactDownloads(unittest.TestCase):
     def test_every_download_gives_up_within_minutes_and_is_tried_again(self):
         found = 0
@@ -442,6 +447,31 @@ class ArtifactDownloads(unittest.TestCase):
                     for step in (attempt, again):
                         self.assertRegex(step, r"(?m)^timeout-minutes: [1-3]$")
         self.assertGreater(found, 0)
+
+    def test_every_job_outlasts_a_stall_in_each_of_its_downloads(self):
+        for path in sorted((ROOT / ".github/workflows").glob("*.yml")):
+            jobs = workflow_jobs(path.read_text())
+            anchors = {m[1]: block for block in jobs.values() for m in re.finditer(r"(?m)^    steps: &(\S+)$", block)}
+            for name, block in jobs.items():
+                alias = re.search(r"(?m)^    steps: \*(\S+)$", block)
+                attempts = download_steps(anchors[alias[1]] if alias else block)[::2]
+                stalls = sum(int(re.search(r"(?m)^timeout-minutes: (\d+)$", step)[1]) for step in attempts)
+                if not stalls:
+                    continue
+                with self.subTest(workflow=path.name, job=name):
+                    timeout = re.search(r"(?m)^    timeout-minutes: (\d+)$", block)
+                    self.assertIsNotNone(timeout)
+                    self.assertGreaterEqual(int(timeout[1]), stalls + 5)
+
+    def test_every_gh_run_download_gives_up_within_minutes_and_is_tried_again(self):
+        for path in sorted((ROOT / ".github/workflows").glob("*.yml")):
+            lines = path.read_text().split("\n")
+            for i, line in enumerate(lines):
+                if "gh run download" not in line:
+                    continue
+                with self.subTest(workflow=path.name, line=i + 1):
+                    self.assertRegex(line, r"\btimeout [1-9]\d* gh run download ")
+                    self.assertTrue(any(re.search(r"\bfor attempt in 1 2; do$", previous) for previous in lines[max(0, i - 3):i]))
 
 class Runners(unittest.TestCase):
     def test_no_workflow_targets_self_hosted_runners(self):
