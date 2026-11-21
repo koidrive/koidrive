@@ -111,30 +111,41 @@ impl Deletion {
         &self,
         intents: &Intents,
         server: &Server,
-        copied: &BTreeMap<i64, usize>,
         gone: impl Fn(usize) -> bool,
     ) -> Vec<(i64, NodeId, NodeId)> {
         let deleted = self.deleted(intents, gone);
         let Some(root) = deleted.first().and(intents.nodes(self.intent).next()) else {
             return Vec::new();
         };
-        let seen = (self.removed.iter().copied()).filter(|write| !copied.contains_key(write));
-        let put_there_unseen = |node: &NodeId| {
-            (0..intents.len())
-                .any(|j| self.unseen(intents, j) && intents.nodes(j).any(|id| id == node))
+        let put_there = |write: i64, node: &NodeId| {
+            (0..intents.len()).any(|j| {
+                j != self.intent
+                    && intents.nodes(j).any(|id| id == node)
+                    && match intents.intent(j).value {
+                        Value::Content { write: put, .. } => {
+                            put == write && (intents.intent(j).copies() || self.unseen(intents, j))
+                        }
+                        Value::Live => self.unseen(intents, j),
+                        Value::Place { .. } => {
+                            self.unseen(intents, j) && intents.reached_trashed(j, node)
+                        }
+                        Value::Trashed { .. } => false,
+                    }
+            })
         };
-        seen.flat_map(|write| {
-            server
-                .live_with(write)
-                .map(move |node| (write, node.clone()))
-        })
-        .filter(|(write, node)| {
-            !deleted.contains(&node)
-                && !self.held.contains(&(*write, node.clone()))
-                && !put_there_unseen(node)
-        })
-        .map(|(write, node)| (write, root.clone(), node))
-        .collect()
+        (self.removed.iter().copied())
+            .flat_map(|write| {
+                server
+                    .live_with(write)
+                    .map(move |node| (write, node.clone()))
+            })
+            .filter(|(write, node)| {
+                !deleted.contains(&node)
+                    && !self.held.contains(&(*write, node.clone()))
+                    && !put_there(*write, node)
+            })
+            .map(|(write, node)| (write, root.clone(), node))
+            .collect()
     }
 }
 
@@ -171,19 +182,14 @@ impl World {
                      did not see brought the node back"
                 )
             });
-            let elsewhere = (deletion.seen_writes_elsewhere(
-                &self.intents,
-                server,
-                &self.copied,
-                gone,
-            ))
-            .into_iter()
-            .map(|(write, root, node)| {
-                format!(
-                    "write {write} that the delete of node {root} on device {d} saw is live \
+            let elsewhere = (deletion.seen_writes_elsewhere(&self.intents, server, gone))
+                .into_iter()
+                .map(|(write, root, node)| {
+                    format!(
+                        "write {write} that the delete of node {root} on device {d} saw is live \
                          again on node {node}, and no user copied it"
-                )
-            });
+                    )
+                });
             for why in undone.chain(elsewhere) {
                 if !expected(Check::DeleteUndone, &why) {
                     return Err(Failure::Diverged(why));
@@ -191,5 +197,152 @@ impl World {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use koidrive_proto::v1::{NodeKind, NodeState, VersionInfo};
+
+    use super::*;
+
+    fn file(root: &str, id: &str, status: NodeStatus, write: i64) -> NodeState {
+        NodeState {
+            node_id: id.into(),
+            parent_id: root.into(),
+            name: id.into(),
+            kind: NodeKind::File as i32,
+            status: status as i32,
+            current: Some(VersionInfo {
+                content: Some(super::super::content(0, 0, write)),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    fn deleted_x() -> (Intents, Deletion) {
+        let world = World::new(2);
+        let mut intents = Intents::new(2);
+        let root = NodeId::from("root");
+        let disk = |d: usize| &world.devices[d].disk;
+        intents.observe(0, 0, disk(0), &BTreeMap::from([(1, "x".into())]), &root);
+        intents.observe(1, 0, disk(1), &BTreeMap::from([(2, "z".into())]), &root);
+        let intent = intents.answered_delete(0, 1, 1, &"x".into());
+        let deletion = Deletion {
+            intent,
+            device: 0,
+            left_out: BTreeSet::new(),
+            held: BTreeSet::from([(7, "x".into())]),
+            removed: BTreeSet::from([7]),
+        };
+        (intents, deletion)
+    }
+
+    fn x_trashed_and_z_holding_7(z_name: &str) -> Server {
+        let mut z = file("root", "z", NodeStatus::Live, 7);
+        z.name = z_name.into();
+        Server::of("root", vec![file("root", "x", NodeStatus::Trashed, 7), z])
+    }
+
+    #[test]
+    fn a_copy_excuses_a_write_a_delete_saw_only_on_the_node_it_was_copied_to() {
+        for (copied_to, reported) in [("y", true), ("z", false)] {
+            let (mut intents, deletion) = deleted_x();
+            let world = World::new(2);
+            let copy = BTreeMap::from([(3, NodeId::from(copied_to))]);
+            intents.observe(0, 0, &world.devices[0].disk, &copy, &"root".into());
+            let write = Value::Content {
+                write: 7,
+                digest: super::super::content(0, 0, 7).manifest_digest,
+            };
+            intents.record(0, 0, 3, "copy", write);
+            let tree = x_trashed_and_z_holding_7("z");
+            let found = deletion.seen_writes_elsewhere(&intents, &tree, |_| false);
+            let wanted = match reported {
+                true => vec![(7, NodeId::from("x"), NodeId::from("z"))],
+                false => Vec::new(),
+            };
+            assert_eq!(found, wanted, "copied to {copied_to}");
+        }
+    }
+
+    #[test]
+    fn an_unseen_rename_does_not_explain_a_write_a_delete_saw_on_another_node() {
+        let (mut intents, deletion) = deleted_x();
+        let wanted = vec![(7, NodeId::from("x"), NodeId::from("z"))];
+        let tree = x_trashed_and_z_holding_7("z");
+        assert_eq!(
+            deletion.seen_writes_elsewhere(&intents, &tree, |_| false),
+            wanted
+        );
+        let rename = Value::Place {
+            parent: None,
+            name: "renamed".into(),
+        };
+        intents.record(1, 2, 2, "move", rename);
+        let tree = x_trashed_and_z_holding_7("renamed");
+        intents.sync(&tree, 3, None);
+        assert_eq!(
+            deletion.seen_writes_elsewhere(&intents, &tree, |_| false),
+            wanted
+        );
+    }
+
+    #[test]
+    fn a_delete_answer_reports_the_write_it_showed_when_it_is_live_on_another_node() {
+        use koidrive_engine::commit::Commits;
+        use koidrive_engine::question::{Held, Question, QuestionKind, RecoveryGroup, Revisions};
+        use koidrive_engine::tree::RemoteNode;
+
+        let mut world = World::new(1);
+        let root = world.space.space_id().to_owned();
+        let x = NodeId::from("x");
+        let (_, remote) = RemoteNode::from_state(&file(&root, "x", NodeStatus::Live, 7)).unwrap();
+        let inos = BTreeMap::from([(1, x.clone())]);
+        let disk = &world.devices[0].disk;
+        (world.intents).observe(0, 0, disk, &inos, &NodeId::from(root.as_str()));
+        let device = &mut world.devices[0];
+        device.down = true;
+        device.store.trees.set_remote(x.clone(), remote);
+        let mut state = device.store.commits.state();
+        let members = BTreeMap::from([(
+            x.clone(),
+            Some(Revisions {
+                content_rev: 0,
+                meta_rev: 0,
+            }),
+        )]);
+        state.questions.push(Question {
+            id: "q".into(),
+            asked_at_ms: 1,
+            kind: QuestionKind::Recovery {
+                group: RecoveryGroup::DeletedOnThisDevice,
+                sent_in: None,
+                cause: None,
+            },
+            held: BTreeMap::from([(x, Held { members, files: 1 })]),
+            answer: None,
+            shown: BTreeMap::new(),
+            frozen: None,
+        });
+        device.store.commits = Commits::from_state(state).unwrap();
+        assert!(world.answer(0, 0, false).unwrap());
+        let tree = Server::of(
+            &root,
+            vec![
+                file(&root, "x", NodeStatus::Trashed, 7),
+                file(&root, "z", NodeStatus::Live, 7),
+            ],
+        );
+        let Err(Failure::Diverged(why)) = world.undone_delete(&tree) else {
+            panic!("the delete answer let write 7 stay live on node z");
+        };
+        assert!(
+            why.starts_with(
+                "write 7 that the delete of node x on device 0 saw is live again on node z"
+            ),
+            "{why}"
+        );
     }
 }
