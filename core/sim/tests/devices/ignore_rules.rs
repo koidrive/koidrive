@@ -2465,3 +2465,32 @@ fn merged_folders_settle_once_another_device_deletes_the_folder_that_took_one_ov
     assert!((world.space().nodes().iter()).all(|node| node.name != "c.txt"));
     sends_nothing_more(&mut world, 4);
 }
+
+#[test]
+fn a_file_deleted_while_a_server_rename_leaves_it_out_comes_back_when_its_delete_is_seen_after_the_rename_back()
+ {
+    let mut lost = Vec::new();
+    for moved_to_excluded_name in [false, true] {
+        let exclude = [vec![], vec!["ss/", "*.txt"]];
+        let mut phases = vec![
+            vec![(0, folder("a")), (0, user(1, 0, 1, "b"))],
+            vec![(0, rename(0, 0, "ss"))],
+        ];
+        let world = converge_excluding(&exclude, &phases).unwrap();
+        let b = target(&world, 1, &["a", "b"]);
+        let step = match moved_to_excluded_name {
+            false => delete(b),
+            true => rename(b, 1, "c.txt"),
+        };
+        let mut race = vec![(1, step), (0, rename(0, 0, "a"))];
+        race.extend(commit(0));
+        race.extend([(1, DELIVER); 8]);
+        phases.push(race);
+        let world = converge_excluding(&exclude, &phases).unwrap();
+        lost.push((
+            moved_to_excluded_name,
+            live_node_at(&world, &["a", "b"]).is_none(),
+        ));
+    }
+    assert_eq!(lost, [(false, false), (true, false)]);
+}

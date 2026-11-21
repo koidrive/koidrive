@@ -425,6 +425,16 @@ impl Tx<'_> {
                 .unobserved
                 .insert(NodeId::from(row.get::<_, String>(0)?));
         }
+        let mut stmt = self
+            .0
+            .prepare_cached("SELECT node_id FROM left_out_by_server")?;
+        let mut rows = stmt.query([])?;
+        while let Some(row) = next_row!(rows, abandoned) {
+            state
+                .trees
+                .left_out_by_server
+                .insert(NodeId::from(row.get::<_, String>(0)?));
+        }
         let mut stmt = self.0.prepare_cached("SELECT node_id FROM missing_nodes")?;
         let mut rows = stmt.query([])?;
         while let Some(row) = next_row!(rows, abandoned) {
@@ -765,6 +775,7 @@ impl Tx<'_> {
             reverted,
             unobserved,
             discard_members,
+            left_out_by_server,
             parked_as,
             waiting,
             watched,
@@ -1017,6 +1028,11 @@ impl Tx<'_> {
             "DELETE FROM discard_members WHERE node_id = ?1",
             "INSERT OR REPLACE INTO discard_members (node_id, folder_id) VALUES (?1, ?2)",
             |put, node, folder| put.execute(params![node, folder.to_string()]),
+        )?;
+        self.write_set(
+            left_out_by_server,
+            "DELETE FROM left_out_by_server WHERE node_id = ?1",
+            "INSERT OR IGNORE INTO left_out_by_server (node_id) VALUES (?1)",
         )?;
         self.write_set(
             unsent_moves,

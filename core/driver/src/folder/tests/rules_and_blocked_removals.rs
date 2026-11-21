@@ -3082,3 +3082,158 @@ fn a_copy_a_rule_added_here_excludes_stays_when_the_server_trashes_it_before_its
         (Some(b"keep".to_vec()), Vec::<Vec<u8>>::new()),
     );
 }
+
+#[test]
+fn a_top_level_file_renamed_back_rereads_only_itself_and_its_delete_is_sent() {
+    let mut remote = Remote::new();
+    let (site_a, mut a) = linked(&mut remote, "a");
+    a.create(&mut remote, &site_a.root.join("f.txt"), b"synced");
+    fs::create_dir(site_a.root.join("other")).unwrap();
+    a.create(&mut remote, &site_a.root.join("other/h.txt"), b"other");
+    let file = NodeId::from(live_id(&server_nodes(&remote), "f.txt"));
+    let (site, b) = linked(&mut remote, "b");
+    drop(b);
+    let sync = SyncRules {
+        include: Vec::new(),
+        exclude: vec!["blocked.txt".into()],
+        ..SyncRules::default()
+    };
+    let mut b = site.start_with(&sync);
+    b.connect(&remote);
+    b.scan_until(|b| b.folder.scanned);
+    b.run(&mut remote);
+    b.settle();
+    for (from, to) in [("f.txt", "blocked.txt"), ("blocked.txt", "f.txt")] {
+        fs::rename(site_a.root.join(from), site_a.root.join(to)).unwrap();
+        a.scan_until(|a| !a.work.is_empty());
+        a.run(&mut remote);
+        b.pull(&remote);
+        if to == "blocked.txt" {
+            fs::write(site.root.join("f.txt"), b"edited").unwrap();
+            let local = |b: &Device| b.folder.engine.trees.local().get(&file).cloned();
+            b.scan_until(|b| local(b).is_some_and(|node| !node.content_from_server));
+        }
+        b.run(&mut remote);
+        assert!(b.folder.engine.trees.unobserved(&file), "{to}");
+    }
+    let observer = &mut b.observer;
+    let batch = b.folder.disk.sections().observe(observer, Duration::ZERO);
+    let batch = batch.unwrap().unwrap();
+    let read: Vec<_> = (batch.observation.changes.iter())
+        .filter_map(|change| match change {
+            Observed::Modified {
+                path,
+                content: Some(_),
+                ..
+            } => Some(path.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(read, [PathBuf::from("f.txt")]);
+    b.folder
+        .disk
+        .observed(batch, &mut b.folder.engine, &mut b.folder.store)
+        .unwrap();
+    assert!(!b.folder.engine.trees.unobserved(&file));
+    fs::remove_file(site.root.join("f.txt")).unwrap();
+    b.scan_until(|b| !b.work.is_empty());
+    b.run(&mut remote);
+    assert_eq!(remote.names(), ["h.txt", "other"]);
+}
+
+#[test]
+fn a_folder_removed_while_a_server_rename_leaves_it_out_downloads_again() {
+    let mut remote = Remote::new();
+    let (site_a, mut a) = linked(&mut remote, "a");
+    fs::create_dir(site_a.root.join("d")).unwrap();
+    a.create(&mut remote, &site_a.root.join("d/g.txt"), b"synced");
+    fs::create_dir(site_a.root.join("other")).unwrap();
+    a.create(&mut remote, &site_a.root.join("other/h.txt"), b"other");
+    let folder = NodeId::from(live_id(&server_nodes(&remote), "d"));
+    let (site, b) = linked(&mut remote, "b");
+    drop(b);
+    let sync = SyncRules {
+        include: Vec::new(),
+        exclude: vec!["blocked/".into()],
+        ..SyncRules::default()
+    };
+    let mut b = site.start_with(&sync);
+    b.connect(&remote);
+    b.scan_until(|b| b.folder.scanned);
+    b.run(&mut remote);
+    b.settle();
+    for (from, to) in [("d", "blocked"), ("blocked", "d")] {
+        fs::rename(site_a.root.join(from), site_a.root.join(to)).unwrap();
+        a.scan_until(|a| !a.work.is_empty());
+        a.run(&mut remote);
+        b.pull(&remote);
+        b.run(&mut remote);
+        assert!(b.folder.engine.trees.unobserved(&folder), "{to}");
+        if to == "blocked" {
+            fs::remove_dir_all(site.root.join("d")).unwrap();
+        }
+    }
+    let sections = b.folder.disk.sections();
+    let (requests, _) = sections.take_resets();
+    let resets: Vec<_> = requests
+        .into_iter()
+        .flat_map(|(_, resets)| resets)
+        .collect();
+    let scopes: Vec<_> = resets.iter().map(|reset| reset.scope.clone()).collect();
+    assert_eq!(scopes, [PathBuf::from("d")]);
+    sections.request(resets);
+    b.scan_until(|b| !b.folder.engine.trees.unobserved(&folder));
+    b.run(&mut remote);
+    b.settle();
+    assert_eq!(fs::read(site.root.join("d/g.txt")).unwrap(), b"synced");
+    assert_eq!(remote.names(), ["d", "g.txt", "h.txt", "other"]);
+}
+
+#[test]
+fn a_delete_after_another_device_renames_a_folder_back_out_of_a_path_the_rules_exclude_is_sent() {
+    let mut remote = Remote::new();
+    let (site_a, mut a) = linked(&mut remote, "a");
+    fs::create_dir(site_a.root.join("d")).unwrap();
+    a.create(&mut remote, &site_a.root.join("d/g.txt"), b"synced");
+    fs::create_dir(site_a.root.join("d/sub")).unwrap();
+    a.create(&mut remote, &site_a.root.join("d/sub/i.txt"), b"below");
+    fs::create_dir(site_a.root.join("other")).unwrap();
+    a.create(&mut remote, &site_a.root.join("other/h.txt"), b"other");
+    let folder = NodeId::from(live_id(&server_nodes(&remote), "d"));
+    let (site, b) = linked(&mut remote, "b");
+    drop(b);
+    let sync = SyncRules {
+        include: Vec::new(),
+        exclude: vec!["blocked/".into()],
+        ..SyncRules::default()
+    };
+    let mut b = site.start_with(&sync);
+    b.connect(&remote);
+    b.scan_until(|b| b.folder.scanned);
+    b.run(&mut remote);
+    b.settle();
+    assert_eq!(fs::read(site.root.join("d/g.txt")).unwrap(), b"synced");
+    for (from, to) in [("d", "blocked"), ("blocked", "d")] {
+        fs::rename(site_a.root.join(from), site_a.root.join(to)).unwrap();
+        a.scan_until(|a| !a.work.is_empty());
+        a.run(&mut remote);
+        b.pull(&remote);
+        b.run(&mut remote);
+        assert!(b.folder.engine.trees.unobserved(&folder), "{to}");
+        assert!(b.folder.engine.trees.take_relist().is_empty(), "{to}");
+    }
+    let sections = b.folder.disk.sections();
+    let (requests, _) = sections.take_resets();
+    let resets: Vec<_> = requests
+        .into_iter()
+        .flat_map(|(_, resets)| resets)
+        .collect();
+    let scopes: Vec<_> = resets.iter().map(|reset| reset.scope.clone()).collect();
+    assert_eq!(scopes, [PathBuf::from("d")]);
+    sections.request(resets);
+    b.scan_until(|b| !b.folder.engine.trees.unobserved(&folder));
+    fs::remove_dir_all(site.root.join("d")).unwrap();
+    b.scan_until(|b| !b.work.is_empty());
+    b.run(&mut remote);
+    assert_eq!(remote.names(), ["h.txt", "other"]);
+}
