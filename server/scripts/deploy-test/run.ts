@@ -654,6 +654,9 @@ function inventory(kind: string, found: { name: string }[]): string {
 }
 
 async function sweep(account: Account): Promise<void> {
+  const secrets = [account.token, account.id, process.env.GH_TOKEN ?? ""].filter((secret) => secret.length > 0);
+  const redacted = (text: string) => secrets.reduce((line, secret) => line.replaceAll(secret, "***"), text);
+  const say = (text: string) => console.log(redacted(text));
   const current = testName();
   const repository = process.env.GITHUB_REPOSITORY || fail("GITHUB_REPOSITORY must name the repository whose runs the sweep checks");
   const budgetMs = Number(process.env.KOIDRIVE_SWEEP_BUDGET_MS || SWEEP_MS);
@@ -700,7 +703,7 @@ async function sweep(account: Account): Promise<void> {
     }
     try {
       const found = await decide();
-      if (found === "running") console.log("Skipped the " + what + ": its run is still going");
+      if (found === "running") say("Skipped the " + what + ": its run is still going");
       else if (found === "sweep") await remove();
       else leftAlone.push("the " + what + ", because " + found.leftAlone);
     } catch (error) {
@@ -717,26 +720,26 @@ async function sweep(account: Account): Promise<void> {
   const workers = await listWorkers(account, deadline).catch((error: unknown) => void failed("listing the Workers", error));
   const live = new Set(workers?.map((worker) => worker.name));
   const testWorkers = workers?.filter((candidate) => candidate.name.startsWith(NAME_PREFIX));
-  if (testWorkers) console.log(inventory("Workers", testWorkers));
+  if (testWorkers) say(inventory("Workers", testWorkers));
   for (const worker of testWorkers ?? []) {
     await visit("Worker " + shown(worker.name), () => createdDuring(worker.name, worker.createdOn), async () => {
       await deleteWorker(account, worker.name, deadline);
-      console.log("Deleted the Worker " + worker.name + " and its Durable Objects, which its finished run left behind");
+      say("Deleted the Worker " + worker.name + " and its Durable Objects, which its finished run left behind");
       live.delete(worker.name);
     });
   }
   startPhase();
   const buckets = await listBuckets(account, NAME_PREFIX, deadline).catch((error: unknown) => void failed("listing the R2 buckets", error));
-  if (buckets) console.log(inventory("R2 buckets", buckets));
+  if (buckets) say(inventory("R2 buckets", buckets));
   for (const bucket of buckets ?? []) {
     await visit("R2 bucket " + shown(bucket.name), () => createdDuring(bucket.name, bucket.creationDate), async () => {
       try {
         await deleteBucket(account, bucket.name, deadline);
-        console.log("Deleted the empty R2 bucket " + bucket.name + ", which its finished run left behind");
+        say("Deleted the empty R2 bucket " + bucket.name + ", which its finished run left behind");
       } catch (error) {
         if (!(error instanceof ApiError && error.status === 409)) throw error;
         await expireAllObjects(account, bucket.name, deadline);
-        console.log("The R2 bucket " + bucket.name + " still holds objects. Its lifecycle rule deletes them within a day, and a later run's sweep deletes the bucket");
+        say("The R2 bucket " + bucket.name + " still holds objects. Its lifecycle rule deletes them within a day, and a later run's sweep deletes the bucket");
       }
     });
   }
@@ -744,7 +747,7 @@ async function sweep(account: Account): Promise<void> {
   const listed = await listNamespaces(account, deadline).catch((error: unknown) => void failed("listing the Durable Object namespaces", error));
   const namespaces = listed?.namespaces;
   const unnamed = namespaces?.filter((namespace) => namespace.script === undefined) ?? [];
-  if (listed) console.log("The sweep listed " + (namespaces!.length + listed.malformed) + " Durable Object namespaces, " + unnamed.length + " of them with no Worker name and " + listed.malformed + " with no id or class");
+  if (listed) say("The sweep listed " + (namespaces!.length + listed.malformed) + " Durable Object namespaces, " + unnamed.length + " of them with no Worker name and " + listed.malformed + " with no id or class");
   for (const namespace of unnamed) leftAlone.push("the Durable Object namespace " + label(namespace) + ", because the API names no Worker for it");
   if (listed?.malformed) leftAlone.push(listed.malformed + " Durable Object namespaces the API listed with no id or class");
   for (const namespace of namespaces ?? []) {
@@ -756,14 +759,14 @@ async function sweep(account: Account): Promise<void> {
     }
     await visit("Durable Object namespace " + label(namespace) + " of the deleted Worker " + shown(script), () => orphaned(script), async () => {
       await deleteNamespace(account, namespace.id, deadline);
-      console.log("Deleted the Durable Object namespace " + label(namespace) + ", which outlived the Worker " + script + " of a finished run");
+      say("Deleted the Durable Object namespace " + label(namespace) + ", which outlived the Worker " + script + " of a finished run");
     });
   }
 
   startPhase();
   const unchecked = (what: string, error: unknown) => {
     if (error instanceof DeadlineError) unfinished = true;
-    else console.log("::warning::The sweep could not check for leftovers the lists left out, " + what + ": " + reason(error));
+    else say("::warning::The sweep could not check for leftovers the lists left out, " + what + ": " + reason(error));
   };
   const recent = await finishedRunNames(repository, deadline).catch((error: unknown) => void unchecked("listing the finished test runs", error));
   if (recent && (testWorkers || buckets)) {
@@ -793,13 +796,13 @@ async function sweep(account: Account): Promise<void> {
       if (testWorkers && !listedWorkers.has(name)) await lookUp("Worker " + name, () => getWorker(account, name, deadline));
       if (buckets && !listedBuckets.has(name)) await lookUp("R2 bucket " + name, () => getBucket(account, name, deadline));
     }
-    console.log("The sweep looked up the Worker and R2 bucket of " + checked + " test run attempts that finished in the last " + LOOKBACK_DAYS + " days and that the lists did not show: " + found + " exist, " + lookupsFailed + " lookups failed");
+    say("The sweep looked up the Worker and R2 bucket of " + checked + " test run attempts that finished in the last " + LOOKBACK_DAYS + " days and that the lists did not show: " + found + " exist, " + lookupsFailed + " lookups failed");
   }
 
-  for (const item of leftAlone) console.log("::warning::The sweep left alone " + item);
-  if (unfinished) console.log("::notice::The sweep stopped because " + what + ". The next run's sweep checks what is left");
+  for (const item of leftAlone) say("::warning::The sweep left alone " + item);
+  if (unfinished) say("::notice::The sweep stopped because " + what + ". The next run's sweep checks what is left");
   if (problems.length > 0) {
-    for (const problem of problems) console.error("::error::sweep: " + problem);
+    for (const problem of problems) console.error(redacted("::error::sweep: " + problem));
     fail("the sweep could not check or delete everything earlier runs left behind");
   }
 }

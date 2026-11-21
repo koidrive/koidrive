@@ -430,7 +430,7 @@ describe("sweep", () => {
   });
 
   it("prints a namespace id only when it is 32 hex digits and a creation time only as a parsed instant", async () => {
-    const id = "0123456789abcdef0123456789abcdef";
+    const id = "fedcba9876543210fedcba9876543210";
     mock.runAttempts.set("7/1", attempt(Date.now() - HOUR, Date.now() + HOUR));
     mock.namespaces.push({ id, class: "SpaceDO" }, { id: "fixture-only-marker", class: "fixture-only-class" });
     mock.addBucket("koidrive-test-7-1", "fixture-only-time");
@@ -444,14 +444,16 @@ describe("sweep", () => {
 
   it("leaves alone a namespace of a finished run whose id is not 32 hex digits, and names no raw path or class in its diagnostics", async () => {
     mock.runAttempts.set("7/1", attempt(Date.now() - HOUR, Date.now() + HOUR));
-    mock.namespaces.push({ id: "fixture-only-id", class: "SpaceDO", script: "koidrive-test-7-1" }, { id: "0123456789abcdef0123456789abcdef", class: "FixtureOnlyClass" });
+    mock.namespaces.push({ id: "fixture-only-id", class: "SpaceDO", script: "koidrive-test-7-1" }, { id: "fedcba9876543210fedcba9876543210", class: "FixtureOnlyClass" }, { id: "0123456789abcdef0123456789abcdef", class: "AccountDO" });
     mock.addBucket("koidrive-test-8-1");
     mock.bucketListStatus = 403;
     const { status, output } = await runTs("sweep");
     expect(status).toBe(1);
     expect(mock.deletes()).toEqual([]);
     expect(output).toContain("::warning::The sweep left alone the Durable Object namespace SpaceDO (an id that is not 32 hex digits) of the deleted Worker koidrive-test-7-1, because its id is not 32 hex digits");
-    expect(output).toContain("namespace (a class Koidrive does not define) 0123456789abcdef0123456789abcdef, because");
+    expect(output).toContain("namespace (a class Koidrive does not define) fedcba9876543210fedcba9876543210, because");
+    expect(output).toContain("namespace AccountDO ***, because the API names no Worker for it");
+    expect(output).not.toContain("0123456789abcdef0123456789abcdef");
     expect(output).toContain("::error::sweep: listing the R2 buckets: GET /accounts/{account}/r2/buckets returned HTTP 403 (the token lacks a permission this call needs; see docs/deploy-test.md)");
     expect(output).not.toMatch(/fixture-only|FixtureOnly|Authentication error|accounts\/(?!\{account\})/);
   });
