@@ -604,11 +604,23 @@ struct Relocation {
 }
 
 impl Device {
-    fn note_taken_along<'a>(&mut self, folders: impl IntoIterator<Item = &'a NodeId>) {
-        let on_server: BTreeMap<NodeId, NodeId> = (self.trees.remote().iter())
+    fn on_server(&self) -> BTreeMap<NodeId, NodeId> {
+        (self.trees.remote().iter())
             .filter(|(_, remote)| !remote.trashed)
             .map(|(id, remote)| (id.clone(), remote.shape.parent.clone()))
-            .collect();
+            .collect()
+    }
+
+    fn note_taken_along<'a>(&mut self, folders: impl IntoIterator<Item = &'a NodeId>) {
+        let on_server = self.on_server();
+        self.note_taken_along_from(folders, &on_server);
+    }
+
+    fn note_taken_along_from<'a>(
+        &mut self,
+        folders: impl IntoIterator<Item = &'a NodeId>,
+        on_server: &BTreeMap<NodeId, NodeId>,
+    ) {
         for folder in folders {
             (self.on_server_when_taken_along).insert(folder.clone(), on_server.clone());
         }
@@ -2373,7 +2385,12 @@ fn run_ignoring_answering_after(
     let mut revived_once: BTreeSet<NodeId> = BTreeSet::new();
     let mut freed: BTreeSet<NodeId> = BTreeSet::new();
     let mut sent_nodes: BTreeSet<NodeId> = BTreeSet::new();
-    let mut pending: Option<(Question, BTreeMap<NodeId, koidrive_engine::tree::Shape>)> = None;
+    type AtAnswer = (
+        Question,
+        BTreeMap<NodeId, koidrive_engine::tree::Shape>,
+        Option<BTreeMap<NodeId, NodeId>>,
+    );
+    let mut pending: Option<AtAnswer> = None;
     let mut during = during.iter();
     while !quiet {
         steps += 1;
@@ -2658,7 +2675,9 @@ fn run_ignoring_answering_after(
             "S is not a valid tree"
         );
         let open = |question: &Question| commits.questions().iter().any(|o| o.id == question.id);
-        if let Some((question, at_answer)) = pending.take_if(|(question, _)| !open(question)) {
+        if let Some((question, at_answer, on_server)) =
+            pending.take_if(|(question, _, _)| !open(question))
+        {
             let asked_again: BTreeSet<&NodeId> =
                 (commits.questions().iter().flat_map(Question::holds)).collect();
             let shown: BTreeMap<NodeId, koidrive_engine::tree::Shape> = (question.shown)
@@ -2700,7 +2719,8 @@ fn run_ignoring_answering_after(
             }
             std::mem::swap(&mut device.trees, &mut before.0);
             device.acted.retain(|id| !taken.contains_key(id));
-            device.note_taken_along(taken.keys());
+            let on_server = on_server.unwrap_or_else(|| device.on_server());
+            device.note_taken_along_from(taken.keys(), &on_server);
             kept_with.append(&mut taken);
             discarded.extend(shown);
         }
@@ -2743,12 +2763,13 @@ fn run_ignoring_answering_after(
                     let frozen = (commits.questions().iter())
                         .any(|asked| asked.id == question.id && asked.frozen.is_some());
                     let sets = (&from_server, &placed_left_out);
-                    let at_answer = if frozen {
-                        taken_along(&device, &question.shown, sets, &discarded)
+                    let (at_answer, on_server) = if frozen {
+                        let at_answer = taken_along(&device, &question.shown, sets, &discarded);
+                        (at_answer, Some(device.on_server()))
                     } else {
-                        BTreeMap::new()
+                        (BTreeMap::new(), None)
                     };
-                    pending = Some((question.clone(), at_answer));
+                    pending = Some((question.clone(), at_answer, on_server));
                 }
                 asked += 1;
                 continue;
