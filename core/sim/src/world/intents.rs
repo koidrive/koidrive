@@ -2183,4 +2183,39 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn zz_cr_4650066796_a_replay_into_the_trash_a_restore_brought_back_settles_the_lost_move() {
+        for revived_before_replay in [true, false] {
+            let mut intents = move_oracle();
+            let live = move_tree("root", NodeStatus::Live, "root");
+            let trashed = move_tree("root", NodeStatus::Trashed, "root");
+            deleting_p(&mut intents, 1);
+            intents.sync(&trashed, 2, None);
+            intents.sync(&live, 3, None);
+            moving_n(&mut intents, 4, 2);
+            build(&mut intents, 4, ("n", "p", "n"));
+            reach(&mut intents, 5, ("n", "p", "n"), &live);
+            let applied = move_tree("p", NodeStatus::Live, "root");
+            intents.sync(&applied, 5, None);
+            intents.sync(&trashed, 6, Some(&applied));
+            if revived_before_replay {
+                intents.record(2, 7, 2, RESTORE, Value::Live);
+                intents.sync(&live, 8, None);
+                reach(&mut intents, 9, ("n", "p", "n"), &live);
+            } else {
+                reach(&mut intents, 7, ("n", "p", "n"), &trashed);
+            }
+            let server = if revived_before_replay {
+                &live
+            } else {
+                &trashed
+            };
+            assert_eq!(
+                intents.check(server, |_| false, |_, _| false).is_ok(),
+                !revived_before_replay,
+                "revived before the replay: {revived_before_replay}"
+            );
+        }
+    }
 }

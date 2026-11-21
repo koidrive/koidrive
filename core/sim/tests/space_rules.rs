@@ -2237,3 +2237,51 @@ fn zz_cr_4624485755_growing_a_trash_group_republishes_its_old_members() {
     assert!(node_states(&result.changes)
         .any(|node| node.node_id == first && node.trash_held == held && node.meta_rev == result.seq));
 }
+#[test]
+fn zz_cr_4650066769_a_folder_revived_and_put_back_in_the_trash_takes_the_held_merge_revision() {
+    for intents in [false, true] {
+        let mut s = Space::new();
+        let mut a = s.client("A");
+        let root = s.root();
+        let (p, f, m, n) = (s.id(), s.id(), s.id(), s.id());
+        let tag = |op: Op, id: u8| match intents {
+            true => with_intent(op, intent(id, "dev-A")),
+            false => op,
+        };
+        let folders = vec![
+            tag(mkdir(&p, &root, "p"), 1),
+            tag(mkdir(&f, &p, "f"), 2),
+            tag(mkdir(&m, &p, "m"), 3),
+        ];
+        s.commit(&mut a, folders, vec![]);
+        s.commit(&mut a, vec![tag(delete(&p), 4)], vec![]);
+        let held = match intents {
+            true => with_intent(delete_holding(&m, &[9]), intent(4, "dev-A")),
+            false => delete(&m),
+        };
+        let ops = vec![tag(mkdir(&n, &f, "n"), 5), held, tag(mv(&n, &root, "n"), 6)];
+        let result = s.commit(&mut a, ops, vec![]);
+        assert!(!s.live(&f) && s.live(&n), "intents: {intents}, {result:?}");
+        assert_eq!(s.get(&f).meta_rev, s.get(&m).meta_rev, "intents: {intents}");
+    }
+}
+
+
+#[test]
+fn zz_cr_4650066745_an_unchanged_create_reports_the_node_it_proves() {
+    let mut s = Space::new();
+    let mut a = s.client("A");
+    let root = s.root();
+    let dir = s.id();
+    let op = with_intent(mkdir(&dir, &root, "d"), intent(1, "dev-A"));
+    s.commit(&mut a, vec![op.clone()], vec![]);
+    let retry = s.commit(&mut a, vec![op], vec![]);
+    assert_eq!(codes(&retry), [op_result::Code::Applied]);
+    let reported: Vec<String> = (retry.changes.iter())
+        .filter_map(|change| match &change.change {
+            Some(change_record::Change::Node(node)) => Some(node.node_id.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(reported, vec![dir]);
+}
