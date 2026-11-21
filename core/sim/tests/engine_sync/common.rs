@@ -2983,7 +2983,9 @@ fn run_ignoring_answering_after(
                 || device.trees.remote().live(id).is_none_or(|remote| {
                     !remote.same_position(at)
                         && (device.disk_name_taken(&remote.parent, &[], &remote.name)
-                            || device.trees.ignores(&remote_path(&device.trees, id), remote.kind))
+                            || device
+                                .trees
+                                .ignores(&remote_path(&device.trees, id), remote.kind))
                 })
                 || waits_on_left_out(&device, id)
         })
