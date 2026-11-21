@@ -40,20 +40,32 @@ NOTICE_MARKERS = {
 }
 PREFERENCE = ("MIT", "ISC", "BSD-2-Clause", "BSD-3-Clause", "Apache-2.0", "Unicode-3.0")
 LICENCE_FILE = re.compile(r"^(LICEN[CS]E|COPYING|COPYRIGHT|UNLICENSE)", re.IGNORECASE)
-NOTICE_FILE = re.compile(r"^NOTICE", re.IGNORECASE)
+EXTRA_NOTICE_FILE = re.compile(r"^NOTICE|THIRD[-_]?PARTY", re.IGNORECASE)
+COPYRIGHT_LINE = re.compile(r"copyright\s*(?:\(c\)|©|\d{4})", re.IGNORECASE)
+NEEDS_COPYRIGHT = {"MIT", "ISC", "BSD-2-Clause", "BSD-3-Clause"}
+UNSHIPPED_DIRS = {"tests", "benches", "examples", "target", ".git"}
 COMPILED_SOURCES = (".c", ".cc", ".cpp", ".cxx", ".s", ".S", ".asm", ".m", ".mm")
 
 BUNDLED = {
     ("aws-lc-sys", "0.47.0"): [
-        ("AWS-LC", "ISC AND Apache-2.0 AND MIT AND BSD-3-Clause", ["aws-lc/LICENSE", "aws-lc/third_party/fiat/LICENSE"]),
+        (
+            "AWS-LC",
+            ("aws-lc/include/openssl/base.h", r'AWSLC_VERSION_NUMBER_STRING "(\d+)\.(\d+)\.(\d+)"'),
+            "ISC AND Apache-2.0 AND MIT AND BSD-3-Clause",
+            [("file", "aws-lc/LICENSE"), ("file", "aws-lc/third_party/fiat/LICENSE")],
+        ),
     ],
-    ("libmimalloc-sys", "0.1.49"): [("mimalloc 3.3.2", "MIT", ["c_src/mimalloc/v3/LICENSE"])],
-    ("libsqlite3-sys", "0.39.1"): [("SQLite 3.51.1", "blessing", [])],
+    ("libmimalloc-sys", "0.1.49"): [
+        ("mimalloc", ("c_src/mimalloc/v3/include/mimalloc.h", r"MI_MALLOC_VERSION (\d)(\d\d)(\d\d)"), "MIT", [("file", "c_src/mimalloc/v3/LICENSE")]),
+    ],
+    ("libsqlite3-sys", "0.39.1"): [
+        ("SQLite", ("sqlite3/sqlite3.h", r'#define SQLITE_VERSION\s+"(\d+)\.(\d+)\.(\d+)"'), "blessing", [("lines", "sqlite3/sqlite3.h", 2, 9)]),
+    ],
 }
 CLARIFIED = {
     ("@bufbuild/protobuf", "2.17.0"): [
         ("vendored", "bufbuild-protobuf-2.17.0-LICENSE"),
-        ("package", "dist/esm/wire/varint.js", 1, 32),
+        ("lines", "dist/esm/wire/varint.js", 1, 32),
     ],
     ("rust", "1.100.0"): [("vendored", "rust-1.100.0-LICENSE-MIT")],
 }
@@ -164,11 +176,12 @@ def read(path):
 
 
 def files_in(directory, pattern):
-    return sorted(entry for entry in directory.iterdir() if entry.is_file() and pattern.match(entry.name))
+    return sorted(entry for entry in directory.iterdir() if entry.is_file() and pattern.search(entry.name))
 
 
 def licence_texts(component, licences, searched):
     files = next((found for found in (files_in(d, LICENCE_FILE) for d in searched if d.is_dir()) if found), [])
+    files = [path for path in files if not EXTRA_NOTICE_FILE.search(path.name)]
     texts = {path: read(path) for path in files}
     chosen = []
     for licence in licences:
@@ -179,9 +192,29 @@ def licence_texts(component, licences, searched):
         best = min(matching, key=lambda path: (sum(holds(texts[path], other) for other in NOTICE_MARKERS), len(path.name), path.name))
         if best not in chosen:
             chosen.append(best)
-    if "Apache-2.0" in licences and files:
-        chosen += [path for path in files_in(files[0].parent, NOTICE_FILE) if path not in chosen]
+    if files:
+        chosen += files_in(files[0].parent, EXTRA_NOTICE_FILE)
     return [texts.get(path) or read(path) for path in chosen]
+
+
+def uncommented(line):
+    return re.sub(r"^\s*(?:/\*+|//[/!]?|\*+/?|#+|--)\s?", "", line).rstrip()
+
+
+def source_copyrights(directory):
+    found = set()
+    for root, dirs, names in os.walk(directory):
+        dirs[:] = sorted(d for d in dirs if d not in UNSHIPPED_DIRS)
+        for name in names:
+            path = Path(root) / name
+            if path.stat().st_size > 4_000_000:
+                continue
+            try:
+                lines = path.read_text(encoding="utf-8").splitlines()
+            except (UnicodeDecodeError, OSError):
+                continue
+            found.update(" ".join(uncommented(line).split()) for line in lines if COPYRIGHT_LINE.search(line))
+    return sorted(found)
 
 
 def clarified_texts(component, sources):
@@ -190,9 +223,12 @@ def clarified_texts(component, sources):
         if source[0] == "vendored":
             texts.append(read(TEXTS / source[1]))
             continue
+        if source[0] == "file":
+            texts.append(read(component.directory / source[1]))
+            continue
         _, relative, first, last = source
         lines = (component.directory / relative).read_text(encoding="utf-8").splitlines()[first - 1 : last]
-        texts.append(normalise("\n".join(re.sub(r"^// ?", "", line) for line in lines)))
+        texts.append(normalise("\n".join(uncommented(line) for line in lines)))
     return texts
 
 
@@ -214,6 +250,11 @@ def resolve(component, searched, clarified=None):
         if missing:
             errors.append(f"the CLARIFIED texts of {component.label()} do not hold the {', '.join(missing)} text")
             continue
+        if component.group != ZIG and NEEDS_COPYRIGHT & set(licences):
+            shipped = flat("\n".join(texts))
+            notices = [line for line in source_copyrights(component.directory) if line not in shipped]
+            if notices:
+                texts = texts + ["Copyright notices in the sources of " + component.label() + ":\n\n" + "\n".join(notices)]
         component.texts = texts
         return
     raise Unresolved(errors[0])
@@ -227,14 +268,18 @@ def compiles_bundled_sources(package):
 
 def bundled_components(crate):
     components = []
-    for name, expression, paths in BUNDLED[(crate.name, crate.version)]:
-        component = Component(CRATES, name, "", expression, crate.directory, bundled_in=crate.label())
-        component.targets = set(crate.targets)
-        component.licences = [expression]
-        missing = [path for path in paths if not (crate.directory / path).is_file()]
+    for name, (version_file, version_pattern), expression, sources in BUNDLED[(crate.name, crate.version)]:
+        named = {version_file} | {source[1] for source in sources}
+        missing = sorted(path for path in named if not (crate.directory / path).is_file())
         if missing:
             raise Unresolved(f"BUNDLED names {', '.join(missing)} in {crate.label()}, which it does not contain")
-        component.texts = [read(crate.directory / path) for path in paths]
+        match = re.search(version_pattern, (crate.directory / version_file).read_text(encoding="utf-8", errors="replace"))
+        if not match:
+            raise Unresolved(f"BUNDLED reads the version of {name} from {version_file} in {crate.label()}, which has no match for {version_pattern}")
+        component = Component(CRATES, name, ".".join(str(int(part)) for part in match.groups()), expression, crate.directory, bundled_in=crate.label())
+        component.targets = set(crate.targets)
+        component.licences = [expression]
+        component.texts = clarified_texts(component, sources)
         unmatched = [l for option in parse(expression) for l in needing_notice(option) if not any(holds(t, l) for t in component.texts)]
         if unmatched:
             raise Unresolved(f"{name} in {crate.label()} is used under {', '.join(unmatched)}, but BUNDLED lists no file with that text")

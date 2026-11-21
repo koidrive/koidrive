@@ -104,18 +104,50 @@ class BundledSources(unittest.TestCase):
         self.assertFalse(notices.compiles_bundled_sources(self.package(crate, build_script=False)))
         self.assertTrue(notices.compiles_bundled_sources(self.package(crate, build_script=True)))
 
-    def test_bundled_entry_must_name_files_that_hold_its_licence(self):
-        crate = Crate(self, {"c_src/LICENSE": MIT})
+    def test_bundled_entry_reads_its_version_and_must_name_files_that_hold_its_licence(self):
+        crate = Crate(self, {"c_src/LICENSE": MIT, "c_src/demo.h": "#define DEMO_VERSION 30302\n"})
         parent = crate.component("MIT", name="demo-sys")
-        with mock.patch.dict(notices.BUNDLED, {("demo-sys", "1.0.0"): [("libdemo", "MIT", ["c_src/LICENSE"])]}):
+        version = ("c_src/demo.h", r"DEMO_VERSION (\d)(\d\d)(\d\d)")
+        entry = lambda expression, path: {("demo-sys", "1.0.0"): [("libdemo", version, expression, [("file", path)])]}
+        with mock.patch.dict(notices.BUNDLED, entry("MIT", "c_src/LICENSE")):
             [bundled] = notices.bundled_components(parent)
-            self.assertEqual((bundled.label(), bundled.texts), ("libdemo (bundled in demo-sys 1.0.0)", [MIT]))
-        with mock.patch.dict(notices.BUNDLED, {("demo-sys", "1.0.0"): [("libdemo", "ISC", ["c_src/LICENSE"])]}):
+            self.assertEqual((bundled.label(), bundled.texts), ("libdemo 3.3.2 (bundled in demo-sys 1.0.0)", [MIT]))
+        with mock.patch.dict(notices.BUNDLED, entry("ISC", "c_src/LICENSE")):
             with self.assertRaisesRegex(notices.Unresolved, "used under ISC, but BUNDLED lists no file"):
                 notices.bundled_components(parent)
-        with mock.patch.dict(notices.BUNDLED, {("demo-sys", "1.0.0"): [("libdemo", "MIT", ["c_src/COPYING"])]}):
+        with mock.patch.dict(notices.BUNDLED, entry("MIT", "c_src/COPYING")):
             with self.assertRaisesRegex(notices.Unresolved, "names c_src/COPYING"):
                 notices.bundled_components(parent)
+        (crate.dir / "c_src/demo.h").write_text("#define DEMO_VERSION_STRING \"3.3.2\"\n", encoding="utf-8")
+        with mock.patch.dict(notices.BUNDLED, entry("MIT", "c_src/LICENSE")):
+            with self.assertRaisesRegex(notices.Unresolved, "reads the version of libdemo from c_src/demo.h"):
+                notices.bundled_components(parent)
+
+
+class Copyrights(unittest.TestCase):
+    def test_source_copyright_lines_the_licence_file_lacks_are_shipped(self):
+        bare_mit = "Permission is hereby granted, free of charge, to any person obtaining a copy"
+        crate = Crate(self, {
+            "LICENSE-MIT": bare_mit,
+            "src/lib.rs": "// Copyright 2016 lazy-static.rs Developers\n//\n// Licensed under MIT\nfn f() {}\n",
+            "src/inner.rs": "/* Copyright (c) 2019 Someone Else */\n",
+            "tests/fixture.rs": "// Copyright 2001 Test Fixture Author\n",
+        })
+        component = crate.component("MIT")
+        notices.resolve(component, [crate.dir])
+        self.assertEqual(component.texts, [bare_mit, "Copyright notices in the sources of demo 1.0.0:\n\nCopyright (c) 2019 Someone Else */\nCopyright 2016 lazy-static.rs Developers"])
+
+    def test_copyright_lines_already_in_the_licence_text_are_not_repeated(self):
+        crate = Crate(self, {"LICENSE": MIT, "src/lib.rs": "// Copyright (c) 2020 Someone\n"})
+        component = crate.component("MIT")
+        notices.resolve(component, [crate.dir])
+        self.assertEqual(component.texts, [MIT])
+
+    def test_third_party_notice_files_ship_whatever_licence_is_chosen(self):
+        crate = Crate(self, {"LICENSE-MIT": MIT, "LICENSE-THIRD-PARTY": "Copyright (c) 2016 Alex Crichton\nApache License"})
+        component = crate.component("MIT OR Apache-2.0")
+        notices.resolve(component, [crate.dir])
+        self.assertEqual(component.texts, [MIT, "Copyright (c) 2016 Alex Crichton\nApache License"])
 
 
 class Commands(unittest.TestCase):
