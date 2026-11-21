@@ -111,6 +111,13 @@ impl InFlight {
         })
     }
 
+    pub fn created_file_name(&self, id: &NodeId) -> Option<&str> {
+        (self.commit.ops.iter()).find_map(|op| match &op.op {
+            Some(op::Op::CreateFile(create)) if *id == create.node_id => Some(create.name.as_str()),
+            _ => None,
+        })
+    }
+
     /// Whether the commit deletes `id`, by a `Delete` of it or of a folder above it.
     pub fn deletes_node(&self, id: &NodeId) -> bool {
         (self.deletes.iter()).any(|(top, members)| top == id || members.iter().any(|m| m == id))

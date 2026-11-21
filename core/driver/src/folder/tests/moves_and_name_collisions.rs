@@ -2235,3 +2235,79 @@ fn a_safe_save_does_not_take_a_revised_file_that_reaches_the_name_through_a_tmp_
     assert_eq!(live_id(&nodes, "report.docx"), draft_id, "{nodes:?}");
     assert_eq!(server_bytes(&remote, &draft_id), b"draft two", "{nodes:?}");
 }
+
+#[test]
+fn a_word_save_whose_temp_file_was_written_while_stopped_keeps_its_node() {
+    let (mut remote, site, a, before) = safe_save_fixture();
+    drop(a);
+    let stage = site.root.join("~WRD0000.tmp");
+    fs::write(&stage, b"version two").unwrap();
+    let mut a = site.start();
+    a.connect(&mut remote);
+    a.scan_until(|a| a.folder.scanned && tracks(a, "~WRD0000.tmp"));
+    assert_eq!(remote.names(), ["report.docx"]);
+    safe_save_swap(&site, &mut a);
+    fs::rename(stage, site.root.join("report.docx")).unwrap();
+    a.rescan();
+    a.scan_until(|_| local_holds(&site, "report.docx"));
+    safe_save_cleanup(&site, &mut a, &mut remote);
+    safe_save_assert(&remote, &before);
+}
+
+#[test]
+fn a_safe_save_does_not_take_a_file_whose_create_awaits_its_reply() {
+    let (mut remote, site, mut a, report) = safe_save_fixture();
+    let notes_path = site.root.join("notes.docx");
+    fs::write(&notes_path, b"notes").unwrap();
+    a.rescan();
+    a.settle();
+    let upload = a.work.pop_front().unwrap();
+    assert!(matches!(upload, Work::Upload(_)));
+    a.perform(upload, &mut remote).unwrap();
+    let Some(Work::Send(create)) = a.work.pop_front() else {
+        panic!("notes create was sent")
+    };
+    let result = remote.commit(&a.caller, &create).unwrap();
+    let notes = live_id(&server_nodes(&remote), "notes.docx");
+    let node = NodeId::from(notes.as_str());
+    assert!(a.folder.engine.trees.synced().get(&node).is_none());
+    assert!(a.folder.engine.trees.remote().get(&node).is_none());
+    assert_eq!(
+        a.folder.engine.path_of(&node).as_deref(),
+        Some(Path::new("notes.docx"))
+    );
+
+    let stage = site.root.join("notes.tmp");
+    fs::rename(&notes_path, &stage).unwrap();
+    a.rescan();
+    a.settle();
+    assert_eq!(
+        a.folder.engine.path_of(&node).as_deref(),
+        Some(Path::new("notes.tmp"))
+    );
+    fs::rename(
+        site.root.join("report.docx"),
+        site.root.join("~WRL0001.tmp"),
+    )
+    .unwrap();
+    a.rescan();
+    a.settle();
+    fs::rename(stage, site.root.join("report.docx")).unwrap();
+    a.rescan();
+    a.settle();
+    assert_eq!(
+        a.folder.engine.path_of(&node).as_deref(),
+        Some(Path::new("report.docx"))
+    );
+    fs::remove_file(site.root.join("~WRL0001.tmp")).unwrap();
+    a.rescan();
+    a.settle();
+
+    let step = a.folder.sent(Ok(result));
+    a.take(step).unwrap();
+    a.rest(&mut remote);
+    let nodes = server_nodes(&remote);
+    assert_eq!(server_bytes(&remote, &report), b"version one", "{nodes:?}");
+    assert_eq!(live_id(&nodes, "report.docx"), notes, "{nodes:?}");
+    assert_eq!(server_bytes(&remote, &notes), b"notes", "{nodes:?}");
+}

@@ -1701,13 +1701,17 @@ impl Engine {
             let slot = (shape.parent.clone(), shape.name.clone());
             let held = (self.took_slot.get(&slot)).is_some_and(|(taker, _, _)| *taker == id);
             if let Some(from) = moved {
-                let tmp = Path::new(&from.1)
-                    .extension()
-                    .is_some_and(|extension| extension.eq_ignore_ascii_case("tmp"));
-                let on_server = self.trees.synced().get(&id).is_some()
-                    || self.trees.remote().get(&id).is_some();
+                let tmp = |name: &str| {
+                    (Path::new(name).extension())
+                        .is_some_and(|extension| extension.eq_ignore_ascii_case("tmp"))
+                };
+                let own_identity = self.trees.synced().get(&id).is_some()
+                    || self.trees.remote().get(&id).is_some()
+                    || (self.commits.in_flight())
+                        .and_then(|flight| flight.created_file_name(&id))
+                        .is_some_and(|born| !tmp(born));
                 self.took_slot
-                    .insert(slot, (id.clone(), now_ms, tmp && !on_server));
+                    .insert(slot, (id.clone(), now_ms, tmp(&from.1) && !own_identity));
                 self.renamed_away
                     .insert(id.clone(), (from.0, from.1, now_ms));
             } else if !held {
