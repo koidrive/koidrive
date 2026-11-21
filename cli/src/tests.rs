@@ -3072,3 +3072,12 @@ async fn readers_of_the_status_find_a_linked_folder_whose_name_is_not_utf8() {
         ]
     );
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+fn the_option_koi_zeroes_is_mimallocs_purge_delay() {
+    assert_eq!(
+        unsafe { libmimalloc_sys::mi_option_get(crate::PURGE_DELAY) },
+        1000
+    );
+}

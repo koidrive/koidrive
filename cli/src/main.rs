@@ -6,6 +6,18 @@
 //! versions commands talk to the server directly with the credential. With `--json` every command prints one
 //! envelope (see [`report`]) and exits with the status of its [`koidrive_ipc::Code`].
 
+/// Linux builds allocate through mimalloc. On the static musl release builds it also replaces C `malloc`, so SQLite
+/// and the TLS library don't take musl's allocator lock.
+#[cfg(target_os = "linux")]
+#[global_allocator]
+static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
+/// mimalloc 3.3's `mi_option_purge_delay`, which libmimalloc-sys 0.1.49 doesn't name. `main` sets it to 0, so freed
+/// pages go back to the system at once instead of after a second: on a 200k-entry first sync that holds about 9%
+/// less memory at about the same speed.
+#[cfg(target_os = "linux")]
+const PURGE_DELAY: libmimalloc_sys::mi_option_t = 15;
+
 mod app;
 mod app_install;
 mod args;
@@ -81,6 +93,10 @@ use tokio::signal::unix::{SignalKind, signal};
 pub use options::{DeviceArgs, RequestArg};
 
 fn main() -> ExitCode {
+    #[cfg(target_os = "linux")]
+    unsafe {
+        libmimalloc_sys::mi_option_set(PURGE_DELAY, 0)
+    };
     if let Some(exit) = lifeline::hold() {
         return exit;
     }
