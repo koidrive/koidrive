@@ -429,6 +429,7 @@ fn removals_below_a_folder_move_that_is_dropped_are_dropped_with_it() {
                     kind: EntryKind::Dir,
                     id,
                     linked: false,
+                    marked_node: None,
                 },
             ],
             root: Ok(()),
@@ -509,6 +510,7 @@ fn a_removal_dropped_while_excluded_stays_unobserved_until_the_reset_scan_answer
                 kind: EntryKind::Dir,
                 id,
                 linked: false,
+                marked_node: None,
             },
             Observed::Removed {
                 path: "n/d/x.log".into(),

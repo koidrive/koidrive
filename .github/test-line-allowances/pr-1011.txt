@@ -1,0 +1,9 @@
+910
+# A file whose valid node mark names another node never becomes that node. Each way an observed file gets a node needs its
+# own repro: save continuation (marked replacement under one node, a refused file deleted and written again in separate
+# batches, one batch and on disk, a scan gap, inode reuse without birth time, a temp file moved into a name a refused file
+# left, an unread arrival, an effect replacing the taker), written_again (a trashed file moved onto a deleted name, with
+# and without the backup), the holder swap (a file back from the trash, a marked rename over a file), resolve by path, the
+# Modified identity lookup, temp birth after a marked rewrite, the Word save in one scan and step by step, a synced file
+# moved over another seen both ways, the concurrent server edit, the download echo, and the observer's event shape for a
+# move out of an excluded folder, and a refused folder rename or arrival (new node, contents kept, ignored and stale destinations, recorded children, a parent removed in the same batch), a refused file rename read again where it arrives and recorded as an unread occupant of a saved name, and a folder that takes a saved name for a while. Each reaches a decision no other test reaches.
