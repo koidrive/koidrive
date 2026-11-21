@@ -40,219 +40,219 @@ cpufeatures 0.3.1: MIT (offered as MIT OR Apache-2.0), text 19
 crypto-common 0.2.2: MIT (offered as MIT OR Apache-2.0), text 23
 cty 0.2.2: MIT (offered as MIT OR Apache-2.0), text 24 [aarch64-unknown-linux-musl, x86_64-unknown-linux-musl]
 data-encoding 2.11.1: MIT, text 25
-deranged 0.5.9: MIT (offered as MIT OR Apache-2.0), text 26, 27 [aarch64-apple-darwin]
-digest 0.11.3: MIT (offered as MIT OR Apache-2.0), text 28
+deranged 0.5.9: MIT (offered as MIT OR Apache-2.0), text 26 [aarch64-apple-darwin]
+digest 0.11.3: MIT (offered as MIT OR Apache-2.0), text 27
 dyn-clone 1.0.20: MIT (offered as MIT OR Apache-2.0), text 2
 endi 1.1.1: MIT, text 2 [aarch64-unknown-linux-musl, x86_64-unknown-linux-musl]
-equivalent 1.0.3: MIT (offered as Apache-2.0 OR MIT), text 29
-errno 0.3.14: MIT (offered as MIT OR Apache-2.0), text 30, 31
-fallible-iterator 0.3.0: MIT (offered as MIT/Apache-2.0), text 32
-fallible-streaming-iterator 0.1.9: MIT (offered as MIT/Apache-2.0), text 33
-fastcdc 5.0.0: MIT, text 34, 35
+equivalent 1.0.3: MIT (offered as Apache-2.0 OR MIT), text 28
+errno 0.3.14: MIT (offered as MIT OR Apache-2.0), text 29, 30
+fallible-iterator 0.3.0: MIT (offered as MIT/Apache-2.0), text 31
+fallible-streaming-iterator 0.1.9: MIT (offered as MIT/Apache-2.0), text 32
+fastcdc 5.0.0: MIT, text 33, 34
 fastrand 2.5.0: MIT (offered as Apache-2.0 OR MIT), text 2
-fnv 1.0.7: MIT (offered as Apache-2.0 / MIT), text 36
+fnv 1.0.7: MIT (offered as Apache-2.0 / MIT), text 35
 foldhash 0.2.0: Zlib, no notice required
-form_urlencoded 1.2.2: MIT (offered as MIT OR Apache-2.0), text 37, 38
-futures-channel 0.3.34: MIT (offered as MIT OR Apache-2.0), text 39, 40
-futures-core 0.3.34: MIT (offered as MIT OR Apache-2.0), text 39
-futures-io 0.3.34: MIT (offered as MIT OR Apache-2.0), text 39 [aarch64-unknown-linux-musl, x86_64-unknown-linux-musl]
-futures-sink 0.3.34: MIT (offered as MIT OR Apache-2.0), text 39
-futures-task 0.3.34: MIT (offered as MIT OR Apache-2.0), text 39
-futures-util 0.3.34: MIT (offered as MIT OR Apache-2.0), text 39
-getrandom 0.4.3: MIT (offered as MIT OR Apache-2.0), text 41
-h2 0.4.20: MIT, text 42
-hashbrown 0.17.1: MIT (offered as MIT OR Apache-2.0), text 43
-hashlink 0.12.2: MIT (offered as MIT OR Apache-2.0), text 44
-hex 0.4.3: MIT (offered as MIT OR Apache-2.0), text 45, 46 [aarch64-unknown-linux-musl, x86_64-unknown-linux-musl]
-http 1.5.0: MIT (offered as MIT OR Apache-2.0), text 47, 48
-http-body 1.1.0: MIT, text 49
-http-body-util 0.1.5: MIT, text 49
-httparse 1.10.1: MIT (offered as MIT OR Apache-2.0), text 50
-hybrid-array 0.4.15: MIT (offered as MIT OR Apache-2.0), text 51
-hyper 1.12.0: MIT, text 52
-hyper-rustls 0.27.10: MIT (offered as Apache-2.0 OR ISC OR MIT), text 53, 54
-hyper-util 0.1.21: MIT, text 55
-icu_collections 2.4.0: Unicode-3.0, text 56
-icu_locale_core 2.4.0: Unicode-3.0, text 56
-icu_locale_fallback 2.4.0: Unicode-3.0, text 56
-icu_locale_fallback_data 2.4.0: Unicode-3.0, text 56
-icu_normalizer 2.4.0: Unicode-3.0, text 56
-icu_normalizer_data 2.4.0: Unicode-3.0, text 56
-icu_properties 2.4.0: Unicode-3.0, text 56
-icu_properties_data 2.4.0: Unicode-3.0, text 56
-icu_provider 2.4.0: Unicode-3.0, text 56
-icu_segmenter 2.4.0: Unicode-3.0, text 56
-icu_segmenter_data 2.4.0: Unicode-3.0, text 56
-idna 1.1.0: MIT (offered as MIT OR Apache-2.0), text 57, 58
-idna_adapter 1.2.2: MIT (offered as Apache-2.0 OR MIT), text 59
-indexmap 2.14.2: MIT (offered as Apache-2.0 OR MIT), text 60
+form_urlencoded 1.2.2: MIT (offered as MIT OR Apache-2.0), text 36, 37
+futures-channel 0.3.34: MIT (offered as MIT OR Apache-2.0), text 38, 39
+futures-core 0.3.34: MIT (offered as MIT OR Apache-2.0), text 38
+futures-io 0.3.34: MIT (offered as MIT OR Apache-2.0), text 38 [aarch64-unknown-linux-musl, x86_64-unknown-linux-musl]
+futures-sink 0.3.34: MIT (offered as MIT OR Apache-2.0), text 38
+futures-task 0.3.34: MIT (offered as MIT OR Apache-2.0), text 38
+futures-util 0.3.34: MIT (offered as MIT OR Apache-2.0), text 38
+getrandom 0.4.3: MIT (offered as MIT OR Apache-2.0), text 40
+h2 0.4.20: MIT, text 41
+hashbrown 0.17.1: MIT (offered as MIT OR Apache-2.0), text 42
+hashlink 0.12.2: MIT (offered as MIT OR Apache-2.0), text 43
+hex 0.4.3: MIT (offered as MIT OR Apache-2.0), text 44, 45 [aarch64-unknown-linux-musl, x86_64-unknown-linux-musl]
+http 1.5.0: MIT (offered as MIT OR Apache-2.0), text 46
+http-body 1.1.0: MIT, text 47
+http-body-util 0.1.5: MIT, text 47
+httparse 1.10.1: MIT (offered as MIT OR Apache-2.0), text 48
+hybrid-array 0.4.15: MIT (offered as MIT OR Apache-2.0), text 49
+hyper 1.12.0: MIT, text 50
+hyper-rustls 0.27.10: MIT (offered as Apache-2.0 OR ISC OR MIT), text 51
+hyper-util 0.1.21: MIT, text 52
+icu_collections 2.4.0: Unicode-3.0, text 53
+icu_locale_core 2.4.0: Unicode-3.0, text 53
+icu_locale_fallback 2.4.0: Unicode-3.0, text 53
+icu_locale_fallback_data 2.4.0: Unicode-3.0, text 53
+icu_normalizer 2.4.0: Unicode-3.0, text 53
+icu_normalizer_data 2.4.0: Unicode-3.0, text 53
+icu_properties 2.4.0: Unicode-3.0, text 53
+icu_properties_data 2.4.0: Unicode-3.0, text 53
+icu_provider 2.4.0: Unicode-3.0, text 53
+icu_segmenter 2.4.0: Unicode-3.0, text 53
+icu_segmenter_data 2.4.0: Unicode-3.0, text 53
+idna 1.1.0: MIT (offered as MIT OR Apache-2.0), text 54, 55
+idna_adapter 1.2.2: MIT (offered as Apache-2.0 OR MIT), text 56
+indexmap 2.14.2: MIT (offered as Apache-2.0 OR MIT), text 57
 indicatif 0.18.6: MIT, text 18
-inotify 0.11.5: ISC, text 61 [aarch64-unknown-linux-musl, x86_64-unknown-linux-musl]
-inotify-sys 0.1.8: ISC, text 61 [aarch64-unknown-linux-musl, x86_64-unknown-linux-musl]
-ipnet 2.12.2: MIT (offered as MIT OR Apache-2.0), text 62, 63
+inotify 0.11.5: ISC, text 58 [aarch64-unknown-linux-musl, x86_64-unknown-linux-musl]
+inotify-sys 0.1.8: ISC, text 58 [aarch64-unknown-linux-musl, x86_64-unknown-linux-musl]
+ipnet 2.12.2: MIT (offered as MIT OR Apache-2.0), text 59, 60
 is_terminal_polyfill 1.70.2: MIT (offered as MIT OR Apache-2.0), text 1
 itoa 1.0.19: MIT (offered as MIT OR Apache-2.0), text 2
-lazy_static 1.5.1: MIT (offered as MIT OR Apache-2.0), text 2, 64
-libc 0.2.191: MIT (offered as MIT OR Apache-2.0), text 65
-libmimalloc-sys 0.1.49: MIT, text 66, 67 [aarch64-unknown-linux-musl, x86_64-unknown-linux-musl]
-mimalloc 3.3.2 (bundled in libmimalloc-sys 0.1.49): MIT, text 68 [aarch64-unknown-linux-musl, x86_64-unknown-linux-musl]
-libsqlite3-sys 0.39.1: MIT, text 69
-SQLite 3.54.1 (bundled in libsqlite3-sys 0.39.1): blessing, text 70
+lazy_static 1.5.1: MIT (offered as MIT OR Apache-2.0), text 2, 61
+libc 0.2.191: MIT (offered as MIT OR Apache-2.0), text 62
+libmimalloc-sys 0.1.49: MIT, text 63, 64 [aarch64-unknown-linux-musl, x86_64-unknown-linux-musl]
+mimalloc 3.3.2 (bundled in libmimalloc-sys 0.1.49): MIT, text 65 [aarch64-unknown-linux-musl, x86_64-unknown-linux-musl]
+libsqlite3-sys 0.39.1: MIT, text 66
+SQLite 3.54.1 (bundled in libsqlite3-sys 0.39.1): blessing, text 67
 linux-raw-sys 0.12.1: Apache-2.0 WITH LLVM-exception (offered as Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT), no notice required [aarch64-unknown-linux-musl, x86_64-unknown-linux-musl]
-litemap 0.8.3: Unicode-3.0, text 56
-log 0.4.35: MIT (offered as MIT OR Apache-2.0), text 10, 71
-matchers 0.2.0: MIT, text 72
+litemap 0.8.3: Unicode-3.0, text 53
+log 0.4.35: MIT (offered as MIT OR Apache-2.0), text 10, 68
+matchers 0.2.0: MIT, text 69
 memchr 2.8.3: Unlicense (offered as Unlicense OR MIT), no notice required
-mimalloc 0.1.52: MIT, text 66 [aarch64-unknown-linux-musl, x86_64-unknown-linux-musl]
-mime 0.3.18: MIT (offered as MIT OR Apache-2.0), text 73
-mime_guess 2.0.5: MIT, text 74
-mio 1.2.4: MIT, text 75
+mimalloc 0.1.52: MIT, text 63 [aarch64-unknown-linux-musl, x86_64-unknown-linux-musl]
+mime 0.3.18: MIT (offered as MIT OR Apache-2.0), text 70
+mime_guess 2.0.5: MIT, text 71
+mio 1.2.4: MIT, text 72
 notify 8.2.2: CC0-1.0, no notice required
-notify-types 2.3.0: MIT (offered as MIT OR Apache-2.0), text 76, 77
-nu-ansi-term 0.50.3: MIT, text 78
-num-conv 0.2.2: MIT (offered as MIT OR Apache-2.0), text 79 [aarch64-apple-darwin]
+notify-types 2.3.0: MIT (offered as MIT OR Apache-2.0), text 73
+nu-ansi-term 0.50.3: MIT, text 74
+num-conv 0.2.2: MIT (offered as MIT OR Apache-2.0), text 75 [aarch64-apple-darwin]
 objc2-core-foundation 0.3.2: Zlib (offered as Zlib OR Apache-2.0 OR MIT), no notice required [aarch64-apple-darwin]
 objc2-core-services 0.3.2: Zlib (offered as Zlib OR Apache-2.0 OR MIT), no notice required [aarch64-apple-darwin]
 once_cell 1.21.4: MIT (offered as MIT OR Apache-2.0), text 2
 openssl-probe 0.2.2: MIT (offered as MIT OR Apache-2.0), text 14 [aarch64-unknown-linux-musl, x86_64-unknown-linux-musl]
 ordered-stream 0.2.0: MIT (offered as MIT OR Apache-2.0), text 2 [aarch64-unknown-linux-musl, x86_64-unknown-linux-musl]
-percent-encoding 2.3.2: MIT (offered as MIT OR Apache-2.0), text 57, 80
+percent-encoding 2.3.2: MIT (offered as MIT OR Apache-2.0), text 54, 76
 pin-project-lite 0.2.17: MIT (offered as Apache-2.0 OR MIT), text 2
-plist 1.10.3: MIT, text 81 [aarch64-apple-darwin]
+plist 1.10.3: MIT, text 77 [aarch64-apple-darwin]
 portable-atomic 1.15.0: MIT (offered as Apache-2.0 OR MIT), text 2
-potential_utf 0.1.6: Unicode-3.0, text 56
-powerfmt 0.2.1: MIT (offered as MIT OR Apache-2.0), text 82, 83 [aarch64-apple-darwin]
+potential_utf 0.1.6: Unicode-3.0, text 53
+powerfmt 0.2.1: MIT (offered as MIT OR Apache-2.0), text 78 [aarch64-apple-darwin]
 proc-macro2 1.0.107: MIT (offered as MIT OR Apache-2.0), text 2 [aarch64-unknown-linux-musl, x86_64-unknown-linux-musl]
-prost 0.14.4: Apache-2.0, text 84
-quick-xml 0.42.0: MIT, text 85 [aarch64-apple-darwin]
+prost 0.14.4: Apache-2.0, text 79
+quick-xml 0.42.0: MIT, text 80 [aarch64-apple-darwin]
 quote 1.0.47: MIT (offered as MIT OR Apache-2.0), text 2 [aarch64-unknown-linux-musl, x86_64-unknown-linux-musl]
-rand 0.10.3: MIT (offered as MIT OR Apache-2.0), text 86, 87
-rand_core 0.10.1: MIT (offered as MIT OR Apache-2.0), text 88
+rand 0.10.3: MIT (offered as MIT OR Apache-2.0), text 81, 82
+rand_core 0.10.1: MIT (offered as MIT OR Apache-2.0), text 83
 ref-cast 1.0.27: MIT (offered as MIT OR Apache-2.0), text 2
 regex-automata 0.4.18: MIT (offered as MIT OR Apache-2.0), text 10
-regex-syntax 0.8.11: MIT (offered as MIT OR Apache-2.0), text 10, 89
-reqwest 0.13.5: MIT (offered as MIT OR Apache-2.0), text 90, 91
-rusqlite 0.41.1: MIT, text 69
+regex-syntax 0.8.11: MIT (offered as MIT OR Apache-2.0), text 10, 84
+reqwest 0.13.5: MIT (offered as MIT OR Apache-2.0), text 85
+rusqlite 0.41.1: MIT, text 66
 rustix 1.1.6: Apache-2.0 WITH LLVM-exception (offered as Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT), no notice required
-rustls 0.23.46: MIT (offered as Apache-2.0 OR ISC OR MIT), text 53, 92
-rustls-native-certs 0.8.5: MIT (offered as Apache-2.0 OR ISC OR MIT), text 53, 93 [aarch64-unknown-linux-musl, x86_64-unknown-linux-musl]
-rustls-pki-types 1.15.1: MIT (offered as MIT OR Apache-2.0), text 94, 95
-rustls-platform-verifier 0.7.1: MIT (offered as MIT OR Apache-2.0), text 96
-rustls-webpki 0.103.16: ISC, text 97, 98
+rustls 0.23.46: MIT (offered as Apache-2.0 OR ISC OR MIT), text 51
+rustls-native-certs 0.8.5: MIT (offered as Apache-2.0 OR ISC OR MIT), text 51 [aarch64-unknown-linux-musl, x86_64-unknown-linux-musl]
+rustls-pki-types 1.15.1: MIT (offered as MIT OR Apache-2.0), text 86
+rustls-platform-verifier 0.7.1: MIT (offered as MIT OR Apache-2.0), text 87
+rustls-webpki 0.103.16: ISC, text 88, 89
 ryu 1.0.23: BSL-1.0 (offered as Apache-2.0 OR BSL-1.0), no notice required
 same-file 1.0.6: Unlicense (offered as Unlicense/MIT), no notice required
-schemars 1.2.3: MIT, text 99, 100
-security-framework 3.7.0: MIT (offered as MIT OR Apache-2.0), text 101, 102 [aarch64-apple-darwin]
-security-framework-sys 2.17.0: MIT (offered as MIT OR Apache-2.0), text 101 [aarch64-apple-darwin]
+schemars 1.2.3: MIT, text 90, 91
+security-framework 3.7.0: MIT (offered as MIT OR Apache-2.0), text 92, 93 [aarch64-apple-darwin]
+security-framework-sys 2.17.0: MIT (offered as MIT OR Apache-2.0), text 92 [aarch64-apple-darwin]
 semver 1.0.28: MIT (offered as MIT OR Apache-2.0), text 2
 serde 1.0.229: MIT (offered as MIT OR Apache-2.0), text 2
 serde_core 1.0.229: MIT (offered as MIT OR Apache-2.0), text 2
 serde_json 1.0.154: MIT (offered as MIT OR Apache-2.0), text 2
 serde_spanned 1.1.2: MIT (offered as MIT OR Apache-2.0), text 1
-serde_urlencoded 0.7.1: MIT (offered as MIT/Apache-2.0), text 103
-sha1 0.11.0: MIT (offered as MIT OR Apache-2.0), text 104
-sha2 0.11.1: MIT (offered as MIT OR Apache-2.0), text 104
-sharded-slab 0.1.7: MIT, text 105
-signal-hook-registry 1.4.8: MIT (offered as MIT OR Apache-2.0), text 106
-siphasher 1.0.4: MIT (offered as MIT OR Apache-2.0), text 107, 108
-slab 0.4.12: MIT, text 109
-smallvec 1.16.5: MIT (offered as MIT OR Apache-2.0), text 110
-smawk 0.3.3: MIT, text 111
-socket2 0.6.5: MIT (offered as MIT OR Apache-2.0), text 14, 112
-stable_deref_trait 1.2.1: MIT (offered as MIT OR Apache-2.0), text 113, 114
-strsim 0.11.1: MIT, text 115
-subtle 2.6.1: BSD-3-Clause, text 116, 117
+serde_urlencoded 0.7.1: MIT (offered as MIT/Apache-2.0), text 94
+sha1 0.11.0: MIT (offered as MIT OR Apache-2.0), text 95
+sha2 0.11.1: MIT (offered as MIT OR Apache-2.0), text 95
+sharded-slab 0.1.7: MIT, text 96
+signal-hook-registry 1.4.8: MIT (offered as MIT OR Apache-2.0), text 97
+siphasher 1.0.4: MIT (offered as MIT OR Apache-2.0), text 98, 99
+slab 0.4.12: MIT, text 100
+smallvec 1.16.5: MIT (offered as MIT OR Apache-2.0), text 101
+smawk 0.3.3: MIT, text 102
+socket2 0.6.5: MIT (offered as MIT OR Apache-2.0), text 14, 103
+stable_deref_trait 1.2.1: MIT (offered as MIT OR Apache-2.0), text 104, 105
+strsim 0.11.1: MIT, text 106
+subtle 2.6.1: BSD-3-Clause, text 107, 108
 syn 3.0.10: MIT (offered as MIT OR Apache-2.0), text 2 [aarch64-unknown-linux-musl, x86_64-unknown-linux-musl]
-sync_wrapper 1.0.2: Apache-2.0, text 118
-tempfile 3.27.0: MIT (offered as MIT OR Apache-2.0), text 119, 120
-textwrap 0.16.4: MIT, text 121
+sync_wrapper 1.0.2: Apache-2.0, text 109
+tempfile 3.27.0: MIT (offered as MIT OR Apache-2.0), text 110, 111
+textwrap 0.16.4: MIT, text 112
 thiserror 2.0.21: MIT (offered as MIT OR Apache-2.0), text 2
-thread_local 1.1.10: MIT (offered as MIT OR Apache-2.0), text 122, 123
-time 0.3.55: MIT (offered as MIT OR Apache-2.0), text 124 [aarch64-apple-darwin]
-time-core 0.1.9: MIT (offered as MIT OR Apache-2.0), text 124 [aarch64-apple-darwin]
-tinystr 0.8.5: Unicode-3.0, text 56
+thread_local 1.1.10: MIT (offered as MIT OR Apache-2.0), text 113, 114
+time 0.3.55: MIT (offered as MIT OR Apache-2.0), text 115 [aarch64-apple-darwin]
+time-core 0.1.9: MIT (offered as MIT OR Apache-2.0), text 115 [aarch64-apple-darwin]
+tinystr 0.8.5: Unicode-3.0, text 53
 tinyvec 1.13.3: Zlib (offered as Zlib OR Apache-2.0 OR MIT), no notice required
-tokio 1.54.1: MIT, text 125
-tokio-rustls 0.26.6: MIT (offered as MIT OR Apache-2.0), text 126, 127
-tokio-tungstenite 0.30.0: MIT, text 128
-tokio-util 0.7.20: MIT, text 125
-toml 1.1.8+spec-1.1.0: MIT (offered as MIT OR Apache-2.0), text 1, 129
+tokio 1.54.1: MIT, text 116
+tokio-rustls 0.26.6: MIT (offered as MIT OR Apache-2.0), text 117
+tokio-tungstenite 0.30.0: MIT, text 118
+tokio-util 0.7.20: MIT, text 116
+toml 1.1.8+spec-1.1.0: MIT (offered as MIT OR Apache-2.0), text 1, 119
 toml_datetime 1.1.3+spec-1.1.0: MIT (offered as MIT OR Apache-2.0), text 1
 toml_edit 0.25.19+spec-1.1.0: MIT (offered as MIT OR Apache-2.0), text 1
 toml_parser 1.1.5+spec-1.1.0: MIT (offered as MIT OR Apache-2.0), text 1
 toml_writer 1.2.0+spec-1.1.0: MIT (offered as MIT OR Apache-2.0), text 1
-tower 0.5.3: MIT, text 130, 131
-tower-http 0.6.11: MIT, text 132
-tower-layer 0.3.3: MIT, text 130
-tower-service 0.3.3: MIT, text 130
-tracing 0.1.44: MIT, text 133
-tracing-core 0.1.36: MIT, text 133, 134
-tracing-log 0.2.0: MIT, text 133
-tracing-serde 0.2.0: MIT, text 133
-tracing-subscriber 0.3.23: MIT, text 133, 135
-try-lock 0.2.5: MIT, text 136
-tungstenite 0.30.0: MIT (offered as MIT OR Apache-2.0), text 137
-typenum 1.20.1: MIT (offered as MIT OR Apache-2.0), text 138, 139
-unicase 2.10.0: MIT (offered as MIT OR Apache-2.0), text 52
-unicode-ident 1.0.27: MIT AND Unicode-3.0 (offered as (MIT OR Apache-2.0) AND Unicode-3.0), text 2, 140 [aarch64-unknown-linux-musl, x86_64-unknown-linux-musl]
-unicode-normalization 0.1.26: MIT AND Unicode-3.0 (offered as (MIT OR Apache-2.0) AND Unicode-3.0), text 140, 141, 142
-unicode-width 0.2.3: MIT (offered as MIT OR Apache-2.0), text 141, 143
-unit-prefix 0.5.2: MIT, text 144
-untrusted 0.9.0: ISC, text 145, 146
-url 2.5.8: MIT (offered as MIT OR Apache-2.0), text 57, 147
-utf8_iter 1.1.0: MIT (offered as Apache-2.0 OR MIT), text 148
-utf8parse 0.2.2: MIT (offered as Apache-2.0 OR MIT), text 149
-utf_types 1.0.0: MIT (offered as Apache-2.0 OR MIT), text 148
-uuid 1.29.2: MIT (offered as Apache-2.0 OR MIT), text 150, 151 [aarch64-unknown-linux-musl, x86_64-unknown-linux-musl]
+tower 0.5.3: MIT, text 120, 121
+tower-http 0.6.11: MIT, text 122
+tower-layer 0.3.3: MIT, text 120
+tower-service 0.3.3: MIT, text 120
+tracing 0.1.44: MIT, text 123
+tracing-core 0.1.36: MIT, text 123, 124
+tracing-log 0.2.0: MIT, text 123
+tracing-serde 0.2.0: MIT, text 123
+tracing-subscriber 0.3.23: MIT, text 123, 125
+try-lock 0.2.5: MIT, text 126
+tungstenite 0.30.0: MIT (offered as MIT OR Apache-2.0), text 127
+typenum 1.20.1: MIT (offered as MIT OR Apache-2.0), text 128
+unicase 2.10.0: MIT (offered as MIT OR Apache-2.0), text 50
+unicode-ident 1.0.27: MIT AND Unicode-3.0 (offered as (MIT OR Apache-2.0) AND Unicode-3.0), text 2, 129 [aarch64-unknown-linux-musl, x86_64-unknown-linux-musl]
+unicode-normalization 0.1.26: MIT AND Unicode-3.0 (offered as (MIT OR Apache-2.0) AND Unicode-3.0), text 129, 130, 131
+unicode-width 0.2.3: MIT (offered as MIT OR Apache-2.0), text 130, 132
+unit-prefix 0.5.2: MIT, text 133
+untrusted 0.9.0: ISC, text 134, 135
+url 2.5.8: MIT (offered as MIT OR Apache-2.0), text 54, 136
+utf8_iter 1.1.0: MIT (offered as Apache-2.0 OR MIT), text 137
+utf8parse 0.2.2: MIT (offered as Apache-2.0 OR MIT), text 138
+utf_types 1.0.0: MIT (offered as Apache-2.0 OR MIT), text 137
+uuid 1.29.2: MIT (offered as Apache-2.0 OR MIT), text 139, 140 [aarch64-unknown-linux-musl, x86_64-unknown-linux-musl]
 walkdir 2.5.0: Unlicense (offered as Unlicense/MIT), no notice required
-want 0.3.2: MIT, text 152
-winnow 1.0.5: MIT, text 153
-writeable 0.6.4: Unicode-3.0, text 56
-yoke 0.8.4: Unicode-3.0, text 56
-zbus 6.2.1: MIT, text 154 [aarch64-unknown-linux-musl, x86_64-unknown-linux-musl]
-zbus_utils 6.1.0: MIT, text 154 [aarch64-unknown-linux-musl, x86_64-unknown-linux-musl]
-zcheapstr 1.2.0: MIT, text 155 [aarch64-unknown-linux-musl, x86_64-unknown-linux-musl]
-zerofrom 0.1.8: Unicode-3.0, text 56
-zeroize 1.9.1: MIT (offered as Apache-2.0 OR MIT), text 156
-zerotrie 0.2.5: Unicode-3.0, text 56
-zerovec 0.11.9: Unicode-3.0, text 56
+want 0.3.2: MIT, text 141
+winnow 1.0.5: MIT, text 142
+writeable 0.6.4: Unicode-3.0, text 53
+yoke 0.8.4: Unicode-3.0, text 53
+zbus 6.2.1: MIT, text 143 [aarch64-unknown-linux-musl, x86_64-unknown-linux-musl]
+zbus_utils 6.1.0: MIT, text 143 [aarch64-unknown-linux-musl, x86_64-unknown-linux-musl]
+zcheapstr 1.2.0: MIT, text 144 [aarch64-unknown-linux-musl, x86_64-unknown-linux-musl]
+zerofrom 0.1.8: Unicode-3.0, text 53
+zeroize 1.9.1: MIT (offered as Apache-2.0 OR MIT), text 145
+zerotrie 0.2.5: Unicode-3.0, text 53
+zerovec 0.11.9: Unicode-3.0, text 53
 zmij 1.0.23: MIT, text 2
-zruntime 0.2.2: MIT, text 157 [aarch64-unknown-linux-musl, x86_64-unknown-linux-musl]
+zruntime 0.2.2: MIT, text 146 [aarch64-unknown-linux-musl, x86_64-unknown-linux-musl]
 
 Rust standard library
 =====================
 
-addr2line 0.27.1: MIT (offered as Apache-2.0 OR MIT), text 158
+addr2line 0.27.1: MIT (offered as Apache-2.0 OR MIT), text 147
 adler2 2.0.1: 0BSD (offered as 0BSD OR MIT OR Apache-2.0), no notice required
-alloc (Rust 1.100.0 standard library): MIT (offered as MIT OR Apache-2.0), text 159
+alloc (Rust 1.100.0 standard library): MIT (offered as MIT OR Apache-2.0), text 148
 cfg-if 1.0.4: MIT (offered as MIT OR Apache-2.0), text 14
-compiler_builtins (Rust 1.100.0 standard library): Apache-2.0 WITH LLVM-exception AND MIT (offered as MIT AND Apache-2.0 WITH LLVM-exception AND (MIT OR Apache-2.0)), text 160
-core (Rust 1.100.0 standard library): MIT (offered as MIT OR Apache-2.0), text 159, 161
-gimli 0.34.0: MIT (offered as MIT OR Apache-2.0), text 141, 162
-hashbrown 0.17.1: MIT (offered as MIT OR Apache-2.0), text 43
-libc 0.2.189: MIT (offered as MIT OR Apache-2.0), text 65
+compiler_builtins (Rust 1.100.0 standard library): Apache-2.0 WITH LLVM-exception AND MIT (offered as MIT AND Apache-2.0 WITH LLVM-exception AND (MIT OR Apache-2.0)), text 149
+core (Rust 1.100.0 standard library): MIT (offered as MIT OR Apache-2.0), text 148, 150
+gimli 0.34.0: MIT (offered as MIT OR Apache-2.0), text 130, 151
+hashbrown 0.17.1: MIT (offered as MIT OR Apache-2.0), text 42
+libc 0.2.189: MIT (offered as MIT OR Apache-2.0), text 62
 memchr 2.8.3: Unlicense (offered as Unlicense OR MIT), no notice required
 miniz_oxide 0.9.1: Zlib (offered as MIT OR Zlib OR Apache-2.0), no notice required
-object 0.39.1: MIT (offered as Apache-2.0 OR MIT), text 163
-panic_abort (Rust 1.100.0 standard library): MIT (offered as MIT OR Apache-2.0), text 159
-panic_unwind (Rust 1.100.0 standard library): MIT (offered as MIT OR Apache-2.0), text 159
+object 0.39.1: MIT (offered as Apache-2.0 OR MIT), text 152
+panic_abort (Rust 1.100.0 standard library): MIT (offered as MIT OR Apache-2.0), text 148
+panic_unwind (Rust 1.100.0 standard library): MIT (offered as MIT OR Apache-2.0), text 148
 rustc-demangle 0.1.28: MIT (offered as MIT/Apache-2.0), text 14
-rustc-std-workspace-alloc (Rust 1.100.0 standard library): MIT (offered as MIT OR Apache-2.0), text 159
-rustc-std-workspace-core (Rust 1.100.0 standard library): MIT (offered as MIT OR Apache-2.0), text 159
-std (Rust 1.100.0 standard library): MIT (offered as MIT OR Apache-2.0), text 159, 164
-std_detect (Rust 1.100.0 standard library): MIT (offered as MIT OR Apache-2.0), text 159
-unwind (Rust 1.100.0 standard library): MIT (offered as MIT OR Apache-2.0), text 159
+rustc-std-workspace-alloc (Rust 1.100.0 standard library): MIT (offered as MIT OR Apache-2.0), text 148
+rustc-std-workspace-core (Rust 1.100.0 standard library): MIT (offered as MIT OR Apache-2.0), text 148
+std (Rust 1.100.0 standard library): MIT (offered as MIT OR Apache-2.0), text 148, 153
+std_detect (Rust 1.100.0 standard library): MIT (offered as MIT OR Apache-2.0), text 148
+unwind (Rust 1.100.0 standard library): MIT (offered as MIT OR Apache-2.0), text 148
 
 Zig toolchain runtime (Linux)
 =============================
 
-musl libc, as bundled with Zig 0.16.0: MIT, text 165 [aarch64-unknown-linux-musl, x86_64-unknown-linux-musl]
-Zig 0.16.0 compiler-rt and libc: MIT, text 166 [aarch64-unknown-linux-musl, x86_64-unknown-linux-musl]
+musl libc, as bundled with Zig 0.16.0: MIT, text 154 [aarch64-unknown-linux-musl, x86_64-unknown-linux-musl]
+Zig 0.16.0 compiler-rt and libc: MIT, text 155 [aarch64-unknown-linux-musl, x86_64-unknown-linux-musl]
 
 Embedded server bundle
 ======================
 
-@bufbuild/protobuf 2.17.0: Apache-2.0 AND BSD-3-Clause (offered as (Apache-2.0 AND BSD-3-Clause)), text 167, 168
+@bufbuild/protobuf 2.17.0: Apache-2.0 AND BSD-3-Clause (offered as (Apache-2.0 AND BSD-3-Clause)), text 156, 157
 
 Licence texts
 =============
@@ -1505,15 +1505,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 ------------------------------------------------------------------------
-Text 27: deranged 0.5.9
-------------------------------------------------------------------------
-
-Copyright notices in the sources of deranged 0.5.9:
-
-Copyright 2024 Jacob Pratt et al.
-
-------------------------------------------------------------------------
-Text 28: digest 0.11.3
+Text 27: digest 0.11.3
 ------------------------------------------------------------------------
 
 Copyright (c) 2017-2025 RustCrypto Developers
@@ -1544,7 +1536,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
 ------------------------------------------------------------------------
-Text 29: equivalent 1.0.3
+Text 28: equivalent 1.0.3
 ------------------------------------------------------------------------
 
 Copyright (c) 2016--2023
@@ -1574,7 +1566,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
 ------------------------------------------------------------------------
-Text 30: errno 0.3.14
+Text 29: errno 0.3.14
 ------------------------------------------------------------------------
 
 Copyright (c) 2014 Chris Wong
@@ -1604,7 +1596,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
 ------------------------------------------------------------------------
-Text 31: errno 0.3.14
+Text 30: errno 0.3.14
 ------------------------------------------------------------------------
 
 Copyright notices in the sources of errno 0.3.14:
@@ -1613,7 +1605,7 @@ Copyright 2014 The Rust Project Developers. See the COPYRIGHT
 Copyright 2015 The Rust Project Developers. See the COPYRIGHT
 
 ------------------------------------------------------------------------
-Text 32: fallible-iterator 0.3.0
+Text 31: fallible-iterator 0.3.0
 ------------------------------------------------------------------------
 
 Copyright (c) 2015 The rust-openssl-verify Developers
@@ -1637,7 +1629,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 ------------------------------------------------------------------------
-Text 33: fallible-streaming-iterator 0.1.9
+Text 32: fallible-streaming-iterator 0.1.9
 ------------------------------------------------------------------------
 
 Copyright (c) 2016 The fallible-streaming-iterator Developers
@@ -1661,7 +1653,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 ------------------------------------------------------------------------
-Text 34: fastcdc 5.0.0
+Text 33: fastcdc 5.0.0
 ------------------------------------------------------------------------
 
 The MIT License (MIT)
@@ -1687,7 +1679,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 ------------------------------------------------------------------------
-Text 35: fastcdc 5.0.0
+Text 34: fastcdc 5.0.0
 ------------------------------------------------------------------------
 
 Copyright notices in the sources of fastcdc 5.0.0:
@@ -1697,7 +1689,7 @@ Copyright (c) 2023 Nathan Fiedler
 Copyright (c) 2025 Nathan Fiedler
 
 ------------------------------------------------------------------------
-Text 36: fnv 1.0.7
+Text 35: fnv 1.0.7
 ------------------------------------------------------------------------
 
 Copyright (c) 2017 Contributors
@@ -1727,7 +1719,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
 ------------------------------------------------------------------------
-Text 37: form_urlencoded 1.2.2
+Text 36: form_urlencoded 1.2.2
 ------------------------------------------------------------------------
 
 Copyright (c) 2013-2016 The rust-url developers
@@ -1757,7 +1749,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
 ------------------------------------------------------------------------
-Text 38: form_urlencoded 1.2.2
+Text 37: form_urlencoded 1.2.2
 ------------------------------------------------------------------------
 
 Copyright notices in the sources of form_urlencoded 1.2.2:
@@ -1765,7 +1757,7 @@ Copyright notices in the sources of form_urlencoded 1.2.2:
 Copyright 2013-2016 The rust-url developers.
 
 ------------------------------------------------------------------------
-Text 39: futures-channel 0.3.34, futures-core 0.3.34, futures-io 0.3.34, futures-sink 0.3.34, futures-task 0.3.34, futures-util 0.3.34
+Text 38: futures-channel 0.3.34, futures-core 0.3.34, futures-io 0.3.34, futures-sink 0.3.34, futures-task 0.3.34, futures-util 0.3.34
 ------------------------------------------------------------------------
 
 Copyright (c) 2016 Alex Crichton
@@ -1796,7 +1788,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
 ------------------------------------------------------------------------
-Text 40: futures-channel 0.3.34
+Text 39: futures-channel 0.3.34
 ------------------------------------------------------------------------
 
 Copyright notices in the sources of futures-channel 0.3.34:
@@ -1804,7 +1796,7 @@ Copyright notices in the sources of futures-channel 0.3.34:
 Copyright (c) 2010-2011 Dmitry Vyukov. All rights reserved.
 
 ------------------------------------------------------------------------
-Text 41: getrandom 0.4.3
+Text 40: getrandom 0.4.3
 ------------------------------------------------------------------------
 
 Copyright (c) 2018-2026 The rust-random Project Developers
@@ -1835,7 +1827,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
 ------------------------------------------------------------------------
-Text 42: h2 0.4.20
+Text 41: h2 0.4.20
 ------------------------------------------------------------------------
 
 Copyright (c) 2017 h2 authors
@@ -1865,7 +1857,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
 ------------------------------------------------------------------------
-Text 43: hashbrown 0.17.1
+Text 42: hashbrown 0.17.1
 ------------------------------------------------------------------------
 
 Copyright (c) 2016 Amanieu d'Antras
@@ -1895,7 +1887,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
 ------------------------------------------------------------------------
-Text 44: hashlink 0.12.2
+Text 43: hashlink 0.12.2
 ------------------------------------------------------------------------
 
 This work is derived in part from the `linked-hash-map` crate, Copyright (c)
@@ -1926,7 +1918,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
 ------------------------------------------------------------------------
-Text 45: hex 0.4.3
+Text 44: hex 0.4.3
 ------------------------------------------------------------------------
 
 Copyright (c) 2013-2014 The Rust Project Developers.
@@ -1951,7 +1943,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 ------------------------------------------------------------------------
-Text 46: hex 0.4.3
+Text 45: hex 0.4.3
 ------------------------------------------------------------------------
 
 Copyright notices in the sources of hex 0.4.3:
@@ -1959,7 +1951,7 @@ Copyright notices in the sources of hex 0.4.3:
 Copyright (c) 2015-2020 The rust-hex Developers.
 
 ------------------------------------------------------------------------
-Text 47: http 1.5.0
+Text 46: http 1.5.0
 ------------------------------------------------------------------------
 
 Copyright (c) 2017 http-rs authors
@@ -1989,15 +1981,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
 ------------------------------------------------------------------------
-Text 48: http 1.5.0
-------------------------------------------------------------------------
-
-Copyright notices in the sources of http 1.5.0:
-
-Copyright 2017 http-rs authors
-
-------------------------------------------------------------------------
-Text 49: http-body 1.1.0, http-body-util 0.1.5
+Text 47: http-body 1.1.0, http-body-util 0.1.5
 ------------------------------------------------------------------------
 
 Copyright (c) 2019-2026 Sean McArthur & Hyper Contributors
@@ -2027,7 +2011,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
 ------------------------------------------------------------------------
-Text 50: httparse 1.10.1
+Text 48: httparse 1.10.1
 ------------------------------------------------------------------------
 
 Copyright (c) 2015-2025 Sean McArthur
@@ -2051,7 +2035,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 
 ------------------------------------------------------------------------
-Text 51: hybrid-array 0.4.15
+Text 49: hybrid-array 0.4.15
 ------------------------------------------------------------------------
 
 Copyright (c) 2022-2026 The RustCrypto Project Developers
@@ -2081,7 +2065,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
 ------------------------------------------------------------------------
-Text 52: hyper 1.12.0, unicase 2.10.0
+Text 50: hyper 1.12.0, unicase 2.10.0
 ------------------------------------------------------------------------
 
 Copyright (c) 2014-2026 Sean McArthur
@@ -2105,7 +2089,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 
 ------------------------------------------------------------------------
-Text 53: hyper-rustls 0.27.10, rustls 0.23.46, rustls-native-certs 0.8.5
+Text 51: hyper-rustls 0.27.10, rustls 0.23.46, rustls-native-certs 0.8.5
 ------------------------------------------------------------------------
 
 Copyright (c) 2016 Joseph Birr-Pixton <jpixton@gmail.com>
@@ -2135,15 +2119,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
 ------------------------------------------------------------------------
-Text 54: hyper-rustls 0.27.10
-------------------------------------------------------------------------
-
-Copyright notices in the sources of hyper-rustls 0.27.10:
-
-Copyright (c) 2016, Joseph Birr-Pixton <jpixton@gmail.com>
-
-------------------------------------------------------------------------
-Text 55: hyper-util 0.1.21
+Text 52: hyper-util 0.1.21
 ------------------------------------------------------------------------
 
 Copyright (c) 2023-2025 Sean McArthur
@@ -2167,7 +2143,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 
 ------------------------------------------------------------------------
-Text 56: icu_collections 2.4.0, icu_locale_core 2.4.0, icu_locale_fallback 2.4.0, icu_locale_fallback_data 2.4.0, icu_normalizer 2.4.0, icu_normalizer_data 2.4.0, icu_properties 2.4.0, icu_properties_data 2.4.0, icu_provider 2.4.0, icu_segmenter 2.4.0, icu_segmenter_data 2.4.0, litemap 0.8.3, potential_utf 0.1.6, tinystr 0.8.5, writeable 0.6.4, yoke 0.8.4, zerofrom 0.1.8, zerotrie 0.2.5, zerovec 0.11.9
+Text 53: icu_collections 2.4.0, icu_locale_core 2.4.0, icu_locale_fallback 2.4.0, icu_locale_fallback_data 2.4.0, icu_normalizer 2.4.0, icu_normalizer_data 2.4.0, icu_properties 2.4.0, icu_properties_data 2.4.0, icu_provider 2.4.0, icu_segmenter 2.4.0, icu_segmenter_data 2.4.0, litemap 0.8.3, potential_utf 0.1.6, tinystr 0.8.5, writeable 0.6.4, yoke 0.8.4, zerofrom 0.1.8, zerotrie 0.2.5, zerovec 0.11.9
 ------------------------------------------------------------------------
 
 UNICODE LICENSE V3
@@ -2218,7 +2194,7 @@ Portions of ICU4X may have been adapted from ICU4C and/or ICU4J.
 ICU 1.8.1 to ICU 57.1 © 1995-2016 International Business Machines Corporation and others.
 
 ------------------------------------------------------------------------
-Text 57: idna 1.1.0, percent-encoding 2.3.2, url 2.5.8
+Text 54: idna 1.1.0, percent-encoding 2.3.2, url 2.5.8
 ------------------------------------------------------------------------
 
 Copyright (c) 2013-2025 The rust-url developers
@@ -2248,7 +2224,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
 ------------------------------------------------------------------------
-Text 58: idna 1.1.0
+Text 55: idna 1.1.0
 ------------------------------------------------------------------------
 
 Copyright notices in the sources of idna 1.1.0:
@@ -2258,7 +2234,7 @@ Copyright 2013-2014 The rust-url developers.
 Copyright 2016 The rust-url developers.
 
 ------------------------------------------------------------------------
-Text 59: idna_adapter 1.2.2
+Text 56: idna_adapter 1.2.2
 ------------------------------------------------------------------------
 
 Copyright (c) The rust-url developers
@@ -2288,7 +2264,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
 ------------------------------------------------------------------------
-Text 60: indexmap 2.14.2
+Text 57: indexmap 2.14.2
 ------------------------------------------------------------------------
 
 Copyright (c) 2016--2017
@@ -2318,7 +2294,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
 ------------------------------------------------------------------------
-Text 61: inotify 0.11.5, inotify-sys 0.1.8
+Text 58: inotify 0.11.5, inotify-sys 0.1.8
 ------------------------------------------------------------------------
 
 Copyright (c) Hanno Braun and contributors
@@ -2336,7 +2312,7 @@ TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF
 THIS SOFTWARE.
 
 ------------------------------------------------------------------------
-Text 62: ipnet 2.12.2
+Text 59: ipnet 2.12.2
 ------------------------------------------------------------------------
 
 Copyright 2017 Juniper Networks, Inc.
@@ -2348,7 +2324,7 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ------------------------------------------------------------------------
-Text 63: ipnet 2.12.2
+Text 60: ipnet 2.12.2
 ------------------------------------------------------------------------
 
 Copyright notices in the sources of ipnet 2.12.2:
@@ -2356,7 +2332,7 @@ Copyright notices in the sources of ipnet 2.12.2:
 Copyright (c) 2017, Juniper Networks, Inc. All rights reserved.
 
 ------------------------------------------------------------------------
-Text 64: lazy_static 1.5.1
+Text 61: lazy_static 1.5.1
 ------------------------------------------------------------------------
 
 Copyright notices in the sources of lazy_static 1.5.1:
@@ -2364,7 +2340,7 @@ Copyright notices in the sources of lazy_static 1.5.1:
 Copyright 2016 lazy-static.rs Developers
 
 ------------------------------------------------------------------------
-Text 65: libc 0.2.189, libc 0.2.191
+Text 62: libc 0.2.189, libc 0.2.191
 ------------------------------------------------------------------------
 
 Copyright (c) The Rust Project Developers
@@ -2394,7 +2370,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
 ------------------------------------------------------------------------
-Text 66: libmimalloc-sys 0.1.49, mimalloc 0.1.52
+Text 63: libmimalloc-sys 0.1.49, mimalloc 0.1.52
 ------------------------------------------------------------------------
 
 Copyright 2019 Octavian Oncescu
@@ -2424,7 +2400,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
 ------------------------------------------------------------------------
-Text 67: libmimalloc-sys 0.1.49
+Text 64: libmimalloc-sys 0.1.49
 ------------------------------------------------------------------------
 
 Copyright notices in the sources of libmimalloc-sys 0.1.49:
@@ -2452,7 +2428,7 @@ Copyright (c) 2023-2025, Microsoft Research, Daan Leijen
 Copyright (c) 2024-2025, Microsoft Research, Daan Leijen
 
 ------------------------------------------------------------------------
-Text 68: mimalloc 3.3.2 (bundled in libmimalloc-sys 0.1.49)
+Text 65: mimalloc 3.3.2 (bundled in libmimalloc-sys 0.1.49)
 ------------------------------------------------------------------------
 
 MIT License
@@ -2478,7 +2454,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 ------------------------------------------------------------------------
-Text 69: libsqlite3-sys 0.39.1, rusqlite 0.41.1
+Text 66: libsqlite3-sys 0.39.1, rusqlite 0.41.1
 ------------------------------------------------------------------------
 
 Copyright (c) 2014 The rusqlite developers
@@ -2502,7 +2478,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 
 ------------------------------------------------------------------------
-Text 70: SQLite 3.54.1 (bundled in libsqlite3-sys 0.39.1)
+Text 67: SQLite 3.54.1 (bundled in libsqlite3-sys 0.39.1)
 ------------------------------------------------------------------------
 
 2001-09-15
@@ -2515,7 +2491,7 @@ a legal notice, here is a blessing:
    May you share freely, never taking more than you give.
 
 ------------------------------------------------------------------------
-Text 71: log 0.4.35
+Text 68: log 0.4.35
 ------------------------------------------------------------------------
 
 Copyright notices in the sources of log 0.4.35:
@@ -2524,7 +2500,7 @@ Copyright 2014-2015 The Rust Project Developers. See the COPYRIGHT
 Copyright 2015 The Rust Project Developers. See the COPYRIGHT
 
 ------------------------------------------------------------------------
-Text 72: matchers 0.2.0
+Text 69: matchers 0.2.0
 ------------------------------------------------------------------------
 
 Copyright (c) 2019 Eliza Weisman
@@ -2548,7 +2524,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 ------------------------------------------------------------------------
-Text 73: mime 0.3.18
+Text 70: mime 0.3.18
 ------------------------------------------------------------------------
 
 Copyright (c) 2014 Sean McArthur
@@ -2572,7 +2548,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 
 ------------------------------------------------------------------------
-Text 74: mime_guess 2.0.5
+Text 71: mime_guess 2.0.5
 ------------------------------------------------------------------------
 
 The MIT License (MIT)
@@ -2598,7 +2574,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 ------------------------------------------------------------------------
-Text 75: mio 1.2.4
+Text 72: mio 1.2.4
 ------------------------------------------------------------------------
 
 Copyright (c) 2014 Carl Lerche and other MIO contributors
@@ -2622,7 +2598,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 
 ------------------------------------------------------------------------
-Text 76: notify-types 2.3.0
+Text 73: notify-types 2.3.0
 ------------------------------------------------------------------------
 
 Copyright (c) 2023 Notify Contributors
@@ -2652,15 +2628,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
 ------------------------------------------------------------------------
-Text 77: notify-types 2.3.0
-------------------------------------------------------------------------
-
-Copyright notices in the sources of notify-types 2.3.0:
-
-Copyright 2023 Notify Contributors
-
-------------------------------------------------------------------------
-Text 78: nu-ansi-term 0.50.3
+Text 74: nu-ansi-term 0.50.3
 ------------------------------------------------------------------------
 
 The MIT License (MIT)
@@ -2687,7 +2655,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 ------------------------------------------------------------------------
-Text 79: num-conv 0.2.2
+Text 75: num-conv 0.2.2
 ------------------------------------------------------------------------
 
 Copyright (c) Jacob Pratt
@@ -2711,7 +2679,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 ------------------------------------------------------------------------
-Text 80: percent-encoding 2.3.2
+Text 76: percent-encoding 2.3.2
 ------------------------------------------------------------------------
 
 Copyright notices in the sources of percent-encoding 2.3.2:
@@ -2719,7 +2687,7 @@ Copyright notices in the sources of percent-encoding 2.3.2:
 Copyright 2013-2016 The rust-url developers.
 
 ------------------------------------------------------------------------
-Text 81: plist 1.10.3
+Text 77: plist 1.10.3
 ------------------------------------------------------------------------
 
 Copyright (c) 2015 Edward Barnard
@@ -2743,7 +2711,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 ------------------------------------------------------------------------
-Text 82: powerfmt 0.2.1
+Text 78: powerfmt 0.2.1
 ------------------------------------------------------------------------
 
 Copyright (c) 2023 Jacob Pratt et al.
@@ -2767,15 +2735,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 ------------------------------------------------------------------------
-Text 83: powerfmt 0.2.1
-------------------------------------------------------------------------
-
-Copyright notices in the sources of powerfmt 0.2.1:
-
-Copyright 2023 Jacob Pratt et al.
-
-------------------------------------------------------------------------
-Text 84: prost 0.14.4
+Text 79: prost 0.14.4
 ------------------------------------------------------------------------
 
                               Apache License
@@ -2981,7 +2941,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 
 ------------------------------------------------------------------------
-Text 85: quick-xml 0.42.0
+Text 80: quick-xml 0.42.0
 ------------------------------------------------------------------------
 
 The MIT License (MIT)
@@ -3009,7 +2969,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 
 ------------------------------------------------------------------------
-Text 86: rand 0.10.3
+Text 81: rand 0.10.3
 ------------------------------------------------------------------------
 
 Copyright 2018 Developers of the Rand project
@@ -3040,7 +3000,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
 ------------------------------------------------------------------------
-Text 87: rand 0.10.3
+Text 82: rand 0.10.3
 ------------------------------------------------------------------------
 
 Copyright notices in the sources of rand 0.10.3:
@@ -3054,7 +3014,7 @@ Copyright 2018-2024 Developers of the Rand project.
 Copyright 2021 Developers of the Rand project.
 
 ------------------------------------------------------------------------
-Text 88: rand_core 0.10.1
+Text 83: rand_core 0.10.1
 ------------------------------------------------------------------------
 
 Copyright (c) 2018-2026 The Rand Project Developers
@@ -3084,7 +3044,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
 ------------------------------------------------------------------------
-Text 89: regex-syntax 0.8.11
+Text 84: regex-syntax 0.8.11
 ------------------------------------------------------------------------
 
 Copyright notices in the sources of regex-syntax 0.8.11:
@@ -3092,7 +3052,7 @@ Copyright notices in the sources of regex-syntax 0.8.11:
 Copyright © 1991-2018 Unicode, Inc. All rights reserved.
 
 ------------------------------------------------------------------------
-Text 90: reqwest 0.13.5
+Text 85: reqwest 0.13.5
 ------------------------------------------------------------------------
 
 Copyright (c) 2016-2026 Sean McArthur
@@ -3116,31 +3076,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 
 ------------------------------------------------------------------------
-Text 91: reqwest 0.13.5
-------------------------------------------------------------------------
-
-Copyright notices in the sources of reqwest 0.13.5:
-
-Copyright 2016 Sean McArthur
-
-------------------------------------------------------------------------
-Text 92: rustls 0.23.46
-------------------------------------------------------------------------
-
-Copyright notices in the sources of rustls 0.23.46:
-
-Copyright (c) 2016, Joseph Birr-Pixton <jpixton@gmail.com>
-
-------------------------------------------------------------------------
-Text 93: rustls-native-certs 0.8.5
-------------------------------------------------------------------------
-
-Copyright notices in the sources of rustls-native-certs 0.8.5:
-
-Copyright (c) 2016, Joseph Birr-Pixton <jpixton@gmail.com>
-
-------------------------------------------------------------------------
-Text 94: rustls-pki-types 1.15.1
+Text 86: rustls-pki-types 1.15.1
 ------------------------------------------------------------------------
 
 Copyright (c) 2023 Dirkjan Ochtman <dirkjan@ochtman.nl>
@@ -3170,15 +3106,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
 ------------------------------------------------------------------------
-Text 95: rustls-pki-types 1.15.1
-------------------------------------------------------------------------
-
-Copyright notices in the sources of rustls-pki-types 1.15.1:
-
-Copyright 2023 Dirkjan Ochtman
-
-------------------------------------------------------------------------
-Text 96: rustls-platform-verifier 0.7.1
+Text 87: rustls-platform-verifier 0.7.1
 ------------------------------------------------------------------------
 
 MIT License
@@ -3204,7 +3132,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 ------------------------------------------------------------------------
-Text 97: rustls-webpki 0.103.16
+Text 88: rustls-webpki 0.103.16
 ------------------------------------------------------------------------
 
 Except as otherwise noted, this project is licensed under the following
@@ -3228,7 +3156,7 @@ The files under third-party/chromium are licensed as described in
 third-party/chromium/LICENSE.
 
 ------------------------------------------------------------------------
-Text 98: rustls-webpki 0.103.16
+Text 89: rustls-webpki 0.103.16
 ------------------------------------------------------------------------
 
 Copyright notices in the sources of rustls-webpki 0.103.16:
@@ -3240,7 +3168,7 @@ Copyright 2022 Rafael Fernández López.
 Copyright 2023 Daniel McCarney.
 
 ------------------------------------------------------------------------
-Text 99: schemars 1.2.3
+Text 90: schemars 1.2.3
 ------------------------------------------------------------------------
 
 MIT License
@@ -3266,7 +3194,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 ------------------------------------------------------------------------
-Text 100: schemars 1.2.3
+Text 91: schemars 1.2.3
 ------------------------------------------------------------------------
 
 Copyright notices in the sources of schemars 1.2.3:
@@ -3274,7 +3202,7 @@ Copyright notices in the sources of schemars 1.2.3:
 Copyright (c) 2014 The Rust Project Developers
 
 ------------------------------------------------------------------------
-Text 101: security-framework 3.7.0, security-framework-sys 2.17.0
+Text 92: security-framework 3.7.0, security-framework-sys 2.17.0
 ------------------------------------------------------------------------
 
 The MIT License (MIT)
@@ -3299,7 +3227,7 @@ IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ------------------------------------------------------------------------
-Text 102: security-framework 3.7.0
+Text 93: security-framework 3.7.0
 ------------------------------------------------------------------------
 
 This project contains documentation adapted from Apple Inc.'s Security Framework
@@ -3407,7 +3335,7 @@ This file contains Original Code and/or Modifications of Original Code as define
 The Original Code and all software distributed under the License are distributed on an 'AS IS' basis, WITHOUT WARRANTY OF ANY KIND, EITHER EXPRESS OR IMPLIED, AND APPLE HEREBY DISCLAIMS ALL SUCH WARRANTIES, INCLUDING WITHOUT LIMITATION, ANY WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, QUIET ENJOYMENT OR NON-INFRINGEMENT.  Please see the License for the specific language governing rights and limitations under the License."
 
 ------------------------------------------------------------------------
-Text 103: serde_urlencoded 0.7.1
+Text 94: serde_urlencoded 0.7.1
 ------------------------------------------------------------------------
 
 Copyright (c) 2016 Anthony Ramine
@@ -3437,7 +3365,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
 ------------------------------------------------------------------------
-Text 104: sha1 0.11.0, sha2 0.11.1
+Text 95: sha1 0.11.0, sha2 0.11.1
 ------------------------------------------------------------------------
 
 Copyright (c) 2016-2026 The RustCrypto Project Developers
@@ -3470,7 +3398,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
 ------------------------------------------------------------------------
-Text 105: sharded-slab 0.1.7
+Text 96: sharded-slab 0.1.7
 ------------------------------------------------------------------------
 
 Copyright (c) 2019 Eliza Weisman
@@ -3494,7 +3422,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 
 ------------------------------------------------------------------------
-Text 106: signal-hook-registry 1.4.8
+Text 97: signal-hook-registry 1.4.8
 ------------------------------------------------------------------------
 
 Copyright (c) 2017 tokio-jsonrpc developers
@@ -3524,7 +3452,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
 ------------------------------------------------------------------------
-Text 107: siphasher 1.0.4
+Text 98: siphasher 1.0.4
 ------------------------------------------------------------------------
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -3546,18 +3474,16 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 ------------------------------------------------------------------------
-Text 108: siphasher 1.0.4
+Text 99: siphasher 1.0.4
 ------------------------------------------------------------------------
 
 Copyright notices in the sources of siphasher 1.0.4:
 
 Copyright 2012-2015 The Rust Project Developers. See the COPYRIGHT
-Copyright 2012-2016 The Rust Project Developers.
 Copyright 2014 The Rust Project Developers. See the COPYRIGHT
-Copyright 2016-2026 Frank Denis.
 
 ------------------------------------------------------------------------
-Text 109: slab 0.4.12
+Text 100: slab 0.4.12
 ------------------------------------------------------------------------
 
 Copyright (c) 2019 Carl Lerche
@@ -3587,7 +3513,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
 ------------------------------------------------------------------------
-Text 110: smallvec 1.16.5
+Text 101: smallvec 1.16.5
 ------------------------------------------------------------------------
 
 Copyright (c) 2018 The Servo Project Developers
@@ -3617,7 +3543,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
 ------------------------------------------------------------------------
-Text 111: smawk 0.3.3
+Text 102: smawk 0.3.3
 ------------------------------------------------------------------------
 
 MIT License
@@ -3643,7 +3569,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 ------------------------------------------------------------------------
-Text 112: socket2 0.6.5
+Text 103: socket2 0.6.5
 ------------------------------------------------------------------------
 
 Copyright notices in the sources of socket2 0.6.5:
@@ -3651,7 +3577,7 @@ Copyright notices in the sources of socket2 0.6.5:
 Copyright 2015 The Rust Project Developers.
 
 ------------------------------------------------------------------------
-Text 113: stable_deref_trait 1.2.1
+Text 104: stable_deref_trait 1.2.1
 ------------------------------------------------------------------------
 
 Copyright (c) 2017 Robert Grosse
@@ -3681,7 +3607,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
 ------------------------------------------------------------------------
-Text 114: stable_deref_trait 1.2.1
+Text 105: stable_deref_trait 1.2.1
 ------------------------------------------------------------------------
 
 Copyright notices in the sources of stable_deref_trait 1.2.1:
@@ -3689,7 +3615,7 @@ Copyright notices in the sources of stable_deref_trait 1.2.1:
 Copyright 2017 Robert Grosse
 
 ------------------------------------------------------------------------
-Text 115: strsim 0.11.1
+Text 106: strsim 0.11.1
 ------------------------------------------------------------------------
 
 The MIT License (MIT)
@@ -3717,7 +3643,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 ------------------------------------------------------------------------
-Text 116: subtle 2.6.1
+Text 107: subtle 2.6.1
 ------------------------------------------------------------------------
 
 Copyright (c) 2016-2017 Isis Agora Lovecruft, Henry de Valence. All rights reserved.
@@ -3751,7 +3677,7 @@ NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ------------------------------------------------------------------------
-Text 117: subtle 2.6.1
+Text 108: subtle 2.6.1
 ------------------------------------------------------------------------
 
 Copyright notices in the sources of subtle 2.6.1:
@@ -3759,7 +3685,7 @@ Copyright notices in the sources of subtle 2.6.1:
 Copyright (c) 2016-2018 isis lovecruft, Henry de Valence
 
 ------------------------------------------------------------------------
-Text 118: sync_wrapper 1.0.2
+Text 109: sync_wrapper 1.0.2
 ------------------------------------------------------------------------
 
                                  Apache License
@@ -3940,7 +3866,7 @@ Text 118: sync_wrapper 1.0.2
    END OF TERMS AND CONDITIONS
 
 ------------------------------------------------------------------------
-Text 119: tempfile 3.27.0
+Text 110: tempfile 3.27.0
 ------------------------------------------------------------------------
 
 Copyright (c) 2015 Steven Allen
@@ -3970,7 +3896,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
 ------------------------------------------------------------------------
-Text 120: tempfile 3.27.0
+Text 111: tempfile 3.27.0
 ------------------------------------------------------------------------
 
 Copyright notices in the sources of tempfile 3.27.0:
@@ -3978,7 +3904,7 @@ Copyright notices in the sources of tempfile 3.27.0:
 Copyright 2015 The Rust Project Developers.
 
 ------------------------------------------------------------------------
-Text 121: textwrap 0.16.4
+Text 112: textwrap 0.16.4
 ------------------------------------------------------------------------
 
 MIT License
@@ -4004,7 +3930,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 ------------------------------------------------------------------------
-Text 122: thread_local 1.1.10
+Text 113: thread_local 1.1.10
 ------------------------------------------------------------------------
 
 Copyright (c) 2016 The Rust Project Developers
@@ -4034,7 +3960,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
 ------------------------------------------------------------------------
-Text 123: thread_local 1.1.10
+Text 114: thread_local 1.1.10
 ------------------------------------------------------------------------
 
 Copyright notices in the sources of thread_local 1.1.10:
@@ -4042,7 +3968,7 @@ Copyright notices in the sources of thread_local 1.1.10:
 Copyright 2017 Amanieu d'Antras
 
 ------------------------------------------------------------------------
-Text 124: time 0.3.55, time-core 0.1.9
+Text 115: time 0.3.55, time-core 0.1.9
 ------------------------------------------------------------------------
 
 Copyright (c) Jacob Pratt et al.
@@ -4066,7 +3992,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 ------------------------------------------------------------------------
-Text 125: tokio 1.54.1, tokio-util 0.7.20
+Text 116: tokio 1.54.1, tokio-util 0.7.20
 ------------------------------------------------------------------------
 
 MIT License
@@ -4092,7 +4018,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 ------------------------------------------------------------------------
-Text 126: tokio-rustls 0.26.6
+Text 117: tokio-rustls 0.26.6
 ------------------------------------------------------------------------
 
 Copyright (c) 2017 quininer kel
@@ -4122,15 +4048,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
 ------------------------------------------------------------------------
-Text 127: tokio-rustls 0.26.6
-------------------------------------------------------------------------
-
-Copyright notices in the sources of tokio-rustls 0.26.6:
-
-Copyright 2017 quininer kel
-
-------------------------------------------------------------------------
-Text 128: tokio-tungstenite 0.30.0
+Text 118: tokio-tungstenite 0.30.0
 ------------------------------------------------------------------------
 
 Copyright (c) 2017 Daniel Abramov
@@ -4155,7 +4073,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 
 ------------------------------------------------------------------------
-Text 129: toml 1.1.8+spec-1.1.0
+Text 119: toml 1.1.8+spec-1.1.0
 ------------------------------------------------------------------------
 
 Copyright notices in the sources of toml 1.1.8+spec-1.1.0:
@@ -4163,7 +4081,7 @@ Copyright notices in the sources of toml 1.1.8+spec-1.1.0:
 Copyright 2017 Serde Developers
 
 ------------------------------------------------------------------------
-Text 130: tower 0.5.3, tower-layer 0.3.3, tower-service 0.3.3
+Text 120: tower 0.5.3, tower-layer 0.3.3, tower-service 0.3.3
 ------------------------------------------------------------------------
 
 Copyright (c) 2019 Tower Contributors
@@ -4193,7 +4111,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
 ------------------------------------------------------------------------
-Text 131: tower 0.5.3
+Text 121: tower 0.5.3
 ------------------------------------------------------------------------
 
 Copyright notices in the sources of tower 0.5.3:
@@ -4201,7 +4119,7 @@ Copyright notices in the sources of tower 0.5.3:
 license. Copyright 2017, Twitter Inc.
 
 ------------------------------------------------------------------------
-Text 132: tower-http 0.6.11
+Text 122: tower-http 0.6.11
 ------------------------------------------------------------------------
 
 Copyright (c) 2019-2021 Tower Contributors
@@ -4231,7 +4149,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
 ------------------------------------------------------------------------
-Text 133: tracing 0.1.44, tracing-core 0.1.36, tracing-log 0.2.0, tracing-serde 0.2.0, tracing-subscriber 0.3.23
+Text 123: tracing 0.1.44, tracing-core 0.1.36, tracing-log 0.2.0, tracing-serde 0.2.0, tracing-subscriber 0.3.23
 ------------------------------------------------------------------------
 
 Copyright (c) 2019 Tokio Contributors
@@ -4261,7 +4179,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
 ------------------------------------------------------------------------
-Text 134: tracing-core 0.1.36
+Text 124: tracing-core 0.1.36
 ------------------------------------------------------------------------
 
 Copyright notices in the sources of tracing-core 0.1.36:
@@ -4269,7 +4187,7 @@ Copyright notices in the sources of tracing-core 0.1.36:
 Copyright (c) 2014 Mathijs van de Nes
 
 ------------------------------------------------------------------------
-Text 135: tracing-subscriber 0.3.23
+Text 125: tracing-subscriber 0.3.23
 ------------------------------------------------------------------------
 
 Copyright notices in the sources of tracing-subscriber 0.3.23:
@@ -4288,7 +4206,7 @@ The smoothsort implementation (src/stdlib/qsort.c) is Copyright © 2011
 src/regex/tre*) is Copyright © 2001-2008 Ville Laurikari and licensed
 
 ------------------------------------------------------------------------
-Text 136: try-lock 0.2.5
+Text 126: try-lock 0.2.5
 ------------------------------------------------------------------------
 
 Copyright (c) 2018-2023 Sean McArthur
@@ -4313,7 +4231,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 
 ------------------------------------------------------------------------
-Text 137: tungstenite 0.30.0
+Text 127: tungstenite 0.30.0
 ------------------------------------------------------------------------
 
 Copyright (c) 2017 Alexey Galakhov
@@ -4338,7 +4256,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 
 ------------------------------------------------------------------------
-Text 138: typenum 1.20.1
+Text 128: typenum 1.20.1
 ------------------------------------------------------------------------
 
 The MIT License (MIT)
@@ -4364,15 +4282,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 ------------------------------------------------------------------------
-Text 139: typenum 1.20.1
-------------------------------------------------------------------------
-
-Copyright notices in the sources of typenum 1.20.1:
-
-Copyright 2014 Paho Lurie-Gregg
-
-------------------------------------------------------------------------
-Text 140: unicode-ident 1.0.27, unicode-normalization 0.1.26
+Text 129: unicode-ident 1.0.27, unicode-normalization 0.1.26
 ------------------------------------------------------------------------
 
 UNICODE LICENSE V3
@@ -4416,7 +4326,7 @@ dealings in these Data Files or Software without prior written
 authorization of the copyright holder.
 
 ------------------------------------------------------------------------
-Text 141: gimli 0.34.0, unicode-normalization 0.1.26, unicode-width 0.2.3
+Text 130: gimli 0.34.0, unicode-normalization 0.1.26, unicode-width 0.2.3
 ------------------------------------------------------------------------
 
 Copyright (c) 2015 The Rust Project Developers
@@ -4446,7 +4356,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
 ------------------------------------------------------------------------
-Text 142: unicode-normalization 0.1.26
+Text 131: unicode-normalization 0.1.26
 ------------------------------------------------------------------------
 
 Copyright notices in the sources of unicode-normalization 0.1.26:
@@ -4458,7 +4368,7 @@ Copyright 2019 The Rust Project Developers. See the COPYRIGHT
 PREAMBLE = """// Copyright 2012-2018 The Rust Project Developers. See the COPYRIGHT
 
 ------------------------------------------------------------------------
-Text 143: unicode-width 0.2.3
+Text 132: unicode-width 0.2.3
 ------------------------------------------------------------------------
 
 Copyright notices in the sources of unicode-width 0.2.3:
@@ -4467,7 +4377,7 @@ Copyright 2012-2025 The Rust Project Developers. See the COPYRIGHT
 Copyright 2012-2026 The Rust Project Developers. See the COPYRIGHT
 
 ------------------------------------------------------------------------
-Text 144: unit-prefix 0.5.2
+Text 133: unit-prefix 0.5.2
 ------------------------------------------------------------------------
 
 MIT License
@@ -4493,7 +4403,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 ------------------------------------------------------------------------
-Text 145: untrusted 0.9.0
+Text 134: untrusted 0.9.0
 ------------------------------------------------------------------------
 
 // Copyright 2015-2016 Brian Smith.
@@ -4511,7 +4421,7 @@ Text 145: untrusted 0.9.0
 // OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
 ------------------------------------------------------------------------
-Text 146: untrusted 0.9.0
+Text 135: untrusted 0.9.0
 ------------------------------------------------------------------------
 
 Copyright notices in the sources of untrusted 0.9.0:
@@ -4520,7 +4430,7 @@ Copyright 2015-2021 Brian Smith.
 Copyright 2020 Brian Smith.
 
 ------------------------------------------------------------------------
-Text 147: url 2.5.8
+Text 136: url 2.5.8
 ------------------------------------------------------------------------
 
 Copyright notices in the sources of url 2.5.8:
@@ -4530,7 +4440,7 @@ Copyright 2013-2016 The rust-url developers.
 Copyright 2016 The rust-url developers.
 
 ------------------------------------------------------------------------
-Text 148: utf8_iter 1.1.0, utf_types 1.0.0
+Text 137: utf8_iter 1.1.0, utf_types 1.0.0
 ------------------------------------------------------------------------
 
 Copyright Mozilla Foundation
@@ -4560,7 +4470,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
 ------------------------------------------------------------------------
-Text 149: utf8parse 0.2.2
+Text 138: utf8parse 0.2.2
 ------------------------------------------------------------------------
 
 Copyright (c) 2016 Joe Wilm
@@ -4590,7 +4500,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
 ------------------------------------------------------------------------
-Text 150: uuid 1.29.2
+Text 139: uuid 1.29.2
 ------------------------------------------------------------------------
 
 Copyright (c) 2014 The Rust Project Developers
@@ -4621,7 +4531,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
 ------------------------------------------------------------------------
-Text 151: uuid 1.29.2
+Text 140: uuid 1.29.2
 ------------------------------------------------------------------------
 
 Copyright notices in the sources of uuid 1.29.2:
@@ -4631,7 +4541,7 @@ Copyright 2013-2014 The Rust Project Developers.
 Copyright 2018 The Uuid Project Developers.
 
 ------------------------------------------------------------------------
-Text 152: want 0.3.2
+Text 141: want 0.3.2
 ------------------------------------------------------------------------
 
 Copyright (c) 2018-2019 Sean McArthur
@@ -4655,7 +4565,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 
 ------------------------------------------------------------------------
-Text 153: winnow 1.0.5
+Text 142: winnow 1.0.5
 ------------------------------------------------------------------------
 
 Permission is hereby granted, free of charge, to any person obtaining
@@ -4678,7 +4588,7 @@ OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
 WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ------------------------------------------------------------------------
-Text 154: zbus 6.2.1, zbus_utils 6.1.0
+Text 143: zbus 6.2.1, zbus_utils 6.1.0
 ------------------------------------------------------------------------
 
 Copyright (c) 2024 Zeeshan Ali Khan & zbus contributors
@@ -4708,7 +4618,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
 ------------------------------------------------------------------------
-Text 155: zcheapstr 1.2.0
+Text 144: zcheapstr 1.2.0
 ------------------------------------------------------------------------
 
 Copyright (c) 2026 Zeeshan Ali Khan & zcheapstr contributors
@@ -4738,7 +4648,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
 ------------------------------------------------------------------------
-Text 156: zeroize 1.9.1
+Text 145: zeroize 1.9.1
 ------------------------------------------------------------------------
 
 Copyright (c) 2018-2026 The RustCrypto Project Developers
@@ -4768,7 +4678,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
 ------------------------------------------------------------------------
-Text 157: zruntime 0.2.2
+Text 146: zruntime 0.2.2
 ------------------------------------------------------------------------
 
 Copyright (c) 2026 Zeeshan Ali Khan & zruntime contributors
@@ -4804,7 +4714,7 @@ benchmark (`benches/broadcast.rs`) come from the async-broadcast crate
 Copyright (c) 2020 Yoshua Wuyts, Stjepan Glavina & Zeeshan Ali Khan
 
 ------------------------------------------------------------------------
-Text 158: addr2line 0.27.1
+Text 147: addr2line 0.27.1
 ------------------------------------------------------------------------
 
 Copyright (c) 2016-2018 The gimli Developers
@@ -4834,7 +4744,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
 ------------------------------------------------------------------------
-Text 159: alloc (Rust 1.100.0 standard library), core (Rust 1.100.0 standard library), panic_abort (Rust 1.100.0 standard library), panic_unwind (Rust 1.100.0 standard library), rustc-std-workspace-alloc (Rust 1.100.0 standard library), rustc-std-workspace-core (Rust 1.100.0 standard library), std (Rust 1.100.0 standard library), std_detect (Rust 1.100.0 standard library), unwind (Rust 1.100.0 standard library)
+Text 148: alloc (Rust 1.100.0 standard library), core (Rust 1.100.0 standard library), panic_abort (Rust 1.100.0 standard library), panic_unwind (Rust 1.100.0 standard library), rustc-std-workspace-alloc (Rust 1.100.0 standard library), rustc-std-workspace-core (Rust 1.100.0 standard library), std (Rust 1.100.0 standard library), std_detect (Rust 1.100.0 standard library), unwind (Rust 1.100.0 standard library)
 ------------------------------------------------------------------------
 
 Copyright (c) The Rust Project Contributors
@@ -4864,7 +4774,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
 ------------------------------------------------------------------------
-Text 160: compiler_builtins (Rust 1.100.0 standard library)
+Text 149: compiler_builtins (Rust 1.100.0 standard library)
 ------------------------------------------------------------------------
 
 The compiler-builtins crate is available for use under both the MIT license
@@ -5144,7 +5054,7 @@ Additionally, some source files may contain comments with specific copyrights
 or licenses.
 
 ------------------------------------------------------------------------
-Text 161: core (Rust 1.100.0 standard library)
+Text 150: core (Rust 1.100.0 standard library)
 ------------------------------------------------------------------------
 
 Copyright notices in the sources of core (Rust 1.100.0 standard library):
@@ -5152,7 +5062,7 @@ Copyright notices in the sources of core (Rust 1.100.0 standard library):
 Copyright 2015 Andrew Gallant, bluss and Nicolas Koch
 
 ------------------------------------------------------------------------
-Text 162: gimli 0.34.0
+Text 151: gimli 0.34.0
 ------------------------------------------------------------------------
 
 Copyright notices in the sources of gimli 0.34.0:
@@ -5160,7 +5070,7 @@ Copyright notices in the sources of gimli 0.34.0:
 Copyright 2016 The rust-dwarf Developers
 
 ------------------------------------------------------------------------
-Text 163: object 0.39.1
+Text 152: object 0.39.1
 ------------------------------------------------------------------------
 
 Copyright (c) 2015 The Gimli Developers
@@ -5190,7 +5100,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
 ------------------------------------------------------------------------
-Text 164: std (Rust 1.100.0 standard library)
+Text 153: std (Rust 1.100.0 standard library)
 ------------------------------------------------------------------------
 
 Copyright notices in the sources of std (Rust 1.100.0 standard library):
@@ -5199,7 +5109,7 @@ Copyright (c) 2019 The Crossbeam Project Developers
 Copyright 2016 The Fuchsia Authors.
 
 ------------------------------------------------------------------------
-Text 165: musl libc, as bundled with Zig 0.16.0
+Text 154: musl libc, as bundled with Zig 0.16.0
 ------------------------------------------------------------------------
 
 musl as a whole is licensed under the following standard MIT license:
@@ -5397,7 +5307,7 @@ permissive licensing, and of not having licensing issues being an
 obstacle to adoption, that text has been removed.
 
 ------------------------------------------------------------------------
-Text 166: Zig 0.16.0 compiler-rt and libc
+Text 155: Zig 0.16.0 compiler-rt and libc
 ------------------------------------------------------------------------
 
 The MIT License (Expat)
@@ -5423,7 +5333,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 
 ------------------------------------------------------------------------
-Text 167: @bufbuild/protobuf 2.17.0
+Text 156: @bufbuild/protobuf 2.17.0
 ------------------------------------------------------------------------
 
                                  Apache License
@@ -5629,7 +5539,7 @@ Text 167: @bufbuild/protobuf 2.17.0
    limitations under the License.
 
 ------------------------------------------------------------------------
-Text 168: @bufbuild/protobuf 2.17.0
+Text 157: @bufbuild/protobuf 2.17.0
 ------------------------------------------------------------------------
 
 Copyright 2008 Google Inc.  All rights reserved.

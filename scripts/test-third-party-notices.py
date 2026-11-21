@@ -49,6 +49,23 @@ class Expressions(unittest.TestCase):
 
 
 class Choice(unittest.TestCase):
+    def test_an_unknown_alternative_is_skipped_for_a_known_one(self):
+        crate = Crate(self, {"LICENSE-MIT": MIT})
+        component = crate.component("GPL-3.0-only OR MIT")
+        notices.resolve(component, [crate.dir])
+        self.assertEqual((component.licences, component.texts), (["MIT"], [MIT]))
+
+    def test_bsd_3_needs_the_non_endorsement_clause(self):
+        bsd2 = "Copyright 2001 A\nRedistribution and use in source and binary forms\nANY EXPRESS OR IMPLIED WARRANTIES"
+        bsd3 = "Copyright 2001 B\nRedistribution and use in source and binary forms\nNeither the name of B\nANY EXPRESS OR IMPLIED WARRANTIES"
+        crate = Crate(self, {"LICENSE": bsd2, "LICENSE-BSD-3": bsd3})
+        component = crate.component("BSD-3-Clause")
+        notices.resolve(component, [crate.dir])
+        self.assertEqual(component.texts, [bsd3])
+        (crate.dir / "LICENSE-BSD-3").unlink()
+        with self.assertRaisesRegex(notices.Unresolved, "used under BSD-3-Clause, but none of its licence files"):
+            notices.resolve(component, [crate.dir])
+
     def test_a_licence_that_needs_no_notice_wins_and_ships_no_text(self):
         crate = Crate(self, {"LICENSE-MIT": MIT, "UNLICENSE": "This is free and unencumbered software"})
         component = crate.component("Unlicense OR MIT")

@@ -148,8 +148,12 @@ def parse(expression):
     return options
 
 
+def unknown_licences(option):
+    return sorted(licence for licence in option if licence not in NO_NOTICE and licence not in NOTICE_MARKERS)
+
+
 def needing_notice(option):
-    unknown = sorted(licence for licence in option if licence not in NO_NOTICE and licence not in NOTICE_MARKERS)
+    unknown = unknown_licences(option)
     if unknown:
         raise Unresolved(f"{', '.join(unknown)} is a licence this script does not know; read its terms and add it to NO_NOTICE or NOTICE_MARKERS")
     return sorted((licence for licence in option if licence in NOTICE_MARKERS), key=PREFERENCE.index)
@@ -209,6 +213,8 @@ def source_copyrights(directory):
         dirs[:] = sorted(d for d in dirs if d not in UNSHIPPED_DIRS)
         for name in names:
             path = Path(root) / name
+            if Path(root) == directory and (LICENCE_FILE.search(name) or EXTRA_NOTICE_FILE.search(name)):
+                continue
             if path.stat().st_size > 4_000_000:
                 continue
             try:
@@ -240,7 +246,10 @@ def clarified_texts(component, sources):
 
 def resolve(component, searched, clarified=None):
     options = parse(component.expression)
-    ranked = sorted(options, key=lambda option: [len(needing_notice(option))] + [PREFERENCE.index(l) for l in needing_notice(option)])
+    known = [option for option in options if not unknown_licences(option)]
+    if not known:
+        needing_notice(options[0])
+    ranked = sorted(known, key=lambda option: [len(needing_notice(option))] + [PREFERENCE.index(licence) for licence in needing_notice(option)])
     errors = []
     for option in ranked:
         licences = needing_notice(option)
@@ -286,7 +295,7 @@ def bundled_components(crate):
         component.targets = set(crate.targets)
         component.licences = [expression]
         component.texts = clarified_texts(component, sources)
-        unmatched = [l for option in parse(expression) for l in needing_notice(option) if not any(holds(t, l) for t in component.texts)]
+        unmatched = [licence for option in parse(expression) for licence in needing_notice(option) if not any(holds(text, licence) for text in component.texts)]
         if unmatched:
             raise Unresolved(f"{name} in {crate.label()} is used under {', '.join(unmatched)}, but BUNDLED lists no file with that text")
         components.append(component)
