@@ -532,3 +532,16 @@ fn a_result_that_keeps_the_intent_it_was_sent_leaves_compact_rows_based_on_it_un
         changes
     );
 }
+
+#[test]
+fn a_delete_that_saw_nothing_keeps_no_delete_view() {
+    let f = NodeId::from("f");
+    let mut journal = Journal::new(&IdGen::new(0));
+    journal.user_delete(&f, Vec::new(), None);
+    assert!(!journal.state(whole).seen.contains_key(&f));
+    let mut state = journal.state(whole);
+    state.seen.insert(f.clone(), Vec::new());
+    let mut restored = Journal::new(&IdGen::new(0));
+    restored.restore(state);
+    assert!(!restored.state(whole).seen.contains_key(&f));
+}

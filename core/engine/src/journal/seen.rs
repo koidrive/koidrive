@@ -14,6 +14,10 @@ pub(super) struct SeenLists {
 
 impl SeenLists {
     pub fn insert(&mut self, node: NodeId, entries: Vec<Seen>) {
+        if entries.is_empty() {
+            self.remove(&node);
+            return;
+        }
         self.unindex(&node);
         for entry in &entries {
             self.holding
@@ -63,6 +67,9 @@ impl Deref for SeenLists {
 
 impl From<BTreeMap<NodeId, Vec<Seen>>> for SeenLists {
     fn from(lists: BTreeMap<NodeId, Vec<Seen>>) -> Self {
+        let lists: BTreeMap<NodeId, Vec<Seen>> = (lists.into_iter())
+            .filter(|(_, entries)| !entries.is_empty())
+            .collect();
         let mut holding: BTreeMap<IntentId, BTreeSet<NodeId>> = BTreeMap::new();
         for (node, entries) in &lists {
             for entry in entries {

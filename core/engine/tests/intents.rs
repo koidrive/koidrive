@@ -2179,3 +2179,14 @@ fn a_backfilled_delete_of_a_folder_l_lacks_sees_what_s_held_below_it() {
         .collect();
     assert_eq!(unseen, [0]);
 }
+
+#[test]
+fn a_relisted_node_whose_field_intents_did_not_change_keeps_no_separate_s_intents() {
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
+    let f = NodeId::from("f");
+    synced(&mut trees, "f", file(ROOT, "f", 1), 1);
+    let mut listed = trees.remote().get(&f).unwrap().clone();
+    listed.meta_rev += 1;
+    trees.set_listed_remote(f.clone(), listed);
+    assert!(trees.synced_intents_apart_from_remote(&f).is_none());
+}
