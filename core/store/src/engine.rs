@@ -16,9 +16,9 @@ use koidrive_engine::effects::{Base, Dir, Displaced, Effect, EffectRecord, Locat
 use koidrive_engine::question::{RecoveryCause, RecoveryTrigger, Revisions};
 use koidrive_engine::restore::SplitRestore;
 use koidrive_engine::state::{
-    Agreed, CommitsChanges, CommitsState, ContentProvenance, EffectsChanges, EffectsState,
-    FinishOrigin, GivenUp, LostPosition, MapChanges, MovedHere, PendingFinish, RenamedOver,
-    SetChanges, SyncedPosition, TempBirth, TreesChanges, TreesState,
+    Agreed, AnsweredRules, CommitsChanges, CommitsState, ContentProvenance, EffectsChanges,
+    EffectsState, FinishOrigin, GivenUp, LostPosition, MapChanges, MovedHere, PendingFinish,
+    RenamedOver, SetChanges, SyncedPosition, TempBirth, TreesChanges, TreesState,
 };
 use koidrive_engine::tree::{ContentKey, DigestTooLong, FileIdentity, Kind, NodeId, Shape};
 use koidrive_proto::v1::{Commit, CommitResult, Content, NodeKind};
@@ -635,6 +635,20 @@ impl Tx<'_> {
                 .lost_creates
                 .insert(NodeId::from(row.get::<_, String>(0)?));
         }
+        let mut stmt = self.0.prepare_cached(
+            "SELECT rules_file_id, folder_id, gitignore, rules FROM answered_rules",
+        )?;
+        let mut rows = stmt.query([])?;
+        while let Some(row) = next_row!(rows, abandoned) {
+            state.trees.answered_rules.insert(
+                NodeId::from(row.get::<_, String>(0)?),
+                AnsweredRules {
+                    folder: NodeId::from(row.get::<_, String>(1)?),
+                    gitignore: row.get(2)?,
+                    rules: row.get(3)?,
+                },
+            );
+        }
         let mut stmt = self
             .0
             .prepare_cached("SELECT node_id, kept FROM kept_originals")?;
@@ -860,6 +874,7 @@ impl Tx<'_> {
             kept_originals,
             unsent_marks,
             pending_finishes,
+            answered_rules,
         } = trees;
         let CommitsChanges {
             accepted,
@@ -1262,6 +1277,14 @@ impl Tx<'_> {
             "INSERT OR REPLACE INTO lost_positions (node_id, parent_id, name) VALUES (?1, ?2, ?3)",
             |put, node, at: &LostPosition| {
                 put.execute(params![node, at.parent.to_string(), at.name])
+            },
+        )?;
+        self.write_node_map(
+            answered_rules,
+            "DELETE FROM answered_rules WHERE rules_file_id = ?1",
+            "INSERT OR REPLACE INTO answered_rules (rules_file_id, folder_id, gitignore, rules) VALUES (?1, ?2, ?3, ?4)",
+            |put, node, answered: &AnsweredRules| {
+                put.execute(params![node, answered.folder.to_string(), answered.gitignore, answered.rules])
             },
         )?;
         self.write_node_map(

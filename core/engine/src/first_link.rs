@@ -190,12 +190,14 @@ pub enum PriorSync {
 /// R still gives the node that content. S then holds it there. An entry whose match S cannot hold there, as when it would make S a
 /// cycle, is returned.
 pub fn adopt(trees: &mut Trees, history: Option<&History>) -> Vec<NodeId> {
+    let root = trees.local().root.clone();
     adopt_around(
         trees,
         history,
         &BTreeMap::new(),
         &BTreeSet::new(),
         &BTreeMap::new(),
+        &[root],
     )
     .0
 }
@@ -206,6 +208,7 @@ pub(crate) fn adopt_around(
     claimed: &BTreeMap<NodeId, NodeId>,
     named: &BTreeSet<NodeId>,
     blocked_by: &BTreeMap<NodeId, NodeId>,
+    from: &[NodeId],
 ) -> (Vec<NodeId>, bool) {
     let blocked = |trees: &Trees, id: &NodeId| {
         blocked_by.get(id).is_some_and(|node| {
@@ -251,7 +254,7 @@ pub(crate) fn adopt_around(
         }
     }
     let mut held = Vec::new();
-    let mut pending = vec![trees.local().root.clone()];
+    let mut pending = from.to_vec();
     let mut deferred: Vec<NodeId> = Vec::new();
     loop {
         let ids: Vec<NodeId> = match pending.pop() {
@@ -380,7 +383,9 @@ pub(crate) fn adopt_by_marks_first(
         let blocked_by = claims_to_follow(trees, history, &marks);
         let (_, mut waiting) = follow_marks(trees, history, &marks, &folders, Pass::Latest);
         'adopt: loop {
-            let (_, stopped) = adopt_around(trees, Some(history), &waiting, &named, &blocked_by);
+            let root = trees.local().root.clone();
+            let (_, stopped) =
+                adopt_around(trees, Some(history), &waiting, &named, &blocked_by, &[root]);
             for pass in [Pass::Latest, Pass::Older, Pass::InNewFolder] {
                 let (followed, left) = follow_marks(trees, history, &marks, &folders, pass);
                 waiting = left;

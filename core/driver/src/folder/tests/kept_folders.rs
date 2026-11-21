@@ -2244,29 +2244,12 @@ fn discarding_the_rules_file_a_relinked_copy_of_a_kept_folder_holds_asks_about_i
     relink(&site).unwrap();
     let mut b = restarted(&site, &mut remote);
     b.rest(&mut remote);
-    let asked = |site: &Site| -> Vec<String> {
-        (shown(site).iter())
-            .flat_map(|question| question.items.iter())
-            .map(|item| item.path.unquoted().to_owned())
-            .collect()
-    };
     assert_eq!(asked(&site), ["app/.koiignore"]);
     drop(b);
-    answer(&site, Answer::Discard);
-    let mut b = restarted(&site, &mut remote);
-    for _ in 0..3 {
-        b.settle();
-        b.run(&mut remote);
-    }
+    drop(answered_and_restarted(&site, &mut remote, Answer::Discard));
 
-    let asked = asked(&site);
-    let unasked: Vec<&str> = (["app/.env", "app/node_modules"].into_iter())
-        .filter(|path| !asked.iter().any(|item| item == path))
-        .collect();
-    assert_eq!(
-        (unasked, remote.tree().keys().cloned().collect::<Vec<_>>()),
-        (vec![], vec!["app".to_owned(), "app/README.md".to_owned()])
-    );
+    assert_eq!(asked(&site), ["app/.env", "app/node_modules"]);
+    assert_eq!(server_paths(&remote), ["app", "app/README.md"]);
     for path in ignored {
         let path = site.root.join("app").join(path);
         assert_eq!(fs::read_to_string(&path).unwrap(), local_only(&path));

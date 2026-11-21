@@ -11,14 +11,15 @@ use koidrive_ignore::{Scope, Source, Status};
 use siphasher::sip::SipHasher13;
 
 use crate::first_link;
-use crate::ignore::{Key, LocalRules, Matcher, RuleFile, is_rules_file};
+use crate::ignore::{Key, LocalRules, Matcher, RuleFile, is_rules_file, rules_source};
 use crate::names::{name_key, nfc, same_name};
 use crate::provenance::Provenances;
 use crate::question::Frozen;
 use crate::state::{
-    Agreed, ContentProvenance, ContentValue, ContentVersion, FinishOrigin, KeptCause, KeptEntries,
-    KeptRules, KeptRulesFile, LostPosition, MoveHistory, MovePosition, MovedHere, PendingFinish,
-    RenamedOver, StateError, SyncedPosition, TempBirth, TreesChanges, TreesState, made_over,
+    Agreed, AnsweredRules, ContentProvenance, ContentValue, ContentVersion, FinishOrigin,
+    KeptCause, KeptEntries, KeptRules, KeptRulesFile, LostPosition, MoveHistory, MovePosition,
+    MovedHere, PendingFinish, RenamedOver, StateError, SyncedPosition, TempBirth, TreesChanges,
+    TreesState, made_over,
 };
 use crate::tracked::{TrackedMap, TrackedSet};
 use crate::tree::{
@@ -686,6 +687,7 @@ pub struct Trees {
     kept_originals: TrackedMap<NodeId, NodeId>,
     unsent_marks: TrackedMap<NodeId, String>,
     pending_finishes: TrackedMap<NodeId, PendingFinish>,
+    answered_rules: TrackedMap<NodeId, AnsweredRules>,
     ignore: Matcher,
     /// Nodes whose local copy the user moved into an ignored folder that is no node. L keeps the
     /// entry each had before the move.
@@ -818,6 +820,7 @@ impl Trees {
             kept_originals: TrackedMap::default(),
             unsent_marks: TrackedMap::default(),
             pending_finishes: TrackedMap::default(),
+            answered_rules: TrackedMap::default(),
             ignore: Matcher::new(LocalRules::default()),
             outside: TrackedSet::default(),
             lost: TrackedSet::default(),
@@ -3202,6 +3205,88 @@ impl Trees {
         for (id, shape) in taken {
             self.discarded.insert(id, shape);
         }
+    }
+
+    pub(crate) fn record_answered_rules(&mut self, shown: &BTreeMap<NodeId, Shape>) {
+        for (id, shape) in shown {
+            let Some(source) = rules_source(&shape.name).filter(|_| shape.kind == Kind::File)
+            else {
+                continue;
+            };
+            let rules = (self.folder_path(&shape.parent))
+                .and_then(|dir| self.ignore.rules_file(&dir, source))
+                .map(|rules| rules.source().to_vec());
+            if let Some(rules) = rules {
+                let answered = AnsweredRules {
+                    folder: shape.parent.clone(),
+                    gitignore: source == Source::Gitignore,
+                    rules,
+                };
+                self.answered_rules.insert(id.clone(), answered);
+            }
+        }
+    }
+
+    pub(crate) fn answered_rules_to_judge(&mut self) -> Vec<(NodeId, AnsweredRules)> {
+        let mut ready = Vec::new();
+        for (id, answered) in self.answered_rules.to_map() {
+            if self.l.get(&id).is_some() && !self.discard_pending(&id) {
+                self.answered_rules.remove(&id);
+                continue;
+            }
+            let unwritten = (self.remote_children(&answered.folder)).any(|child| {
+                self.r
+                    .live(child)
+                    .is_some_and(|remote| remote.kind == Kind::File && is_rules_file(&remote.name))
+                    && self.l.get(child).is_none()
+            });
+            if self.l.get(&id).is_none() && !self.held(&answered.folder) && !unwritten {
+                ready.push((id, answered));
+            }
+        }
+        ready
+    }
+
+    fn discard_pending(&self, id: &NodeId) -> bool {
+        matches!(
+            self.discard_state(id),
+            Some(Discard::Pending | Discard::Kept)
+        )
+    }
+
+    pub(crate) fn left_out_by_answered_rules(
+        &self,
+        answered: &[AnsweredRules],
+        tops: Vec<NodeId>,
+    ) -> Vec<NodeId> {
+        let mut then = self.ignore.clone();
+        for answered in answered {
+            let Some(dir) = self.folder_path(&answered.folder) else {
+                continue;
+            };
+            let source = match answered.gitignore {
+                true => Source::Gitignore,
+                false => Source::Koiignore,
+            };
+            let rules = RuleFile::parse(&answered.rules);
+            then.set_rules(&dir, source, Some(rules), std::iter::empty());
+        }
+        let mut left_out = Vec::new();
+        let mut pending = tops;
+        while let Some(id) = pending.pop() {
+            let Some((names, kind)) = path(&self.l, &id) else {
+                continue;
+            };
+            match excluded(&then, &names, &[kind]) {
+                true => left_out.push(id),
+                false => pending.extend(self.local_children(&id).cloned()),
+            }
+        }
+        left_out
+    }
+
+    pub(crate) fn end_answered_rules(&mut self, id: &NodeId) {
+        self.answered_rules.remove(id);
     }
 
     pub(crate) fn below(
@@ -7837,6 +7922,7 @@ impl Trees {
             kept_originals: self.kept_originals.to_map(),
             unsent_marks: self.unsent_marks.to_map(),
             pending_finishes: self.pending_finishes.to_map(),
+            answered_rules: self.answered_rules.to_map(),
         }
     }
 
@@ -7899,6 +7985,7 @@ impl Trees {
             kept_originals,
             unsent_marks,
             pending_finishes,
+            answered_rules,
             ignore: _,
             outside,
             lost,
@@ -7983,6 +8070,7 @@ impl Trees {
             kept_originals: kept_originals.take_changes(),
             unsent_marks: unsent_marks.take_changes(),
             pending_finishes: pending_finishes.take_changes(),
+            answered_rules: answered_rules.take_changes(),
         }
     }
 
@@ -8235,6 +8323,7 @@ impl Trees {
             kept_originals,
             unsent_marks,
             pending_finishes,
+            answered_rules,
         } = state;
         self.unsettled = dirty.clone();
         self.same.clear();
@@ -8296,6 +8385,7 @@ impl Trees {
         self.kept_originals = kept_originals.into();
         self.unsent_marks = unsent_marks.into();
         self.pending_finishes = pending_finishes.into();
+        self.answered_rules = answered_rules.into();
         self.rules_known = false;
         self.unknown_rules.clear();
         Ok(Some(()))

@@ -26,8 +26,8 @@ use crate::restore::{
     Outcome, RESOLVED_KEPT, Rejection, Resolved, RestoreId, RestoreIntent, SplitRestore,
 };
 use crate::state::{
-    Agreed, CONTENT_ANCESTRY_LIMIT, CommitsChanges, CommitsState, FinishOrigin, GivenUp,
-    MovePosition, RenamedOver, StateError,
+    Agreed, AnsweredRules, CONTENT_ANCESTRY_LIMIT, CommitsChanges, CommitsState, FinishOrigin,
+    GivenUp, MovePosition, RenamedOver, StateError,
 };
 use crate::tracked::{Marked, TrackedMap, TrackedSet};
 use crate::tree::{
@@ -1278,6 +1278,47 @@ impl Commits {
         );
     }
 
+    fn ask_let_in(
+        &mut self,
+        trees: &mut Trees,
+        cause: Option<&RecoveryCause>,
+        ids: &mut IdGen,
+        now_ms: u64,
+    ) {
+        let judged = trees.answered_rules_to_judge();
+        if judged.is_empty() {
+            return;
+        }
+        let folders: Vec<NodeId> = judged
+            .iter()
+            .map(|(_, answered)| answered.folder.clone())
+            .collect();
+        let (tops, _) = first_link::adopt_around(
+            trees,
+            None,
+            &BTreeMap::new(),
+            &BTreeSet::new(),
+            &BTreeMap::new(),
+            &folders,
+        );
+        let asked: BTreeSet<&NodeId> = (self.questions.iter())
+            .flat_map(|question| question.shown.keys().chain(question.holds()))
+            .collect();
+        let tops: Vec<NodeId> = tops.into_iter().filter(|id| !asked.contains(id)).collect();
+        let answered: Vec<AnsweredRules> = judged
+            .iter()
+            .map(|(_, answered)| answered.clone())
+            .collect();
+        let left_out = trees.left_out_by_answered_rules(&answered, tops);
+        for (id, _) in &judged {
+            trees.end_answered_rules(id);
+        }
+        if let Some(question) = first_link::ask(trees, left_out, None, cause, ids, now_ms) {
+            self.questions.get_mut().push(question);
+            self.hold(trees);
+        }
+    }
+
     fn ask_again(&mut self, trees: &mut Trees, ids: &mut IdGen, now_ms: u64) -> Vec<NodeId> {
         let shows = |question: &Question| first_link::asks(question) && !question.shown.is_empty();
         let mut left = Vec::new();
@@ -1328,6 +1369,7 @@ impl Commits {
                             index += 1;
                             continue;
                         };
+                        trees.record_answered_rules(&question.shown);
                         let shown: BTreeSet<NodeId> = question.shown.keys().cloned().collect();
                         trees.discard(shown.iter().cloned(), &question.shown);
                         trees.discard_taken(taken);
@@ -1706,6 +1748,7 @@ impl Commits {
             self.questions.get_mut().push(question);
             self.hold(trees);
         }
+        self.ask_let_in(trees, cause.as_ref(), ids, now_ms);
         self.ask_missing(trees, ids, now_ms);
         let waiting: BTreeSet<NodeId> = (trees.waiting().keys())
             .filter(|id| !changed_locally(trees, id))
