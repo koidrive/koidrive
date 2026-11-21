@@ -5,17 +5,21 @@ tests = [
   "devices_converge_across_server_restores_on_the_oracle_reds",
   "devices_lose_no_write_across_server_restores",
   "devices_lose_no_write_across_server_restores_on_the_oracle_reds",
+  "devices_with_rules_converge_once_the_faults_stop",
+  "devices_with_rules_converge_once_the_faults_stop_on_the_oracle_reds",
 ]
 message = '''(after phase <n>: write <n> that the delete of node <id> on device <n> saw is live again on node <id>, and no user copied it\.|not recorded: devices::\S+ \S+ (?:(?:on|off) )?DeleteUndone write <n> that the delete of node <id> on device <n> saw is live again on node <id>, and no user copied it( not recorded: devices::\S+ \S+ (?:(?:on|off) )?DeleteUndone write <n> that the delete of node <id> on device <n> saw is live again on node <id>, and no user copied it)*)'''
 examples = [
   "after phase 2: write 2 that the delete of node 01a1c2c0-39a0-7510-83bc-38d6c6b89fe4 on device 0 saw is live again on node 01a1c2c0-39a0-7c94-ad9a-de661683ef13, and no user copied it.",
   "not recorded: devices::devices_converge_across_server_restores_on_the_oracle_reds\tcc-48aab6ccc23fcdde6b640c5cf35b7c7ab0c351d783ca32463d2f56d1e7c367bf\tDeleteUndone\twrite 8 that the delete of node 01a1c2c0-39a0-7735-80db-d7e668859a70 on device 0 saw is live again on node 01a1c2c0-39a0-7743-862d-2f063b6d6ed6, and no user copied it\nnot recorded: devices::devices_converge_across_server_restores_on_the_oracle_reds\tcc-48aab6ccc23fcdde6b640c5cf35b7c7ab0c351d783ca32463d2f56d1e7c367bf\tDeleteUndone\twrite 8 that the delete of node 01a1c2c0-39a0-7735-80db-d7e668859a70 on device 0 saw is live again on node 01a1c2c0-39a0-7ff5-81c5-bc897f458202, and no user copied it",
   "after phase 2: write 5 that the delete of node 01a1c2c0-39a0-76b6-8f17-7744bb83aba9 on device 2 saw is live again on node 01a1c2c0-3a27-75dd-b48a-1465dedff0d8, and no user copied it.",
+  "not recorded: devices::devices_with_rules_converge_once_the_faults_stop\tcc-6cb9c8222866906d6488a24702c33315145c4e3818cdd3cf3b89f2fb15531061\ton\tDeleteUndone\twrite 3 that the delete of node 01a1c2c0-39a0-7ea7-93f8-3d888a182e12 on device 1 saw is live again on node 01a1c2c0-39a0-79e5-8143-24067dcb30c3, and no user copied it",
 ]
 cases = [
   "161f03129158",
   "21aece05ada9",
   "41ef8e85eb93",
   "48aab6ccc23f",
+  "6cb9c8222866",
   "9018ed88183f",
 ]

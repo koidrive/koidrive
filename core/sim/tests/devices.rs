@@ -770,6 +770,17 @@ fn devices_with_rules_converge_once_the_faults_stop() {
 }
 
 #[test]
+fn devices_with_rules_converge_once_the_faults_stop_on_the_oracle_reds() {
+    holds_on_the_oracle_reds(
+        test_name!(devices_with_rules_converge_once_the_faults_stop_on_the_oracle_reds),
+        (2..=3usize, excludes(), phases(Losses::None), rulings()),
+        |(devices, exclude, phases, rulings)| {
+            converge_ruled(&exclude[..devices], &rulings, &phases).map(drop)
+        },
+    );
+}
+
+#[test]
 fn devices_lose_no_write_when_folders_are_rescanned_alone() {
     holds(
         test_name!(devices_lose_no_write_when_folders_are_rescanned_alone),
