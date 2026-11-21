@@ -535,6 +535,15 @@ describe("server events", () => {
     expect(serverEvent({ $metadata: { trigger: "SpaceDO.webSocketMessage" } }).$metadata).toEqual({ trigger: "SpaceDO.webSocketMessage" });
   });
 
+  it("keeps the koidrive fields of a structured log line and nothing else from its source", () => {
+    const kept = serverEvent({
+      $metadata: { type: "cf-worker", requestId: "r1", message: "secret" },
+      source: { koidrive_rpc: "commit", koidrive_items: 1000, message: "secret", nested: { koidrive_rpc: "secret" } },
+    });
+    expect(kept.$metadata).toEqual({ type: "cf-worker", requestId: "r1" });
+    expect(kept.attributes).toEqual({ koidrive_rpc: "commit", koidrive_items: 1000 });
+  });
+
   it("halves a window that returns the query limit, drops events read twice at a boundary, and reports windows too short to halve", async () => {
     const events = [
       ...Array.from({ length: 5 }, (_, i) => ({ timestamp: 100 + i * 10, $metadata: { id: "a" + i } })),

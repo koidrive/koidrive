@@ -129,6 +129,11 @@ describe("server logs", () => {
       expect(lines.filter((line) => line.includes(secret))).toEqual([]);
     }
     expect(lines.filter((line) => /ticket=|Bearer /.test(line))).toEqual([]);
+    expect(lines.filter((line) => line.includes("koidrive_rpc")), "each Space RPC logs its kind and item count").toEqual([
+      JSON.stringify({ koidrive_rpc: "prepareUpload", koidrive_items: 1 }),
+      JSON.stringify({ koidrive_rpc: "commit", koidrive_items: 1 }),
+      JSON.stringify({ koidrive_rpc: "getDownloadTargets", koidrive_items: 1 }),
+    ]);
   });
 
   it("format every caught error with errorText, so its name and message reach Workers Logs", () => {

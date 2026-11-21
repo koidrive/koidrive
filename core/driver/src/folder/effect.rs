@@ -137,6 +137,9 @@ impl Folder {
                 let commit =
                     self.step(|engine, _| Ok(engine.commits.uploaded(receipts).cloned()))?;
                 if let Some(commit) = commit {
+                    if let Some(cycle) = &mut self.cycle {
+                        cycle.uploaded = Some(clock::instant());
+                    }
                     self.sent_commit = Some(commit.commit_id.clone());
                     self.flight = Flight::Sending(commit.clone());
                     work.push(Work::Send(commit));

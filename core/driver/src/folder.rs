@@ -125,6 +125,13 @@ pub(crate) struct Loaded {
     snapshot: Snapshot,
 }
 
+struct Cycle {
+    commit_id: String,
+    chunks: usize,
+    started: Instant,
+    uploaded: Option<Instant>,
+}
+
 /// One linked folder while it syncs.
 pub(crate) struct Folder {
     timing: Timing,
@@ -134,6 +141,8 @@ pub(crate) struct Folder {
     disk: Disk,
     stream: Stream,
     flight: Flight,
+    cycle: Option<Cycle>,
+    landed_at: Option<Instant>,
     sent_commit: Option<String>,
     /// The observer has scanned the folder once. Nothing is planned before, because L does not describe the disk
     /// until then.
@@ -474,6 +483,8 @@ impl Folder {
             other_changes: 0,
             questions_holding_changes: 0,
             retry_at: None,
+            cycle: None,
+            landed_at: None,
             #[cfg(test)]
             crash_after: None,
         };

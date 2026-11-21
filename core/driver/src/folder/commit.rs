@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use koidrive_engine::commit::{Base, Failure, Halt as CommitHalt};
 use koidrive_net::{CallError, Cause, Event, NotResent, ServerError};
@@ -18,7 +18,7 @@ use crate::timing::Time;
 use koidrive_engine::question::{RecoveryCause, RecoveryTrigger};
 use koidrive_engine::tree::NodeId;
 
-use super::{Call, Flight, Folder, Next, NotTaken, Retrying, Stream, Work};
+use super::{Call, Cycle, Flight, Folder, Next, NotTaken, Retrying, Stream, Work};
 
 impl Folder {
     /// `Session::commit` returned. A result is acknowledged once R has reached it. A refusal goes to the engine,
@@ -33,6 +33,7 @@ impl Folder {
         match result {
             Ok(result) => {
                 crate::volume::commit_sent();
+                self.landed(&commit);
                 self.failures = 0;
                 self.commit_ended();
                 self.result(&commit.commit_id, result)?;
@@ -94,6 +95,28 @@ impl Folder {
         }
         self.drive(&mut work)?;
         Ok(work)
+    }
+
+    fn landed(&mut self, commit: &Commit) {
+        let now = clock::instant();
+        let since_last = self.landed_at.replace(now);
+        let Some(cycle) = self
+            .cycle
+            .take_if(|cycle| cycle.commit_id == commit.commit_id)
+        else {
+            return;
+        };
+        let uploaded = cycle.uploaded.unwrap_or(now);
+        let ms = |from: Instant, to: Instant| to.saturating_duration_since(from).as_millis() as u64;
+        tracing::info!(
+            space_id = self.link.space_id,
+            ops = commit.ops.len(),
+            chunks = cycle.chunks,
+            since_last_ms = since_last.map(|at| ms(at, cycle.started)),
+            upload_ms = ms(cycle.started, uploaded),
+            send_ms = ms(uploaded, now),
+            "koidrive commit landed"
+        );
     }
 
     /// The commit in flight went through, or is not sent again as it is: the waits of its upload and its send
@@ -305,6 +328,15 @@ impl Folder {
     /// Starts the upload of what `commit` adds, or its send when it adds no content.
     pub(super) fn start(&mut self, commit: Commit, work: &mut Vec<Work>) {
         let mut upload = self.disk.upload(&commit, &self.engine);
+        if (self.cycle.as_ref()).is_none_or(|cycle| cycle.commit_id != commit.commit_id) {
+            let started = clock::instant();
+            self.cycle = Some(Cycle {
+                commit_id: commit.commit_id.clone(),
+                chunks: upload.chunks.len(),
+                started,
+                uploaded: upload.chunks.is_empty().then_some(started),
+            });
+        }
         upload.credit = Credit::upload(&self.progress, &commit, |node| self.engine.path_of(node));
         if self.timing.is_on() {
             upload.timing_bytes = self.timing.uploading(&commit, Time::now());

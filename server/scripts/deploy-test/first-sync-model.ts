@@ -409,6 +409,7 @@ export const TELEMETRY_KEPT = {
   $workers: ["eventType", "entrypoint", "executionModel", "outcome", "wallTimeMs", "cpuTimeMs", "requestId", "traceId", "spanId", "durableObjectId"],
 } as const;
 const SPAN_ATTRIBUTE = /cloudflare\.(r2\.(operation|response\.success|error\.code)|durable_object\.id|entrypoint|execution_model)$/;
+const LOG_FIELD = /^source\.(koidrive_[a-z_]+)$/;
 const FIELD_DEPTH = 4;
 const MAX_FIELDS = 500;
 
@@ -455,6 +456,8 @@ export function serverEvent(event: Raw): ServerEvent {
     const name = path.join(".");
     const match = SPAN_ATTRIBUTE.exec(name);
     if (match && isScalar(value)) attributes[match[0]] = value;
+    const field = LOG_FIELD.exec(name);
+    if (field && isScalar(value)) attributes[field[1]!] = value;
   }
   return { timestamp: typeof event.timestamp === "number" ? event.timestamp : null, $metadata: kept("$metadata"), $workers: kept("$workers"), attributes };
 }

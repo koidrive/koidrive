@@ -1,7 +1,62 @@
 // SPDX-License-Identifier: Apache-2.0
 
+use std::io;
+
 use super::*;
 use koidrive_telemetry::Recorder;
+
+#[derive(Clone, Default)]
+struct Captured(Arc<Mutex<Vec<u8>>>);
+
+impl io::Write for Captured {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+#[test]
+fn each_landed_commit_logs_its_ops_chunks_and_the_time_of_its_upload_and_send() {
+    let captured = Captured::default();
+    let writer = captured.clone();
+    let subscriber = tracing_subscriber::fmt()
+        .with_writer(move || writer.clone())
+        .with_ansi(false)
+        .finish();
+    let _second_dispatch_so_other_threads_do_not_cache_never =
+        tracing::Dispatch::new(tracing::subscriber::NoSubscriber::default());
+    tracing::subscriber::with_default(subscriber, || {
+        let mut remote = Remote::new_at(Time::now().unix_ms - 10_000);
+        let (site, mut a) = linked(&mut remote, "device-a");
+        fs::write(site.root.join("one"), b"first bytes").unwrap();
+        fs::write(site.root.join("two"), b"second bytes").unwrap();
+        a.scan_until(|a| !a.work.is_empty());
+        a.rest(&mut remote);
+        fs::create_dir(site.root.join("folder")).unwrap();
+        a.scan_until(|a| !a.work.is_empty());
+        a.rest(&mut remote);
+    });
+    let log = String::from_utf8(captured.0.lock().unwrap().clone()).unwrap();
+    let landed: Vec<_> = (log.lines())
+        .filter(|line| line.contains("koidrive commit landed"))
+        .collect();
+    assert_eq!(landed.len(), 2, "{log}");
+    for field in ["upload_ms=", "send_ms="] {
+        assert!(landed.iter().all(|line| line.contains(field)), "{log}");
+    }
+    assert!(
+        landed[0].contains("chunks=2") && !landed[0].contains("since_last_ms="),
+        "{log}"
+    );
+    assert!(
+        landed[1].contains("chunks=0") && landed[1].contains("since_last_ms="),
+        "{log}"
+    );
+}
 
 fn histograms(recorder: &Recorder) -> serde_json::Value {
     let mut all = koidrive_telemetry::HourlyReport::default();
