@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use koidrive_engine::classify::Trees;
+use koidrive_engine::classify::{Origin, Trees, Waiting};
 use koidrive_engine::commit::Commits;
 use koidrive_engine::effects::{BatchLimit, Effect, Effects};
 use koidrive_engine::first_link::{LogRead, Marks};
@@ -53,6 +53,10 @@ fn rolled_back_under_a_later_edit(on_disk_at: i64) -> (Trees, Commits, IdGen) {
 }
 
 fn rolled_back(local: Shape, synced: Shape, later: RemoteNode) -> (Trees, Commits, IdGen) {
+    recovered(before_rollback(local, Some(synced), later))
+}
+
+fn before_rollback(local: Shape, synced: Option<Shape>, later: RemoteNode) -> Trees {
     let mut trees = Trees::new(ROOT);
     let local = LocalNode {
         left_out_when_placed: false,
@@ -67,12 +71,21 @@ fn rolled_back(local: Shape, synced: Shape, later: RemoteNode) -> (Trees, Commit
         chunks: Box::default(),
     };
     trees.set_local("n".into(), local);
-    trees.set_synced("n".into(), Some(synced.clone()));
-    trees.set_remote("n".into(), version(synced, "v4", &[], 1));
+    if let Some(synced) = &synced {
+        trees.set_synced("n".into(), Some(synced.clone()));
+    }
+    trees.set_remote(
+        "n".into(),
+        version(synced.unwrap_or_else(|| file(4, 0)), "v4", &[], 1),
+    );
     trees.rules_scanned();
     trees.settle(&Default::default());
     trees.set_remote("n".into(), later);
     trees.settle(&Default::default());
+    trees
+}
+
+fn recovered(mut trees: Trees) -> (Trees, Commits, IdGen) {
     let mut commits = Commits::default();
     let mut ids = IdGen::new(7);
     let cause = RecoveryCause::of(RecoveryTrigger::StoreOlderThanDisk);
@@ -255,4 +268,64 @@ fn a_file_another_device_trashed_with_other_bytes_than_l_holds_is_asked_about_af
         }
     ));
     assert!(effects(&mut trees, &mut ids).is_empty());
+}
+
+#[test]
+fn a_file_another_device_trashed_with_the_bytes_l_holds_that_s_never_held_is_matched_and_follows_the_trash()
+ {
+    let later = trashed(version(file(5, 0), "v5", &["v4"], 2));
+    let (mut trees, mut commits, mut ids) =
+        recovered(before_rollback(file(5, WRITTEN_AT), None, later));
+    assert!(commits.questions().is_empty(), "{:?}", commits.questions());
+    let done = effects(&mut trees, &mut ids);
+    assert!(
+        matches!(&done[..], [(node, Effect::RemoveFile { .. })] if node == "n"),
+        "{done:?}"
+    );
+    assert!(
+        commits
+            .build(&mut trees, &mut ids, NOW, "new", "me", 1)
+            .is_none()
+    );
+}
+
+#[test]
+fn a_file_held_as_changed_follows_another_devices_trash_of_the_bytes_l_holds_over_a_waiting_update()
+{
+    let later = version(file(6, 0), "v6", &["v4"], 2);
+    let (mut trees, mut commits, mut ids) = rolled_back(file(5, WRITTEN_AT), file(4, 0), later);
+    assert_eq!(commits.questions().len(), 1, "{:?}", commits.questions());
+    let mut state = trees.state();
+    let stale = Shape {
+        parent: "d".into(),
+        ..file(4, 0)
+    };
+    state.waiting.insert(
+        "n".into(),
+        Waiting {
+            shape: Some(stale),
+            origin: Origin::Other,
+        },
+    );
+    trees.restore(state).unwrap();
+    trees.rules_scanned();
+    trees.set_remote("n".into(), trashed(version(file(5, 0), "v5", &["v6"], 3)));
+    trees.settle(commits.aliases());
+    assert!(
+        commits
+            .build(&mut trees, &mut ids, NOW, "new", "me", 1)
+            .is_none()
+    );
+    assert!(commits.questions().is_empty(), "{:?}", commits.questions());
+    assert!(!trees.edited(&"n".into()));
+    let done = effects(&mut trees, &mut ids);
+    assert!(
+        matches!(&done[..], [(node, Effect::RemoveFile { .. })] if node == "n"),
+        "{done:?}"
+    );
+    assert!(
+        commits
+            .build(&mut trees, &mut ids, NOW, "new", "me", 1)
+            .is_none()
+    );
 }

@@ -3656,9 +3656,7 @@ fn agreed_with_remote(
         trees.sent_edit(id, shape.as_ref().and_then(|shape| shape.content.as_ref()));
     }
     (agreed.into_iter())
-        .filter(|(id, shape)| {
-            !same(trees.synced().live(id), shape.as_ref()) && trees.waiting().get(id).is_none()
-        })
+        .filter(|(id, shape)| !same(trees.acknowledged(id), shape.as_ref()))
         .collect()
 }
 

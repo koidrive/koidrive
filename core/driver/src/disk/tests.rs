@@ -3720,6 +3720,40 @@ fn a_store_put_back_at_the_markers_counter_halts_before_the_next_marker_write() 
 }
 
 #[test]
+fn a_store_put_back_between_load_and_start_brings_nothing_back_from_the_parked_directory() {
+    let (folder, mut running) = two_batches_ahead();
+    let server = Server::default();
+    let copy = folder.dir.path().join("copy.sqlite");
+    copy_store_while_open(&folder.db, &copy);
+    assert_eq!(running.step(&server), Some(Settled::Done));
+    drop(running);
+    copy_store_while_open(&copy, &folder.db);
+    let parked = folder.root.join(PRIVATE_DIR).join(koidrive_fs::PARKED_DIR);
+    fs::create_dir_all(&parked).unwrap();
+    fs::write(parked.join("held"), b"held").unwrap();
+    let (mut store, mut engine) = folder.open();
+    let stamp = store.read::<_, Stop>(|tx| Ok(tx.write_stamp()?)).unwrap();
+    store.stamp_writes(stamp);
+    rusqlite::Connection::open(&folder.db)
+        .unwrap()
+        .execute(
+            "INSERT OR REPLACE INTO write_stamp (id, stamp) VALUES (1, ?1)",
+            [stamp + 1],
+        )
+        .unwrap();
+    let lock = claim::lock(&folder.root)
+        .unwrap()
+        .expect("the folder is not locked");
+    let before = tree(&folder.root);
+    let started = Disk::start(&lock, &folder.link, &mut engine, &mut store).err();
+    assert!(
+        matches!(started, Some(Stop::Store(koidrive_store::Error::Replaced))),
+        "{started:?}"
+    );
+    assert_eq!(tree(&folder.root), before);
+}
+
+#[test]
 fn a_store_swapped_for_an_older_copy_before_a_rescan_halts_with_nothing_planned() {
     let (folder, mut running) = two_batches_ahead();
     let server = Server::default();

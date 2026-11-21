@@ -548,6 +548,7 @@ impl Disk {
             flush_fails: false,
         };
         let counter = counted(&engine.effects);
+        store.check_stamp()?;
         let (found, opened) = store.read(|tx| marker_standing(&disk.space, link, tx, counter))?;
         let recovered = matches!(opened, Standing::StoreOlder);
         if recovered {
