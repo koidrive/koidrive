@@ -86,7 +86,7 @@ use self::deletes::Deletion;
 use self::device::{Device, Engine, Link, Message, Rules};
 pub use self::disk::Cut;
 use self::disk::{Applied, Disk, Place, Precision, Refused};
-use self::intents::{Answered, Intents, RESTORE, RESTORE_ANSWER, Server, Value};
+use self::intents::{Answered, Intents, KEEP, PUBLISH, RESTORE, RESTORE_ANSWER, Server, Value};
 pub use self::intents::{Check, ExpectedRed, allow_red, expect_red};
 use self::rules::{LeftOutOnDisk, Unsynced, excluded_op};
 use crate::space::{Role, Session, SpaceDo};
@@ -385,6 +385,16 @@ fn live_writes(space: &SpaceDo) -> BTreeMap<i64, NodeId> {
         .filter(|node| node.status == NodeStatus::Live as i32)
         .filter_map(|node| Some((tag(&node.current?.content?), NodeId::from(node.node_id))))
         .collect()
+}
+
+fn placed_by(op: &koidrive_proto::v1::Op) -> Option<(NodeId, NodeId, &str)> {
+    let (node, parent, name) = match op.op.as_ref()? {
+        op::Op::Move(moved) => (&moved.node_id, &moved.new_parent_id, &moved.new_name),
+        op::Op::CreateDir(create) => (&create.node_id, &create.parent_id, &create.name),
+        op::Op::CreateFile(create) => (&create.node_id, &create.parent_id, &create.name),
+        _ => return None,
+    };
+    Some((NodeId::from(node), NodeId::from(parent), name.as_str()))
 }
 
 fn uncredit(kept: &mut BTreeMap<i64, BTreeMap<NodeId, u128>>, id: &NodeId, ino: u128, write: i64) {
@@ -1551,12 +1561,13 @@ impl World {
                 for id in &ids {
                     if let Some(ino) = self.intents.ino_of(d, id) {
                         let intent = self.intents.answered_delete(d, self.moment, ino, id);
+                        let removed = content(trees.remote().live(id)).into_iter().collect();
                         (self.deletions).push(Deletion::new(
                             &self.space,
                             d,
                             intent,
                             BTreeSet::new(),
-                            BTreeSet::new(),
+                            removed,
                         ));
                     }
                 }
@@ -1564,10 +1575,13 @@ impl World {
             Answer::Restore => self.intents.restore_deleted(d, &ids),
             _ => {}
         }
+        let kind = match answer {
+            Answer::Publish => PUBLISH,
+            _ => KEEP,
+        };
         for (ino, value, answered) in published {
             let held = ids.iter().any(|id| self.intents.ino_of(d, id) == Some(ino));
-            self.intents
-                .answered(d, self.moment, ino, value, answered, held);
+            (self.intents).answered((d, self.moment, kind), ino, value, answered, held);
         }
         assert!(
             engine
@@ -2645,6 +2659,13 @@ impl World {
                 if let Err(why) = commits.check_buildable() {
                     panic!("{why}");
                 }
+                let root = NodeId::from(self.space.space_id());
+                let built = commits.in_flight().into_iter();
+                for op in built.flat_map(|flight| &flight.commit.ops) {
+                    if let Some((node, parent, name)) = placed_by(op) {
+                        (self.intents).built(d, self.moment, (&node, &parent, name), &root);
+                    }
+                }
                 let ops = commits.in_flight().map(|flight| &flight.commit.ops);
                 for placed in ops.map_or_else(Vec::new, |ops| excluded_op(trees, ops)) {
                     let why = format!(
@@ -3013,6 +3034,13 @@ impl World {
                                             );
                                         }
                                     }
+                                }
+                            }
+                            let reached = Server::of(self.space.space_id(), held.clone());
+                            for op in &sent.ops {
+                                if let Some((node, parent, name)) = placed_by(op) {
+                                    let op = (&node, &parent, name);
+                                    (self.intents).reached(d, self.moment, op, &reached);
                                 }
                             }
                             let server = Server::of(self.space.space_id(), self.space.nodes());

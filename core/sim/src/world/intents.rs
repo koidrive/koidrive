@@ -129,6 +129,8 @@ pub(super) fn expected(check: Check, why: &str) -> bool {
 
 pub(super) const RESTORE_ANSWER: &str = "restore answer";
 pub(super) const RESTORE: &str = "restore";
+pub(super) const PUBLISH: &str = "publish";
+pub(super) const KEEP: &str = "keep";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Field {
@@ -190,6 +192,9 @@ pub(super) struct Intent {
     pub(super) carried: Option<Carried>,
     answered_for: Option<NodeId>,
     restored_without: Option<u64>,
+    held_since: u64,
+    built: Option<u64>,
+    reached: Option<(u64, Vec<NodeId>)>,
 }
 
 impl Intent {
@@ -199,6 +204,10 @@ impl Intent {
 
     pub(super) fn stands(&self) -> bool {
         !self.dropped || self.kept
+    }
+
+    pub(super) fn copies(&self) -> bool {
+        self.kind == "copy" || self.kind == PUBLISH
     }
 }
 
@@ -285,6 +294,8 @@ type Spans = Vec<(u64, Option<u64>)>;
 
 pub(super) type Shown<'a> = (Option<&'a NodeId>, &'a str, Option<&'a [u8]>);
 
+pub(super) type Placed<'a> = (&'a NodeId, &'a NodeId, &'a str);
+
 impl Intents {
     pub(super) fn new(devices: usize) -> Self {
         Intents {
@@ -326,6 +337,9 @@ impl Intents {
             carried: None,
             answered_for: None,
             restored_without: None,
+            held_since: 0,
+            built: None,
+            reached: None,
         });
         self.list.len() - 1
     }
@@ -357,8 +371,7 @@ impl Intents {
 
     pub(super) fn answered(
         &mut self,
-        author: usize,
-        made: u64,
+        (author, made, kind): (usize, u64, &'static str),
         ino: u128,
         value: Value,
         answer: Answered,
@@ -381,7 +394,7 @@ impl Intents {
                     && (intent.author, intent.ino) == (author, ino)
                     && same(&intent.value)
             });
-        self.record(author, made, ino, "publish", value);
+        self.record(author, made, ino, kind, value);
         let intent = self.list.last_mut().expect("recorded above");
         intent.answer = Some(answer);
         intent.discarded = discarded;
@@ -699,8 +712,11 @@ impl Intents {
             if holds && intent.applied == 0 {
                 intent.applied = clock;
             }
+            if holds && !intent.held {
+                intent.held_since = clock;
+            }
             intent.lost |= lost && intent.held;
-            if before.is_some() && !holds && intent.made < clock {
+            if before.is_some() && !holds && intent.built.is_some() {
                 intent.restored_without.get_or_insert(clock);
             }
             intent.held = holds;
@@ -722,6 +738,51 @@ impl Intents {
     pub(super) fn carried_until(&mut self, head: u64) {
         for intent in &mut self.list {
             intent.carried = intent.carried.take().filter(|carried| carried.seq <= head);
+        }
+    }
+
+    fn placing(&self, author: usize, clock: u64, op: Placed, root: &NodeId) -> Vec<usize> {
+        let (node, parent, name) = op;
+        (0..self.list.len())
+            .filter(|i| {
+                let intent = &self.list[*i];
+                let Value::Place {
+                    parent: above,
+                    name: given,
+                } = &intent.value
+                else {
+                    return false;
+                };
+                intent.author == author
+                    && intent.made <= clock
+                    && self.on(*i, node)
+                    && named(name, given)
+                    && self.parent_is(*i, *above, parent, root)
+            })
+            .collect()
+    }
+
+    pub(super) fn reached_trashed(&self, i: usize, node: &NodeId) -> bool {
+        (self.list[i].reached.as_ref()).is_some_and(|(_, trashed)| trashed.contains(node))
+    }
+
+    pub(super) fn built(&mut self, author: usize, clock: u64, op: Placed, root: &NodeId) {
+        for i in self.placing(author, clock, op, root) {
+            self.list[i].built.get_or_insert(clock);
+        }
+    }
+
+    pub(super) fn reached(&mut self, author: usize, clock: u64, op: Placed, server: &Server) {
+        let (node, parent, _) = op;
+        let trashed: Vec<NodeId> = [node.clone(), parent.clone()]
+            .into_iter()
+            .chain(server.above(parent))
+            .filter(|id| {
+                (server.nodes.get(id)).is_some_and(|node| node.status != NodeStatus::Live as i32)
+            })
+            .collect();
+        for i in self.placing(author, clock, op, &server.root) {
+            self.list[i].reached = Some((clock, trashed.clone()));
         }
     }
 
@@ -907,15 +968,6 @@ impl Intents {
             true => self.holders(i).any(|id| trashes(j, id, true)),
             false => self.nodes(i).any(|id| trashes(j, id, false)),
         };
-        let into_trashed = |j: usize| match intent.value {
-            Value::Place {
-                parent: Some(parent),
-                ..
-            } => self
-                .nodes_of(intent.author, parent, intent.made)
-                .any(|id| trashes(j, id, true)),
-            _ => false,
-        };
         let into_itself = match intent.value {
             Value::Place {
                 parent: Some(parent),
@@ -1027,8 +1079,13 @@ impl Intents {
                                 _ => true,
                             }
                     });
-                let restored_without = field == Field::Place
-                    && intent.restored_without.is_some_and(|at| other.applied > at);
+                let replayed_into_trash = field == Field::Place
+                    && intent.restored_without.is_some_and(|lost| {
+                        other.held_since > lost
+                            && (intent.reached.as_ref()).is_some_and(|(at, trashed)| {
+                                *at > lost && trashed.iter().any(|id| trashes(j, id, false))
+                            })
+                    });
                 let deleted = matches!(other.value, Value::Trashed { .. })
                     && (covers(j, true)
                         && (!undone
@@ -1045,12 +1102,11 @@ impl Intents {
                                     }
                                     && (0..self.list.len())
                                         .any(|k| held_as(i, k) && self.saw(j, k))
-                                || !answered_restore_first && republished && covers(j, false)
-                                || restored_without)
+                                || !answered_restore_first && republished && covers(j, false))
                             || intent.restore_answer()
                                 && other.author != intent.author
                                 && (!other.lost || other.carried.is_some()))
-                        || restored_without && into_trashed(j));
+                        || replayed_into_trash);
                 match dropped {
                     true => matches!(field, Field::Content | Field::Place) && deleted,
                     false => replaced || looped || deleted,
@@ -1256,9 +1312,9 @@ mod tests {
         };
         let server = Server::of("root", vec![at_a]);
         let ok = |intents: &Intents| intents.check(&server, |_| false, |_, _| false).is_ok();
-        intents.answered(0, 1, 1, content(1), Answered::Settles, false);
+        intents.answered((0, 1, PUBLISH), 1, content(1), Answered::Settles, false);
         assert!(ok(&intents));
-        intents.answered(0, 2, 1, content(2), Answered::Owed, false);
+        intents.answered((0, 2, PUBLISH), 1, content(2), Answered::Owed, false);
         assert!(!ok(&intents));
         intents.record(0, 3, 1, "move", place("a"));
         intents.record(0, 3, 1, "move", place("b"));
@@ -1305,7 +1361,7 @@ mod tests {
             0,
             &[NodeId::from("n")].into(),
         );
-        intents.answered(0, 2, 1, place(), Answered::Settles, false);
+        intents.answered((0, 2, PUBLISH), 1, place(), Answered::Settles, false);
         assert!(!intents.placed(Some(0), "n", "root", "p", "root"));
         assert!(intents.discarded_place(Some(0), "n", "root", "p", "root"));
     }
@@ -1342,12 +1398,12 @@ mod tests {
             for nodes in &mut intents.nodes {
                 nodes.insert(1, [NodeId::from("n")].into());
             }
-            intents.answered(0, 1, 1, content(1), Answered::Owed, true);
+            intents.answered((0, 1, PUBLISH), 1, content(1), Answered::Owed, true);
             intents.sync(&holding(1), 2, None);
             if seen {
                 intents.shown[1].insert(0, 2);
             }
-            intents.answered(1, 3, 1, content(2), Answered::Owed, true);
+            intents.answered((1, 3, PUBLISH), 1, content(2), Answered::Owed, true);
             intents.check(&holding(2), |_| false, |_, _| false).is_ok()
         };
         assert!(settles(true));
@@ -1359,7 +1415,7 @@ mod tests {
         let mut intents = Intents::new(1);
         intents.nodes[0].insert(1, [NodeId::from("n")].into());
         intents.record(0, 1, 1, "write", content(1));
-        intents.answered(0, 2, 1, content(2), Answered::Settles, false);
+        intents.answered((0, 2, PUBLISH), 1, content(2), Answered::Settles, false);
         assert!(intents.check(&holding(2), |_| false, |_, _| false).is_err());
     }
 
@@ -1379,7 +1435,13 @@ mod tests {
                 replaced_by: None,
             };
             intents.record(0, 2, 1, "delete", deleted);
-            intents.answered(1, 3, 1, content(republished), Answered::Owed, true);
+            intents.answered(
+                (1, 3, PUBLISH),
+                1,
+                content(republished),
+                Answered::Owed,
+                true,
+            );
             intents.check(&Server::of("root", Vec::new()), |_| false, |_, _| false)
         };
         assert_eq!(settles(1), Ok(()));
@@ -1448,7 +1510,7 @@ mod tests {
                     3 => _ = intents.record(0, 3, deleted, "delete", trashed.clone()),
                     5 => undo(&mut intents, deleted, 5),
                     _ if at == answered => {
-                        intents.answered(1, at, 1, content(1), Answered::Owed, true);
+                        intents.answered((1, at, PUBLISH), 1, content(1), Answered::Owed, true);
                     }
                     _ => {}
                 }
@@ -1467,8 +1529,8 @@ mod tests {
             intents.record(0, at, 2, RESTORE, Value::Live);
         };
         let keeps_the_other_file = |intents: &mut Intents, _: u128, at| {
-            intents.answered(0, at, 2, Value::Live, Answered::Owed, true);
-            intents.answered(0, at, 10, Value::Live, Answered::Settles, false);
+            intents.answered((0, at, PUBLISH), 2, Value::Live, Answered::Owed, true);
+            intents.answered((0, at, PUBLISH), 10, Value::Live, Answered::Settles, false);
         };
         for (at, answered, undo) in [
             (
@@ -1514,7 +1576,7 @@ mod tests {
             intents.check(&at_a, |_| false, |_, _| false)
         };
         let saw_the_answer = |intents: &mut Intents| {
-            intents.answered(1, 1, 1, content(1), Answered::Owed, true);
+            intents.answered((1, 1, PUBLISH), 1, content(1), Answered::Owed, true);
             let answer = intents.len() - 1;
             intents.sync(&holding(1), 2, None);
             intents.seen[0].insert(answer, 2);
@@ -1522,7 +1584,7 @@ mod tests {
         let saw_the_value = |intents: &mut Intents| {
             let moved = intents.record(1, 1, 1, "move", at("b"));
             intents.seen[0].insert(moved, 1);
-            intents.answered(1, 2, 1, at("b"), Answered::Owed, true);
+            intents.answered((1, 2, PUBLISH), 1, at("b"), Answered::Owed, true);
         };
         let merged = |intents: &mut Intents| {
             intents.record(1, 1, 1, "write", content(1));
@@ -1566,7 +1628,7 @@ mod tests {
             if rewind {
                 intents.rewound(&gone, 6);
             }
-            intents.answered(1, 7, 1, content(1), Answered::Owed, true);
+            intents.answered((1, 7, PUBLISH), 1, content(1), Answered::Owed, true);
             intents.check(&gone, |_| false, |_, _| false)
         };
         assert_eq!(kept(true), Ok(()));
@@ -1617,9 +1679,9 @@ mod tests {
                     true => Answered::Owed,
                     false => Answered::Settles,
                 };
-                intents.answered(1, 6, 1, place(parent), Answered::Settles, true);
-                intents.answered(1, 6, 1, content(write), settles(owed), true);
-                intents.answered(1, 6, 1, Value::Live, Answered::Owed, true);
+                intents.answered((1, 6, PUBLISH), 1, place(parent), Answered::Settles, true);
+                intents.answered((1, 6, PUBLISH), 1, content(write), settles(owed), true);
+                intents.answered((1, 6, PUBLISH), 1, Value::Live, Answered::Owed, true);
                 intents.check(&gone, |d| restored && d == 0, |_, _| false)
             };
         assert_eq!(kept(1, 10, 10, 1, true, false), Ok(()));
@@ -1666,14 +1728,14 @@ mod tests {
             };
             intents.record(0, 3, 20, "delete", trashed);
             if publish {
-                intents.answered(1, 5, 1, into_g.clone(), Answered::Settles, true);
-                intents.answered(1, 5, 1, content(1), Answered::Settles, true);
-                intents.answered(1, 5, 1, Value::Live, Answered::Owed, true);
+                intents.answered((1, 5, PUBLISH), 1, into_g.clone(), Answered::Settles, true);
+                intents.answered((1, 5, PUBLISH), 1, content(1), Answered::Settles, true);
+                intents.answered((1, 5, PUBLISH), 1, Value::Live, Answered::Owed, true);
                 let gone = Server::of("root", vec![node("g", "root", None)]);
                 return intents.check(&gone, |_| false, |_, _| false);
             }
             intents.record(1, 4, 1, "move", into_g.clone());
-            intents.answered(1, 5, 1, content(1), Answered::Owed, true);
+            intents.answered((1, 5, PUBLISH), 1, content(1), Answered::Owed, true);
             let in_g = Server::of(
                 "root",
                 vec![node("g", "root", None), node("n", "g", Some(0))],
@@ -1702,7 +1764,13 @@ mod tests {
             let old = Server::of("root", vec![node("n", "root", Some(0))]);
             intents.rewound(&old, 2);
             intents.copied(&NodeId::from("n"), &NodeId::from("m"));
-            intents.answered(1, answer, 1, content(write), Answered::Owed, true);
+            intents.answered(
+                (1, answer, PUBLISH),
+                1,
+                content(write),
+                Answered::Owed,
+                true,
+            );
             let trashed = Value::Trashed {
                 subtree: vec![deleted],
                 under: BTreeMap::new(),
@@ -1739,7 +1807,7 @@ mod tests {
         let missing = check(&intents).expect_err("the move to b is missing");
         assert!(missing.0.contains("at \"b\""));
 
-        intents.answered(1, 3, 1, at("a"), Answered::Settles, false);
+        intents.answered((1, 3, PUBLISH), 1, at("a"), Answered::Settles, false);
         intents.sync(&server, 4, None);
         assert_eq!(check(&intents), Err(missing));
     }
@@ -1768,7 +1836,7 @@ mod tests {
             if shown {
                 intents.shown[0].insert(moved, 3);
             }
-            intents.answered(0, 3, 1, at("a"), Answered::Owed, true);
+            intents.answered((0, 3, PUBLISH), 1, at("a"), Answered::Owed, true);
             intents.check(&server, |_| false, |_, _| false).is_ok()
         };
         assert!(settles(false));
@@ -1789,7 +1857,13 @@ mod tests {
             0,
             &[NodeId::from("n")].into(),
         );
-        intents.answered(0, 2, 1, place("\u{c9}"), Answered::Settles, false);
+        intents.answered(
+            (0, 2, PUBLISH),
+            1,
+            place("\u{c9}"),
+            Answered::Settles,
+            false,
+        );
         assert!(!intents.placed(Some(0), "n", "root", "\u{c9}", "root"));
     }
 
@@ -1801,7 +1875,7 @@ mod tests {
         }
         intents.record(1, 1, 1, "write", content(1));
         intents.sync(&holding(1), 2, None);
-        intents.answered(0, 3, 1, content(1), Answered::Settles, false);
+        intents.answered((0, 3, PUBLISH), 1, content(1), Answered::Settles, false);
         intents.record(0, 4, 1, "write", content(2));
         assert!(intents.check(&holding(2), |_| false, |_, _| false).is_err());
     }
@@ -1832,6 +1906,21 @@ mod tests {
         }
     }
 
+    fn build(intents: &mut Intents, at: u64, (node, parent, name): (&str, &str, &str)) {
+        let (node, parent) = (NodeId::from(node), NodeId::from(parent));
+        intents.built(0, at, (&node, &parent, name), &NodeId::from("root"));
+    }
+
+    fn reach(
+        intents: &mut Intents,
+        at: u64,
+        (node, parent, name): (&str, &str, &str),
+        server: &Server,
+    ) {
+        let (node, parent) = (NodeId::from(node), NodeId::from(parent));
+        intents.reached(0, at, (&node, &parent, name), server);
+    }
+
     fn created_in_p_before_a_restore_that_lost_it(trashed: u128) -> (Intents, Server) {
         let mut intents = Intents::new(2);
         for (ino, id) in [(1, "n"), (2, "p"), (3, "q")] {
@@ -1844,6 +1933,7 @@ mod tests {
             name: "b".into(),
         };
         intents.record(0, 1, 1, "create", place);
+        build(&mut intents, 1, ("n", "p", "b"));
         let folders = |status| {
             let folder = |id: &str| NodeState {
                 kind: koidrive_proto::v1::NodeKind::Dir as i32,
@@ -1863,6 +1953,7 @@ mod tests {
         nodes[trashed as usize - 2].status = NodeStatus::Trashed as i32;
         let server = Server::of("root", nodes);
         intents.sync(&server, 4, None);
+        reach(&mut intents, 5, ("n", "p", "b"), &server);
         (intents, server)
     }
 
@@ -1889,6 +1980,7 @@ mod tests {
             name: "b".into(),
         };
         intents.record(0, 1, 1, "move", place);
+        build(&mut intents, 1, ("n", "root", "b"));
         let restored = Server::of("root", vec![node_named("n", "a", NodeStatus::Live)]);
         intents.sync(&restored, 2, Some(&restored));
         intents
@@ -1918,6 +2010,7 @@ mod tests {
         intents.record(1, 3, 1, "delete", trashed);
         let server = Server::of("root", vec![node_named("n", "a", NodeStatus::Trashed)]);
         intents.sync(&server, 4, None);
+        reach(&mut intents, 5, ("n", "root", "b"), &server);
         assert_eq!(intents.check(&server, |_| false, |_, _| false), Ok(()));
     }
 
@@ -1961,5 +2054,133 @@ mod tests {
             write && why.starts_with("write 4 of the write of node n"),
             "{why}"
         );
+    }
+
+    fn move_oracle() -> Intents {
+        let mut intents = Intents::new(3);
+        for device in &mut intents.nodes {
+            for (ino, id) in [(1, "n"), (2, "p"), (3, "q")] {
+                device.insert(ino, BTreeSet::from([NodeId::from(id)]));
+            }
+        }
+        intents
+    }
+
+    fn moving_n(intents: &mut Intents, at: u64, parent: u128) {
+        let place = Value::Place {
+            parent: Some(parent),
+            name: "n".into(),
+        };
+        intents.record(0, at, 1, "move", place);
+    }
+
+    fn deleting_p(intents: &mut Intents, at: u64) {
+        let trashed = Value::Trashed {
+            subtree: vec![2],
+            under: BTreeMap::new(),
+            replaced_by: None,
+        };
+        intents.record(1, at, 2, "delete", trashed);
+    }
+
+    fn move_tree(n_parent: &str, p_status: NodeStatus, q_parent: &str) -> Server {
+        let mut n = node_named("n", "n", NodeStatus::Live);
+        n.parent_id = n_parent.into();
+        let p = node_named("p", "p", p_status);
+        let mut q = node_named("q", "q", NodeStatus::Live);
+        q.parent_id = q_parent.into();
+        Server::of("root", vec![n, p, q])
+    }
+
+    #[test]
+    fn a_lost_move_is_not_settled_by_the_delete_of_a_folder_its_destination_moved_into_later() {
+        let mut intents = move_oracle();
+        moving_n(&mut intents, 1, 3);
+        build(&mut intents, 1, ("n", "q", "n"));
+        let applied = move_tree("q", NodeStatus::Live, "root");
+        intents.sync(&applied, 2, None);
+        let restored = move_tree("root", NodeStatus::Live, "root");
+        intents.sync(&restored, 3, Some(&applied));
+        deleting_p(&mut intents, 4);
+        let trashed = move_tree("root", NodeStatus::Trashed, "root");
+        intents.sync(&trashed, 5, None);
+        reach(&mut intents, 6, ("n", "q", "n"), &trashed);
+        let into_p = Value::Place {
+            parent: Some(2),
+            name: "q".into(),
+        };
+        intents.record(2, 7, 3, "move", into_p);
+        let server = move_tree("root", NodeStatus::Live, "p");
+        intents.sync(&server, 8, None);
+        let (why, _) = intents.check(&server, |_| false, |_, _| false).unwrap_err();
+        assert!(why.contains("puts node n at \"n\""), "{why}");
+    }
+
+    #[test]
+    fn a_move_not_sent_before_a_restore_is_not_settled_by_a_later_delete_of_its_destination() {
+        let mut intents = move_oracle();
+        moving_n(&mut intents, 1, 2);
+        let restored = move_tree("root", NodeStatus::Live, "root");
+        intents.sync(&restored, 2, Some(&restored));
+        deleting_p(&mut intents, 3);
+        let server = move_tree("root", NodeStatus::Trashed, "root");
+        intents.sync(&server, 4, None);
+        build(&mut intents, 5, ("n", "p", "n"));
+        reach(&mut intents, 6, ("n", "p", "n"), &server);
+        let (why, _) = intents.check(&server, |_| false, |_, _| false).unwrap_err();
+        assert!(why.contains("puts node n at \"n\""), "{why}");
+    }
+
+    #[test]
+    fn a_lost_move_is_settled_by_a_delete_of_its_destination_the_server_takes_again_after_the_restore()
+     {
+        let mut intents = move_oracle();
+        let live = move_tree("root", NodeStatus::Live, "root");
+        let trashed = move_tree("root", NodeStatus::Trashed, "root");
+        deleting_p(&mut intents, 1);
+        intents.sync(&trashed, 2, None);
+        moving_n(&mut intents, 3, 2);
+        build(&mut intents, 3, ("n", "p", "n"));
+        reach(&mut intents, 4, ("n", "p", "n"), &trashed);
+        let revived = move_tree("p", NodeStatus::Live, "root");
+        intents.sync(&revived, 4, None);
+        intents.sync(&live, 5, Some(&revived));
+        intents.sync(&trashed, 6, None);
+        reach(&mut intents, 7, ("n", "p", "n"), &trashed);
+        assert_eq!(intents.check(&trashed, |_| false, |_, _| false), Ok(()));
+    }
+
+    #[test]
+    fn a_lost_move_is_settled_by_a_delete_of_its_destination_only_when_its_replay_reaches_the_trash()
+     {
+        for (replayed_in_trash, restored) in [(true, false), (true, true), (false, true)] {
+            let mut intents = move_oracle();
+            moving_n(&mut intents, 1, 2);
+            build(&mut intents, 1, ("n", "p", "n"));
+            let live = move_tree("root", NodeStatus::Live, "root");
+            reach(&mut intents, 2, ("n", "p", "n"), &live);
+            let applied = move_tree("p", NodeStatus::Live, "root");
+            intents.sync(&applied, 2, None);
+            intents.sync(&live, 3, Some(&applied));
+            deleting_p(&mut intents, 4);
+            let trashed = move_tree("root", NodeStatus::Trashed, "root");
+            intents.sync(&trashed, 5, None);
+            if replayed_in_trash {
+                reach(&mut intents, 6, ("n", "p", "n"), &trashed);
+            }
+            if restored {
+                intents.record(2, 7, 2, RESTORE, Value::Live);
+                intents.sync(&live, 8, None);
+            }
+            if !replayed_in_trash {
+                reach(&mut intents, 9, ("n", "p", "n"), &live);
+            }
+            let server = if restored { &live } else { &trashed };
+            assert_eq!(
+                intents.check(server, |_| false, |_, _| false).is_ok(),
+                replayed_in_trash,
+                "replayed in the trash: {replayed_in_trash}, restored: {restored}"
+            );
+        }
     }
 }
