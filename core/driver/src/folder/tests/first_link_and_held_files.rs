@@ -1299,3 +1299,51 @@ fn a_rules_download_that_fails_or_cannot_land_lets_no_commit_send_what_the_disca
         );
     }
 }
+
+#[test]
+fn a_discarded_rules_file_asks_about_what_it_left_out_in_a_folder_a_scan_could_not_read() {
+    use std::os::unix::fs::PermissionsExt;
+    let (mut remote, site, mut b) = with_a_held_rules_file(&[("README.md", "synced")], &[], true);
+    let lib = site.root.join("app/lib");
+    fs::create_dir_all(lib.join("node_modules/pkg")).unwrap();
+    fs::write(lib.join("node_modules/pkg/index.js"), "built").unwrap();
+    b.rescan();
+    b.rest(&mut remote);
+    fs::set_permissions(&lib, fs::Permissions::from_mode(0o000)).unwrap();
+    drop(b);
+    let mut b = answered_and_restarted(&site, &mut remote, Answer::Discard);
+    fs::set_permissions(&lib, fs::Permissions::from_mode(0o755)).unwrap();
+    b.rescan();
+    b.rest(&mut remote);
+
+    let asked_about = ["app/.env", "app/lib/node_modules", "app/node_modules"];
+    assert_eq!(asked(&site), asked_about);
+    assert_eq!(server_paths(&remote), ["app", "app/README.md", "app/lib"]);
+}
+
+#[test]
+fn discarding_a_rules_file_a_recovery_question_holds_asks_about_what_it_left_out() {
+    let mut remote = Remote::new();
+    let (site, mut a) = linked(&mut remote, "a");
+    fs::create_dir(site.root.join("app")).unwrap();
+    a.create(&mut remote, &site.root.join("app/note.txt"), b"before");
+    let backup = remote.space.clone();
+    a.create(&mut remote, &site.root.join("app/.koiignore"), b"*.log\n");
+    fs::write(site.root.join("app/build.log"), b"left out").unwrap();
+    a.rescan();
+    a.rest(&mut remote);
+    remote.space.rewind(&backup, NOW);
+    a.event(Event::ResyncRequired(ResyncRequired {
+        reason: Reason::HistoryChanged as i32,
+        ..ResyncRequired::default()
+    }))
+    .unwrap();
+    a.rest(&mut remote);
+    assert_eq!(asked(&site), ["app/.koiignore"]);
+    answer(&site, Answer::Discard);
+    take_requested(&mut a);
+    a.rest(&mut remote);
+
+    assert_eq!(asked(&site), ["app/build.log"]);
+    assert_eq!(server_paths(&remote), ["app", "app/note.txt"]);
+}

@@ -3287,7 +3287,12 @@ impl Trees {
                     .is_some_and(|remote| remote.kind == Kind::File && is_rules_file(&remote.name))
                     && self.l.get(child).is_none()
             });
-            if self.l.get(&id).is_none() && !self.held(&answered.folder) && !unwritten {
+            let unread = self.folder_path(&answered.folder).is_some_and(|dir| {
+                (self.unknown_rules.iter())
+                    .filter_map(|folder| self.folder_path(folder))
+                    .any(|at| at.starts_with(&dir))
+            });
+            if self.l.get(&id).is_none() && !self.held(&answered.folder) && !unwritten && !unread {
                 self.answered_rules.remove(&id);
                 ready.push(answered);
             }
