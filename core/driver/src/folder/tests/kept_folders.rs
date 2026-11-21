@@ -2213,3 +2213,45 @@ fn a_rules_file_edited_while_its_emptied_kept_folder_waits_to_go_survives_a_purg
         assert_eq!(fs::read(&file).unwrap(), b".env\n*.log\n", "{rules}");
     }
 }
+#[test]
+fn discarding_the_rules_file_a_relinked_copy_of_a_kept_folder_holds_asks_about_its_kept_entries() {
+    let ignored = [".env", "node_modules/pkg/index.js"];
+    let (mut remote, site_a, mut a, site, b, _) = deleted_with_rules_files(
+        &[(".koiignore", ".env\nnode_modules/\n")],
+        &["README.md"],
+        &ignored,
+    );
+    drop(b);
+    let copy = site.root.with_file_name("copy");
+    copy_folder(&site.root, &copy);
+    fs::create_dir(site_a.root.join("app")).unwrap();
+    a.create(
+        &mut remote,
+        &site_a.root.join("app/README.md"),
+        b"cloned again",
+    );
+    let mut b = restarted(&site, &mut remote);
+    for _ in 0..3 {
+        b.pull(&remote);
+        b.run(&mut remote);
+        b.settle();
+    }
+    drop(b);
+    fs::rename(&site.root, site.root.with_file_name("original")).unwrap();
+    fs::rename(&copy, &site.root).unwrap();
+    assert!(halts_as_a_copy(&site));
+
+    relink(&site).unwrap();
+    let mut b = restarted(&site, &mut remote);
+    b.rest(&mut remote);
+    assert_eq!(asked(&site), ["app/.koiignore"]);
+    drop(b);
+    drop(answered_and_restarted(&site, &mut remote, Answer::Discard));
+
+    assert_eq!(asked(&site), ["app/.env", "app/node_modules"]);
+    assert_eq!(server_paths(&remote), ["app", "app/README.md"]);
+    for path in ignored {
+        let path = site.root.join("app").join(path);
+        assert_eq!(fs::read_to_string(&path).unwrap(), local_only(&path));
+    }
+}

@@ -969,3 +969,407 @@ fn a_discard_takes_along_a_server_file_moved_into_an_excluded_folder_inside_the_
         assert!(!site.root.join("new").exists(), "{adopted}");
     }
 }
+const LOCAL_APP: [(&str, &str); 4] = [
+    ("README.md", "synced"),
+    (".koiignore", ".env\nnode_modules/\n"),
+    (".env", "SECRET=local"),
+    ("node_modules/pkg/index.js", "built"),
+];
+
+fn with_a_held_rules_file(
+    server: &[(&str, &str)],
+    trashed: &[&str],
+    found_marker: bool,
+) -> (Remote, Site, Device) {
+    let mut remote = Remote::new();
+    let (site_a, mut a) = linked(&mut remote, "a");
+    fs::create_dir(site_a.root.join("app")).unwrap();
+    for (name, text) in server {
+        a.create(
+            &mut remote,
+            &site_a.root.join("app").join(name),
+            text.as_bytes(),
+        );
+    }
+    for name in trashed {
+        delete_on(&mut a, &mut remote, &site_a.root.join("app").join(name));
+    }
+    let site = Site::new(&remote, "b");
+    let link = Link {
+        found_marker,
+        ..site.link.clone()
+    };
+    Store::open(&site.db)
+        .unwrap()
+        .transaction(|tx| tx.set_link(&link))
+        .unwrap();
+    let site = Site { link, ..site };
+    fs::create_dir_all(site.root.join("app/node_modules/pkg")).unwrap();
+    for (path, text) in LOCAL_APP {
+        fs::write(site.root.join("app").join(path), text).unwrap();
+    }
+    let mut b = restarted(&site, &mut remote);
+    b.rest(&mut remote);
+    assert_eq!(asked(&site), ["app/.koiignore"]);
+    (remote, site, b)
+}
+
+fn asked(site: &Site) -> Vec<String> {
+    (shown(site).iter())
+        .flat_map(|question| question.items.iter())
+        .map(|item| item.path.unquoted().to_owned())
+        .collect()
+}
+
+fn answered_and_restarted(site: &Site, remote: &mut Remote, given: Answer) -> Device {
+    answer(site, given);
+    let mut b = restarted(site, remote);
+    b.rest(remote);
+    b
+}
+
+fn server_paths(remote: &Remote) -> Vec<String> {
+    remote.tree().keys().cloned().collect()
+}
+
+#[test]
+fn discarding_a_rules_file_a_first_link_holds_asks_about_what_it_left_out_before_anything_uploads()
+{
+    let let_in = [
+        "app/.env",
+        "app/node_modules",
+        "app/node_modules/pkg",
+        "app/node_modules/pkg/index.js",
+    ];
+    for (given, uploaded) in [(Answer::Publish, &let_in[..]), (Answer::Discard, &[][..])] {
+        let (mut remote, site, b) = with_a_held_rules_file(&[("README.md", "synced")], &[], true);
+        drop(b);
+        drop(answered_and_restarted(&site, &mut remote, Answer::Discard));
+        assert_eq!(asked(&site), ["app/.env", "app/node_modules"]);
+        assert_eq!(server_paths(&remote), ["app", "app/README.md"]);
+
+        let b = answered_and_restarted(&site, &mut remote, given);
+        let mut expected: Vec<&str> = ["app", "app/README.md"]
+            .into_iter()
+            .chain(uploaded.iter().copied())
+            .collect();
+        expected.sort();
+        assert_eq!(server_paths(&remote), expected, "{}", given.as_str());
+        assert_eq!(b.folder.view().questions, 0);
+    }
+}
+
+#[test]
+fn a_file_a_discarded_rules_file_lets_in_that_the_server_holds_alike_is_adopted() {
+    let server = [("README.md", "synced"), (".env", "SECRET=local")];
+    let (mut remote, site, b) = with_a_held_rules_file(&server, &[], true);
+    drop(b);
+    let b = answered_and_restarted(&site, &mut remote, Answer::Discard);
+
+    assert_eq!(asked(&site), ["app/node_modules"]);
+    assert!(b.sent.is_empty(), "{:?}", b.sent);
+    assert_eq!(server_paths(&remote), ["app", "app/.env", "app/README.md"]);
+}
+
+#[test]
+fn a_fresh_first_link_holds_what_discarding_a_rules_file_at_a_trashed_name_lets_in() {
+    let server = [("README.md", "synced"), (".koiignore", ".env\n")];
+    let (mut remote, site, b) = with_a_held_rules_file(&server, &[".koiignore"], false);
+    drop(b);
+    drop(answered_and_restarted(&site, &mut remote, Answer::Discard));
+
+    assert_eq!(asked(&site), ["app/.env", "app/node_modules"]);
+    assert_eq!(server_paths(&remote), ["app", "app/README.md"]);
+}
+
+#[test]
+fn a_rules_file_the_person_deletes_while_it_is_asked_about_lets_in_what_it_left_out_as_a_rule_change()
+ {
+    let (mut remote, site, mut b) = with_a_held_rules_file(&[("README.md", "synced")], &[], true);
+    fs::remove_file(site.root.join("app/.koiignore")).unwrap();
+    b.rest(&mut remote);
+
+    assert!(
+        asked(&site).iter().all(|path| path == "app/.koiignore"),
+        "{:?}",
+        asked(&site)
+    );
+    assert!(server_paths(&remote).contains(&"app/.env".to_owned()));
+    assert!(site.stored().trees.state().answered_rules.is_empty());
+}
+
+fn disconnect(b: &mut Device) {
+    b.event(Event::Disconnected {
+        reason: koidrive_net::DisconnectReason::Timeout,
+        retry_in: Duration::from_secs(1),
+    })
+    .unwrap();
+}
+
+fn take_requested(b: &mut Device) {
+    let step = b.folder.requested();
+    b.take(step).unwrap();
+}
+
+#[test]
+fn a_restart_at_any_step_between_a_rules_files_discard_and_its_judgment_uploads_nothing_unasked() {
+    for (stop, upgraded, gone) in [
+        (0, false, false),
+        (1, false, false),
+        (1, true, false),
+        (1, false, true),
+        (2, false, false),
+        (3, false, false),
+    ] {
+        let (mut remote, site, mut b) =
+            with_a_held_rules_file(&[("README.md", "synced")], &[], true);
+        answer(&site, Answer::Discard);
+        for _ in 0..stop.min(2) {
+            take_requested(&mut b);
+        }
+        if upgraded {
+            let mut store = Store::open(&site.db).unwrap();
+            let mut state = store.transaction(|tx| tx.engine_state()).unwrap();
+            state.trees.answered_rules.clear();
+            store.transaction(|tx| tx.set_engine_state(&state)).unwrap();
+        }
+        if gone {
+            fs::remove_file(site.root.join("app/.koiignore")).unwrap();
+        }
+        if stop >= 2 {
+            b.run(&mut remote);
+            fs::write(site.root.join("app/notes.txt"), "made meanwhile").unwrap();
+        }
+        if stop == 3 {
+            disconnect(&mut b);
+            b.settle();
+        }
+        drop(b);
+        let b = restarted(&site, &mut remote);
+        drop(b);
+        let mut b = restarted(&site, &mut remote);
+        b.rest(&mut remote);
+
+        assert_eq!(asked(&site), ["app/.env", "app/node_modules"], "{stop}");
+        assert_eq!(shown(&site).len(), 1, "{stop}");
+        let made: &[&str] = if stop >= 2 { &["app/notes.txt"] } else { &[] };
+        let expected: Vec<&str> = ["app", "app/README.md"]
+            .iter()
+            .chain(made)
+            .copied()
+            .collect();
+        assert_eq!(server_paths(&remote), expected, "{stop}");
+        assert!(
+            site.stored().trees.state().answered_rules.is_empty(),
+            "{stop}"
+        );
+    }
+}
+
+#[test]
+fn an_answered_rules_record_ends_when_its_folder_goes_or_its_rules_file_comes_back() {
+    let mut recorded = Vec::new();
+    for case in [
+        "folder deleted",
+        "folder renamed",
+        "rules file restored",
+        "rules file edited",
+        "answer re-asked",
+    ] {
+        let (mut remote, site, mut b) =
+            with_a_held_rules_file(&[("README.md", "synced")], &[], true);
+        let (app, rules) = (site.root.join("app"), site.root.join("app/.koiignore"));
+        if case == "answer re-asked" {
+            disconnect(&mut b);
+        }
+        answer(&site, Answer::Discard);
+        take_requested(&mut b);
+        if case.starts_with("folder") || case == "rules file restored" {
+            take_requested(&mut b);
+            b.run(&mut remote);
+            assert!(!rules.exists(), "{case}");
+        }
+        recorded.push(site.stored().trees.state().answered_rules.len());
+        match case {
+            "folder deleted" => fs::remove_dir_all(&app).unwrap(),
+            "folder renamed" => fs::rename(&app, site.root.join("app2")).unwrap(),
+            "rules file restored" => fs::write(&rules, LOCAL_APP[1].1).unwrap(),
+            _ => fs::write(&rules, ".env\n").unwrap(),
+        }
+        if case == "answer re-asked" {
+            b.settle();
+            b.connect(&remote);
+        }
+        b.rest(&mut remote);
+
+        assert!(
+            site.stored().trees.state().answered_rules.is_empty(),
+            "{case}"
+        );
+        assert!(
+            !server_paths(&remote)
+                .iter()
+                .any(|path| path.ends_with(".env")),
+            "{case}"
+        );
+        if case == "folder renamed" {
+            assert_eq!(asked(&site), ["app2/.env", "app2/node_modules"]);
+        }
+        if case == "rules file edited" {
+            fs::remove_file(&rules).unwrap();
+            b.rest(&mut remote);
+            assert!(server_paths(&remote).contains(&"app/.env".to_owned()));
+        }
+    }
+    assert_eq!(recorded, [1, 1, 1, 1, 0]);
+}
+
+#[test]
+fn a_rules_download_that_fails_or_cannot_land_lets_no_commit_send_what_the_discarded_rules_left_out()
+ {
+    use std::os::unix::fs::PermissionsExt;
+    let modes = [
+        ("unavailable", false),
+        ("denied", false),
+        ("taken", false),
+        ("unavailable", true),
+    ];
+    for (mode, upgraded) in modes {
+        let server = [("README.md", "synced"), (".koiignore", "*.log\n")];
+        let (mut remote, site, mut b) = with_a_held_rules_file(&server, &[], true);
+        let (app, moved) = (site.root.join("app"), site.root.join("app2"));
+        answer(&site, Answer::Discard);
+        take_requested(&mut b);
+        if upgraded {
+            drop(b);
+            let mut store = Store::open(&site.db).unwrap();
+            let mut state = store.transaction(|tx| tx.engine_state()).unwrap();
+            state.trees.answered_rules.clear();
+            store.transaction(|tx| tx.set_engine_state(&state)).unwrap();
+            b = site.start();
+            b.connect(&remote);
+            b.scan_until(|device| device.folder.scanned);
+        }
+        let (mut blocked, mut failures) = (false, BTreeSet::new());
+        for step in 0..40 {
+            if mode == "unavailable" && step == 20 {
+                fs::rename(&app, &moved).unwrap();
+            }
+            let Some(work) = b.work.pop_front() else {
+                break;
+            };
+            let stage = matches!(work, Work::Stage(_) | Work::StageAfter(..));
+            if !blocked && stage && !app.join(".koiignore").exists() {
+                blocked = true;
+                match mode {
+                    "unavailable" => *remote.chunks.unavailable.lock().unwrap() = 100,
+                    "denied" => {
+                        fs::set_permissions(&app, fs::Permissions::from_mode(0o555)).unwrap()
+                    }
+                    _ => fs::create_dir(app.join(".koiignore")).unwrap(),
+                }
+            }
+            let _ = b.perform(work, &mut remote);
+            failures.extend(
+                b.folder
+                    .effect_failures
+                    .values()
+                    .map(|(_, why)| why.clone()),
+            );
+            b.settle();
+            let sent = server_paths(&remote);
+            assert!(
+                !sent
+                    .iter()
+                    .any(|path| path.contains(".env") || path.contains("node_modules")),
+                "{mode} {sent:?}"
+            );
+        }
+        assert!(
+            blocked && failures.is_empty() == (mode == "unavailable"),
+            "{mode}"
+        );
+        assert_eq!(
+            site.stored().trees.state().answered_rules.len(),
+            usize::from(mode != "taken"),
+            "{mode}"
+        );
+        drop(b);
+        *remote.chunks.unavailable.lock().unwrap() = 0;
+        let folder = if mode == "unavailable" { &moved } else { &app };
+        fs::set_permissions(folder, fs::Permissions::from_mode(0o755)).unwrap();
+        let mut b = restarted(&site, &mut remote);
+        b.rest(&mut remote);
+
+        assert_eq!(
+            fs::read_to_string(folder.join(".koiignore")).unwrap(),
+            "*.log\n",
+            "{mode}"
+        );
+        let name = folder.file_name().unwrap().to_str().unwrap();
+        assert_eq!(
+            asked(&site),
+            [format!("{name}/.env"), format!("{name}/node_modules")],
+            "{mode}"
+        );
+        assert!(
+            site.stored().trees.state().answered_rules.is_empty(),
+            "{mode}"
+        );
+        let sent = server_paths(&remote);
+        assert!(
+            !sent
+                .iter()
+                .any(|path| path.contains(".env") || path.contains("node_modules")),
+            "{mode} {sent:?}"
+        );
+    }
+}
+
+#[test]
+fn a_discarded_rules_file_asks_about_what_it_left_out_in_a_folder_a_scan_could_not_read() {
+    use std::os::unix::fs::PermissionsExt;
+    let (mut remote, site, mut b) = with_a_held_rules_file(&[("README.md", "synced")], &[], true);
+    let lib = site.root.join("app/lib");
+    fs::create_dir_all(lib.join("node_modules/pkg")).unwrap();
+    fs::write(lib.join("node_modules/pkg/index.js"), "built").unwrap();
+    b.rescan();
+    b.rest(&mut remote);
+    fs::set_permissions(&lib, fs::Permissions::from_mode(0o000)).unwrap();
+    drop(b);
+    let mut b = answered_and_restarted(&site, &mut remote, Answer::Discard);
+    fs::set_permissions(&lib, fs::Permissions::from_mode(0o755)).unwrap();
+    b.rescan();
+    b.rest(&mut remote);
+
+    let asked_about = ["app/.env", "app/lib/node_modules", "app/node_modules"];
+    assert_eq!(asked(&site), asked_about);
+    assert_eq!(server_paths(&remote), ["app", "app/README.md", "app/lib"]);
+}
+
+#[test]
+fn discarding_a_rules_file_a_recovery_question_holds_asks_about_what_it_left_out() {
+    let mut remote = Remote::new();
+    let (site, mut a) = linked(&mut remote, "a");
+    fs::create_dir(site.root.join("app")).unwrap();
+    a.create(&mut remote, &site.root.join("app/note.txt"), b"before");
+    let backup = remote.space.clone();
+    a.create(&mut remote, &site.root.join("app/.koiignore"), b"*.log\n");
+    fs::write(site.root.join("app/build.log"), b"left out").unwrap();
+    a.rescan();
+    a.rest(&mut remote);
+    remote.space.rewind(&backup, NOW);
+    a.event(Event::ResyncRequired(ResyncRequired {
+        reason: Reason::HistoryChanged as i32,
+        ..ResyncRequired::default()
+    }))
+    .unwrap();
+    a.rest(&mut remote);
+    assert_eq!(asked(&site), ["app/.koiignore"]);
+    answer(&site, Answer::Discard);
+    take_requested(&mut a);
+    a.rest(&mut remote);
+
+    assert_eq!(asked(&site), ["app/build.log"]);
+    assert_eq!(server_paths(&remote), ["app", "app/note.txt"]);
+}

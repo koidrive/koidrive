@@ -11,14 +11,15 @@ use koidrive_ignore::{Scope, Source, Status};
 use siphasher::sip::SipHasher13;
 
 use crate::first_link;
-use crate::ignore::{Key, LocalRules, Matcher, RuleFile, is_rules_file};
+use crate::ignore::{Key, LocalRules, Matcher, RuleFile, is_rules_file, rules_source};
 use crate::names::{name_key, nfc, same_name};
 use crate::provenance::Provenances;
 use crate::question::Frozen;
 use crate::state::{
-    Agreed, ContentProvenance, ContentValue, ContentVersion, FinishOrigin, KeptCause, KeptEntries,
-    KeptRules, KeptRulesFile, LostPosition, MoveHistory, MovePosition, MovedHere, PendingFinish,
-    RenamedOver, StateError, SyncedPosition, TempBirth, TreesChanges, TreesState, made_over,
+    Agreed, AnsweredRules, ContentProvenance, ContentValue, ContentVersion, FinishOrigin,
+    KeptCause, KeptEntries, KeptRules, KeptRulesFile, LostPosition, MoveHistory, MovePosition,
+    MovedHere, PendingFinish, RenamedOver, StateError, SyncedPosition, TempBirth, TreesChanges,
+    TreesState, made_over,
 };
 use crate::tracked::{TrackedMap, TrackedSet};
 use crate::tree::{
@@ -686,6 +687,7 @@ pub struct Trees {
     kept_originals: TrackedMap<NodeId, NodeId>,
     unsent_marks: TrackedMap<NodeId, String>,
     pending_finishes: TrackedMap<NodeId, PendingFinish>,
+    answered_rules: TrackedMap<NodeId, AnsweredRules>,
     ignore: Matcher,
     /// Nodes whose local copy the user moved into an ignored folder that is no node. L keeps the
     /// entry each had before the move.
@@ -818,6 +820,7 @@ impl Trees {
             kept_originals: TrackedMap::default(),
             unsent_marks: TrackedMap::default(),
             pending_finishes: TrackedMap::default(),
+            answered_rules: TrackedMap::default(),
             ignore: Matcher::new(LocalRules::default()),
             outside: TrackedSet::default(),
             lost: TrackedSet::default(),
@@ -2407,6 +2410,7 @@ impl Trees {
     }
 
     pub(crate) fn drop_local(&mut self, id: &NodeId) {
+        self.record_discarded_rules(id);
         let deleted_in_place = (self.l.get(id))
             .zip(self.discarded.get(id))
             .is_some_and(|(old, shape)| old.parked || shape.parent == old.shape.parent)
@@ -2416,6 +2420,29 @@ impl Trees {
             self.discarded.remove(id);
         }
         self.take_out_local(id);
+    }
+
+    fn record_discarded_rules(&mut self, id: &NodeId) {
+        let Some(shape) = self.discarded.get(id) else {
+            return;
+        };
+        let Some(source) = rules_source(&shape.name).filter(|_| shape.kind == Kind::File) else {
+            return;
+        };
+        if self.answered_rules.contains_key(id) || !self.discard_pending(id) {
+            return;
+        }
+        let rules = (self.folder_path(&shape.parent))
+            .and_then(|dir| self.ignore.rules_file(&dir, source))
+            .map(|rules| rules.source().to_vec());
+        if let Some(rules) = rules {
+            let answered = AnsweredRules {
+                folder: shape.parent.clone(),
+                gitignore: source == Source::Gitignore,
+                rules,
+            };
+            self.answered_rules.insert(id.clone(), answered);
+        }
     }
 
     fn take_out_local(&mut self, id: &NodeId) {
@@ -2536,6 +2563,19 @@ impl Trees {
     /// root to it, or removes them with `None`. The driver parses each rules file it observes on
     /// this device's disk and passes the rules here with the observation.
     pub fn set_rules<S: AsRef<str>>(&mut self, dir: &[S], source: Source, rules: Option<RuleFile>) {
+        let leaving: Vec<NodeId> = (self.discarded.iter())
+            .filter(|(_, shape)| rules_source(&shape.name) == Some(source))
+            .filter(|(_, shape)| {
+                self.folder_path(&shape.parent).is_some_and(|at| {
+                    at.len() == dir.len()
+                        && at.iter().zip(dir).all(|(at, name)| *at == name.as_ref())
+                })
+            })
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in leaving {
+            self.record_discarded_rules(&id);
+        }
         self.ignore
             .set_rules(dir, source, rules, std::iter::empty());
         self.forget_reclaims();
@@ -2602,7 +2642,37 @@ impl Trees {
     /// Whether an open question holds the node's local entry ([`Trees::set_asked`]), or L, S or R places it below a
     /// folder whose rules are unknown ([`Trees::set_rules_unknown`]).
     pub fn set_aside(&self, id: &NodeId) -> bool {
-        self.asked.contains(id) || self.vanished(id) || self.below_unknown_rules(id)
+        self.asked.contains(id)
+            || self.vanished(id)
+            || self.below_unknown_rules(id)
+            || self.left_out_by_an_answer(id)
+    }
+
+    fn left_out_by_an_answer(&self, id: &NodeId) -> bool {
+        if self.answered_rules.is_empty() {
+            return false;
+        }
+        let Some((names, kind)) = path(&self.l, id) else {
+            return false;
+        };
+        let mut matcher = Matcher::new(LocalRules::default());
+        let mut below = false;
+        for answered in self.answered_rules.values() {
+            let Some(dir) = self.folder_path(&answered.folder) else {
+                continue;
+            };
+            if names.len() <= dir.len() || names[..dir.len()] != dir[..] {
+                continue;
+            }
+            below = true;
+            let source = match answered.gitignore {
+                true => Source::Gitignore,
+                false => Source::Koiignore,
+            };
+            let rules = RuleFile::parse(&answered.rules);
+            matcher.set_rules(&dir, source, Some(rules), std::iter::empty());
+        }
+        below && excluded(&matcher, &names, &[kind])
     }
 
     /// Sets the paths, each a list of names below the root, that a scan must report before anything L, S or R places
@@ -3146,7 +3216,8 @@ impl Trees {
             }
             if let (None, Some(shape)) = (self.r.get(&id), shown.get(&id)) {
                 self.unsort(&id);
-                self.discarded.insert(id, shape.clone());
+                self.discarded.insert(id.clone(), shape.clone());
+                self.record_discarded_rules(&id);
             }
         }
     }
@@ -3202,6 +3273,70 @@ impl Trees {
         for (id, shape) in taken {
             self.discarded.insert(id, shape);
         }
+    }
+
+    pub(crate) fn answered_rules_to_judge(&mut self) -> Vec<AnsweredRules> {
+        let mut ready = Vec::new();
+        for (id, answered) in self.answered_rules.to_map() {
+            if self.l.get(&id).is_some() && !self.discard_pending(&id) {
+                self.answered_rules.remove(&id);
+                continue;
+            }
+            let unwritten = (self.remote_children(&answered.folder)).any(|child| {
+                self.r
+                    .live(child)
+                    .is_some_and(|remote| remote.kind == Kind::File && is_rules_file(&remote.name))
+                    && self.l.get(child).is_none()
+            });
+            let unread = self.folder_path(&answered.folder).is_some_and(|dir| {
+                (self.unknown_rules.iter())
+                    .filter_map(|folder| self.folder_path(folder))
+                    .any(|at| at.starts_with(&dir))
+            });
+            if self.l.get(&id).is_none() && !self.held(&answered.folder) && !unwritten && !unread {
+                self.answered_rules.remove(&id);
+                ready.push(answered);
+            }
+        }
+        ready
+    }
+
+    fn discard_pending(&self, id: &NodeId) -> bool {
+        matches!(
+            self.discard_state(id),
+            Some(Discard::Pending | Discard::Kept)
+        )
+    }
+
+    pub(crate) fn left_out_by_answered_rules(
+        &self,
+        answered: &[AnsweredRules],
+        tops: Vec<NodeId>,
+    ) -> Vec<NodeId> {
+        let mut then = self.ignore.clone();
+        for answered in answered {
+            let Some(dir) = self.folder_path(&answered.folder) else {
+                continue;
+            };
+            let source = match answered.gitignore {
+                true => Source::Gitignore,
+                false => Source::Koiignore,
+            };
+            let rules = RuleFile::parse(&answered.rules);
+            then.set_rules(&dir, source, Some(rules), std::iter::empty());
+        }
+        let mut left_out = Vec::new();
+        let mut pending = tops;
+        while let Some(id) = pending.pop() {
+            let Some((names, kind)) = path(&self.l, &id) else {
+                continue;
+            };
+            match excluded(&then, &names, &[kind]) {
+                true => left_out.push(id),
+                false => pending.extend(self.local_children(&id).cloned()),
+            }
+        }
+        left_out
     }
 
     pub(crate) fn below(
@@ -7837,6 +7972,7 @@ impl Trees {
             kept_originals: self.kept_originals.to_map(),
             unsent_marks: self.unsent_marks.to_map(),
             pending_finishes: self.pending_finishes.to_map(),
+            answered_rules: self.answered_rules.to_map(),
         }
     }
 
@@ -7899,6 +8035,7 @@ impl Trees {
             kept_originals,
             unsent_marks,
             pending_finishes,
+            answered_rules,
             ignore: _,
             outside,
             lost,
@@ -7983,6 +8120,7 @@ impl Trees {
             kept_originals: kept_originals.take_changes(),
             unsent_marks: unsent_marks.take_changes(),
             pending_finishes: pending_finishes.take_changes(),
+            answered_rules: answered_rules.take_changes(),
         }
     }
 
@@ -8235,6 +8373,7 @@ impl Trees {
             kept_originals,
             unsent_marks,
             pending_finishes,
+            answered_rules,
         } = state;
         self.unsettled = dirty.clone();
         self.same.clear();
@@ -8296,6 +8435,7 @@ impl Trees {
         self.kept_originals = kept_originals.into();
         self.unsent_marks = unsent_marks.into();
         self.pending_finishes = pending_finishes.into();
+        self.answered_rules = answered_rules.into();
         self.rules_known = false;
         self.unknown_rules.clear();
         Ok(Some(()))

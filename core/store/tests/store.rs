@@ -15,9 +15,9 @@ use koidrive_engine::question::{
 };
 use koidrive_engine::restore::{Outcome, Rejection, Resolved, RestoreIntent, SplitRestore};
 use koidrive_engine::state::{
-    Agreed, CommitsState, EffectsState, FinishOrigin, GivenUp, KeptCause, KeptEntries, KeptRules,
-    KeptRulesFile, LostPosition, MovedHere, PendingFinish, RenamedOver, SyncedPosition, TempBirth,
-    TreesState,
+    Agreed, AnsweredRules, CommitsState, EffectsState, FinishOrigin, GivenUp, KeptCause,
+    KeptEntries, KeptRules, KeptRulesFile, LostPosition, MovedHere, PendingFinish, RenamedOver,
+    SyncedPosition, TempBirth, TreesState,
 };
 use koidrive_engine::tree::{
     ContentKey, FileIdentity, Kind, LocalNode as EngineLocalNode, NodeId, RemoteNode,
@@ -1498,6 +1498,14 @@ fn engine_state() -> EngineState {
             kept_originals: BTreeMap::from([("t".into(), "kept".into())]),
             unsent_marks: BTreeMap::from([("m".into(), "M".into())]),
             pending_finishes: BTreeMap::new(),
+            answered_rules: BTreeMap::from([(
+                "r".into(),
+                AnsweredRules {
+                    folder: "d".into(),
+                    gitignore: true,
+                    rules: b"*.log\n".to_vec(),
+                },
+            )]),
         },
         commits: CommitsState {
             accepted: 4,
