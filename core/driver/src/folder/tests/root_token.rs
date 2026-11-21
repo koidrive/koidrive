@@ -1308,7 +1308,11 @@ fn a_relinked_copy_keeps_its_policy_halt_until_the_person_lifts_it() {
 
         let mut a = restarted(&site, &mut remote);
         let (site_b, mut b) = linked(&mut remote, "b");
-        b.create(&mut remote, &site_b.root.join("theirs.txt"), b"written on b");
+        b.create(
+            &mut remote,
+            &site_b.root.join("theirs.txt"),
+            b"written on b",
+        );
         a.pull(&remote);
         a.rest(&mut remote);
         assert_eq!(a.folder.engine.commits.halted(), halt, "{code:?}");
@@ -1323,13 +1327,24 @@ fn a_relinked_copy_keeps_its_policy_halt_until_the_person_lifts_it() {
                 lifted.unwrap();
                 break;
             }
-            assert!(matches!(lifted, Err(DriverError::NeedsConfirmation)), "{lifted:?}");
+            assert!(
+                matches!(lifted, Err(DriverError::NeedsConfirmation)),
+                "{lifted:?}"
+            );
         }
         let mut a = restarted(&site, &mut remote);
         a.rest(&mut remote);
         let lifted = code == Code::Forbidden;
-        assert_eq!(a.folder.engine.commits.halted().is_none(), lifted, "{code:?}");
-        assert_eq!(remote.names().contains(&"notes.txt".to_owned()), lifted, "{code:?}");
+        assert_eq!(
+            a.folder.engine.commits.halted().is_none(),
+            lifted,
+            "{code:?}"
+        );
+        assert_eq!(
+            remote.names().contains(&"notes.txt".to_owned()),
+            lifted,
+            "{code:?}"
+        );
     }
 }
 
@@ -1353,7 +1368,10 @@ fn a_relink_keeps_only_the_policy_halt_a_recovery_interrupted() {
         if read_only {
             assert_eq!(halted, Some(CommitHalt::ReadOnly));
         } else {
-            assert!(matches!(halted, Some(CommitHalt::Recovery { policy: p, .. }) if p == policy), "{halted:?}");
+            assert!(
+                matches!(halted, Some(CommitHalt::Recovery { policy: p, .. }) if p == policy),
+                "{halted:?}"
+            );
         }
         relink(&site).unwrap();
         let kept = policy.map(|code| CommitHalt::Policy { code });
