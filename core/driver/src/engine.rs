@@ -1387,6 +1387,7 @@ impl Engine {
                 let (taker, took, staged) = self.took_slot.get(&(parent.clone(), name.clone()))?;
                 let saved = self.trees.local().get(taker)?;
                 let continues = self.trees.local_child(parent, name) == Some(taker)
+                    && removed >= *renamed
                     && (removed < renamed.saturating_add(DELETE_WAIT_MS)
                         || self.backup_gone.get(id) == Some(&true))
                     && now_ms < removed.saturating_add(DELETE_WAIT_MS)
@@ -5347,6 +5348,52 @@ mod tests {
                 Ok::<_, Stop>(())
             })
             .unwrap();
+    }
+
+    #[test]
+    fn current_backup_removal_decides_the_save() {
+        for missing in [false, true] {
+            let (_dir, mut engine, report) = removed_report();
+            let path = "docs/report.txt";
+            engine.observe(&[created(path, ino(3), false, 1)], 1_100);
+            assert_eq!(holding(&engine, path).unwrap().0, report);
+            engine.observe(&[renamed(path, "docs/Thumbs.db", ino(3), false)], 1_200);
+            assert!(engine.excluded_backup(&report));
+            engine.observe(
+                &[
+                    Observed::Removed {
+                        path: "docs/Thumbs.db".into(),
+                        kind: EntryKind::File,
+                    },
+                    created("docs/incoming.tmp", ino(5), false, 7),
+                ],
+                1_500,
+            );
+            assert_eq!(engine.removed_at.get(&report), Some(&1_000));
+            assert_eq!(engine.backup_removed.get(&report), Some(&1_500));
+            if missing {
+                engine.observe(&[created(path, ino(6), false, 1)], 1_600);
+                assert_eq!(holding(&engine, path).unwrap().0, report);
+                engine.observe(&[renamed(path, "docs/elsewhere.txt", ino(6), false)], 1_700);
+                engine.observe(
+                    &[Observed::Missing {
+                        path: "docs/elsewhere.txt".into(),
+                        kind: EntryKind::File,
+                    }],
+                    2_700,
+                );
+                assert!(engine.trees.missing().contains(&report));
+            }
+            engine.observe(&[renamed("docs/incoming.tmp", path, ino(5), false)], 3_001);
+            let (holder, _, size) = holding(&engine, path).unwrap();
+            assert_eq!(size, 7);
+            assert_eq!(
+                holder == report,
+                !missing,
+                "the missing file must keep its own node"
+            );
+            assert_eq!(engine.trees.missing().contains(&report), missing);
+        }
     }
 
     fn removed_report() -> (tempfile::TempDir, Engine, NodeId) {
