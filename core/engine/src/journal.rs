@@ -669,12 +669,7 @@ impl Journal {
     pub fn set_clock(&mut self, now_ms: u64) {
         self.now_ms = now_ms;
         let lapsed_by = now_ms as i64 - ABSENT_FOR_MS;
-        let lapsed: Vec<NodeId> = (self.lapsing.iter())
-            .take_while(|(since_ms, _)| {
-                #[cfg(test)]
-                tests::CLOCK_VISITS.with(|visits| visits.set(visits.get() + 1));
-                *since_ms <= lapsed_by
-            })
+        let lapsed: Vec<NodeId> = (self.lapsing.range(..(lapsed_by + 1, NodeId::from(""))))
             .map(|(_, node)| node.clone())
             .collect();
         for node in lapsed {
