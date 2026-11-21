@@ -589,6 +589,7 @@ struct Device {
     acked: BTreeSet<NodeId>,
     removed_from: BTreeMap<NodeId, NodeId>,
     stays: BTreeMap<NodeId, BTreeMap<NodeId, (bool, u64)>>,
+    last_other: BTreeMap<NodeId, u64>,
     placements: u64,
     on_server_when_taken_along: BTreeMap<NodeId, BTreeMap<NodeId, NodeId>>,
     kept_back: BTreeSet<NodeId>,
@@ -612,6 +613,7 @@ struct DiskEntry {
 struct Relocation {
     from: koidrive_engine::tree::Shape,
     to: koidrive_engine::tree::Shape,
+    origin: Vec<NodeId>,
 }
 
 impl Device {
@@ -644,10 +646,12 @@ impl Device {
     ) {
         let folders: Vec<&NodeId> = folders.into_iter().collect();
         let mut on_server = self.on_server();
-        for (id, _) in (self.stays.iter()).filter(|(_, stays)| {
-            (folders.iter()).any(|f| {
-                (stays.get(*f)).is_some_and(|(by_other, at)| *by_other && at > answered_at)
-            })
+        let own_since = |id: &NodeId, folder: &NodeId, after: u64| {
+            (self.stays.get(id).and_then(|stays| stays.get(folder)))
+                .is_some_and(|(by_other, at)| !by_other && *at > after)
+        };
+        for (id, _) in (self.last_other.iter()).filter(|(id, at)| {
+            *at > answered_at && (folders.iter()).any(|f| !own_since(id, f, **at))
         }) {
             match at_answer.get(id) {
                 Some(parent) => on_server.insert(id.clone(), parent.clone()),
@@ -669,6 +673,7 @@ impl Device {
             acked: BTreeSet::new(),
             removed_from: BTreeMap::new(),
             stays: BTreeMap::new(),
+            last_other: BTreeMap::new(),
             placements: 0,
             on_server_when_taken_along: BTreeMap::new(),
             kept_back: BTreeSet::new(),
@@ -686,13 +691,21 @@ impl Device {
         before: &koidrive_engine::tree::Shape,
         after: &koidrive_engine::tree::Shape,
     ) {
-        let from = (self.relocated.remove(id))
+        let (from, origin) = (self.relocated.remove(id))
             .filter(|moved| moved.to.same_position(before))
-            .map_or_else(|| before.clone(), |moved| moved.from);
+            .map_or_else(
+                || {
+                    (
+                        before.clone(),
+                        ancestors(&self.trees, Some(before.parent.clone())),
+                    )
+                },
+                |moved| (moved.from, moved.origin),
+            );
         if !from.same_position(after) {
             let to = after.clone();
             self.relocated
-                .insert(id.to_owned(), Relocation { from, to });
+                .insert(id.to_owned(), Relocation { from, to, origin });
         }
     }
 
@@ -719,15 +732,19 @@ impl Device {
             };
             let users_origin = (self.relocated.get(&node))
                 .filter(|moved| remote.same_position(&moved.to))
-                .map(|moved| moved.from.parent.clone());
-            let by_other = !answered && users_origin.is_none();
-            let from = users_origin.map_or(from, |origin| ancestors(&self.trees, Some(origin)));
-            let entered: Vec<NodeId> = ancestors(&self.trees, Some(remote.parent.clone()))
-                .into_iter()
+                .map(|moved| moved.origin.clone());
+            let by_other = !answered;
+            let from = users_origin.unwrap_or(from);
+            let now = ancestors(&self.trees, Some(remote.parent.clone()));
+            let entered: Vec<NodeId> = (now.iter())
                 .filter(|folder| !from.contains(folder))
+                .cloned()
                 .collect();
+            self.placements += 1;
+            if by_other {
+                self.last_other.insert(node.clone(), self.placements);
+            }
             if !entered.is_empty() {
-                self.placements += 1;
                 let moved_in: Vec<NodeId> = (self.trees.remote().iter())
                     .filter(|(id, remote)| {
                         **id == node
@@ -750,6 +767,7 @@ impl Device {
                 self.relocated.remove(&node);
             } else if answered {
                 moved.from = remote;
+                moved.origin = now;
             }
         }
     }
