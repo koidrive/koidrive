@@ -1243,9 +1243,7 @@ fn a_word_backup_deleted_after_its_wait_while_another_commit_is_sent_keeps_the_o
     fs::write(site.root.join("other.txt"), b"other").unwrap();
     a.scan_until(|a| (a.work.iter()).any(|work| matches!(work, Work::Upload(_))));
     perform_first(&mut a, &mut remote, |work| matches!(work, Work::Upload(_)));
-    perform_first(&mut a, &mut remote, |work| {
-        matches!(work, Work::RetryAfter(_))
-    });
+    perform_first(&mut a, &mut remote, |work| matches!(work, Work::RetryAt(_)));
     clock::advance_to(clock::instant() + Duration::from_millis(1));
     fs::remove_file(site.root.join("~WRL0001.tmp")).unwrap();
     perform_first(&mut a, &mut remote, |work| matches!(work, Work::Send(_)));
@@ -1266,9 +1264,7 @@ fn a_word_backup_first_checked_well_after_its_wait_keeps_the_original_bytes() {
     word_swap(&mut a, &site.root, &node);
     clock::advance_to(clock::instant() + Duration::from_millis(2_500));
     fs::remove_file(site.root.join("~WRL0001.tmp")).unwrap();
-    perform_first(&mut a, &mut remote, |work| {
-        matches!(work, Work::RetryAfter(_))
-    });
+    perform_first(&mut a, &mut remote, |work| matches!(work, Work::RetryAt(_)));
     a.scan_until(|a| a.folder.engine.path_of(&node).as_deref() != Some(Path::new("~WRL0001.tmp")));
     a.rest(&mut remote);
     let nodes = server_nodes(&remote);
@@ -1294,7 +1290,7 @@ fn a_word_save_after_its_kept_backup_came_back_waits_for_its_own_backup() {
     a.scan_until(|a| a.folder.engine.path_of(&node).as_deref() == Some(Path::new("report.docx")));
 
     word_swap(&mut a, &site.root, &node);
-    while let Some(at) = (a.work.iter()).position(|work| !matches!(work, Work::RetryAfter(_))) {
+    while let Some(at) = (a.work.iter()).position(|work| !matches!(work, Work::RetryAt(_))) {
         let work = a.work.remove(at).unwrap();
         a.perform(work, &mut remote).unwrap();
     }
@@ -1398,9 +1394,7 @@ fn a_word_save_through_excluded_temp_files_keeps_one_document() {
         }
         fs::remove_file(site.root.join("~WRL0001.tmp")).unwrap();
         if late {
-            perform_first(&mut a, &mut remote, |work| {
-                matches!(work, Work::RetryAfter(_))
-            });
+            perform_first(&mut a, &mut remote, |work| matches!(work, Work::RetryAt(_)));
         }
         a.scan_until(|a| {
             a.folder.engine.path_of(&node).as_deref() != Some(Path::new("~WRL0001.tmp"))
@@ -1416,4 +1410,52 @@ fn a_word_save_through_excluded_temp_files_keeps_one_document() {
         assert_eq!(names(&site.root), [".koiignore", "report.docx"]);
         assert_eq!(report, before, "rescan {rescan} late {late}");
     }
+}
+
+#[test]
+fn a_save_keeps_its_node_if_preparing_the_backup_retry_is_slow() {
+    delayed_backup_retry(false);
+}
+
+#[test]
+fn a_save_keeps_its_node_if_arming_the_backup_retry_is_slow() {
+    delayed_backup_retry(true);
+}
+
+fn delayed_backup_retry(late_arm: bool) {
+    let mut remote = Remote::new();
+    let (site, mut a, before) = excluded_tmp_report(&mut remote);
+    let node = NodeId::from(&before);
+    word_swap(&mut a, &site.root, &node);
+    a.work.retain(|work| !matches!(work, Work::RetryAt(_)));
+    a.folder.retry_at = None;
+
+    let now_ms = clock::unix_ms();
+    let now = clock::instant();
+    let due = a.folder.engine.holds_due(now_ms).unwrap();
+    let late = now + Duration::from_millis(300);
+    if !late_arm {
+        clock::advance_to(late);
+    }
+    let mut work = Vec::new();
+    a.folder.retry_when_due(Some(due), &mut work);
+    if late_arm {
+        clock::advance_to(late);
+    }
+    let [Work::RetryAt(at)] = work.as_slice() else {
+        panic!("the backup retry was not queued");
+    };
+    let wakes = clock::instant() + at.saturating_duration_since(clock::instant());
+    clock::advance_to(now + Duration::from_millis(due - now_ms - 1));
+    fs::remove_file(site.root.join("~WRL0001.tmp")).unwrap();
+    clock::advance_to(wakes);
+    let step = a.folder.retry();
+    a.take(step).unwrap();
+    a.scan_until(|a| a.folder.engine.path_of(&node).as_deref() != Some(Path::new("~WRL0001.tmp")));
+    a.rest(&mut remote);
+    assert_eq!(
+        server_bytes(&remote, &before),
+        b"version two",
+        "the new bytes should keep the document's original node"
+    );
 }

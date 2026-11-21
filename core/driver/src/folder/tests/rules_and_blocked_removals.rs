@@ -751,7 +751,7 @@ fn a_wait_for_another_failed_effect_plans_nothing_for_a_kept_folder() {
     assert!(matches!(stage, Work::Stage(_)));
     b.perform(stage, &mut remote).unwrap();
     let wait = b.work.pop_front().unwrap();
-    assert!(matches!(wait, Work::RetryAfter(_)));
+    assert!(matches!(wait, Work::RetryAt(_)));
     b.perform(wait, &mut remote).unwrap();
     assert!(!b.folder.engine.effects.blocked().contains_key(&held));
     assert!(

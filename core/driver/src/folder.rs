@@ -161,7 +161,7 @@ pub(crate) struct Folder {
     /// failed.
     effect_failures: BTreeMap<NodeId, (u32, String)>,
     denied: BTreeMap<NodeId, Denied>,
-    /// The nodes whose last effect ended [`Settled::Stuck`]. A [`Work::RetryAfter`] leaves them blocked.
+    /// The nodes whose last effect ended [`Settled::Stuck`]. A [`Work::RetryAt`] leaves them blocked.
     stuck_effects: BTreeSet<NodeId>,
     /// Why the server did not take a change of each node, for the nodes it may have left out of commits.
     refused_nodes: BTreeMap<NodeId, String>,
@@ -172,7 +172,7 @@ pub(crate) struct Folder {
     unread: (u64, u64),
     other_changes: u64,
     questions_holding_changes: u64,
-    /// When the [`Work::RetryAfter`] that is out ends.
+    /// When the [`Work::RetryAt`] that is out ends.
     retry_at: Option<Instant>,
     /// Tests stop the task after this many more store transactions, as a crash right after one would.
     #[cfg(test)]
@@ -239,8 +239,8 @@ pub(crate) enum Work {
     Send(Commit),
     /// Answered with [`Folder::resend`] after the wait.
     ResendAfter(Duration),
-    /// Answered with [`Folder::retry`] after the wait. A later one replaces it, and always ends earlier.
-    RetryAfter(Duration),
+    /// Answered with [`Folder::retry`] at the instant. A later one replaces it, and always ends earlier.
+    RetryAt(Instant),
 }
 
 /// The pages of the tree read so far, the cursor of the next page and how many times in a row a page failed. When
@@ -822,7 +822,7 @@ impl Folder {
                     }
                     if self.retry_at.is_none_or(|out| at < out) {
                         self.retry_at = Some(at);
-                        work.push(Work::RetryAfter(wait));
+                        work.push(Work::RetryAt(at));
                     }
                 }
                 Settled::Failed(why) | Settled::Denied(why) | Settled::AwaitsScan(why) => {
@@ -1186,11 +1186,11 @@ impl Folder {
         let Some(due) = due else {
             return;
         };
-        let wait = Duration::from_millis(due.saturating_sub(crate::clock::unix_ms()));
-        let at = clock::instant() + wait;
+        let at =
+            clock::instant() + Duration::from_millis(due.saturating_sub(crate::clock::unix_ms()));
         if self.retry_at.is_none_or(|out| at < out) {
             self.retry_at = Some(at);
-            work.push(Work::RetryAfter(wait));
+            work.push(Work::RetryAt(at));
         }
     }
 

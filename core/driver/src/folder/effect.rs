@@ -27,7 +27,7 @@ impl Folder {
             .is_none_or(|effect| self.disk.refuses(effect).is_none())
     }
 
-    /// A [`Work::RetryAfter`] ended. Every node whose effect failed is unblocked, so the engine plans its effect again
+    /// A [`Work::RetryAt`] ended. Every node whose effect failed is unblocked, so the engine plans its effect again
     /// even when it is the one that failed: the disk may have changed in a way the observer does not report, such as
     /// a name that was taken for a moment. A node that fails again waits longer the next time. A node the system
     /// refused stays blocked while its target still refuses the change. A node whose last effect was stuck stays
@@ -88,7 +88,7 @@ impl Folder {
             .min();
         if let Some(next) = next {
             self.retry_at = Some(next);
-            work.push(Work::RetryAfter(next.saturating_duration_since(now)));
+            work.push(Work::RetryAt(next));
         }
         self.drive(&mut work)?;
         Ok(work)
@@ -276,7 +276,7 @@ impl Folder {
         );
         if self.retry_at.is_none_or(|out| at < out) {
             self.retry_at = Some(at);
-            work.push(Work::RetryAfter(wait));
+            work.push(Work::RetryAt(at));
         }
         self.drive(work)
     }

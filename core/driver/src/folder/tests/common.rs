@@ -528,7 +528,7 @@ impl Device {
                 self.folder.sent(result)
             }
             Work::ResendAfter(_) => self.folder.resend(),
-            Work::RetryAfter(_) => {
+            Work::RetryAt(_) => {
                 if let Some(at) = self.folder.retry_at {
                     clock::advance_to(at);
                 }
@@ -559,7 +559,7 @@ impl Device {
                 Work::Upload(_) => "upload",
                 Work::Send(_) => "send",
                 Work::ResendAfter(_) => "wait",
-                Work::RetryAfter(_) => "retry",
+                Work::RetryAt(_) => "retry",
                 Work::Reconnect => "reconnect",
             });
             self.perform(work, remote)?;
@@ -803,11 +803,11 @@ fn take_the_name_and_apply(
         fs::read(site.root.join("notes.txt")).unwrap(),
         b"the user's"
     );
-    let Some(Work::RetryAfter(wait)) = b.work.pop_front() else {
+    let Some(Work::RetryAt(at)) = b.work.pop_front() else {
         panic!("the node is unblocked after a wait: {:?}", b.work.len());
     };
     assert!(b.work.is_empty());
-    wait
+    at.saturating_duration_since(clock::instant())
 }
 
 /// Device `b` links a folder holding an entry whose name only folds like the name of a file the space holds, and one more file,
