@@ -2598,3 +2598,240 @@ fn a_marked_file_at_a_tmp_name_stages_a_save_only_when_it_is_the_file_its_node_h
         );
     }
 }
+
+#[test]
+fn a_save_continuation_does_not_take_a_marked_file_whatever_record_of_it_is_gone() {
+    for case in [
+        "rewound",
+        "deleted on another device",
+        "missed and deleted",
+        "during recovery",
+        "relinked",
+        "sync state forgotten",
+    ] {
+        for restart in [false, true] {
+            let at = format!("{case}, restart {restart}");
+            clock::freeze();
+            let mut remote = Remote::new();
+            let (mut site, mut a) = linked(&mut remote, "a");
+            a.create(&mut remote, &site.root.join(".koiignore"), b"dist/\n");
+            a.create(&mut remote, &site.root.join("report.docx"), b"report");
+            a.rest(&mut remote);
+            let backup = remote.space.clone();
+            a.create(&mut remote, &site.root.join("notes.docx"), b"notes");
+            a.rest(&mut remote);
+            let report = live_id(&server_nodes(&remote), "report.docx");
+            let notes = live_id(&server_nodes(&remote), "notes.docx");
+            let mut _first = None;
+            fs::create_dir(site.root.join("dist")).unwrap();
+            fs::rename(
+                site.root.join("notes.docx"),
+                site.root.join("dist/notes.docx"),
+            )
+            .unwrap();
+            if case == "missed and deleted" {
+                observe(
+                    &mut a,
+                    vec![Observed::Missing {
+                        path: "notes.docx".into(),
+                        kind: EntryKind::File,
+                    }],
+                );
+                a.run(&mut remote);
+                drop(a);
+                a = restarted(&site, &mut remote);
+                a.settle();
+                a.run(&mut remote);
+                drop(a);
+                answer(&site, Answer::Delete);
+                a = restarted(&site, &mut remote);
+            } else {
+                a.settle();
+                a.rest(&mut remote);
+                fs::write(site.root.join("notes.docx"), b"new notes").unwrap();
+            }
+            a.settle();
+            a.rest(&mut remote);
+            match case {
+                "rewound" | "during recovery" => {
+                    remote.space.rewind(&backup, NOW);
+                    a.event(Event::Connected(remote.space.welcome(&a.caller)))
+                        .unwrap();
+                    if case == "rewound" {
+                        for _ in 0..3 {
+                            a.pull(&remote);
+                            a.settle();
+                            a.rest(&mut remote);
+                        }
+                    }
+                }
+                "deleted on another device" => {
+                    let (site_b, mut b) = linked(&mut remote, "b");
+                    b.rest(&mut remote);
+                    fs::remove_file(site_b.root.join("notes.docx")).unwrap();
+                    b.rescan();
+                    b.settle();
+                    b.rest(&mut remote);
+                    for _ in 0..3 {
+                        a.pull(&remote);
+                        a.settle();
+                        a.rest(&mut remote);
+                    }
+                }
+                "relinked" => {
+                    drop(a);
+                    let copy = site.root.with_file_name("copy");
+                    copy_folder(&site.root, &copy);
+                    drop(restarted(&site, &mut remote));
+                    fs::rename(&site.root, site.root.with_file_name("original")).unwrap();
+                    fs::rename(&copy, &site.root).unwrap();
+                    assert!(halts_as_a_copy(&site), "{at}");
+                    relink(&site).unwrap();
+                    a = restarted(&site, &mut remote);
+                    a.rest(&mut remote);
+                }
+                "sync state forgotten" => {
+                    drop(a);
+                    Store::open(&site.db)
+                        .unwrap()
+                        .transaction(|tx| tx.forget_sync_state())
+                        .unwrap();
+                    let again = relinked(&site, &remote);
+                    _first = Some(std::mem::replace(&mut site, again));
+                    a = restarted(&site, &mut remote);
+                    a.rest(&mut remote);
+                }
+                _ => {}
+            }
+            if restart && case == "during recovery" {
+                drop(a);
+                a = site.start();
+                a.scan_until(|a| a.folder.scanned);
+                a.event(Event::Connected(remote.space.welcome(&a.caller)))
+                    .unwrap();
+            } else if restart {
+                drop(a);
+                a = restarted(&site, &mut remote);
+            }
+            if case == "during recovery" {
+                assert!(
+                    matches!(
+                        a.folder.engine.commits.halted(),
+                        Some(CommitHalt::Recovery { .. })
+                    ),
+                    "{at}"
+                );
+            }
+
+            safe_save_swap(&site, &mut a);
+            fs::rename(
+                site.root.join("dist/notes.docx"),
+                site.root.join("report.docx"),
+            )
+            .unwrap();
+            a.rescan();
+            a.scan_until(|_| local_holds(&site, "report.docx"));
+            safe_save_cleanup(&site, &mut a, &mut remote);
+            for _ in 0..3 {
+                a.pull(&remote);
+                a.settle();
+                a.rest(&mut remote);
+            }
+            if case == "relinked" {
+                let nodes = server_nodes(&remote);
+                assert_eq!(live_id(&nodes, "notes.docx"), notes, "{at} {nodes:?}");
+                assert_eq!(server_bytes(&remote, &notes), b"notes", "{at} {nodes:?}");
+                continue;
+            }
+            let report_id = NodeId::from(report.as_str());
+            assert_ne!(
+                a.folder.engine.path_of(&report_id).as_deref(),
+                Some(Path::new("report.docx")),
+                "{at}"
+            );
+            let nodes = server_nodes(&remote);
+            assert_eq!(server_bytes(&remote, &report), b"report", "{at} {nodes:?}");
+            if case != "during recovery" {
+                let live = live_id(&nodes, "report.docx");
+                assert_ne!(live, report, "{at} {nodes:?}");
+                assert_eq!(server_bytes(&remote, &live), b"notes", "{at} {nodes:?}");
+            }
+        }
+    }
+}
+
+#[test]
+fn a_save_continuation_does_not_take_a_file_the_server_forgot_through_an_unsynced_tmp() {
+    for restart in [false, true] {
+        clock::freeze();
+        let mut remote = Remote::new();
+        let (site, mut a) = linked(&mut remote, "a");
+        a.create(&mut remote, &site.root.join(".koiignore"), b"dist/\n");
+        a.create(&mut remote, &site.root.join("report.docx"), b"report");
+        a.rest(&mut remote);
+        let backup = remote.space.clone();
+        a.create(&mut remote, &site.root.join("notes.docx"), b"notes");
+        a.rest(&mut remote);
+        let nodes = server_nodes(&remote);
+        let report = live_id(&nodes, "report.docx");
+        let notes = NodeId::from(live_id(&nodes, "notes.docx").as_str());
+        fs::create_dir(site.root.join("dist")).unwrap();
+        fs::rename(
+            site.root.join("notes.docx"),
+            site.root.join("dist/notes.docx"),
+        )
+        .unwrap();
+        a.settle();
+        a.rest(&mut remote);
+        fs::write(site.root.join("notes.docx"), b"new notes").unwrap();
+        a.settle();
+        a.rest(&mut remote);
+        assert!(a.folder.engine.trees.displaced_local().contains_key(&notes));
+
+        remote.space.rewind(&backup, NOW);
+        a.event(Event::Connected(remote.space.welcome(&a.caller)))
+            .unwrap();
+        for _ in 0..3 {
+            a.pull(&remote);
+            a.settle();
+            a.rest(&mut remote);
+        }
+        if restart {
+            drop(a);
+            a = restarted(&site, &mut remote);
+        }
+        assert!(!a.folder.engine.trees.displaced_local().contains_key(&notes));
+        assert!(a.folder.engine.trees.remote().get(&notes).is_none());
+
+        safe_save_swap(&site, &mut a);
+        a.rest(&mut remote);
+        fs::rename(
+            site.root.join("dist/notes.docx"),
+            site.root.join("notes.tmp"),
+        )
+        .unwrap();
+        a.rescan();
+        a.scan_until(|a| {
+            a.folder.engine.path_of(&notes).as_deref() == Some(Path::new("notes.tmp"))
+        });
+        assert!(a.folder.engine.trees.synced().get(&notes).is_none());
+        assert!(a.folder.engine.trees.remote().get(&notes).is_none());
+        fs::rename(site.root.join("notes.tmp"), site.root.join("report.docx")).unwrap();
+        a.rescan();
+        a.scan_until(|a| {
+            a.folder.engine.path_of(&notes).as_deref() == Some(Path::new("report.docx"))
+        });
+        safe_save_cleanup(&site, &mut a, &mut remote);
+        let nodes = server_nodes(&remote);
+        assert_eq!(
+            server_bytes(&remote, &report),
+            b"report",
+            "{restart} {nodes:?}"
+        );
+        assert_ne!(
+            live_id(&nodes, "report.docx"),
+            report,
+            "{restart} {nodes:?}"
+        );
+    }
+}
