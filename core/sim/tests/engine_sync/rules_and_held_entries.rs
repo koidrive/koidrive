@@ -769,6 +769,7 @@ fn renaming_an_entry_another_device_brought_into_a_taken_along_folder_changes_th
                 by_other: true,
                 order,
                 from: Vec::new(),
+                to: vec!["s".into()],
             });
         }
         device.acted.insert(g);
@@ -2122,4 +2123,27 @@ fn renaming_an_entry_that_left_the_folder_with_its_ancestor_and_came_back_with_t
     device.receive(&[a_dir_record("z", "s", 2)], true);
     renames_after_sync(&mut device, "m", "y");
     assert!(acted_below(&device, &s, &kept, &discarded));
+}
+
+#[test]
+fn renaming_an_entry_this_device_brought_in_after_another_device_moves_it_out_unsynced_changes_the_folder()
+ {
+    for later in [None, Some("z"), Some("root")] {
+        let (mut device, kept, discarded) = a_file_in_a_taken_along_server_folder();
+        let s: NodeId = "s".into();
+        place_dir(&mut device, "z", Some(("root", "z")), Some(("root", "z")));
+        place_dir(&mut device, "y", Some(("z", "y")), Some(("z", "y")));
+        device.note_taken_along([&s]);
+        place_dir(&mut device, "y", Some(("s", "y")), None);
+        device.receive(&[a_dir_record("y", "s", 2)], true);
+        let synced = device.trees.remote().live(&"y".into()).cloned();
+        device.trees.set_synced("y".into(), synced);
+        device.receive(&[a_dir_record("y", "z", 3)], false);
+        if let Some(parent) = later {
+            device.receive(&[a_dir_record("y", parent, 4)], false);
+        }
+        place_dir(&mut device, "y", Some(("s", "renamed")), None);
+        device.acted_on("y".into());
+        assert!(acted_below(&device, &s, &kept, &discarded), "{later:?}");
+    }
 }

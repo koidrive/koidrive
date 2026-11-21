@@ -539,6 +539,7 @@ struct Placement {
     by_other: bool,
     order: u64,
     from: Vec<NodeId>,
+    to: Vec<NodeId>,
 }
 
 fn ancestors(trees: &Trees, parent: Option<NodeId>) -> Vec<NodeId> {
@@ -734,6 +735,7 @@ impl Device {
                 by_other: !answered && !users_move,
                 order: self.placements,
                 from,
+                to: ancestors(&self.trees, Some(remote.parent.clone())),
             });
             let Some(moved) = self.relocated.get_mut(&node) else {
                 continue;
@@ -2105,7 +2107,7 @@ fn acted_below(
         }
         (chain.iter())
             .flat_map(|at| device.placed.get(at).into_iter().flatten())
-            .filter(|placement| !placement.from.contains(id))
+            .filter(|placement| placement.to.contains(id) && !placement.from.contains(id))
             .max_by_key(|placement| placement.order)
             .is_some_and(|placement| placement.by_other)
     };
