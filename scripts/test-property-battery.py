@@ -717,6 +717,14 @@ cases = ["{1:064}"]
                          " right: `[]` at core/sim/tests/engine_sync/common.rs:2008.")
         m1a5a = "1a5a26e7e993648c79095e1fce614f8ffc3b38e5f2fc3209dc93c33d625070ed"
         purged = next(entry for entry in entries if entry["file"] == "GUN-1393-M-purged-entry-reclaims-discarded-folder.toml")["examples"][0]
+        keeps = "a_first_link_discard_keeps_a_folder_the_user_changes_after_the_server_drops_part_of_it"
+        listed = {entry["file"]: entry for entry in entries}
+        q_held = listed["GUN-1437-Q-rules-lift-while-asked-sends-held-folder-2655546c45ea.toml"]
+        v_dropped = listed["GUN-1459-V-dropped-folder-discard-is-created-on-the-server.toml"]
+        f_held = listed["GUN-1487-F-held-folder-published-with-no-user-change-below.toml"]
+        settles = "a_node_another_device_moves_onto_a_folder_the_rules_leave_out_here_settles"
+        n812f = "812f80a55f271edd88172ef1fcd1ced1ec88d3bcd8cfd8aed455c8f842181ebe"
+        no_convergence = "no convergence within 400 steps at core/sim/tests/engine_sync/common.rs:2454."
         def replayed(case):
             return next(text for entry in entries for text in entry["examples"] if f"\tcc-{case}\t" in text)
         coarse_once = "devices_on_coarse_volumes_converge_once_the_faults_stop"
@@ -873,6 +881,11 @@ cases = ["{1:064}"]
             (lose_coarse, replayed(a0fe7), a0fe7[:12] + "0" * 52, []),
             (takes_along, purged, m1a5a, [("M", "GUN-1393", [m1a5a])]),
             (takes_along, purged, "53195fc36ab56c3514afc3fdfa7a52b5d1192f6a75a240b901e4604d04525f82", []),
+            *((keeps, entry["examples"][0], case, [(entry["class"], entry["issue"], entry["cases"])])
+              for entry in (q_held, v_dropped, f_held) for case in entry["cases"]),
+            (keeps, f_held["examples"][0], other, []),
+            (settles, no_convergence, n812f, [("O", "GUN-1450", [n812f])]),
+            (settles, no_convergence, other, []),
         ]:
             with self.subTest(test=test, message=message[:40], case=case[:12]):
                 found = triage.matches(entries, test, message, case)
