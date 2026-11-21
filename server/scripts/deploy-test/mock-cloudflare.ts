@@ -38,10 +38,13 @@ export class MockCloudflare {
   readonly namespaces: { id: string; class: string; script?: string | null }[] = [];
   readonly runAttempts = new Map<string, MockRunAttempt>();
   githubStatus = 200;
+  workflowRunsStatus = 200;
   githubDelayMs = 0;
   workerListDelayMs = 0;
   readonly stalledBodies: string[] = [];
   readonly hiddenWorkers = new Set<string>();
+  readonly hiddenBuckets = new Set<string>();
+  emptyBucketPages = 0;
   readonly claimCode = "ZQ7K-M2XR-9WPD";
   readonly logs: { script: string; timestamp: number; message?: string; path?: string; visibleFrom?: number }[] = [];
   readonly queryDryFlags: unknown[] = [];
@@ -146,6 +149,17 @@ export class MockCloudflare {
         const answer = this.graphqlAnswers.length > 1 ? this.graphqlAnswers.shift()! : this.graphqlAnswers[0];
         return answer ? send(answer.status, answer.body) : missing();
       }
+      if ((match = /^\/github\/repos\/koidrive\/koidrive\/actions\/workflows\/([^/]+)\/runs$/.exec(path)) && method === "GET") {
+        if (this.workflowRunsStatus !== 200) return send(this.workflowRunsStatus, { message: "Server Error" });
+        const latest = new Map<number, { attempt: number; run: MockRunAttempt }>();
+        for (const [key, run] of this.runAttempts) {
+          const [id, attempt] = key.split("/").map(Number) as [number, number];
+          if (run.path.replace(/@.*$/, "").endsWith("/" + match[1]) && attempt > (latest.get(id)?.attempt ?? 0)) latest.set(id, { attempt, run });
+        }
+        const page = Number(new URL(request.url ?? "/", this.url).searchParams.get("page") ?? "1");
+        const runs = page > 1 ? [] : [...latest].filter(([, { run }]) => run.status === "completed").map(([id, { attempt }]) => ({ id, run_attempt: attempt }));
+        return send(200, { total_count: runs.length, workflow_runs: runs });
+      }
       if ((match = /^\/github\/repos\/koidrive\/koidrive\/actions\/runs\/(\d+)\/attempts\/(\d+)$/.exec(path)) && method === "GET") {
         const attempt = this.runAttempts.get(Number(match[1]) + "/" + Number(match[2]));
         setTimeout(() => {
@@ -217,7 +231,8 @@ export class MockCloudflare {
       if (api === "/r2/buckets" && method === "GET") {
         if (this.bucketListStatus !== 200) return send(this.bucketListStatus, { success: false, errors: [{ code: 10000, message: "Authentication error" }], messages: [], result: null });
         const contains = new URL(request.url ?? "/", this.url).searchParams.get("name_contains") ?? "";
-        const named = [...this.buckets].filter(([name]) => name.includes(contains)).map(([name, bucket]) => ({ name, ...(bucket.creationDate ? { creation_date: bucket.creationDate } : {}) }));
+        const named = [...this.buckets].filter(([name]) => name.includes(contains) && !this.hiddenBuckets.has(name)).map(([name, bucket]) => ({ name, ...(bucket.creationDate ? { creation_date: bucket.creationDate } : {}) }));
+        if (this.bucketListPages < this.emptyBucketPages) return ok({ buckets: [] }, "empty-page-" + this.bucketListPages++);
         const cursor = this.bucketListCursors[this.bucketListPages++ % Math.max(1, this.bucketListCursors.length)] ?? "";
         return ok({ buckets: [...this.unnamedListings, ...named] }, cursor);
       }
