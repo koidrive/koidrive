@@ -40,8 +40,7 @@ upgrade_case!(schema_forget_sync_state, |store| {
     copy.transaction(|tx| {
         tx.set_root_tokens(&tokens)?;
         tx.set_volume_mounts(&mounts)?;
-        tx.set_unread_folders(&std::collections::BTreeMap::from([("Private".into(), 42)]))?;
-        tx.set_id_generator(&7u64.to_le_bytes())
+        tx.set_unread_folders(&std::collections::BTreeMap::from([("Private".into(), 42)]))
     })
     .unwrap();
     rusqlite::Connection::open(&path)
@@ -54,7 +53,6 @@ upgrade_case!(schema_forget_sync_state, |store| {
     copy.transaction(|tx| {
         assert_eq!(tx.root_tokens()?, tokens);
         assert_eq!(tx.volume_mounts()?, mounts);
-        assert_eq!(tx.id_generator()?, Some(7u64.to_le_bytes().to_vec()));
         assert_eq!(tx.cursor()?, None);
         assert_eq!(tx.unread_folders()?, None);
         assert_eq!(tx.engine_state()?, koidrive_store::EngineState::default());
@@ -74,9 +72,9 @@ upgrade_case!(schema_forget_sync_state, |store| {
     ];
     let forgotten = "answer_moves answered_rules born_as_temp commit_in_flight commit_in_flight_delete_members commit_in_flight_deletes \
          commit_in_flight_restore_members commit_in_flight_restore_owners commit_slot_given_up commit_slots commit_state content_provenance cycle_reverted \
-         discard_members discarded_nodes dropped_edits edited_here effect_state effects_in_flight engine_state failed_effects \
+         delete_views discard_members discarded_nodes dropped_edits edited_here effect_state effects_in_flight failed_effects \
          forgotten_shapes given_up guard_confirmed guard_confirmed_limits guard_confirmed_members guard_ledger \
-         guard_remote guard_remote_dismissed kept_entries kept_folders kept_nodes kept_originals left_out_by_server local_changes local_nodes lost_creates \
+         guard_remote guard_remote_dismissed intent_history journal journal_absent journal_state kept_entries kept_folders kept_nodes kept_originals left_out_by_server local_changes local_nodes lost_creates \
          lost_positions lost_shapes missing_nodes moved_here names_left_out node_maps node_sets open_question_items open_question_members owed_deletes \
          open_question_shapes open_question_frozen open_questions past_positions pending_finishes published_nodes questions \
          recorded_nodes remote_cursor remote_nodes removed_from removed_here replaced_versions resends synced_nodes synced_positions \
@@ -90,7 +88,6 @@ upgrade_case!(schema_forget_sync_state, |store| {
     assert!(emptied.count() > 10, "{before:?}");
     for ((table, was), (_, now)) in before.iter().zip(rows(&path)) {
         let expected = match table.as_str() {
-            "engine_state" => 1,
             table if kept.contains(&table) => *was,
             _ => 0,
         };

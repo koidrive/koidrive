@@ -51,11 +51,14 @@ impl Engine {
     }
 
     pub fn new(root: &str, history: &str, seed: u64) -> Self {
+        let ids = IdGen::new(seed);
+        let mut trees = Trees::new(root, &ids);
+        trees.take_changes();
         Self {
-            trees: Trees::new(root),
+            trees,
             commits: Commits::default(),
             effects: Effects::default(),
-            ids: IdGen::new(seed),
+            ids,
             cursor: Base::default(),
             behind: false,
             history: history.to_owned(),
@@ -63,11 +66,8 @@ impl Engine {
         }
     }
 
-    /// Rebuilds the engine the way the store loads it after a restart, and checks that every part
-    /// comes back equal. The store does not hold the ignore rules, so the device reads `rules`
-    /// again, and a restart plans nothing before its full scan, so the rules count as read.
-    pub fn reload(&self, rules: &Rules) -> Result<Engine, Failure> {
-        let mut trees = Trees::new(self.trees.remote().root.clone());
+    pub fn reload(&self, rules: &Rules, ids: IdGen, journal: &IdGen) -> Result<Engine, Failure> {
+        let mut trees = Trees::new(self.trees.remote().root.clone(), journal);
         for (id, node) in self.trees.remote().iter() {
             trees.set_remote(id.clone(), node.clone());
             trees.set_remote_place_id(id, self.trees.remote_place_id(id));
@@ -85,11 +85,11 @@ impl Engine {
         rules.read(&mut trees);
         let commits = Commits::from_state(self.commits.state()).map_err(refused)?;
         commits.hold(&mut trees);
-        let loaded = Engine {
+        let mut loaded = Engine {
             trees,
             commits,
             effects: Effects::from_state(self.effects.state()).map_err(refused)?,
-            ids: IdGen::new(self.ids.state),
+            ids: self.ids.clone(),
             cursor: self.cursor.clone(),
             behind: self.behind,
             history: self.history.clone(),
@@ -102,6 +102,7 @@ impl Engine {
                 "the stored state did not come back equal".into(),
             ));
         }
+        loaded.ids = ids;
         Ok(loaded)
     }
 
@@ -254,7 +255,7 @@ impl Engine {
         self.displace(&reported);
         let gone = self.gone(&missing);
         for id in missing.iter().filter(|id| gone.contains(id)) {
-            self.trees.remove_local(id);
+            self.trees.remove_local_by_user(id);
         }
         self.drop_lost_folders();
         Reached {
@@ -363,7 +364,7 @@ impl Engine {
                             (self.commits.in_flight()).is_some_and(|flight| flight.creates(id));
                         self.trees.displace_local(id, created)
                     }
-                    false => self.trees.remove_local(id),
+                    false => self.trees.remove_local_by_user(id),
                 }
             }
         }
@@ -693,7 +694,8 @@ impl Device {
                 differences.join("; ")
             )));
         }
-        self.store = self.engine.reload(&self.rules)?;
+        let ids = self.engine.ids.clone();
+        self.store = self.engine.reload(&self.rules, ids.clone(), &ids)?;
         let commits = &self.store.commits;
         if let Some(flight) = commits.in_flight() {
             (self.sent.entry(flight.commit.device_seq).or_default())

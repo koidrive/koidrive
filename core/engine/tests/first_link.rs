@@ -50,7 +50,7 @@ fn dir(parent: &str, name: &str) -> Shape {
 
 /// Trees with `local` in L and `remote` in R, and nothing in S, as on a first link.
 fn trees(local: &[(&str, Shape)], remote: &[(&str, Shape)]) -> Trees {
-    let mut trees = Trees::new(ROOT);
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
     for (ino, (id, shape)) in local.iter().enumerate() {
         let identity = FileIdentity {
             ino: ino as u128 + 1,
@@ -81,6 +81,7 @@ fn trees(local: &[(&str, Shape)], remote: &[(&str, Shape)]) -> Trees {
             pending_for: None,
             pending_by: None,
             chunks: Box::default(),
+            intents: None,
         };
         trees.set_remote((*id).into(), node);
     }
@@ -251,6 +252,7 @@ fn a_first_link_holds_an_entry_like_one_in_the_servers_trash() {
         pending_for: None,
         pending_by: None,
         chunks: Box::default(),
+        intents: None,
     };
     trees.set_remote("r-a".into(), trashed);
     trees.settle(&Default::default());
@@ -535,6 +537,7 @@ fn a_first_link_to_a_space_listed_empty_holds_only_what_the_trash_names() {
         pending_for: None,
         pending_by: None,
         chunks: Box::default(),
+        intents: None,
     };
     trees.set_remote("r-slides".into(), trashed);
     let mut commits = Commits::default();
@@ -658,6 +661,7 @@ fn a_fresh_first_link_to_a_live_space_holds_only_what_the_trash_names() {
         pending_for: None,
         pending_by: None,
         chunks: Box::default(),
+        intents: None,
     };
     trees.set_remote("r-slides".into(), trashed);
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(7));
@@ -698,6 +702,7 @@ fn a_fresh_first_link_holds_a_folder_that_holds_an_entry_at_a_path_the_trash_hol
             pending_for: None,
             pending_by: None,
             chunks: Box::default(),
+            intents: None,
         };
         trees.set_remote("r-deleted".into(), trashed);
         trees.settle(&Default::default());
@@ -938,7 +943,7 @@ fn settled_below(folders: &[(&str, Shape)]) -> (Trees, IdGen) {
     let mut remote = folders.to_vec();
     remote.push(("r-file", child.clone()));
     let remote = trees(&[], &remote);
-    let mut settled = Trees::new(ROOT);
+    let mut settled = Trees::new(ROOT, &IdGen::new(0));
     settled.rules_scanned();
     let mut local = folders.to_vec();
     local.push(("l-file", child));
@@ -989,7 +994,7 @@ fn restarted_without(trees: &Trees, gone: &[&str]) -> Trees {
 }
 
 fn restarted_from(trees: &Trees, gone: &[&str], state: TreesState) -> Trees {
-    let mut fresh = Trees::new(ROOT);
+    let mut fresh = Trees::new(ROOT, &IdGen::new(0));
     for (id, node) in
         (trees.local().iter()).filter(|(id, _)| !gone.iter().any(|gone| **id == *gone))
     {
@@ -1010,7 +1015,7 @@ fn linked_once_the_folder_is_placed(place: impl FnOnce(&mut Trees)) {
     let remote_parent = dir(ROOT, "remote-folder");
     let mut child = written("notes", WRITTEN_NS);
     child.parent = "p".into();
-    let mut trees = Trees::new(ROOT);
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
     trees.rules_scanned();
     trees.set_local("p".into(), local_node(dir(ROOT, "local-folder"), 1));
     trees.set_local("l-file".into(), local_node(child.clone(), 2));
@@ -1306,6 +1311,7 @@ fn renamed_create(commits: &mut Commits, trees: &mut Trees, id: &str, name: &str
         pending_for: None,
         pending_by: None,
         chunks: Box::default(),
+        intents: None,
     };
     trees.set_remote(id.into(), node);
     let renamed = OpResult {
@@ -1384,6 +1390,7 @@ fn a_published_create_that_takes_a_conflict_name_asks_nothing_and_a_later_create
         pending_for: None,
         pending_by: None,
         chunks: Box::default(),
+        intents: None,
     };
     trees.set_remote("r-later".into(), theirs);
     renamed_create(&mut commits, &mut trees, "l-later", "later (conflict)", 3);
@@ -2210,6 +2217,7 @@ fn a_discard_whose_s_update_waits_stays_after_a_server_loss() {
         pending_for: None,
         pending_by: None,
         chunks: Box::default(),
+        intents: None,
     };
     trees.set_remote("pad".into(), pad);
     let applied = OpResult {
@@ -2255,7 +2263,7 @@ fn a_discard_whose_s_update_waits_stays_after_a_server_loss() {
 
 #[test]
 fn a_reclaimed_folder_that_cannot_leave_s_yet_keeps_its_childs_waiting_update() {
-    let mut trees = Trees::new(ROOT);
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
     for (id, shape, ino) in [("f", dir(ROOT, "a"), 1), ("c", dir("f", "child"), 2)] {
         trees.set_synced(id.into(), Some(shape.clone()));
         trees.set_local(
@@ -2287,6 +2295,7 @@ fn a_reclaimed_folder_that_cannot_leave_s_yet_keeps_its_childs_waiting_update() 
         pending_for: None,
         pending_by: None,
         chunks: Box::default(),
+        intents: None,
     };
     trees.set_remote("p".into(), remote(dir(ROOT, "a")));
     trees.set_remote("c".into(), remote(dir("p", "child")));
@@ -2332,11 +2341,12 @@ fn remote_node(shape: Shape) -> RemoteNode {
         pending_for: None,
         pending_by: None,
         chunks: Box::default(),
+        intents: None,
     }
 }
 
 fn a_reclaimed_folder_that_took_along_a_server_file(server_digest: u8) -> Trees {
-    let mut trees = Trees::new(ROOT);
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
     let local = [
         ("f", dir(ROOT, "a"), 1),
         ("c", dir("f", "child"), 2),
@@ -2409,7 +2419,7 @@ fn reclaim_with_waiting(
     remote: &[(&str, Shape)],
     waiting: &[(&str, Shape)],
 ) -> Trees {
-    let mut trees = Trees::new(ROOT);
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
     for (ino, (id, shape)) in synced.iter().enumerate() {
         trees.set_synced((*id).into(), Some(shape.clone()));
         let identity = FileIdentity {
@@ -2441,6 +2451,7 @@ fn reclaim_with_waiting(
             pending_for: None,
             pending_by: None,
             chunks: Box::default(),
+            intents: None,
         };
         trees.set_remote((*id).into(), node);
     }
@@ -2894,6 +2905,7 @@ fn a_discarded_entry_stays_discarded_when_the_server_merges_its_folder_into_anot
         pending_for: None,
         pending_by: None,
         chunks: Box::default(),
+        intents: None,
     };
     trees.set_remote("r-new".into(), remote(dir(ROOT, "new")));
     trees.set_remote("l-later".into(), remote(file("r-new", "later", 6)));
@@ -2949,6 +2961,7 @@ fn a_file_the_user_took_back_from_a_discard_is_sent_again_once_the_server_loses_
             pending_for: None,
             pending_by: None,
             chunks: Box::default(),
+            intents: None,
         };
         trees.set_remote("l-b".into(), node);
         let applied = OpResult {
@@ -6048,6 +6061,7 @@ mod a_server_file_moved_into_an_asked_folder {
                 pending_for: None,
                 pending_by: None,
                 chunks: Box::default(),
+                intents: None,
             },
         );
         t.settle(&Default::default());

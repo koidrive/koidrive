@@ -2,23 +2,42 @@
 
 #[test]
 fn a_late_acknowledgement_keeps_the_content_s_took_after_the_commit_was_built() {
-    a_late_acknowledgement_keeps_the_content_s_took_since(false, false);
+    a_late_acknowledgement_keeps_the_content_s_took_since(false, false, op_result::Code::Applied);
 }
 
 #[test]
 fn a_late_acknowledgement_after_a_restart_keeps_the_content_s_took_after_the_commit_was_built() {
-    a_late_acknowledgement_keeps_the_content_s_took_since(true, false);
+    a_late_acknowledgement_keeps_the_content_s_took_since(true, false, op_result::Code::Applied);
 }
 
 #[test]
 fn a_late_acknowledgement_overtaken_by_the_next_remote_edit_keeps_the_content_s_took() {
-    a_late_acknowledgement_keeps_the_content_s_took_since(false, true);
+    a_late_acknowledgement_keeps_the_content_s_took_since(false, true, op_result::Code::Applied);
 }
 
 #[test]
 fn a_late_acknowledgement_overtaken_by_the_next_remote_edit_after_a_restart_keeps_the_content_s_took()
  {
-    a_late_acknowledgement_keeps_the_content_s_took_since(true, true);
+    a_late_acknowledgement_keeps_the_content_s_took_since(true, true, op_result::Code::Applied);
+}
+
+#[test]
+fn a_superseded_edit_keeps_the_content_s_took_after_the_commit_was_built() {
+    a_late_acknowledgement_keeps_the_content_s_took_since(
+        false,
+        false,
+        op_result::Code::Superseded,
+    );
+}
+
+#[test]
+fn a_superseded_edit_after_a_restart_keeps_the_content_s_took_after_the_commit_was_built() {
+    a_late_acknowledgement_keeps_the_content_s_took_since(true, false, op_result::Code::Superseded);
+}
+
+#[test]
+fn a_superseded_edit_overtaken_by_the_next_remote_edit_keeps_the_content_s_took() {
+    a_late_acknowledgement_keeps_the_content_s_took_since(false, true, op_result::Code::Superseded);
 }
 
 #[test]

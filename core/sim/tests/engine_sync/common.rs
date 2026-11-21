@@ -609,6 +609,7 @@ fn remote_path(trees: &Trees, id: &NodeId) -> Vec<String> {
 struct Device {
     trees: Trees,
     ids: IdGen,
+    loads: IdGen,
     inos: u64,
     /// Whether the folders the user creates take names nothing else has, so none is merged.
     fresh_dir_names: bool,
@@ -691,6 +692,7 @@ impl Device {
         Self {
             trees,
             ids: IdGen::new(7),
+            loads: IdGen::new(8),
             inos: 0,
             fresh_dir_names: false,
             rules: Rules::default(),
@@ -1550,8 +1552,9 @@ fn reload(
     commits: &Commits,
     effects: &Effects,
     rules: &Rules,
+    loads: &mut IdGen,
 ) -> Result<(Trees, Commits, Effects), TestCaseError> {
-    let mut loaded = Trees::new(trees.remote().root.clone());
+    let mut loaded = Trees::new(trees.remote().root.clone(), &IdGen::new(loads.next_u64()));
     for (id, node) in trees.remote().iter() {
         loaded.set_remote(id.clone(), node.clone());
     }
@@ -1566,13 +1569,155 @@ fn reload(
     loaded.restore(trees.state()).map_err(refused)?;
     prop_assert!(!loaded.rules_known());
     rules.read(&mut loaded);
-    let restored_commits = Commits::from_state(commits.state()).map_err(refused)?;
+    let mut restored_commits = Commits::from_state(commits.state()).map_err(refused)?;
+    restored_commits.set_field_intents(commits.field_intents());
     restored_commits.hold(&mut loaded);
     let restored_effects = Effects::from_state(effects.state()).map_err(refused)?;
     prop_assert_eq!(&loaded, trees);
     prop_assert_eq!(&restored_commits, commits);
     prop_assert_eq!(&restored_effects, effects);
     Ok((loaded, restored_commits, restored_effects))
+}
+
+thread_local! {
+    static FIELD_INTENTS: std::cell::Cell<bool> = const { std::cell::Cell::new(FIELD_INTENTS_BY_DEFAULT) };
+}
+
+enum Where {
+    Test,
+    Case(&'static str),
+    AnyCase { witness: &'static str },
+}
+
+struct IntentsOnRed {
+    test: &'static str,
+    fails_in: Where,
+    issue: &'static str,
+    site: &'static str,
+}
+
+const INTENTS_ON_REDS: [IntentsOnRed; 8] = [
+    IntentsOnRed {
+        test: "removing_most_of_a_space_is_held_until_the_person_answers",
+        fails_in: Where::AnyCase {
+            witness: "cc-013c139c773a52791566f475cfeb9681c26f7035e2dad9117678ca4015725c56",
+        },
+        issue: "GUN-1482",
+        site: "a Delete answer trashes the folder and every file in it at core/sim/tests/engine_sync.rs:<line>",
+    },
+    IntentsOnRed {
+        test: "a_first_link_discard_keeps_a_folder_the_user_changes_after_the_server_drops_part_of_it",
+        fails_in: Where::AnyCase {
+            witness: "cc-844c642c9fdfc4dbf360fa3df56c7816a68740120cc2b667c72f44e4369c8166",
+        },
+        issue: "GUN-1482",
+        site: "is where the user put it in a folder that is the user's again, but the effects move it out at core/sim/tests/engine_sync/common.rs:<line>",
+    },
+    IntentsOnRed {
+        test: "a_first_link_discard_judges_a_taken_along_folder_against_what_it_held_at_the_discard",
+        fails_in: Where::Test,
+        issue: "GUN-1482",
+        site: "the Discard trashes the server folder it judged at core/sim/tests/engine_sync/rules_and_held_entries.rs:<line>",
+    },
+    IntentsOnRed {
+        test: "a_device_with_local_changes_converges_with_the_server_and_keeps_every_write",
+        fails_in: Where::Case(
+            "cc-a0e59dbd46366e057b781c820d7ec6f0c255feb9fbec00802aa50f9b45271e83",
+        ),
+        issue: "GUN-1482",
+        site: "no convergence within 400 steps; the last commit sent Delete of 01a1c2c0-39a0-75ee-831c-498d57bc0a70 answered CODE_SUPERSEDED at core/sim/tests/engine_sync/common.rs:<line>",
+    },
+    IntentsOnRed {
+        test: "a_device_with_local_changes_converges_with_the_server_and_keeps_every_write",
+        fails_in: Where::Case(
+            "cc-cd6f15873b750370ea8e3e9eafef1cd51fd5386d8da042aecd61038373d80065",
+        ),
+        issue: "GUN-1482",
+        site: "no convergence within 400 steps; the last commit sent Delete of 01a1c2c0-39a0-796f-a8a3-82c9a31d6efe answered CODE_SUPERSEDED at core/sim/tests/engine_sync/common.rs:<line>",
+    },
+    IntentsOnRed {
+        test: "a_device_with_local_changes_converges_with_the_server_and_keeps_every_write",
+        fails_in: Where::Case(
+            "cc-b391e3c8c35a92cb4a6d81b1e51e919f47835f7063cd8ee80e1ccc53be1e256c",
+        ),
+        issue: "GUN-1482",
+        site: "no convergence within 400 steps; the last commit sent Delete of 01a1c2c0-39a0-72d6-a4fd-bf2db1bb78a0 answered CODE_SUPERSEDED at core/sim/tests/engine_sync/common.rs:<line>",
+    },
+    IntentsOnRed {
+        test: "a_device_with_local_changes_converges_with_the_server_and_keeps_every_write",
+        fails_in: Where::Case(
+            "cc-c5a70021ee8e9f6eff9ff982939c4a0a9103b7f95565eac20c8d09e9823d6bb3",
+        ),
+        issue: "GUN-1482",
+        site: "no convergence within 400 steps; the last commit sent Delete of 01a1c2c0-39a0-7122-aa2f-19dfbfa03020 answered CODE_SUPERSEDED at core/sim/tests/engine_sync/common.rs:<line>",
+    },
+    IntentsOnRed {
+        test: "a_device_with_local_changes_converges_with_the_server_and_keeps_every_write",
+        fails_in: Where::Case(
+            "cc-6ad530a677fba14eb8aed45d62575495f6dd97ff029e72ef13a249945906f8e6",
+        ),
+        issue: "GUN-1482",
+        site: "no convergence within 400 steps; the last commit sent Delete of 01a1c2c0-39a0-7895-abc3-b3429e08873f answered CODE_SUPERSEDED at core/sim/tests/engine_sync/common.rs:<line>",
+    },
+];
+
+fn recorded_red(test: &str, case: Option<&str>, failure: &str) -> Option<&'static IntentsOnRed> {
+    let mut unlined = String::new();
+    let mut rest = failure;
+    while let Some(at) = rest.find(".rs:") {
+        unlined.push_str(&rest[..at + 4]);
+        rest = &rest[at + 4..];
+        let digits = rest.len() - rest.trim_start_matches(|c: char| c.is_ascii_digit()).len();
+        if digits > 0 {
+            unlined.push_str("<line>");
+        }
+        rest = &rest[digits..];
+    }
+    unlined.push_str(rest);
+    (INTENTS_ON_REDS.iter()).find(|red| {
+        let in_place = match red.fails_in {
+            Where::Test => case.is_none(),
+            Where::Case(pinned) => case == Some(pinned),
+            Where::AnyCase { .. } => true,
+        };
+        red.test == test && in_place && unlined.contains(red.site)
+    })
+}
+
+fn panic_message(panic: &(dyn std::any::Any + Send)) -> String {
+    (panic.downcast_ref::<String>().cloned())
+        .or_else(|| panic.downcast_ref::<&str>().map(|text| text.to_string()))
+        .unwrap_or_default()
+}
+
+fn fails_as_recorded(test: &str, run: impl FnOnce() + std::panic::UnwindSafe) {
+    if !FIELD_INTENTS.get() || !INTENTS_ON_REDS.iter().any(|red| red.test == test) {
+        return run();
+    }
+    let Err(panic) = std::panic::catch_unwind(run) else {
+        panic!("{test} passes with field intents on, so its entry in INTENTS_ON_REDS goes");
+    };
+    let message = panic_message(&*panic);
+    assert!(
+        recorded_red(test, None, &message).is_some(),
+        "{test} fails with field intents on, but not as its INTENTS_ON_REDS entry records: {message}"
+    );
+}
+
+fn sent_op(op: &Op, outcome: &OpResult) -> String {
+    let (kind, node) = match &op.op {
+        Some(op::Op::CreateDir(create)) => ("CreateDir", &create.node_id),
+        Some(op::Op::CreateFile(create)) => ("CreateFile", &create.node_id),
+        Some(op::Op::UpdateContent(update)) => ("UpdateContent", &update.node_id),
+        Some(op::Op::Move(moved)) => ("Move", &moved.node_id),
+        Some(op::Op::Delete(delete)) => ("Delete", &delete.node_id),
+        Some(op::Op::Restore(restore)) => ("Restore", &restore.node_id),
+        Some(op::Op::MarkGitTracked(marked)) => ("MarkGitTracked", &marked.node_id),
+        None => return "an empty op".to_owned(),
+    };
+    let code = (op_result::Code::try_from(outcome.code))
+        .map_or("an unknown code", |code| code.as_str_name());
+    format!("{kind} of {node} answered {code}")
 }
 
 /// The server as [`run`] seeds it.
@@ -2464,7 +2609,7 @@ fn run_ignoring_answering_after(
     let (mut space, mut other) = seeded(seed);
     let root = space.space_id().to_owned();
     let history = space.history_id().to_owned();
-    let mut device = Device::new(Trees::new(root.clone()));
+    let mut device = Device::new(Trees::new(root.clone(), &IdGen::new(0)));
     device.fresh_dir_names = fresh_dir_names;
     for state in space.nodes().iter().filter(|n| n.node_id != root) {
         let (id, node) = RemoteNode::from_state(state).unwrap();
@@ -2534,6 +2679,8 @@ fn run_ignoring_answering_after(
     }
 
     let me = session("me");
+    space.announce_field_intents(FIELD_INTENTS.get());
+    prop_assert_eq!(commits.connected(&space.welcome(&me)), Reconnect::Idle);
     let mut effects = Effects::default();
     let (mut steps, mut quiet, mut due, mut parked_reverted) = (0, false, false, 0);
     let mut retried: Option<Trees> = None;
@@ -2557,10 +2704,16 @@ fn run_ignoring_answering_after(
         Option<(BTreeMap<NodeId, NodeId>, u64)>,
     );
     let mut pending: Option<AtAnswer> = None;
+    let mut last_sent = String::from("nothing");
     let mut during = during.iter();
     while !quiet {
         steps += 1;
-        prop_assert!(steps <= STEPS, "no convergence within {} steps", STEPS);
+        prop_assert!(
+            steps <= STEPS,
+            "no convergence within {} steps; the last commit sent {}",
+            STEPS,
+            last_sent
+        );
         device.trees.settle(commits.aliases());
         prop_assert_eq!(device.trees.check(), Ok(()));
         device.follow_rekeys();
@@ -2627,8 +2780,13 @@ fn run_ignoring_answering_after(
         prop_assert_eq!(device.trees.check(), Ok(()));
         device.list_moved();
         device.follow_rekeys();
-        (device.trees, commits, effects) =
-            reload(&device.trees, &commits, &effects, &device.rules)?;
+        (device.trees, commits, effects) = reload(
+            &device.trees,
+            &commits,
+            &effects,
+            &device.rules,
+            &mut device.loads,
+        )?;
         note_kept_back(&mut device);
         note_unacknowledged_taken_along_kept_back(&mut device, &kept_with);
         let held = held_by(commits.questions());
@@ -2773,8 +2931,13 @@ fn run_ignoring_answering_after(
                 );
             }
             if cut == Cut::Effect {
-                (device.trees, commits, effects) =
-                    reload(&device.trees, &commits, &effects, &device.rules)?;
+                (device.trees, commits, effects) = reload(
+                    &device.trees,
+                    &commits,
+                    &effects,
+                    &device.rules,
+                    &mut device.loads,
+                )?;
                 prop_assert_eq!(effects.in_flight().first(), Some(&record));
             }
             if let Effect::RemoveDir { along, .. } = &record.effect {
@@ -2829,6 +2992,11 @@ fn run_ignoring_answering_after(
         let residue = observed_merge_residue(&device, &commits);
         commits.settle_merge_residue(&mut device.trees, &mut device.ids, NOW as u64, &residue);
         let mut before = (device.trees.clone(), commits.questions().to_vec());
+        let negotiated = space
+            .welcome(&me)
+            .features
+            .contains(&"field_intents".to_owned());
+        prop_assert_eq!(commits.field_intents(), negotiated);
         let built = commits.build(
             &mut device.trees,
             &mut device.ids,
@@ -3067,8 +3235,13 @@ fn run_ignoring_answering_after(
         let cut = if restores.is_empty() { Cut::None } else { cut };
         let in_flight = |commits: &Commits| commits.in_flight().map(|f| f.commit.clone());
         if cut == Cut::Built {
-            (device.trees, commits, effects) =
-                reload(&device.trees, &commits, &effects, &device.rules)?;
+            (device.trees, commits, effects) = reload(
+                &device.trees,
+                &commits,
+                &effects,
+                &device.rules,
+                &mut device.loads,
+            )?;
             prop_assert_eq!(commits.connected(&space.welcome(&me)), Reconnect::Resend);
             prop_assert_eq!(in_flight(&commits), Some(commit.clone()));
         }
@@ -3087,8 +3260,13 @@ fn run_ignoring_answering_after(
         if cut == Cut::Applied {
             // The response is lost. The server counts the commit, so the device sends the same
             // commit again and gets the stored result: nothing is applied a second time.
-            (device.trees, commits, effects) =
-                reload(&device.trees, &commits, &effects, &device.rules)?;
+            (device.trees, commits, effects) = reload(
+                &device.trees,
+                &commits,
+                &effects,
+                &device.rules,
+                &mut device.loads,
+            )?;
             prop_assert_eq!(commits.connected(&space.welcome(&me)), Reconnect::Resend);
             prop_assert_eq!(in_flight(&commits), Some(commit.clone()));
             let head = space.head_seq();
@@ -3099,6 +3277,10 @@ fn run_ignoring_answering_after(
         }
         let result = committed.result;
         prop_assert_eq!(result.seq, last_seq + 1);
+        last_sent = (commit.ops.iter().zip(&result.results))
+            .map(|(op, outcome)| sent_op(op, outcome))
+            .collect::<Vec<_>>()
+            .join(", ");
         for (op, outcome) in commit.ops.iter().zip(&result.results) {
             if let Some(op::Op::CreateDir(create)) = &op.op
                 && outcome.code == op_result::Code::MergedInto as i32
@@ -3119,8 +3301,13 @@ fn run_ignoring_answering_after(
         let ended = commits.resolved().len();
         if cut == Cut::Answered {
             commits.received(result.clone()).unwrap();
-            (device.trees, commits, effects) =
-                reload(&device.trees, &commits, &effects, &device.rules)?;
+            (device.trees, commits, effects) = reload(
+                &device.trees,
+                &commits,
+                &effects,
+                &device.rules,
+                &mut device.loads,
+            )?;
             prop_assert_eq!(commits.connected(&space.welcome(&me)), Reconnect::Idle);
             prop_assert!(!commits.acknowledge(&mut device.trees, last_seq));
             prop_assert_eq!(commits.resolved().len(), ended);
@@ -3457,8 +3644,9 @@ fn a_merged_folder_is_held_by_its_key_holder_or_its_alias_under_a_merged_parent(
         pending_for: None,
         pending_by: None,
         chunks: Box::default(),
+        intents: None,
     };
-    let mut trees = Trees::new(root.clone());
+    let mut trees = Trees::new(root.clone(), &IdGen::new(0));
     let local = LocalNode {
         left_out_when_placed: false,
         content_from_server: false,
@@ -3526,7 +3714,7 @@ fn an_ignored_entry_follows_its_folder_when_another_folder_takes_the_folders_id(
         parked: false,
         chunks: Box::default(),
     };
-    let mut device = Device::new(Trees::new(root.clone()));
+    let mut device = Device::new(Trees::new(root.clone(), &IdGen::new(0)));
     device.trees.set_local("live".into(), folder(1));
     device.ignored.insert(
         ("live".into(), vec!["c.txt".into()]),

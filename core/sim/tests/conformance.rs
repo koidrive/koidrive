@@ -6,9 +6,9 @@ use koidrive_engine::ids::IdGen;
 use koidrive_engine::names::MAX_NAME_BYTES;
 use koidrive_proto::v1::{
     ChangeRecord, ChunkRef, Commit, CommitResult, Content, CreateDir, CreateFile, Delete, Error,
-    ListVersions, Move, NodeKind, NodeRevisions, NodeState, NodeStatus, Op, OpResult, Place,
-    PrepareUpload, Restore, RpcRequest, UpdateContent, UploadReceipt, VersionInfo, change_record,
-    chunk_plan, error, op, op_result, rpc_request, rpc_response,
+    FieldIntents, Intent, ListVersions, Move, NodeKind, NodeRevisions, NodeState, NodeStatus, Op,
+    OpResult, Place, PrepareUpload, Restore, RpcRequest, UpdateContent, UploadReceipt, VersionInfo,
+    change_record, chunk_plan, error, op, op_result, rpc_request, rpc_response,
 };
 use koidrive_sim::space::{Role, Session, SpaceDo, node_states};
 use serde_json::{Map, Value, json};
@@ -178,9 +178,11 @@ fn run_file(path: &str, doc: &Value) -> usize {
     let mut skipped = 0;
     for scenario in scenarios {
         let name = scenario["name"].as_str().unwrap_or("?");
-        if covers_intents(scenario) {
+        if covers_owner_rules(scenario) {
             skipped += 1;
-            println!("scenario {name} ... skipped: the reference has no RFC 0029 intents");
+            println!(
+                "scenario {name} ... skipped: the reference has no RFC 0029 section 6 owner rules"
+            );
             continue;
         }
         let tag = if scenario.get("reference_only").is_some() {
@@ -203,13 +205,15 @@ fn run_file(path: &str, doc: &Value) -> usize {
     failed
 }
 
-fn covers_intents(scenario: &Value) -> bool {
+fn covers_owner_rules(scenario: &Value) -> bool {
     scenario["covers"]
         .as_array()
         .into_iter()
         .flatten()
-        .any(|cover| cover == "RFC0029" || cover == "RFC0029-6")
+        .any(|cover| cover == "RFC0029-6")
 }
+
+const INTENT_FIELDS: [&str; 3] = ["place", "content", "status"];
 
 const SEEDS: u64 = 16;
 const COMMITS: usize = 24;
@@ -564,6 +568,25 @@ fn self_tests(doc: &Value) -> Vec<(&'static str, Outcome)> {
                 "step 3: unknown field stauts in a node",
             ),
         ),
+        (
+            "an-unknown-intent-field-fails",
+            mutate(
+                base,
+                &|s| {
+                    s["steps"][0]["commit"]["ops"][0]["create_file"]["intent"] =
+                        json!({ "id": "i", "author": "a", "replya": true })
+                },
+                "step 1: unknown field replya in intent",
+            ),
+        ),
+        (
+            "an-unknown-field-in-a-nodes-intents-fails",
+            mutate(
+                base,
+                &|s| s["steps"][2]["nodes"][0]["intents"] = json!({ "plcae": {} }),
+                "step 3: f1.intents: unknown field plcae in intents",
+            ),
+        ),
         ("the-unmutated-scenario-passes", run(doc, base)),
     ]
 }
@@ -790,13 +813,6 @@ fn check_error(error: &Error, code: &str) -> Outcome {
     }
 }
 
-#[derive(Clone)]
-struct Stored {
-    space: SpaceDo,
-    top_seq: Option<u64>,
-    slots: Vec<((String, String), u64)>,
-}
-
 struct Run {
     now_ms: i64,
     mtime_ns: i64,
@@ -807,13 +823,19 @@ struct Run {
     slots: HashMap<(String, String), u64>,
     sent_slots: HashMap<(String, String, String), u64>,
     top_seq: HashMap<String, u64>,
-    stored: HashMap<(u64, String), Stored>,
     last_missing: HashMap<(String, String), Vec<Vec<u8>>>,
     symbols: HashMap<String, String>,
     values: HashMap<String, String>,
     cursors: HashMap<String, String>,
+    stored: HashMap<(usize, String), Stored>,
     ids: IdGen,
     req_id: u64,
+}
+
+struct Stored {
+    space: SpaceDo,
+    top_seq: Option<u64>,
+    slots: Vec<((String, String), u64)>,
 }
 
 impl Run {
@@ -903,11 +925,11 @@ impl Run {
             slots: HashMap::new(),
             sent_slots: HashMap::new(),
             top_seq: HashMap::new(),
-            stored: HashMap::new(),
             last_missing: HashMap::new(),
             symbols: HashMap::new(),
             values: HashMap::new(),
             cursors: HashMap::new(),
+            stored: HashMap::new(),
             ids: IdGen::new(7),
             req_id: 0,
         })
@@ -966,16 +988,127 @@ impl Run {
         }
     }
 
-    fn known_set(
-        &self,
+    fn expect_set(
+        &mut self,
         space: &str,
         list: &[Value],
+        got: &BTreeSet<String>,
         what: &str,
-    ) -> Result<BTreeSet<String>, String> {
-        strings(list, what)?
-            .into_iter()
-            .map(|symbol| self.known(space, symbol))
-            .collect()
+    ) -> Outcome {
+        let mut want = BTreeSet::new();
+        let mut unbound = Vec::new();
+        for symbol in strings(list, what)? {
+            match self
+                .fixed(space, symbol)?
+                .or_else(|| self.symbols.get(symbol).cloned())
+            {
+                Some(value) => {
+                    want.insert(value);
+                }
+                None => unbound.push(symbol),
+            }
+        }
+        if unbound.len() > 1 {
+            return Err(format!(
+                "{what} may name only one symbol that is not bound yet, got {unbound:?}"
+            ));
+        }
+        let left: Vec<&String> = got.iter().filter(|id| !want.contains(*id)).collect();
+        if let ([symbol], [id]) = (&unbound[..], &left[..]) {
+            let id = (*id).clone();
+            self.bind(symbol, &id)?;
+            want.insert(id);
+            unbound.clear();
+        }
+        if *got != want || !unbound.is_empty() {
+            let mut expected = self.names(&want);
+            expected.extend(unbound.iter().map(|symbol| symbol.to_string()));
+            expected.sort();
+            return Err(format!(
+                "{what} {:?}, expected {expected:?}",
+                self.names(got)
+            ));
+        }
+        Ok(())
+    }
+
+    fn intent_id(&mut self, space: &str, symbol: &str) -> Result<Vec<u8>, String> {
+        let value = match self
+            .fixed(space, symbol)?
+            .or_else(|| self.symbols.get(symbol).cloned())
+        {
+            Some(value) => value,
+            None => {
+                let minted = self.ids.uuid_v7(self.now_ms as u64).replace('-', "");
+                self.bind(symbol, &minted)?;
+                minted
+            }
+        };
+        (value.len() == 32)
+            .then(|| {
+                (0..16)
+                    .map(|i| u8::from_str_radix(&value[2 * i..2 * i + 2], 16).ok())
+                    .collect::<Option<Vec<u8>>>()
+            })
+            .flatten()
+            .ok_or_else(|| format!("{symbol} is not an intent"))
+    }
+
+    fn author(&self, symbol: &str) -> Result<String, String> {
+        match symbol {
+            "" => Ok(String::new()),
+            symbol => Ok(self.session_of(symbol)?.device_id),
+        }
+    }
+
+    fn intent(&mut self, space: &str, value: &Value, what: &str) -> Result<Intent, String> {
+        keys(
+            value,
+            what,
+            &["id", "author", "replay", "over", "applied_at_ms"],
+        )?;
+        Ok(Intent {
+            id: self.intent_id(space, req(opt_str(value, "id"), "id")?)?,
+            author_device_id: self.author(req(opt_str(value, "author"), "author")?)?,
+            replay: opt_bool(value, "replay")?.unwrap_or(false),
+            over: match opt_str(value, "over")? {
+                Some(over) => self.intent_id(space, over)?,
+                None => Vec::new(),
+            },
+            applied_at_ms: opt_i64(value, "applied_at_ms")?.unwrap_or(0),
+        })
+    }
+
+    fn keep(&self, space: &str) -> Result<Stored, String> {
+        Ok(Stored {
+            space: self.space(space)?.clone(),
+            top_seq: self.top_seq.get(space).copied(),
+            slots: (self.slots.iter())
+                .filter(|((_, slot_space), _)| slot_space == space)
+                .map(|(slot, seq)| (slot.clone(), *seq))
+                .collect(),
+        })
+    }
+
+    fn restore_storage(&mut self, space: &str, to_step: usize) -> Outcome {
+        let saved = self
+            .stored
+            .get(&(to_step, space.to_owned()))
+            .ok_or_else(|| format!("no storage was kept after step {to_step}"))?;
+        let backup = saved.space.clone();
+        let top_seq = saved.top_seq;
+        let slots = saved.slots.clone();
+        self.spaces
+            .get_mut(space)
+            .ok_or_else(|| format!("unknown space {space}"))?
+            .restore(&backup);
+        match top_seq {
+            Some(seq) => self.top_seq.insert(space.to_owned(), seq),
+            None => self.top_seq.remove(space),
+        };
+        self.slots.retain(|(_, slot_space), _| slot_space != space);
+        self.slots.extend(slots);
+        Ok(())
     }
 
     fn space(&self, name: &str) -> Result<&SpaceDo, String> {
@@ -1029,39 +1162,31 @@ impl Run {
 
     fn steps(&mut self, scenario: &Value) -> Outcome {
         let steps = req(opt_list(scenario, "steps"), "steps")?;
-        let mut kept = BTreeSet::new();
+        let mut restores = BTreeSet::new();
         for (i, step) in steps.iter().enumerate() {
             let Some(restore) = step.get("restore_storage") else {
                 continue;
             };
-            keys(restore, "restore_storage", &["to_step"])?;
-            let to = req(opt_u64(restore, "to_step"), "to_step")?;
-            if to < 1 || to > i as u64 {
-                return Err(format!(
-                    "step {}: restore_storage must name an earlier step, got {to}",
-                    i + 1
-                ));
-            }
-            kept.insert(to);
+            let to = keys(restore, "restore_storage", &["to_step"])
+                .and_then(|()| req(opt_u64(restore, "to_step"), "to_step"))
+                .and_then(|to| match to as usize {
+                    to if to >= 1 && to <= i => Ok(to),
+                    _ => Err(format!(
+                        "restore_storage must name an earlier step, got {to}"
+                    )),
+                })
+                .map_err(|e| format!("step {}: {e}", i + 1))?;
+            let space = opt_str(step, "space")?.unwrap_or("main").to_owned();
+            restores.insert((to, space));
         }
         for (i, step) in steps.iter().enumerate() {
             self.step(step)
                 .map_err(|e| format!("step {}: {e}", i + 1))?;
-            let done = i as u64 + 1;
-            if !kept.contains(&done) {
-                continue;
-            }
-            for (name, space) in &self.spaces {
-                let slots = (self.slots.iter())
-                    .filter(|((_, slot_space), _)| slot_space == name)
-                    .map(|(slot, device_seq)| (slot.clone(), *device_seq))
-                    .collect();
-                let stored = Stored {
-                    space: space.clone(),
-                    top_seq: self.top_seq.get(name).copied(),
-                    slots,
-                };
-                self.stored.insert((done, name.clone()), stored);
+            for (to, space) in &restores {
+                if *to == i + 1 {
+                    let kept = self.keep(space)?;
+                    self.stored.insert((*to, space.clone()), kept);
+                }
             }
         }
         Ok(())
@@ -1134,6 +1259,16 @@ impl Run {
             keys(step, "a step", &with("list_versions"))?;
             return self.list_versions(&space, at_ms, step);
         }
+        if let Some(purge) = step.get("purge") {
+            keys(step, "a step", &["space", "reference_only", "purge"])?;
+            keys(purge, "purge", &["at_ms"])?;
+            let at_ms = req(opt_i64(purge, "at_ms"), "at_ms")?;
+            self.spaces
+                .get_mut(&space)
+                .ok_or_else(|| format!("unknown space {space}"))?
+                .collect_garbage(at_ms);
+            return Ok(());
+        }
         if let Some(restore) = step.get("restore_storage") {
             keys(
                 step,
@@ -1141,15 +1276,12 @@ impl Run {
                 &["space", "reference_only", "restore_storage"],
             )?;
             let to = req(opt_u64(restore, "to_step"), "to_step")?;
-            let stored = (self.stored.get(&(to, space.clone())).cloned())
-                .ok_or_else(|| format!("no storage was kept after step {to}"))?;
-            self.spaces.insert(space.clone(), stored.space);
-            match stored.top_seq {
-                Some(top_seq) => self.top_seq.insert(space.clone(), top_seq),
-                None => self.top_seq.remove(&space),
-            };
-            self.slots.retain(|(_, slot_space), _| *slot_space != space);
-            self.slots.extend(stored.slots);
+            return self.restore_storage(&space, to as usize);
+        }
+        if let Some(rebuild) = step.get("rebuild") {
+            keys(step, "a step", &["space", "reference_only", "rebuild"])?;
+            keys(rebuild, "rebuild", &["at_ms"])?;
+            req(opt_i64(rebuild, "at_ms"), "at_ms")?;
             return Ok(());
         }
         keys(
@@ -1279,15 +1411,17 @@ impl Run {
                 continue;
             }
             let allowed: &[&str] = match kind.as_str() {
-                "create_dir" => &["node", "parent", "name", "pending_for"],
+                "create_dir" => &["node", "parent", "name", "pending_for", "fields"],
                 "move" => &["node", "parent", "name", "pending_for", "from"],
                 "create_file" => &[
                     "node",
                     "parent",
                     "name",
                     "content",
+                    "pending_for",
                     "made_over",
                     "source_version_id",
+                    "fields",
                 ],
                 "update_content" => &[
                     "node",
@@ -1296,16 +1430,38 @@ impl Run {
                     "made_over",
                     "source_version_id",
                 ],
-                "delete" => &["node", "requires"],
+                "delete" => &["node", "requires", "unseen", "held"],
                 "restore" => &["node", "version", "parent", "name"],
                 "empty" => &[],
                 other => return Err(format!("unknown op {other}")),
             };
-            keys(body, kind, allowed)?;
+            keys(body, kind, &[allowed, &["intent"]].concat())?;
+            let intent = match body.get("intent") {
+                Some(intent) => Some(self.intent(space, intent, "intent")?),
+                None => None,
+            };
+            let fields = match body.get("fields") {
+                Some(given) => {
+                    keys(given, "fields", &INTENT_FIELDS)?;
+                    let mut field = |name: &str| match given.get(name) {
+                        Some(value) => self
+                            .intent(space, value, &format!("fields.{name}"))
+                            .map(Some),
+                        None => Ok(None),
+                    };
+                    Some(FieldIntents {
+                        place: field("place")?,
+                        content: field("content")?,
+                        status: field("status")?,
+                    })
+                }
+                None => None,
+            };
             if kind == "empty" {
                 ops.push(Op {
                     op: None,
-                    ..Default::default()
+                    intent,
+                    fields,
                 });
                 continue;
             }
@@ -1316,16 +1472,25 @@ impl Run {
             };
             let name = opt_str(body, "name")?.unwrap_or_default().to_owned();
             let pending_for = opt_str(body, "pending_for")?.unwrap_or_default().to_owned();
-            let made_over = match opt_list(body, "made_over")? {
-                Some(list) => (strings(list, "made_over")?.into_iter())
-                    .map(|symbol| self.id(space, symbol))
-                    .collect::<Result<_, _>>()?,
-                None => Vec::new(),
-            };
+            let made_over = strings(
+                opt_list(body, "made_over")?.map_or(&[][..], Vec::as_slice),
+                "made_over",
+            )?
+            .into_iter()
+            .map(|symbol| self.id(space, symbol))
+            .collect::<Result<Vec<_>, _>>()?;
             let source_version_id = match opt_str(body, "source_version_id")? {
                 Some(symbol) => self.id(space, symbol)?,
                 None => String::new(),
             };
+            let mut intent_ids = |field: &str| -> Result<Vec<Vec<u8>>, String> {
+                strings(opt_list(body, field)?.map_or(&[][..], Vec::as_slice), field)?
+                    .into_iter()
+                    .map(|symbol| self.intent_id(space, symbol))
+                    .collect()
+            };
+            let unseen = intent_ids("unseen")?;
+            let held = intent_ids("held")?;
             let mut content = || -> Result<Option<Content>, String> {
                 let Some(symbol) = opt_str(body, "content")? else {
                     return Ok(None);
@@ -1347,7 +1512,7 @@ impl Run {
                     parent_id: parent,
                     name,
                     content: Some(req(content(), "content")?),
-                    ..Default::default()
+                    pending_for,
                 }),
                 "update_content" => op::Op::UpdateContent(UpdateContent {
                     made_over,
@@ -1386,6 +1551,8 @@ impl Run {
                             })
                         }
                     },
+                    unseen,
+                    held,
                     ..Default::default()
                 }),
                 _ => op::Op::Restore(Restore {
@@ -1400,7 +1567,8 @@ impl Run {
             };
             ops.push(Op {
                 op: Some(op),
-                ..Default::default()
+                intent,
+                fields,
             });
         }
         Ok((ops, contents))
@@ -1767,17 +1935,10 @@ impl Run {
                     }
                 }
                 if let Some(changed) = opt_list(expect, "changed")? {
-                    let want = self.known_set(space, changed, "changed")?;
                     let got: BTreeSet<String> = node_states(&result.changes)
                         .map(|n| n.node_id.clone())
                         .collect();
-                    if got != want {
-                        return Err(format!(
-                            "changed {:?}, expected {:?}",
-                            self.names(&got),
-                            self.names(&want)
-                        ));
-                    }
+                    self.expect_set(space, changed, &got, "changed")?;
                 }
                 Ok(())
             }
@@ -1906,8 +2067,59 @@ impl Run {
         }
     }
 
+    fn check_lineage(
+        &mut self,
+        space: &str,
+        want: &Value,
+        got: &VersionInfo,
+        always: bool,
+    ) -> Outcome {
+        let made_over = opt_list(want, "made_over")?;
+        if always || made_over.is_some() {
+            let ids = strings(made_over.map_or(&[][..], Vec::as_slice), "made_over")?;
+            if ids.len() != got.made_over.len() {
+                return Err(format!(
+                    "made_over has {} IDs, expected {}",
+                    got.made_over.len(),
+                    ids.len()
+                ));
+            }
+            for (index, (symbol, id)) in ids.iter().zip(&got.made_over).enumerate() {
+                self.expect_id(space, symbol, id)
+                    .map_err(|e| format!("made_over {}: {e}", index + 1))?;
+            }
+        }
+        match opt_str(want, "source_version_id")? {
+            Some(source) if !source.is_empty() => {
+                if got.source_version_id.is_empty() {
+                    return Err(format!("no source_version_id, expected {source}"));
+                }
+                self.expect_id(space, source, &got.source_version_id)
+                    .map_err(|e| format!("source_version_id: {e}"))
+            }
+            source if (always || source.is_some()) && !got.source_version_id.is_empty() => {
+                Err(format!(
+                    "source_version_id {:?}, expected none",
+                    got.source_version_id
+                ))
+            }
+            _ => Ok(()),
+        }
+    }
+
     fn check_version(&mut self, space: &str, got: &VersionInfo, want: &Value) -> Outcome {
-        keys(want, "a version", &["version", "seq", "content"])?;
+        keys(
+            want,
+            "a version",
+            &[
+                "version",
+                "seq",
+                "content",
+                "made_over",
+                "source_version_id",
+            ],
+        )?;
+        self.check_lineage(space, want, got, false)?;
         if let Some(seq) = opt_u64(want, "seq")?
             && got.seq != seq
         {
@@ -2033,14 +2245,7 @@ impl Run {
                 .filter(|n| n.status == NodeStatus::Live as i32 && n.node_id != root)
                 .map(|n| n.node_id)
                 .collect();
-            let want = self.known_set(space, live, "live")?;
-            if got != want {
-                return Err(format!(
-                    "live nodes {:?}, expected {:?}",
-                    self.names(&got),
-                    self.names(&want)
-                ));
-            }
+            self.expect_set(space, live, &got, "live nodes")?;
         }
         if known {
             Ok(())
@@ -2074,22 +2279,15 @@ impl Run {
         got: &NodeState,
         complete: bool,
     ) -> Outcome {
+        const OPTIONAL: &[&str] = &["edit_rev", "meta_edit_rev", "intents", "trash_held"];
         if complete {
-            keys(
-                want,
-                "a node",
-                &[NODE_FIELDS, &["edit_rev", "meta_edit_rev"]].concat(),
-            )?;
+            keys(want, "a node", &[NODE_FIELDS, OPTIONAL].concat())?;
             every(want, NODE_FIELDS)?;
         } else {
             keys(
                 want,
                 "a node",
-                &[
-                    NODE_FIELDS,
-                    &["absent", "content", "edit_rev", "meta_edit_rev"],
-                ]
-                .concat(),
+                &[NODE_FIELDS, OPTIONAL, &["absent", "content"]].concat(),
             )?;
         }
         let NodeState {
@@ -2106,8 +2304,8 @@ impl Run {
             edit_rev,
             pending_for,
             pending_by,
-            intents: _,
-            trash_held: _,
+            intents,
+            trash_held,
             git_tracked: _,
             git_tracked_rev: _,
         } = got;
@@ -2196,6 +2394,24 @@ impl Run {
             self.check_content(current.as_ref().and_then(|v| v.content.as_ref()), content)
                 .map_err(|e| format!("{symbol}: {e}"))?;
         }
+        if let Some(wanted) = want.get("intents") {
+            self.check_intents(space, wanted, intents.as_ref())
+                .map_err(|e| format!("{symbol}.intents: {e}"))?;
+        }
+        if let Some(held) = opt_list(want, "trash_held")? {
+            let wanted = strings(held, "trash_held")?
+                .into_iter()
+                .map(|symbol| self.known(space, symbol))
+                .collect::<Result<BTreeSet<String>, String>>()?;
+            let found: BTreeSet<String> = trash_held.iter().map(|id| hex(id)).collect();
+            if found != wanted {
+                return Err(format!(
+                    "{symbol}.trash_held is {:?}, expected {:?}",
+                    self.names(&found),
+                    self.names(&wanted)
+                ));
+            }
+        }
         match (want.get("current"), current) {
             (None, _) | (Some(Value::Null), None) => Ok(()),
             (Some(Value::Null), Some(_)) => {
@@ -2208,9 +2424,95 @@ impl Run {
         }
     }
 
+    fn check_intents(
+        &mut self,
+        space: &str,
+        wanted: &Value,
+        got: Option<&FieldIntents>,
+    ) -> Outcome {
+        keys(wanted, "intents", &INTENT_FIELDS)?;
+        for field in INTENT_FIELDS {
+            let Some(want) = wanted.get(field) else {
+                continue;
+            };
+            let intent = got.and_then(|got| match field {
+                "place" => got.place.as_ref(),
+                "content" => got.content.as_ref(),
+                _ => got.status.as_ref(),
+            });
+            self.check_intent(space, want, intent)
+                .map_err(|e| format!("{field}: {e}"))?;
+        }
+        Ok(())
+    }
+
+    fn check_intent(&mut self, space: &str, want: &Value, got: Option<&Intent>) -> Outcome {
+        if want.is_null() {
+            return match got {
+                Some(intent) => Err(format!("an intent {}, expected none", hex(&intent.id))),
+                None => Ok(()),
+            };
+        }
+        keys(
+            want,
+            "an intent",
+            &["id", "author", "replay", "over", "applied_at_ms"],
+        )?;
+        let Intent {
+            id,
+            author_device_id,
+            replay,
+            over,
+            applied_at_ms,
+        } = got.ok_or("no intent")?;
+        if id.is_empty() {
+            return Err("an intent with an empty id".into());
+        }
+        match opt_str(want, "over")? {
+            Some(symbol) => self
+                .expect_id(space, symbol, &hex(over))
+                .map_err(|e| format!("over: {e}"))?,
+            None if !over.is_empty() => return Err(format!("over {}, expected none", hex(over))),
+            None => {}
+        }
+        if let Some(symbol) = opt_str(want, "id")? {
+            self.expect_id(space, symbol, &hex(id))
+                .map_err(|e| format!("id: {e}"))?;
+        }
+        if let Some(author) = opt_str(want, "author")?
+            && *author_device_id != self.author(author)?
+        {
+            let got = match author_device_id.as_str() {
+                "" => "empty".to_owned(),
+                device_id => self
+                    .device_symbol(device_id)
+                    .unwrap_or(device_id.to_owned()),
+            };
+            let want = if author.is_empty() { "empty" } else { author };
+            return Err(format!("author {got}, expected {want}"));
+        }
+        if let Some(want) = opt_bool(want, "replay")?
+            && *replay != want
+        {
+            return Err(format!("replay {replay}, expected {want}"));
+        }
+        if let Some(at) = opt_i64(want, "applied_at_ms")?
+            && *applied_at_ms != at
+        {
+            return Err(format!("applied_at_ms {applied_at_ms}, expected {at}"));
+        }
+        Ok(())
+    }
+
     fn check_current(&mut self, space: &str, want: &Value, got: &VersionInfo) -> Outcome {
-        keys(want, "a current version", CURRENT_FIELDS)?;
+        let lineage = ["made_over", "source_version_id"];
+        keys(
+            want,
+            "a current version",
+            &[CURRENT_FIELDS, &lineage].concat(),
+        )?;
         every(want, CURRENT_FIELDS)?;
+        self.check_lineage(space, want, got, true)?;
         let VersionInfo {
             made_over: _,
             source_version_id: _,

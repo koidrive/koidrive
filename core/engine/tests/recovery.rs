@@ -10,6 +10,7 @@ use koidrive_engine::effects::{BatchLimit, Effect, EffectRecord, Effects};
 use koidrive_engine::first_link::{History, Log, LogRead, Marks, PriorSync};
 use koidrive_engine::ids::IdGen;
 use koidrive_engine::ignore::{RuleFile, Source};
+use koidrive_engine::journal::{Author, Field, FieldIntent, IntentId, NodeIntents, Value};
 use koidrive_engine::names::{nfc, same_name};
 use koidrive_engine::question::{
     Answer, Question, QuestionKind, RecoveryCause, RecoveryGroup, RecoveryTrigger,
@@ -60,7 +61,7 @@ fn dir(parent: &str, name: &str) -> Shape {
 struct Remote<'a>(&'a str, Shape, bool, u64);
 
 fn trees(local: &[(&str, Shape)], synced: &[(&str, Shape)], remote: &[Remote]) -> Trees {
-    let mut trees = Trees::new(ROOT);
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
     for (ino, (id, shape)) in local.iter().enumerate() {
         let node = LocalNode {
             left_out_when_placed: false,
@@ -93,6 +94,7 @@ fn trees(local: &[(&str, Shape)], synced: &[(&str, Shape)], remote: &[Remote]) -
             pending_for: None,
             pending_by: None,
             chunks: Box::default(),
+            intents: None,
         };
         trees.set_remote((*id).into(), node);
     }
@@ -294,6 +296,7 @@ fn restored_under(made_over: &[&str]) -> Trees {
         pending_for: None,
         pending_by: None,
         chunks: Box::default(),
+        intents: None,
     };
     trees.set_remote("n".into(), version(2, "v2", made_over));
     trees.set_synced("n".into(), Some(file(ROOT, "a", 2)));
@@ -383,6 +386,7 @@ fn server_version(shape: Shape, version_id: &str, made_over: &[&str], rev: u64) 
         pending_for: None,
         pending_by: None,
         chunks: Box::default(),
+        intents: None,
     }
 }
 
@@ -661,6 +665,7 @@ fn an_answer_whose_commit_finds_the_head_moved_is_asked_again() {
             pending_for: None,
             pending_by: None,
             chunks: Box::default(),
+            intents: None,
         },
     );
     trees.settle(commits.aliases());
@@ -714,6 +719,7 @@ fn a_question_asked_again_names_the_cause_of_its_recovery() {
             pending_for: None,
             pending_by: None,
             chunks: Box::default(),
+            intents: None,
         },
     );
     trees.settle(commits.aliases());
@@ -863,6 +869,7 @@ fn keeping_a_folder_sends_an_edit_in_it_and_still_moves_the_file_where_the_rewin
             pending_for: None,
             pending_by: None,
             chunks: Box::default(),
+            intents: None,
         },
     );
     assert!(commits.acknowledge(&mut trees, 2));
@@ -1086,6 +1093,76 @@ fn a_folder_deleted_on_this_device_stays_held_while_a_file_in_it_lost_its_rename
     assert_eq!(effects(&mut trees, &mut ids), []);
 }
 
+fn deleted_while_the_store_was_behind(names: &[&str]) -> (Trees, Commits, IdGen, Question) {
+    let files: Vec<(&str, Shape)> = (names.iter()).map(|id| (*id, file(ROOT, id, 1))).collect();
+    let remote: Vec<Remote> = (files.iter())
+        .map(|(id, shape)| live(id, shape.clone()))
+        .collect();
+    let mut trees = trees(&files, &files, &remote);
+    for id in names {
+        trees.remove_local(&(*id).into());
+    }
+    let behind = RecoveryCause::of(RecoveryTrigger::StoreOlderThanDisk);
+    let (commits, ids) = recovered_after(&mut trees, 0, behind);
+    assert!(commits.halted().is_none());
+    let question = asked(&commits, RecoveryGroup::DeletedOnThisDevice, names);
+    (trees, commits, ids, question)
+}
+
+#[test]
+fn a_journal_backfill_records_no_delete_of_a_file_a_store_rollback_question_holds() {
+    let (mut trees, mut commits, mut ids, question) = deleted_while_the_store_was_behind(&["c"]);
+    trees.backfill(None, false, NOW);
+    assert!(trees.journal_row(&"c".into(), Field::Status).is_none());
+    assert!(commits.decide(&mut trees, &question.id, Answer::Restore));
+    assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
+    assert!(trees.journal_row(&"c".into(), Field::Status).is_none());
+}
+
+#[test]
+fn a_delete_answered_after_a_store_rollback_is_recorded_before_the_guard_lets_it_out() {
+    let names: Vec<String> = (0..20).map(|i| format!("f{i:02}")).collect();
+    let names: Vec<&str> = names.iter().map(String::as_str).collect();
+    let (mut trees, mut commits, mut ids, question) = deleted_while_the_store_was_behind(&names);
+    trees.backfill(None, false, NOW);
+    assert!(commits.decide(&mut trees, &question.id, Answer::Delete));
+    assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
+    let recorded: BTreeMap<String, IntentId> = (names.iter())
+        .map(|id| {
+            let row = trees
+                .journal_row(&(*id).into(), Field::Status)
+                .expect(id)
+                .into_owned();
+            assert_eq!(
+                (row.author, row.value),
+                (Author::Own, Value::Status { live: false })
+            );
+            ((*id).to_owned(), row.intent)
+        })
+        .collect();
+    let guard = (commits.questions().iter())
+        .find(|q| matches!(q.kind, QuestionKind::MassDelete { .. }))
+        .expect("the guard holds the deletions")
+        .id
+        .clone();
+    assert!(commits.decide(&mut trees, &guard, Answer::Delete));
+    commits.connected(&Welcome {
+        features: vec!["field_intents".into()],
+        ..Default::default()
+    });
+    let commit = (commits.build(&mut trees, &mut ids, NOW, NEW, "me", 1)).unwrap();
+    let sent: BTreeMap<String, IntentId> = (commit.ops.iter())
+        .map(|op| match &op.op {
+            Some(op::Op::Delete(delete)) => (
+                delete.node_id.clone(),
+                IntentId::from_bytes(&op.intent.as_ref().unwrap().id).unwrap(),
+            ),
+            other => panic!("{other:?}"),
+        })
+        .collect();
+    assert_eq!(sent, recorded);
+}
+
 fn deleted_after_a_rewind_to_an_older_version() -> (Trees, Commits, IdGen) {
     let mut trees = trees(&[], &[], &[]);
     trees.set_remote(
@@ -1107,9 +1184,20 @@ fn a_delete_answered_after_a_rewind_to_an_older_version_deletes_it() {
     assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
     let question = asked(&commits, RecoveryGroup::DeletedOnThisDevice, &["n"]);
     assert!(commits.decide(&mut trees, &question.id, Answer::Delete));
-    assert_eq!(
-        ops(&mut commits, &mut trees, &mut ids),
-        [("delete", "n".to_owned())]
+    commits.connected(&Welcome {
+        features: vec!["field_intents".into()],
+        ..Default::default()
+    });
+    let commit = commits
+        .build(&mut trees, &mut ids, NOW, NEW, "me", 1)
+        .unwrap();
+    assert!(commit.require_head);
+    assert!(
+        matches!(&commit.ops[..], [op] if matches!(&op.op,
+            Some(op::Op::Delete(delete)) if delete.node_id == "n" && delete.unseen.is_empty()
+        )),
+        "{:?}",
+        commit.ops
     );
     assert_eq!(effects(&mut trees, &mut ids), []);
 }
@@ -1118,6 +1206,10 @@ fn a_delete_answered_after_a_rewind_to_an_older_version_deletes_it() {
 fn a_delete_answered_after_a_rewind_keeps_another_devices_edit_of_either_version() {
     for over in ["v1", "v2"] {
         let (mut trees, mut commits, mut ids) = deleted_after_a_rewind_to_an_older_version();
+        commits.connected(&Welcome {
+            features: vec!["field_intents".into()],
+            ..Default::default()
+        });
         trees.set_remote(
             "n".into(),
             server_version(file(ROOT, "a", 3), "v3", &[over], 3),
@@ -1314,6 +1406,7 @@ fn an_entry_new_on_this_device_stays_held_when_another_device_sends_the_same_nod
             pending_for: None,
             pending_by: None,
             chunks: Box::default(),
+            intents: None,
         },
     );
     trees.settle(commits.aliases());
@@ -1366,6 +1459,7 @@ fn an_entry_like_the_servers_at_a_name_s_gives_another_node_is_held_and_s_stays_
             pending_for: None,
             pending_by: None,
             chunks: Box::default(),
+            intents: None,
         };
         trees.set_remote(id.into(), node);
     }
@@ -1381,7 +1475,7 @@ fn an_entry_like_the_servers_at_a_name_s_gives_another_node_is_held_and_s_stays_
         &mut IdGen::new(7),
         NOW,
     );
-    let mut synced = Trees::new(ROOT);
+    let mut synced = Trees::new(ROOT, &IdGen::new(0));
     for (id, shape) in trees.synced().iter() {
         synced.set_synced(id.clone(), Some(shape.clone()));
     }
@@ -1419,6 +1513,7 @@ fn a_held_node_another_device_publishes_stays_held_unless_it_ends_equal() {
                 pending_for: None,
                 pending_by: None,
                 chunks: Box::default(),
+                intents: None,
             },
         );
         trees.settle(commits.aliases());
@@ -1764,6 +1859,7 @@ fn a_discarded_file_in_a_kept_folder_the_server_merged_stays_discarded() {
             pending_for: None,
             pending_by: None,
             chunks: Box::default(),
+            intents: None,
         },
     );
     trees.settle(commits.aliases());
@@ -1815,6 +1911,7 @@ fn a_discarded_file_in_a_kept_folder_the_server_merged_is_not_moved_back_over_an
             pending_for: None,
             pending_by: None,
             chunks: Box::default(),
+            intents: None,
         },
     );
     trees.settle(commits.aliases());
@@ -1955,6 +2052,7 @@ fn a_name_the_disk_and_the_server_agree_on_at_recovery_is_not_sent_after_the_ser
         pending_for: None,
         pending_by: None,
         chunks: Box::default(),
+        intents: None,
     };
     trees.set_remote("n".into(), renamed);
     trees.settle(commits.aliases());
@@ -2119,6 +2217,7 @@ fn applied(commits: &mut Commits, trees: &mut Trees, seq: u64, nodes: &[(&str, S
             pending_for: None,
             pending_by: None,
             chunks: Box::default(),
+            intents: None,
         };
         trees.set_remote((*id).into(), node);
     }
@@ -2300,6 +2399,7 @@ fn a_child_an_answer_trashes_again_leaves_the_disk_and_is_not_sent_again() {
             pending_for: None,
             pending_by: None,
             chunks: Box::default(),
+            intents: None,
         };
         trees.set_remote(id.into(), node);
     }
@@ -2322,6 +2422,88 @@ fn a_child_an_answer_trashes_again_leaves_the_disk_and_is_not_sent_again() {
         "{done:?}"
     );
     assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
+}
+
+#[test]
+fn a_child_an_answer_trashes_again_is_deleted_under_the_trash_intent_with_what_the_trash_holds_as_seen()
+ {
+    let mut trees = trees(
+        &[("d", dir(ROOT, "new")), ("f", file("d", "child", 1))],
+        &[("d", dir(ROOT, "old")), ("f", file("d", "child", 1))],
+        &[
+            Remote("d", dir(ROOT, "old"), true, 1),
+            Remote("f", file("d", "child", 1), true, 1),
+        ],
+    );
+    let id = |n: u8| IntentId::from_bytes(&[n; 16]).unwrap();
+    let intent = |n: u8, author: &str| FieldIntent {
+        id: id(n),
+        author: author.into(),
+        replay: false,
+        applied_at_ms: 0,
+    };
+    for (node, n) in [("d", 10), ("f", 20)] {
+        let mut remote = trees.remote().get(&node.into()).unwrap().clone();
+        remote.intents = Some(NodeIntents {
+            place: Some(intent(n, "me")),
+            content: (node == "f").then(|| intent(n + 1, "me")),
+            status: Some(intent(1, "other")),
+            trash_over: Some(id(n + 2)),
+            trash_held: vec![id(n + 3)],
+        });
+        trees.set_remote(node.into(), remote);
+    }
+    let (mut commits, mut ids) = recovered(&mut trees, 0);
+    commits.connected(&Welcome {
+        features: vec!["field_intents".into()],
+        ..Default::default()
+    });
+    let question = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["d"]);
+    assert!(commits.decide(&mut trees, &question.id, Answer::Publish));
+    let commit = (commits
+        .build(&mut trees, &mut ids, NOW, NEW, "me", 1)
+        .cloned())
+    .unwrap();
+    let delete_of = |commit: &koidrive_proto::v1::Commit| {
+        (commit.ops.iter())
+            .find_map(|op| match &op.op {
+                Some(op::Op::Delete(delete)) => Some((op.intent.clone(), delete.clone())),
+                _ => None,
+            })
+            .unwrap()
+    };
+    let (trash, delete) = delete_of(&commit);
+    assert_eq!(delete.node_id, "f");
+    let trash = trash.unwrap();
+    assert_eq!(
+        (trash.id, trash.author_device_id.as_str()),
+        (vec![1; 16], "other")
+    );
+    assert!(delete.unseen.is_empty(), "{:?}", delete.unseen);
+    let held: BTreeSet<Vec<u8>> = delete.held.iter().cloned().collect();
+    assert!(
+        held.contains(&vec![22; 16]) && held.contains(&vec![23; 16]),
+        "{held:?}"
+    );
+    let mut edited = trees.remote().get(&"f".into()).unwrap().clone();
+    if let Some(intents) = edited.intents.as_mut() {
+        intents.content = Some(intent(30, "another"));
+        intents.trash_held.push(id(31));
+    }
+    trees.set_remote("f".into(), edited);
+    assert!(
+        commits
+            .build(&mut trees, &mut ids, NOW, NEW, "me", 1)
+            .is_none()
+    );
+    let welcome = Welcome {
+        history_id: NEW.into(),
+        device_seq: commits.accepted(),
+        features: vec!["field_intents".into()],
+        ..Default::default()
+    };
+    assert_eq!(commits.connected(&welcome), Reconnect::Resend);
+    assert_eq!(delete_of(&commits.in_flight().unwrap().commit).1, delete);
 }
 
 #[test]
@@ -2775,7 +2957,7 @@ fn a_folder_a_user_named_like_a_pending_name_is_created_again_unmarked_after_a_r
 #[test]
 fn a_mark_s_dropped_is_sent_with_the_create_after_a_restart() {
     let before = dropped_from_s();
-    let mut trees = Trees::new(ROOT);
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
     for (id, node) in before.local().iter() {
         trees.set_local(id.clone(), node.clone());
     }
@@ -2930,6 +3112,7 @@ fn a_removal_planned_before_a_rewind_leaves_a_kept_file_once_the_server_has_it()
         pending_for: None,
         pending_by: None,
         chunks: Box::default(),
+        intents: None,
     };
     trees.set_remote("x".into(), sent);
     let applied = OpResult {
@@ -3041,6 +3224,7 @@ fn a_mark_s_dropped_goes_once_r_holds_the_folder() {
         pending_by: Some("me".into()),
         edit_rev: 5,
         chunks: Box::default(),
+        intents: None,
     };
     trees.set_remote("p".into(), node);
     trees.settle(&Default::default());
@@ -5166,6 +5350,7 @@ fn written_elsewhere(trees: &mut Trees, id: &str, shape: Shape, seq: u64) {
         pending_for: None,
         pending_by: None,
         chunks: Box::default(),
+        intents: None,
     };
     trees.set_remote(id.into(), node);
     trees.settle(&Default::default());
@@ -5265,6 +5450,7 @@ fn a_given_up_file_another_device_edits_before_the_answer_is_acknowledged_is_kep
         pending_for: None,
         pending_by: None,
         chunks: Box::default(),
+        intents: None,
     };
     trees.set_remote("d".into(), revived(dir(ROOT, "new"), 1));
     trees.set_remote("e".into(), revived(dir("d", "e"), 1));
@@ -5666,6 +5852,7 @@ fn files_another_device_changes_after_an_answer_gave_them_up_count_in_the_space_
             version_id: String::new(),
             pending_for: None,
             pending_by: None,
+            intents: None,
         };
         trees.set_remote(NodeId::from(id.as_str()), node);
     }
@@ -6049,7 +6236,7 @@ fn p7_after_another_device_trashed_the_destinations_old_folder(keep_require_head
             .collect(),
     );
     other(&mut space, vec![delete(&a)]);
-    let mut trees = Trees::new(&root);
+    let mut trees = Trees::new(&root, &IdGen::new(0));
     let local = [
         (&a, &root, "new"),
         (&c, &a, "c"),
@@ -6291,6 +6478,7 @@ fn replayed(
                 pending_for: None,
                 pending_by: None,
                 chunks: Box::default(),
+                intents: None,
             });
             (node.shape.parent, node.shape.name, node.trashed) = (parent, name, false);
             node.meta_rev = seq;
@@ -6807,7 +6995,7 @@ fn a_published_folder_whose_child_another_device_moves_before_the_commit_is_aske
             trees.set_remote(id, held);
         }
     };
-    let mut trees = Trees::new(&root);
+    let mut trees = Trees::new(&root, &IdGen::new(0));
     for (ino, (id, parent, name)) in made.iter().enumerate() {
         let local = match *id == &d {
             true => dir(parent, "new"),
@@ -6937,4 +7125,47 @@ fn a_published_folder_whose_child_another_device_moves_before_the_commit_is_aske
 
 fn in_flight(commits: &Commits) -> Option<&str> {
     (commits.in_flight()).map(|flight| flight.commit.commit_id.as_str())
+}
+
+#[test]
+fn a_delete_answer_records_no_status_row_for_an_entry_the_rules_leave_out() {
+    let files: Vec<(&str, Shape)> = vec![
+        ("d", dir(ROOT, "d")),
+        ("c", file("d", "c", 1)),
+        ("n", dir("d", "node_modules")),
+        ("x", file("n", "x.js", 1)),
+    ];
+    let remote: Vec<Remote> = files.iter().map(|(id, s)| live(id, s.clone())).collect();
+    let mut trees = trees(&files, &files, &remote);
+    let rules = RuleFile::parse(b"node_modules/\n");
+    trees.set_rules(&[] as &[&str; 0], Source::Koiignore, Some(rules));
+    trees.settle(&Default::default());
+    trees.rules_scanned();
+    for id in ["x", "n", "c", "d"] {
+        trees.remove_local(&id.into());
+    }
+    let behind = RecoveryCause::of(RecoveryTrigger::StoreOlderThanDisk);
+    let (mut commits, mut ids) = recovered_after(&mut trees, 0, behind);
+    let question = asked(
+        &commits,
+        RecoveryGroup::DeletedOnThisDevice,
+        &["c", "d", "n", "x"],
+    );
+    trees.backfill(None, false, NOW);
+    assert!(commits.decide(&mut trees, &question.id, Answer::Delete));
+    assert_eq!(
+        ops(&mut commits, &mut trees, &mut ids),
+        [("delete", "c".to_owned())]
+    );
+    let status =
+        |id: &str| (trees.journal_row(&id.into(), Field::Status)).map(|row| row.value.clone());
+    assert_eq!(status("c"), Some(Value::Status { live: false }));
+    for id in ["n", "x"] {
+        assert!(trees.unobserved(&id.into()), "{id}");
+        assert_eq!(
+            status(id),
+            None,
+            "{id} is left out by the rules, so the user deleted nothing there"
+        );
+    }
 }

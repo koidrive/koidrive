@@ -16,6 +16,7 @@ serde = ["dep:serde"]
 koidrive-ignore = { path = "../ignore" }
 koidrive-proto = { path = "../proto" }
 prost.workspace = true
+sha1 = "0.11"
 serde = { version = "1.0.229", features = ["derive"], optional = true }
 siphasher = "1"
 unicode-normalization = "0.1"
@@ -24,4 +25,5 @@ unicode-normalization = "0.1"
 koidrive-sim = { path = "../sim" }
 koidrive-test-support = { path = "../test-support" }
 proptest = "1.12.0"
+serde_json = "1.0.154"
 sha2 = "0.11.1"

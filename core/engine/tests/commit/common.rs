@@ -17,6 +17,8 @@ use koidrive_engine::ids::IdGen;
 
 use koidrive_engine::ignore::RuleFile;
 
+use koidrive_engine::journal::{Field, RowState};
+
 use koidrive_engine::names::{MAX_NAME_BYTES, nfc, normalize_name};
 
 use koidrive_engine::state::{CommitsState, FinishOrigin, MovedHere, PendingFinish, TreesState};
@@ -75,6 +77,7 @@ fn remote(shape: Shape) -> RemoteNode {
         edit_rev: 1,
         pending_for: None,
         pending_by: None,
+        intents: None,
     }
 }
 
@@ -116,9 +119,8 @@ type Row = (
     Option<RemoteNode>,
 );
 
-/// Trees from (node, L, S, R) rows.
 fn trees(nodes: &[Row]) -> Trees {
-    let mut trees = Trees::new(ROOT);
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
     for (i, (id, l, s, r)) in nodes.iter().enumerate() {
         if let Some(shape) = l {
             trees.set_local((*id).into(), local(shape.clone(), i as u128 + 1));
@@ -769,7 +771,11 @@ fn effects_for(trees: &mut Trees, ids: &mut IdGen, node: &str) -> Vec<Effect> {
 /// it took after the commit was built, so the user's 1 is an edit of its own and is kept beside
 /// the other device's 3. With `restart`, the commit side is restored from its stored state
 /// between the send and the acknowledgement.
-fn a_late_acknowledgement_keeps_the_content_s_took_since(restart: bool, overtaken: bool) {
+fn a_late_acknowledgement_keeps_the_content_s_took_since(
+    restart: bool,
+    overtaken: bool,
+    code: op_result::Code,
+) {
     let mut trees = trees(&[(
         "n",
         Some(file(ROOT, "a", 1)),
@@ -793,11 +799,7 @@ fn a_late_acknowledgement_keeps_the_content_s_took_since(restart: bool, overtake
         trees.restore(trees.state()).unwrap();
         trees.rules_scanned();
     }
-    acknowledge(
-        &mut commits,
-        &mut trees,
-        vec![outcome(op_result::Code::Applied)],
-    );
+    acknowledge(&mut commits, &mut trees, vec![outcome(code)]);
     assert_eq!(trees.synced().live(&"n".into()), Some(&file(ROOT, "a", 2)));
     trees.set_remote("n".into(), remote(file(ROOT, "a", 3)));
     trees.settle(commits.aliases());

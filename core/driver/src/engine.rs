@@ -18,6 +18,7 @@ use koidrive_engine::commit::{Base, Commits, Halt};
 use koidrive_engine::effects::Effects;
 use koidrive_engine::first_link::Log;
 use koidrive_engine::ids::{IdGen, unix_ms};
+use koidrive_engine::journal::NodeIntents;
 use koidrive_engine::question as engine;
 use koidrive_engine::restore::RestoreIntent;
 use koidrive_engine::state::TempBirth;
@@ -30,7 +31,9 @@ use koidrive_proto::v1::{
     CaughtUp, ChangeRecord, ChunkRef, CommitRecord, NodeKind, NodeState, TrashPage, TreePage,
     change_record,
 };
-use koidrive_store::{Cursor, EngineChanges, EngineState, Error, StoredQuestion, SyncedNode, Tx};
+use koidrive_store::{
+    Cursor, EngineChanges, EngineState, Error, Store, StoredQuestion, SyncedNode, Tx,
+};
 
 use crate::ItemKind;
 use crate::disk::Stop;
@@ -87,15 +90,56 @@ pub(crate) enum Applied {
 }
 
 impl Engine {
-    /// The engine state of the space whose root node is `root`, as the store holds it. A space that never stored an
-    /// ID generator gets one with a random seed.
     pub fn load(tx: &Tx<'_>, root: &str) -> Result<Self, Error> {
         let mut stored = Stored::new(root);
         let whole = stored.read_unless(tx, root, &|| false)?;
         assert!(whole, "a read nobody abandons reads every row");
-        stored
-            .engine_unless(&|| false)
-            .map(|engine| engine.expect("a load nobody abandons ends with the engine"))
+        let mut engine = (stored.engine_unless(&|| false)?)
+            .expect("a load nobody abandons ends with the engine");
+        engine.backfill_journal(tx)?;
+        Ok(engine)
+    }
+
+    pub fn load_from(
+        store: &mut Store,
+        root: &str,
+        abandoned: &dyn Fn() -> bool,
+    ) -> Result<Option<Self>, Error> {
+        let load = |tx: &Tx<'_>| {
+            let mut stored = Stored::new(root);
+            if !stored.read_unless(tx, root, abandoned)? {
+                return Ok(None);
+            }
+            let Some(mut engine) = stored.engine_unless(abandoned)? else {
+                return Ok(None);
+            };
+            engine.backfill_journal(tx)?;
+            Ok(Some(engine))
+        };
+        if store.read(|tx| tx.journal_backfill_owed())? {
+            store.transaction(load)
+        } else {
+            store.read(load)
+        }
+    }
+
+    pub fn backfill_journal(&mut self, tx: &Tx<'_>) -> Result<(), Error> {
+        if !tx.journal_backfill_owed()? {
+            return Ok(());
+        }
+        let recovering = matches!(self.commits.halted(), Some(Halt::Recovery { .. }));
+        self.trees.backfill(
+            self.commits.in_flight(),
+            recovering,
+            crate::driver::now_ms() as u64,
+        );
+        tx.write_engine_changes(&EngineChanges {
+            trees: self.trees.take_changes(),
+            commits: Default::default(),
+            effects: Default::default(),
+        })?;
+        tx.journal_backfilled()?;
+        Ok(())
     }
 
     /// Ends a step that changed the engine, inside the step's transaction. It settles the trees, then writes the L
@@ -148,14 +192,24 @@ impl Engine {
         self.stored_owed.clone_from(&self.owed);
         for id in &changed.synced {
             match self.trees.synced().get(id) {
-                Some(shape) => tx.put_synced_node(&SyncedNode {
-                    node_id: id.clone(),
-                    shape: stored_shape(shape, &[]),
-                    pending_for: self.trees.synced_mark(id).unwrap_or_default().to_owned(),
-                })?,
+                Some(shape) => {
+                    tx.put_synced_node(&SyncedNode {
+                        node_id: id.clone(),
+                        shape: stored_shape(shape, &[]),
+                        pending_for: self.trees.synced_mark(id).unwrap_or_default().to_owned(),
+                    })?;
+                    let intents = (self.trees.synced_intents_apart_from_remote(id))
+                        .map(NodeIntents::to_proto);
+                    tx.set_synced_intents(&id.to_string(), intents.as_ref())?;
+                }
                 None => {
                     tx.remove_synced_node(&id.to_string())?;
                 }
+            }
+            if let Some(intents) =
+                (self.trees.remote().get(id)).and_then(|node| node.intents.as_ref())
+            {
+                tx.set_remote_intents(&id.to_string(), Some(&intents.to_proto()))?;
             }
         }
         let changes = EngineChanges {
@@ -168,7 +222,7 @@ impl Engine {
         if let Some(questions) = changes.commits.questions {
             self.stored_questions = questions;
         }
-        tx.set_id_generator(&self.ids.state.to_le_bytes())
+        Ok(())
     }
 
     /// Takes the answers the person gave to the engine's questions (`Driver::answer`) and removes the rows of the
@@ -549,6 +603,9 @@ impl Engine {
                 at.seq
             )));
         }
+        self.trees
+            .journal_mut()
+            .set_clock(crate::driver::now_ms() as u64);
         let Some(cursor) = &mut self.cursor else {
             return Err(Stop::Protocol(
                 "a commit arrived before the space's tree was read".into(),
@@ -627,6 +684,10 @@ impl Engine {
         Ok(())
     }
 
+    pub fn owes_relist(&self) -> bool {
+        self.commits.field_intents() && !self.trees.journal().listed()
+    }
+
     /// Replaces R, in the store and in the trees, with a bootstrap's tree that the log has caught up, and sets the
     /// cursor. S and L stay, so the planner then moves what differs (design §4.4). When the server reported that it
     /// is behind the cursor ([`Engine::server_behind`]), it lost commits this device applied, and S forgets the
@@ -634,6 +695,9 @@ impl Engine {
     /// of this device it lost, so that they are sent again. A tree that is not valid stops the task before anything is
     /// replaced.
     pub fn replace_remote(&mut self, tx: &Tx<'_>, staging: Staging) -> Result<(), Stop> {
+        self.trees
+            .journal_mut()
+            .set_clock(crate::driver::now_ms() as u64);
         let behind = (self.cursor.as_ref()).is_some_and(|cursor| cursor.ahead_of_server);
         let trashed = self.trees.trashed_here();
         let edited = self.trees.edited_here();
@@ -654,6 +718,9 @@ impl Engine {
                 "the tree the server listed is not a valid tree: {error:?}"
             ))
         })?;
+        if self.owes_relist() {
+            self.trees.take_listed_intents(&tree);
+        }
         let gone: Vec<NodeId> = (self.trees.remote().iter())
             .map(|(id, _)| id)
             .filter(|id| tree.get(id).is_none())
@@ -671,6 +738,7 @@ impl Engine {
             self.trees
                 .set_remote_place_id(&NodeId::from(&state.node_id), RemoteNode::place_id(state));
         }
+        self.trees.listed_without_journal_nodes();
         let recovering = matches!(self.commits.halted(), Some(Halt::Recovery { .. }));
         if !recovering {
             let commits = &self.commits;
@@ -948,6 +1016,7 @@ impl Engine {
     /// when its folder is in L or arrives in the batch, and keeps its entry otherwise ([`Trees::ignore_local`]); an
     /// entry L never held stays out.
     pub fn observe(&mut self, changes: &[Observed], now_ms: u64) -> BTreeSet<NodeId> {
+        self.trees.journal_mut().set_clock(now_ms);
         let unscanned = self.unscanned.take();
         let wait = 2 * DELETE_WAIT_MS;
         (self.renamed_away).retain(|_, (_, _, at, _)| now_ms < at.saturating_add(wait));
@@ -1908,7 +1977,7 @@ impl Engine {
                     self.trees.displace_local(&id, created)
                 }
                 (false, true) => self.trees.miss_local(&id),
-                (false, false) => self.trees.remove_local(&id),
+                (false, false) => self.trees.remove_local_by_user(&id),
             }
             touched.insert(id);
         }
@@ -1918,7 +1987,7 @@ impl Engine {
 pub(crate) struct Stored {
     trees: Trees,
     state: EngineState,
-    ids: Option<Vec<u8>>,
+    ids: IdGen,
     cursor: Option<Cursor>,
     mounts: BTreeMap<PathBuf, Mount>,
     unread: Option<BTreeMap<PathBuf, i64>>,
@@ -1928,12 +1997,15 @@ pub(crate) struct Stored {
 
 impl Stored {
     pub fn new(root: &str) -> Self {
-        let mut trees = Trees::new(root);
+        let ids = IdGen::new(
+            std::collections::hash_map::RandomState::new().hash_one(std::time::SystemTime::now()),
+        );
+        let mut trees = Trees::new(root, &ids);
         trees.skip_provenance_check();
         Stored {
             trees,
             state: EngineState::default(),
-            ids: None,
+            ids,
             cursor: None,
             mounts: BTreeMap::new(),
             unread: None,
@@ -1995,6 +2067,9 @@ impl Stored {
         if let Some(stopped) = stopped {
             return stopped;
         }
+        for (id, intents) in tx.synced_intents()? {
+            trees.set_synced_intents(&id, NodeIntents::from_proto(&intents));
+        }
         if abandoned() {
             return Ok(false);
         }
@@ -2037,7 +2112,6 @@ impl Stored {
         if stopped.is_some() || abandoned() {
             return Ok(false);
         }
-        self.ids = tx.id_generator()?;
         self.cursor = tx.cursor()?;
         self.mounts = tx.volume_mounts()?;
         self.unread = tx.unread_folders()?;
@@ -2071,18 +2145,9 @@ impl Stored {
             Commits::from_state(state.commits).map_err(|error| invalid(format!("{error:?}")))?;
         commits.hold(&mut trees);
         let effects = effects_of(state.effects)?;
-        let ids = match ids {
-            Some(bytes) => {
-                let state = <[u8; 8]>::try_from(bytes.as_slice()).map_err(|_| {
-                    invalid(format!("an ID generator state of {} bytes", bytes.len()))
-                })?;
-                IdGen::new(u64::from_le_bytes(state))
-            }
-            None => IdGen::new(
-                std::collections::hash_map::RandomState::new()
-                    .hash_one(std::time::SystemTime::now()),
-            ),
-        };
+        trees
+            .journal_mut()
+            .set_clock(crate::driver::now_ms() as u64);
         Ok(Some(Engine {
             trees,
             effects,
@@ -2970,7 +3035,7 @@ mod tests {
         batch: impl FnOnce(&mut Trees),
         takes: bool,
     ) -> Case {
-        let mut trees = Trees::new(ROOT);
+        let mut trees = Trees::new(ROOT, &IdGen::new(0));
         for (at, (id, synced, remote)) in nodes.iter().enumerate() {
             trees.set_synced((*id).into(), synced.clone());
             if let Some(shape) = synced {
@@ -2990,6 +3055,7 @@ mod tests {
                     pending_for: None,
                     pending_by: None,
                     chunks: Box::default(),
+                    intents: None,
                 };
                 trees.set_remote((*id).into(), node);
             }
@@ -3306,6 +3372,7 @@ mod tests {
                         pending_for: None,
                         pending_by: None,
                         chunks: Box::default(),
+                        intents: None,
                     };
                     trees.set_remote("d".into(), node);
                 },
@@ -3672,6 +3739,7 @@ mod tests {
                 pending_for: None,
                 pending_by: None,
                 chunks: Box::default(),
+                intents: None,
             };
             engine.trees.set_remote(id, node);
         }
@@ -5180,6 +5248,110 @@ mod tests {
     }
 
     #[test]
+    fn loads_of_one_stored_state_never_mint_the_same_id() {
+        let (_dir, mut store) = store();
+        let synced = koidrive_store::Shape {
+            parent_id: ROOT.into(),
+            name: "d".into(),
+            kind: NodeKind::Dir as i32,
+            content: None,
+        };
+        let renamed = koidrive_store::Shape {
+            name: "e".into(),
+            ..synced.clone()
+        };
+        let mut state = EngineState::default();
+        state.trees.dirty.insert("d".into());
+        store
+            .transaction(|tx| {
+                tx.put_synced_node(&SyncedNode {
+                    node_id: "d".into(),
+                    shape: synced.clone(),
+                    pending_for: String::new(),
+                })?;
+                tx.put_local_node(&koidrive_store::LocalNode {
+                    left_out_when_placed: false,
+                    content_from_server: false,
+                    node_id: "d".into(),
+                    shape: renamed,
+                    identity: ino(1),
+                    parked: false,
+                })?;
+                tx.set_engine_state(&state)
+            })
+            .unwrap();
+        let mut first = store.transaction(|tx| Engine::load(tx, ROOT)).unwrap();
+        let backfilled = first
+            .trees
+            .journal_row(&"d".into(), koidrive_engine::journal::Field::Place)
+            .unwrap()
+            .intent;
+        assert_ne!(
+            backfilled.as_bytes()[..6],
+            [0; 6],
+            "{backfilled} carries no time"
+        );
+        store.transaction(|tx| first.checkpoint(tx)).unwrap();
+        let mut minted = || {
+            let mut engine = store.transaction(|tx| Engine::load(tx, ROOT)).unwrap();
+            engine.trees.journal_mut().set_clock(1_800_000_000_000);
+            let intent = engine.trees.journal_mut().mint();
+            (intent, engine.ids.uuid_v7(1_800_000_000_000))
+        };
+        let (a, a_node) = minted();
+        let (b, b_node) = minted();
+        assert_ne!(a, b);
+        assert_ne!(a_node, b_node);
+    }
+
+    #[test]
+    fn a_store_from_an_earlier_release_gets_its_journal_once_when_it_loads() {
+        let (_dir, mut store) = store();
+        let shape = koidrive_store::Shape {
+            parent_id: ROOT.into(),
+            name: "d".into(),
+            kind: NodeKind::Dir as i32,
+            content: None,
+        };
+        let mut state = EngineState::default();
+        state.trees.lost_creates.insert("d".into());
+        state.trees.dirty.insert("d".into());
+        store
+            .transaction(|tx| {
+                tx.put_synced_node(&SyncedNode {
+                    node_id: "d".into(),
+                    shape: shape.clone(),
+                    pending_for: String::new(),
+                })?;
+                tx.put_local_node(&koidrive_store::LocalNode {
+                    left_out_when_placed: false,
+                    content_from_server: false,
+                    node_id: "d".into(),
+                    shape,
+                    identity: ino(1),
+                    parked: false,
+                })?;
+                tx.set_engine_state(&state)
+            })
+            .unwrap();
+        let rows = |engine: &Engine| {
+            (engine.trees.journal_rows())
+                .map(|(key, row)| (key, row.into_owned()))
+                .collect::<Vec<_>>()
+        };
+        let backfilled = store
+            .transaction(|tx| {
+                let engine = Engine::load(tx, ROOT)?;
+                assert!(!tx.journal_backfill_owed()?);
+                Ok::<_, Error>(rows(&engine))
+            })
+            .unwrap();
+        assert_eq!(backfilled.len(), 2);
+        let reloaded = store.transaction(|tx| Engine::load(tx, ROOT)).unwrap();
+        assert_eq!(rows(&reloaded), backfilled);
+    }
+
+    #[test]
     fn a_replayed_claim_of_an_edit_replaces_the_listed_node() {
         let listed_at = |edit_rev| NodeState {
             node_id: "f".into(),
@@ -5327,6 +5499,7 @@ mod tests {
                 pending_for: None,
                 pending_by: None,
                 chunks: Box::default(),
+                intents: None,
             };
             engine
                 .trees

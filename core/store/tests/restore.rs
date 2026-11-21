@@ -78,7 +78,7 @@ fn a_restore_is_neither_lost_nor_sent_twice_wherever_the_process_stops() {
     let db = dir.path().join("state.db");
     let (root, node, request) = (uuid_v7(1, 0), uuid_v7(1, 1), uuid_v7(2, 1));
     let intent = RestoreIntent::from_trash(NodeId::from(node), None, None).unwrap();
-    let (mut trees, mut ids) = (Trees::new(root), IdGen::new(1));
+    let (mut trees, mut ids) = (Trees::new(root, &IdGen::new(0)), IdGen::new(1));
     let queued = |commits: &Commits| commits.restores().keys().cloned().collect::<Vec<_>>();
     let sent = |commits: &Commits| commits.in_flight().map(|flight| flight.commit.clone());
 

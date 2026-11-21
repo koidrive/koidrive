@@ -1,0 +1,231 @@
+use std::collections::{BTreeMap, BTreeSet};
+use std::ops::Bound;
+
+use super::{Author, Field, HeldRow, IntentId, NodeId, Row, RowKey, RowState, Value};
+use crate::tracked::TrackedMap;
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(super) struct Rows {
+    full: TrackedMap<RowKey, Row>,
+    compact: BTreeMap<NodeId, [Option<Compact>; 3]>,
+    full_over: BTreeSet<(IntentId, RowKey)>,
+    compact_over: BTreeSet<(IntentId, RowKey)>,
+    under: BTreeSet<(NodeId, RowKey)>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+enum Compact {
+    Own { intent: IntentId, versioned: bool },
+    Row(Box<HeldRow>),
+}
+
+impl Compact {
+    fn of(held: HeldRow) -> Self {
+        let own = held.author == Author::Own
+            && held.base.is_none()
+            && held.held_as == held.intent
+            && held.wire_base.is_none()
+            && !held.replay;
+        match own {
+            true => Compact::Own {
+                intent: held.intent,
+                versioned: held.versioned,
+            },
+            false => Compact::Row(Box::new(held)),
+        }
+    }
+
+    fn held(&self) -> HeldRow {
+        match self {
+            Compact::Own { intent, versioned } => HeldRow {
+                intent: *intent,
+                author: Author::Own,
+                base: None,
+                held_as: *intent,
+                wire_base: None,
+                replay: false,
+                versioned: *versioned,
+            },
+            Compact::Row(held) => (**held).clone(),
+        }
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    pub(super) static VISITED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+fn visit<T>(_: &T) {
+    #[cfg(test)]
+    VISITED.with(|visited| visited.set(visited.get() + 1));
+}
+
+fn bases(row: &Row) -> impl Iterator<Item = IntentId> {
+    let flight = match &row.state {
+        RowState::Local {
+            flight: Some(flight),
+        } => flight.base,
+        _ => None,
+    };
+    row.base.into_iter().chain(flight)
+}
+
+fn parent(row: &Row) -> Option<&NodeId> {
+    match &row.value {
+        Value::Place(place) => Some(&place.parent),
+        _ => None,
+    }
+}
+
+fn index(
+    full_over: &mut BTreeSet<(IntentId, RowKey)>,
+    under: &mut BTreeSet<(NodeId, RowKey)>,
+    key: &RowKey,
+    row: &Row,
+) {
+    full_over.extend(bases(row).map(|base| (base, key.clone())));
+    under.extend(parent(row).map(|parent| (parent.clone(), key.clone())));
+}
+
+fn keys_of<T: Ord + Clone>(index: &BTreeSet<(T, RowKey)>, of: T) -> Vec<RowKey> {
+    let first = (of.clone(), (NodeId::from(""), Field::Place));
+    (index.range((Bound::Included(&first), Bound::Unbounded)))
+        .take_while(|(at, _)| *at == of)
+        .map(|(_, key)| key.clone())
+        .collect()
+}
+
+impl Rows {
+    pub(super) fn restore(full: BTreeMap<RowKey, Row>) -> Self {
+        let mut rows = Self::default();
+        for (key, row) in &full {
+            index(&mut rows.full_over, &mut rows.under, key, row);
+        }
+        Self {
+            full: full.into(),
+            ..rows
+        }
+    }
+
+    pub(super) fn get(&self, key: &RowKey) -> Option<&Row> {
+        self.full.get(key)
+    }
+
+    pub(super) fn get_compact(&self, (node, field): &RowKey) -> Option<HeldRow> {
+        self.compact.get(node)?[*field as usize]
+            .as_ref()
+            .map(Compact::held)
+    }
+
+    pub(super) fn iter(&self) -> impl Iterator<Item = (&RowKey, &Row)> {
+        self.full.iter().inspect(visit)
+    }
+
+    pub(super) fn iter_compact(&self) -> impl Iterator<Item = (RowKey, HeldRow)> {
+        (self.compact.iter()).flat_map(|(node, fields)| {
+            (Field::ALL.into_iter())
+                .filter_map(|field| {
+                    Some((
+                        (node.clone(), field),
+                        fields[field as usize].as_ref()?.held(),
+                    ))
+                })
+                .inspect(visit)
+        })
+    }
+
+    pub(super) fn full_over(&self, from: IntentId) -> Vec<RowKey> {
+        keys_of(&self.full_over, from)
+    }
+
+    pub(super) fn compact_over(&self, from: IntentId) -> Vec<RowKey> {
+        keys_of(&self.compact_over, from)
+    }
+
+    pub(super) fn under(&self, parent: &NodeId) -> Vec<RowKey> {
+        keys_of(&self.under, parent.to_owned())
+    }
+
+    pub(super) fn insert(&mut self, key: RowKey, row: Row) {
+        self.unindex(&key);
+        index(&mut self.full_over, &mut self.under, &key, &row);
+        self.full.insert(key, row);
+    }
+
+    pub(super) fn insert_quietly(&mut self, key: RowKey, row: Row) {
+        self.unindex(&key);
+        index(&mut self.full_over, &mut self.under, &key, &row);
+        self.full.insert_quietly(key, row);
+    }
+
+    pub(super) fn remove(&mut self, key: &RowKey) -> Option<Row> {
+        self.unindex(key);
+        self.full.remove(key)
+    }
+
+    pub(super) fn hand_off(&mut self, key: &RowKey) -> Option<(Row, bool)> {
+        self.unindex(key);
+        self.full.hand_off(key)
+    }
+
+    pub(super) fn update<T>(
+        &mut self,
+        key: &RowKey,
+        change: impl FnOnce(&mut Row) -> T,
+    ) -> Option<T> {
+        self.unindex(key);
+        let row = self.full.get_mut(key)?;
+        let changed = change(row);
+        index(&mut self.full_over, &mut self.under, key, row);
+        Some(changed)
+    }
+
+    pub(super) fn insert_compact(&mut self, key: RowKey, held: HeldRow) {
+        self.remove_compact(&key);
+        self.compact_over
+            .extend(held.base.map(|base| (base, key.clone())));
+        let (node, field) = key;
+        self.compact.entry(node).or_default()[field as usize] = Some(Compact::of(held));
+    }
+
+    pub(super) fn remove_compact(&mut self, key: &RowKey) -> Option<HeldRow> {
+        let (node, field) = key;
+        let fields = self.compact.get_mut(node)?;
+        let held = fields[*field as usize].take()?.held();
+        if fields.iter().all(Option::is_none) {
+            self.compact.remove(node);
+        }
+        if let Some(base) = held.base {
+            self.compact_over.remove(&(base, key.clone()));
+        }
+        Some(held)
+    }
+
+    pub(super) fn update_compact<T>(
+        &mut self,
+        key: &RowKey,
+        change: impl FnOnce(&mut HeldRow) -> T,
+    ) -> Option<T> {
+        let mut held = self.remove_compact(key)?;
+        let changed = change(&mut held);
+        self.insert_compact(key.clone(), held);
+        Some(changed)
+    }
+
+    pub(super) fn take_changes(&mut self) -> Vec<(RowKey, Option<Row>)> {
+        self.full.take_changes()
+    }
+
+    fn unindex(&mut self, key: &RowKey) {
+        let Some(row) = self.full.get(key) else {
+            return;
+        };
+        for base in bases(row) {
+            self.full_over.remove(&(base, key.clone()));
+        }
+        if let Some(parent) = parent(row) {
+            self.under.remove(&(parent.clone(), key.clone()));
+        }
+    }
+}

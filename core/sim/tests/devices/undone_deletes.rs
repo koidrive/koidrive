@@ -2,15 +2,6 @@
 
 use super::*;
 
-fn checked(devices: usize, phases: &[Vec<(usize, Step)>]) -> Result<World, Failure> {
-    let mut world = world(devices);
-    world.revived_deletes = true;
-    for (phase, schedule) in phases.iter().enumerate() {
-        world.phase(phase, schedule)?;
-    }
-    Ok(world)
-}
-
 #[test]
 #[ignore = "a delete gives way to the older value a restore brings back (GUN-864)"]
 fn a_delete_outlasts_a_restore_that_brings_back_an_older_value() {
@@ -23,7 +14,7 @@ fn a_delete_outlasts_a_restore_that_brings_back_an_older_value() {
             text: 0,
         })
     };
-    checked(
+    converge(
         2,
         &[
             vec![(0, u(1, 0, 0)), (0, BACKUP)],
@@ -47,7 +38,7 @@ fn a_delete_outlasts_a_restore_that_brings_back_an_older_value() {
 #[test]
 #[ignore = "a delete gives way to the older value a restore brings back (GUN-864)"]
 fn a_delete_outlasts_a_restore_after_another_device_renamed_the_file() {
-    checked(
+    converge(
         2,
         &[
             vec![(0, file("a")), (0, BACKUP)],
@@ -66,7 +57,7 @@ fn a_delete_outlasts_a_restore_after_another_device_renamed_the_file() {
 
 #[test]
 fn a_file_comes_back_when_a_restore_takes_a_delete_that_reached_the_server() {
-    let world = checked(
+    let world = converge(
         2,
         &[
             vec![(0, file("a"))],
@@ -98,7 +89,7 @@ fn deletes_reach_the_server_in(
         ..koidrive_test_support::regression_config(file, 0)
     });
     let result = runner.run(&cases, |(devices, phases)| {
-        checked(devices, &phases)
+        converge(devices, &phases)
             .map(drop)
             .map_err(|failure| TestCaseError::fail(failure.to_string()))
     });
@@ -140,30 +131,6 @@ fn deletes_reach_the_server_in_the_saved_gun_864_cases_across_server_restores() 
 }
 
 #[test]
-fn a_bystanders_store_rollback_leaves_another_devices_delete_checked() {
-    let failure = checked(
-        3,
-        &[
-            vec![(0, file("a")), (2, Step::CopyStore), (0, BACKUP)],
-            vec![(0, BACKUP), (0, overwrite(0)), (0, Step::RestoreEarlier)],
-            vec![(1, rename(0, 0, "c.txt"))],
-            vec![
-                (1, Step::Leave),
-                (0, delete(0)),
-                (2, Step::RollBack),
-                (0, Step::RestoreEarlier),
-                (0, RESTORE),
-            ],
-        ],
-    )
-    .err();
-    assert!(failure.is_some_and(|f| {
-        f.to_string()
-            .contains("the delete never reached the server")
-    }));
-}
-
-#[test]
 fn another_devices_copy_does_not_excuse_the_deleted_file() {
     let u = |kind, target, name| {
         Step::User(Action {
@@ -181,7 +148,7 @@ fn another_devices_copy_does_not_excuse_the_deleted_file() {
         name: 3,
         text: 0,
     });
-    let failure = checked(
+    let failure = converge(
         2,
         &[
             vec![(0, u(1, 0, 0)), (0, BACKUP)],
@@ -203,13 +170,13 @@ fn another_devices_copy_does_not_excuse_the_deleted_file() {
     .err();
     assert!(failure.is_some_and(|f| {
         f.to_string()
-            .contains("the delete never reached the server")
+            .contains("came undone, and no change its user did not see brought the node back")
     }));
 }
 
 #[test]
 fn a_restore_the_deleting_user_chooses_after_a_rewind_brings_the_file_back() {
-    checked(
+    converge(
         2,
         &[
             vec![
@@ -230,7 +197,7 @@ fn a_rename_another_device_owes_on_a_file_moved_into_the_deleted_folder_brings_i
         Check::DeleteUndone,
         "the delete of node 01a1c2c0-39a0-76b6-8f17-7744bb83aba9 on device 1 came undone, and no change its user did not see brought the node back",
     );
-    checked(
+    converge(
         2,
         &[
             vec![(0, file("a"))],
@@ -250,7 +217,7 @@ fn a_rename_another_device_owes_on_a_file_moved_into_the_deleted_folder_brings_i
 
 #[test]
 fn a_folder_another_device_renames_after_the_delete_keeps_its_file_once_moved_out() {
-    checked(
+    converge(
         2,
         &[
             vec![(0, folder("b"))],
@@ -286,7 +253,7 @@ fn a_deleted_conflict_copy_leaves_the_original_with_the_same_write() {
         Check::OneWriteOneNode,
         "write 2 is in 2 live nodes on the server: [[\"c (conflict from device-1 2026-11-09).txt\"], [\"c.txt\"]]",
     );
-    checked(
+    converge(
         3,
         &[
             vec![
@@ -311,7 +278,7 @@ fn a_rename_of_the_folder_above_that_its_user_never_saw_leaves_the_delete_checke
     renamed.extend(commit(1));
     renamed.push((0, delete(1)));
     renamed.extend(commit(0));
-    checked(
+    converge(
         2,
         &[
             vec![(0, folder("a")), (0, user(1, 0, 1, "b"))],
@@ -324,7 +291,7 @@ fn a_rename_of_the_folder_above_that_its_user_never_saw_leaves_the_delete_checke
 
 #[test]
 fn a_move_another_device_made_to_a_folder_moved_into_the_deleted_folder_keeps_its_file() {
-    checked(
+    converge(
         2,
         &[
             vec![(0, folder("b"))],
@@ -356,30 +323,6 @@ fn a_move_another_device_made_to_a_folder_moved_into_the_deleted_folder_keeps_it
 }
 
 #[test]
-fn another_devices_change_that_never_reaches_the_server_leaves_the_delete_checked() {
-    let failure = checked(
-        2,
-        &[
-            vec![(0, file("a")), (0, BACKUP)],
-            vec![(0, BACKUP), (0, overwrite(0)), (0, Step::RestoreEarlier)],
-            vec![(1, rename(0, 0, "c.txt"))],
-            vec![
-                (0, delete(0)),
-                (1, overwrite(0)),
-                (1, Step::Leave),
-                (0, Step::RestoreEarlier),
-                (0, RESTORE),
-            ],
-        ],
-    )
-    .err();
-    assert!(failure.is_some_and(|f| {
-        f.to_string()
-            .contains("the delete never reached the server")
-    }));
-}
-
-#[test]
 fn a_file_another_device_adds_to_the_deleted_folder_leaves_its_siblings_checked() {
     let _red = expect_red(
         Check::DeleteUndone,
@@ -388,7 +331,7 @@ fn a_file_another_device_adds_to_the_deleted_folder_leaves_its_siblings_checked(
     let mut deleted = vec![(0, BACKUP), (1, user(1, 0, 1, "c.txt")), (0, delete(0))];
     deleted.extend(commit(1));
     deleted.extend(commit(0));
-    checked(
+    converge(
         2,
         &[
             vec![(0, folder("b")), (0, user(1, 0, 1, "a"))],
@@ -412,7 +355,7 @@ fn a_rename_another_device_makes_to_a_folder_between_leaves_the_deleted_file_che
     let mut deleted = vec![(0, BACKUP), (1, rename(1, 1, "A")), (0, delete(0))];
     deleted.extend(commit(1));
     deleted.extend(commit(0));
-    checked(
+    converge(
         2,
         &[
             vec![
@@ -445,7 +388,7 @@ fn a_rename_another_device_sends_after_the_delete_brings_the_folder_back_with_it
         (1, COMMIT),
         (0, RESTORE),
     ];
-    checked(
+    converge(
         2,
         &[
             vec![
@@ -486,7 +429,7 @@ fn a_folder_another_device_puts_back_under_its_old_parent_keeps_the_file_the_del
         (0, COMMIT),
         (0, COMMIT),
     ]);
-    let world = checked(2, &[vec![(0, folder("b"))], moved, vec![(0, RESTORE)]]).unwrap();
+    let world = converge(2, &[vec![(0, folder("b"))], moved, vec![(0, RESTORE)]]).unwrap();
     for device in 0..2 {
         assert_eq!(
             held_files(&world, device),
@@ -522,7 +465,7 @@ fn a_folder_another_device_takes_back_out_of_the_deleted_folder_keeps_its_file()
     deleted.push((0, BACKUP));
     deleted.extend([(0, Step::Work(0)); 3]);
     deleted.push((1, COMMIT));
-    let world = checked(
+    let world = converge(
         2,
         &[
             vec![
@@ -575,7 +518,7 @@ fn a_file_another_device_adds_after_the_delete_leaves_the_deleted_file_checked()
         (1, COMMIT),
         (1, COMMIT),
     ];
-    checked(
+    converge(
         2,
         &[
             vec![
@@ -607,7 +550,7 @@ fn a_copy_another_device_sends_after_the_delete_leaves_the_deleted_file_checked(
         name: 6,
         text: 0,
     });
-    let world = checked(
+    let world = converge(
         2,
         &[
             vec![
@@ -640,7 +583,7 @@ fn a_copy_another_device_sends_after_the_delete_leaves_the_deleted_file_checked(
 
 #[test]
 fn a_file_another_device_adds_to_the_deleted_folder_brings_back_only_the_folder() {
-    let world = checked(
+    let world = converge(
         2,
         &[
             vec![
@@ -692,7 +635,7 @@ fn a_rename_of_a_folder_the_server_kept_leaves_the_deleted_file_checked() {
         (1, COMMIT),
         (1, COMMIT),
     ];
-    checked(
+    converge(
         2,
         &[
             vec![
@@ -707,36 +650,9 @@ fn a_rename_of_a_folder_the_server_kept_leaves_the_deleted_file_checked() {
     .unwrap();
 }
 
-fn reports_the_lost_delete(result: Result<World, Failure>) {
-    assert!(result.err().is_some_and(|failure| {
-        failure
-            .to_string()
-            .contains("the delete never reached the server")
-    }));
-}
-
-#[test]
-fn a_bystanders_store_rollback_before_the_delete_leaves_it_checked() {
-    reports_the_lost_delete(checked(
-        3,
-        &[
-            vec![(0, file("a")), (2, Step::CopyStore), (0, BACKUP)],
-            vec![(0, BACKUP), (0, overwrite(0)), (0, Step::RestoreEarlier)],
-            vec![(1, rename(0, 0, "c.txt"))],
-            vec![
-                (1, Step::Leave),
-                (2, Step::RollBack),
-                (0, delete(0)),
-                (0, Step::RestoreEarlier),
-                (0, RESTORE),
-            ],
-        ],
-    ));
-}
-
 #[test]
 fn a_delete_made_before_its_device_hears_of_a_restore_stays_checked() {
-    reports_the_lost_delete(checked(
+    let failure = converge(
         2,
         &[
             vec![(0, file("a")), (1, BACKUP)],
@@ -752,12 +668,17 @@ fn a_delete_made_before_its_device_hears_of_a_restore_stays_checked() {
                 (0, Step::Work(0)),
             ],
         ],
-    ));
+    )
+    .err();
+    assert!(failure.is_some_and(|f| {
+        f.to_string()
+            .contains("came undone, and no change its user did not see brought the node back")
+    }));
 }
 
 #[test]
 fn a_rename_another_device_makes_after_its_store_rollback_brings_the_file_back() {
-    let world = checked(
+    let world = converge(
         2,
         &[
             vec![(1, Step::CopyStore), (0, file("c.txt"))],
@@ -795,7 +716,7 @@ fn a_rename_and_back_the_deleting_device_never_saw_keeps_the_file() {
     deleted.push((0, rename(0, 0, "E\u{301}")));
     deleted.extend([(0, Step::Work(0)); 3]);
     deleted.extend([(1, delete(0)), (1, Step::Work(1)), (1, Step::Work(1))]);
-    let world = checked(2, &[vec![(0, act(1, 0, 0, "E\u{301}", 3))], deleted]).unwrap();
+    let world = converge(2, &[vec![(0, act(1, 0, 0, "E\u{301}", 3))], deleted]).unwrap();
     for (device, name) in [(0, "E\u{301}"), (1, "\u{c9}")] {
         assert_eq!(held_files(&world, device), [(name.to_owned(), 1)]);
     }
@@ -810,7 +731,7 @@ fn a_rename_the_deleting_device_received_but_never_applied_keeps_the_file() {
     let mut deleted = vec![(0, BACKUP), (0, rename(0, 0, "C.TXT"))];
     deleted.extend([(0, Step::Work(0)); 3]);
     deleted.extend([(1, DELIVER), (0, RESTORE), (1, delete(0))]);
-    let world = checked(
+    let world = converge(
         2,
         &[
             vec![
@@ -833,7 +754,7 @@ fn a_rename_the_deleting_device_received_but_never_applied_keeps_the_file() {
 
 #[test]
 fn a_delete_whose_device_leaves_before_sending_it_owes_nothing() {
-    checked(
+    converge(
         2,
         &[vec![(0, file("a"))], vec![(1, delete(0)), (1, Step::Leave)]],
     )
@@ -854,7 +775,7 @@ fn a_restore_after_the_deleting_device_leaves_brings_back_the_file_it_deleted_be
     deleted.push((0, BACKUP));
     deleted.extend(commit(0).into_iter().take(3));
     deleted.extend([(0, Step::Leave), (0, RESTORE)]);
-    let world = checked(2, &[vec![(0, file("a"))], deleted]).unwrap();
+    let world = converge(2, &[vec![(0, file("a"))], deleted]).unwrap();
     assert_eq!(
         held_files(&world, 1),
         [("a".to_owned(), 1), ("b".to_owned(), 1)]
@@ -878,13 +799,13 @@ fn a_rename_another_device_saves_over_before_it_leaves_keeps_the_file() {
         (1, Step::Leave),
         (0, RESTORE),
     ]);
-    let world = checked(2, &[vec![(0, file("a"))], renamed]).unwrap();
+    let world = converge(2, &[vec![(0, file("a"))], renamed]).unwrap();
     assert_eq!(held_files(&world, 0), [("c.txt".to_owned(), 1)]);
 }
 
 #[test]
 fn a_copy_the_engine_makes_after_a_store_rollback_keeps_the_deleted_write() {
-    checked(
+    converge(
         2,
         &[
             vec![
@@ -915,7 +836,7 @@ fn a_save_another_device_makes_after_the_delete_brings_the_file_back() {
     saved.extend(commit(1));
     saved.push((0, BACKUP));
     saved.extend(commit(0));
-    checked(2, &[vec![(0, file("a"))], saved, vec![(0, RESTORE)]]).unwrap();
+    converge(2, &[vec![(0, file("a"))], saved, vec![(0, RESTORE)]]).unwrap();
 }
 
 #[test]
@@ -924,7 +845,7 @@ fn a_sibling_edit_leaves_the_deleted_file_checked_after_the_deleting_device_leav
     deleted.extend(commit(1));
     deleted.extend(commit(0));
     deleted.push((0, Step::Leave));
-    checked(
+    converge(
         2,
         &[
             vec![
@@ -946,7 +867,7 @@ fn an_unsent_edit_of_the_file_leaves_the_delete_checked_after_the_deleting_devic
     renamed.push((0, delete(1)));
     renamed.extend(commit(0));
     renamed.extend([(1, overwrite(1)), (1, Step::Leave), (0, Step::Leave)]);
-    checked(
+    converge(
         2,
         &[
             vec![(0, folder("a")), (0, user(1, 0, 1, "b"))],
@@ -969,7 +890,7 @@ fn a_file_delete_sent_without_its_folder_stays_checked_after_the_deleting_device
     deleted.extend(commit(1));
     deleted.extend(commit(0));
     deleted.push((0, Step::Leave));
-    checked(
+    converge(
         2,
         &[
             vec![(0, folder("b")), (0, user(1, 0, 1, "a"))],
@@ -992,7 +913,7 @@ fn file_deletes_sent_one_by_one_stay_checked_after_the_deleting_device_leaves() 
     deleted.extend(commit(1));
     deleted.extend(commit(0));
     deleted.push((0, Step::Leave));
-    checked(
+    converge(
         2,
         &[
             vec![
@@ -1043,4 +964,28 @@ fn a_restore_answer_is_not_settled_by_a_delete_the_server_lost_from_a_device_tha
     schedule.push((0, Step::Answer(1)));
     world.run(2, &schedule).unwrap();
     world.phase(3, &[]).unwrap();
+}
+
+#[test]
+fn a_server_that_keeps_a_copy_of_a_write_the_delete_saw_is_caught() {
+    let mut world = world(2);
+    world.phase(0, &[(0, file("a"))]).unwrap();
+    world.phase(1, &[(0, overwrite(0))]).unwrap();
+    world.space_mut().copy_each_deleted_file();
+    let failure = world.phase(2, &[(1, delete(0))]).unwrap_err();
+    let node = |named: &str| {
+        (world.space().nodes().into_iter())
+            .find(|node| node.name.starts_with(named))
+            .unwrap()
+            .node_id
+    };
+    assert_eq!(
+        failure.to_string(),
+        format!(
+            "after phase 2: write 2 that the delete of node {} on device 1 saw is live again on \
+             node {}, and no user copied it",
+            node("a"),
+            node("a (conflict")
+        )
+    );
 }

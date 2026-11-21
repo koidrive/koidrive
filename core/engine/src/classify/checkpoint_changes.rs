@@ -70,6 +70,7 @@ fn remote(i: u8, v: u8, mark: Option<u8>) -> RemoteNode {
         pending_for: mark.map(|m| format!("m{m}")),
         pending_by: None,
         chunks: Box::default(),
+        intents: None,
     }
 }
 
@@ -149,7 +150,7 @@ proptest! {
     ))]
     #[test]
     fn take_changed_names_every_node_whose_l_s_or_mark_changed(ops in proptest::collection::vec(op(), 1..40)) {
-        let mut trees = Trees::new("root");
+        let mut trees = Trees::new("root", &IdGen::new(0));
         trees.rules_scanned();
         trees.take_changed();
         let mut checkpointed = rows(&trees);

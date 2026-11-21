@@ -919,7 +919,7 @@ fn local_shape(world: &World, root: &str, i: usize) -> Option<(Shape, Box<[Chunk
 
 fn trees(world: &World, space: &SpaceDo) -> Trees {
     let root = space.space_id().to_string();
-    let mut trees = Trees::new(&root);
+    let mut trees = Trees::new(&root, &IdGen::new(0));
     for i in 0..world.len() {
         if let Some((shape, chunks)) = local_shape(world, &root, i) {
             let identity = FileIdentity {

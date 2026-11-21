@@ -18,6 +18,7 @@ use crate::classify::Waiting;
 use crate::commit::{Halt, InFlight, Slot};
 use crate::effects::{Effect, EffectRecord};
 use crate::guard::{Counted, GuardState, RemoteDeletion};
+use crate::journal::{JournalChanges, JournalState};
 use crate::question::{Held, Limit, Question, Revisions};
 use crate::restore::{Resolved, RestoreId, RestoreIntent, SplitRestore};
 use crate::tree::{FileIdentity, NodeId, Shape, TreeError};
@@ -432,6 +433,7 @@ pub struct TreesState {
     /// replaced. Unlike a resend, a delete made after the loss does not beat it. The record ends
     /// when R holds the node again, and when S takes L's shape or L changes or removes the node.
     pub lost_creates: BTreeSet<NodeId>,
+    pub journal: JournalState,
 }
 
 /// A pending rename this device is finishing (RFC 0017 §3): the node moves within `parent` from
@@ -590,6 +592,7 @@ pub struct TreesChanges {
     pub unsent_marks: MapChanges<NodeId, String>,
     pub pending_finishes: MapChanges<NodeId, PendingFinish>,
     pub answered_rules: MapChanges<NodeId, AnsweredRules>,
+    pub journal: JournalChanges,
 }
 
 impl TreesChanges {
@@ -642,6 +645,7 @@ impl TreesChanges {
             unsent_marks,
             pending_finishes,
             answered_rules,
+            journal,
         } = after;
         Self {
             dirty: set_changes(&before.dirty, dirty),
@@ -690,6 +694,7 @@ impl TreesChanges {
             unsent_marks: map_changes(&before.unsent_marks, unsent_marks),
             pending_finishes: map_changes(&before.pending_finishes, pending_finishes),
             answered_rules: map_changes(&before.answered_rules, answered_rules),
+            journal: JournalChanges::between(&before.journal, journal),
         }
     }
 }

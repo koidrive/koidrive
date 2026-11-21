@@ -1009,3 +1009,93 @@ fn a_folder_moved_into_the_folder_merged_into_it_is_moved_back_when_a_removal_by
     );
     assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
 }
+
+#[test]
+fn an_op_superseded_on_a_trashed_node_ends_and_the_trash_reaches_the_disk() {
+    let created_file = ("f", Some(file(ROOT, "c.txt", 1)), None, None);
+    let created_dir = ("f", Some(dir(ROOT, "c")), None, None);
+    let moved = (
+        "f",
+        Some(dir("a", "C.TXT")),
+        Some(dir(ROOT, "c.txt")),
+        Some(remote(dir(ROOT, "c.txt"))),
+    );
+    let edited = (
+        "f",
+        Some(file(ROOT, "e", 2)),
+        Some(file(ROOT, "e", 1)),
+        Some(remote(file(ROOT, "e", 1))),
+    );
+    let cases = [
+        (created_file, file(ROOT, "c.txt", 1)),
+        (created_dir, dir(ROOT, "c")),
+        (moved, dir(ROOT, "c.txt")),
+        (edited, file(ROOT, "e", 2)),
+    ];
+    for (row, trash) in cases {
+        let mut trees = trees(&[synced("a", dir(ROOT, "a")), row]);
+        let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+        let sent = ops(&build(&mut commits, &mut trees, &mut ids).unwrap());
+        assert_eq!(sent.len(), 1, "{sent:?}");
+        trees.set_remote("f".into(), trashed(trash));
+        acknowledge(
+            &mut commits,
+            &mut trees,
+            vec![outcome(op_result::Code::Superseded)],
+        );
+        assert!(commits.problems().is_empty(), "{sent:?}");
+        assert_eq!(trees.class(&"f".into()), Class::Remote, "{sent:?}");
+    }
+}
+
+#[test]
+fn a_create_superseded_on_a_trashed_node_keeps_the_edit_made_after_it_was_sent() {
+    let mut trees = trees(&[("f", Some(file(ROOT, "c.txt", 1)), None, None)]);
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    build(&mut commits, &mut trees, &mut ids).unwrap();
+    let f = NodeId::from("f");
+    trees.set_local_changed(f.clone(), local(file(ROOT, "c.txt", 2), 1));
+    let edit = trees.journal_row(&f, Field::Content).map(|row| row.intent);
+    assert!(edit.is_some());
+    trees.set_remote(f.clone(), trashed(file(ROOT, "c.txt", 1)));
+    acknowledge(
+        &mut commits,
+        &mut trees,
+        vec![outcome(op_result::Code::Superseded)],
+    );
+    assert!(commits.problems().is_empty());
+    assert_eq!(trees.synced().get(&f), Some(&file(ROOT, "c.txt", 1)));
+    assert_eq!(
+        trees.local().get(&f).map(|node| &node.shape),
+        Some(&file(ROOT, "c.txt", 2))
+    );
+    let row = trees
+        .journal_row(&f, Field::Content)
+        .expect("the edit keeps its row");
+    assert_eq!(Some(row.intent), edit);
+    assert!(matches!(row.state, RowState::Local { .. }), "{row:?}");
+    assert_ne!(trees.class(&f), Class::Remote);
+}
+
+#[test]
+fn a_create_superseded_on_a_purged_node_gives_way_to_the_purge_and_is_not_created_again() {
+    for (sent, renamed) in [
+        (dir(ROOT, "c"), dir(ROOT, "d")),
+        (file(ROOT, "c.txt", 1), file(ROOT, "d.txt", 1)),
+    ] {
+        let mut trees = trees(&[("f", Some(sent.clone()), None, None)]);
+        let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+        build(&mut commits, &mut trees, &mut ids).unwrap();
+        trees.set_local("f".into(), local(renamed.clone(), 1));
+        acknowledge(
+            &mut commits,
+            &mut trees,
+            vec![outcome(op_result::Code::Superseded)],
+        );
+        assert!(commits.problems().is_empty(), "{sent:?}");
+        assert_eq!(trees.synced().get(&"f".into()), Some(&renamed));
+        assert_eq!(trees.class(&"f".into()), Class::Remote, "{sent:?}");
+        let again = build(&mut commits, &mut trees, &mut ids);
+        assert_eq!(again.as_ref().map(ops), None, "{sent:?}");
+    }
+}

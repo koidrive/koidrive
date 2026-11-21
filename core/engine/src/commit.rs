@@ -16,6 +16,7 @@ use crate::effects;
 use crate::first_link::{self, LogRead, Marks, PriorSync};
 use crate::guard::{self, Guard, RemoteRemoval};
 use crate::ids::{IdGen, unix_ms};
+use crate::journal::Wire;
 use crate::names::{MAX_NAME_BYTES, conflict_name, name_key, nfc, same_name};
 use crate::question::{
     Answer, ConflictFile, Question, QuestionKind, RecoveryCause, RecoveryGroup, RecoveryTrigger,
@@ -250,6 +251,8 @@ pub struct Commits {
     granted: Unstored<Vec<NodeId>>,
     confirmed: Unstored<Option<u64>>,
     device_name: Unstored<String>,
+    field_intents: Unstored<bool>,
+    unrecorded: Unstored<usize>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -329,6 +332,8 @@ impl Commits {
             confirmed: _,
             device_name: _,
             unbuildable: _,
+            field_intents: _,
+            unrecorded: _,
         } = self;
         CommitsChanges {
             accepted: accepted.take_changed().copied(),
@@ -454,6 +459,8 @@ impl Commits {
             granted: Unstored::default(),
             confirmed: Unstored::default(),
             device_name: Unstored::default(),
+            field_intents: Unstored::default(),
+            unrecorded: Unstored::default(),
         })
     }
 
@@ -800,6 +807,16 @@ impl Commits {
             }
             settled = true;
         }
+    }
+
+    pub fn field_intents(&self) -> bool {
+        self.field_intents.0
+    }
+
+    /// Builds ops the way a `Welcome` that lists the `field_intents` feature, or one that does not,
+    /// would have them built, without the rest of [`Commits::connected`].
+    pub fn set_field_intents(&mut self, on: bool) {
+        self.field_intents.0 = on;
     }
 
     pub fn in_flight(&self) -> Option<&InFlight> {
@@ -1408,7 +1425,7 @@ impl Commits {
         left: Vec<NodeId>,
         ids: &mut IdGen,
         now_ms: u64,
-    ) -> Vec<Question> {
+    ) -> (Vec<Question>, BTreeSet<NodeId>) {
         let mut asked: BTreeMap<RecoveryGroup, Question> = BTreeMap::new();
         let mut groups = recovery::regroup(trees, left, &BTreeMap::new(), cause.as_ref());
         groups.remove(&RecoveryGroup::CreatedOnThisDevice);
@@ -1456,6 +1473,7 @@ impl Commits {
         }
         let mut updates = agreed_with_remote(trees, certain);
         let mut released = Vec::new();
+        let mut recovery_deletes = BTreeSet::new();
         for (group, nodes) in groups {
             let Some(question) = recovery::ask(
                 trees,
@@ -1477,7 +1495,12 @@ impl Commits {
                 Answer::Publish | Answer::Keep => trees.approve(question.holds().cloned()),
                 _ => {}
             }
-            updates.extend(recovery::release(trees, &question, answer));
+            updates.extend(recovery::release(
+                trees,
+                &question,
+                answer,
+                &mut recovery_deletes,
+            ));
             if matches!(answer, Answer::Publish | Answer::Keep | Answer::Delete) {
                 released.push(question);
             }
@@ -1501,8 +1524,11 @@ impl Commits {
         for (id, shape) in update_synced(trees, updates) {
             trees.wait(id, shape, Origin::Other);
         }
+        for id in &recovery_deletes {
+            trees.delete_acknowledged(id);
+        }
         self.hold(trees);
-        released
+        (released, recovery_deletes)
     }
 
     /// Keeps each answered question of `answered` for the members no acknowledged commit carried
@@ -1728,7 +1754,7 @@ impl Commits {
         }
         let cause = self.questions.iter().find_map(Question::cause).cloned();
         let left = self.ask_again(trees, ids, now_ms);
-        let released = self.ask_recovery(trees, cause, left, ids, now_ms);
+        let (released, recovery_deletes) = self.ask_recovery(trees, cause, left, ids, now_ms);
         let reclaimed = trees.reclaim(|_| true);
         let discardable = reclaimed
             .into_iter()
@@ -2129,12 +2155,21 @@ impl Commits {
             })
             .filter(|(_, removed)| !removed.is_empty())
             .collect();
+        let wire = match self.field_intents.0 {
+            true => Wire::WithIntents,
+            false => Wire::WithoutIntents,
+        };
+        self.unrecorded.0 +=
+            (trees.stamp_intents(&mut ops, device_id, base.committed_at_ms, wire)).0;
         let commit_id = ids.uuid_v7(now_ms);
         for (index, op) in ops.iter_mut().enumerate() {
             let Some(op::Op::Delete(delete)) = &mut op.op else {
                 continue;
             };
             let node = NodeId::from(&delete.node_id);
+            if recovery_deletes.contains(&node) && !delete.unseen.is_empty() {
+                trees.accept_recovery_delete_view(&node, &mut delete.unseen);
+            }
             let deletion = deletions.get(&node).unwrap_or(&node);
             if *deletion == node && !self.trash_groups.contains_key(deletion) {
                 continue;
@@ -2506,6 +2541,7 @@ impl Commits {
         };
         let restored = carried(&self.restores, &flight).expect("a Restore op in flight is queued");
         let result = flight.result.expect("taken with a result");
+        let (sent_again, held_elsewhere) = trees.record_results(&flight.commit, &result);
         (self.granted.0).extend(
             given_nodes(&flight.commit, &result)
                 .into_iter()
@@ -2579,6 +2615,15 @@ impl Commits {
                 _ => None,
             };
             let sent = sent_at.as_ref().map(|(parent, name)| (parent, *name));
+            let target = match &op.op {
+                Some(op::Op::CreateDir(create)) => Some(&create.node_id),
+                Some(op::Op::CreateFile(create)) => Some(&create.node_id),
+                Some(op::Op::UpdateContent(update)) => Some(&update.node_id),
+                Some(op::Op::Move(moved)) => Some(&moved.node_id),
+                _ => None,
+            };
+            let superseded = code == Code::Superseded
+                && target.is_some_and(|id| !sent_again.contains(&NodeId::from(id)));
             let (node, done) = match &op.op {
                 Some(op::Op::CreateDir(create)) => {
                     let create_id = NodeId::from(&create.node_id);
@@ -2663,6 +2708,14 @@ impl Commits {
                         }
                         agreed.extend(agree(trees, &create_id, result.seq));
                         synced.set(&create_id, Some(shape));
+                    } else if superseded && trees.remote().get(&create_id).is_none() {
+                        let origin = Origin::Commit(flight.commit.device_seq);
+                        match held_elsewhere.contains(&create_id) {
+                            true => trees.take_lost_position(create_id.clone(), shape, origin),
+                            false => trees.give_way_to_purge(create_id.clone(), shape, origin),
+                        }
+                    } else if superseded {
+                        synced.set(&create_id, Some(shape));
                     }
                     for (id, position) in moved_in {
                         synced.set(&id, Some(position));
@@ -2671,7 +2724,10 @@ impl Commits {
                         trees.hold_unsent_move(id);
                     }
                     let exists = taken && trees.remote().get(&create_id).is_some();
-                    (create_id, applied || exists || code == Code::MergedInto)
+                    (
+                        create_id,
+                        applied || exists || superseded || code == Code::MergedInto,
+                    )
                 }
                 Some(op::Op::CreateFile(create)) => {
                     let create_id = NodeId::from(&create.node_id);
@@ -2704,6 +2760,16 @@ impl Commits {
                             );
                         }
                         trees.sent_edit(&create_id, create.content.as_ref().map(sent_key).as_ref());
+                    } else if superseded && trees.remote().get(&create_id).is_none() {
+                        trees.take_lost_position(
+                            create_id.clone(),
+                            shape,
+                            Origin::Commit(flight.commit.device_seq),
+                        );
+                        trees.sent_edit(&create_id, create.content.as_ref().map(sent_key).as_ref());
+                    } else if superseded {
+                        synced.set(&create_id, Some(shape));
+                        trees.sent_edit(&create_id, create.content.as_ref().map(sent_key).as_ref());
                     } else if code == Code::ConflictCopy && trees.local().get(&outcome_id).is_some()
                     {
                         trees.revert(create_id.clone());
@@ -2715,7 +2781,10 @@ impl Commits {
                             .sent_edit(&outcome_id, create.content.as_ref().map(sent_key).as_ref());
                     }
                     let exists = taken && trees.remote().get(&create_id).is_some();
-                    (create_id, applied || exists || code == Code::ConflictCopy)
+                    (
+                        create_id,
+                        applied || exists || superseded || code == Code::ConflictCopy,
+                    )
                 }
                 Some(op::Op::UpdateContent(update)) => {
                     let id = &NodeId::from(&update.node_id);
@@ -2727,13 +2796,13 @@ impl Commits {
                     let current = trees.synced().live(id).and_then(|s| s.content);
                     let downloaded =
                         code == Code::ConflictCopy && trees.local().get(&outcome_id).is_some();
-                    if applied && trees.took_content(id) {
+                    if (applied || superseded) && trees.took_content(id) {
                         let kept = synced.get(trees, id).map(|shape| Shape {
                             content: current,
                             ..shape
                         });
                         synced.set(id, kept);
-                    } else if (applied && edited.is_some()) || downloaded {
+                    } else if ((applied || superseded) && edited.is_some()) || downloaded {
                         synced.set(id, edited);
                     } else if code == Code::ConflictCopy {
                         let copied = edited.or_else(|| {
@@ -2761,6 +2830,7 @@ impl Commits {
                         synced.set(id, None);
                         rekey(trees, id, &outcome_id);
                         trees.sent_edit(&outcome_id, sent.as_ref());
+                        trees.sent_version(&outcome_id, sent.as_ref(), result.seq, !update.resend);
                     }
                     if applied && !update.resend {
                         trees.record_edited(id, sent.as_ref());
@@ -2768,13 +2838,16 @@ impl Commits {
                     if applied {
                         trees.sent_version(id, sent.as_ref(), result.seq, !update.resend);
                     }
-                    if applied || code == Code::ConflictCopy {
+                    if applied || superseded || code == Code::ConflictCopy {
                         trees.sent_edit(id, sent.as_ref());
                     }
                     if code == Code::ConflictCopy {
                         conflicts.push((index, id.clone(), outcome_id.clone()));
                     }
-                    (id.clone(), applied || code == Code::ConflictCopy)
+                    (
+                        id.clone(),
+                        applied || superseded || code == Code::ConflictCopy,
+                    )
                 }
                 Some(op::Op::Move(moved)) => {
                     let id = &NodeId::from(&moved.node_id);
@@ -2784,7 +2857,6 @@ impl Commits {
                     let finishing = (trees.pending_finishes().get(id))
                         .filter(|finish| finish.sending)
                         .map(|finish| finish.disk_first);
-                    let superseded = code == Code::Superseded && moved.from.is_some();
                     let moved_back = finishing == Some(true)
                         && applied
                         && (trees.local().get(id).filter(|local| !local.parked)).is_some_and(
@@ -3473,6 +3545,7 @@ impl Commits {
     /// (section 6.4). On a read-only device the restores no commit in flight carries end as
     /// rejected.
     pub fn connected(&mut self, welcome: &proto::Welcome) -> Reconnect {
+        self.field_intents.0 = (welcome.features.iter()).any(|feature| feature == "field_intents");
         let (a, w) = (*self.accepted, welcome.device_seq);
         let kept = (self.slots.get(&w))
             .filter(|slot| !slot.commit_id.is_empty() && !welcome.device_commit_id.is_empty());
@@ -4031,7 +4104,7 @@ fn settle_kept_folders(trees: &mut Trees, ids: &mut IdGen, now_ms: u64) {
     trees.keep_folders_of_kept_folders();
     loop {
         let ended: Vec<NodeId> = (trees.kept_folders().iter())
-            .filter(|id| !trees.kept_folder(id) && !trees.kept_rules_file(id))
+            .filter(|id| !trees.holds_kept_folder(id) && !trees.kept_rules_file(id))
             .cloned()
             .collect();
         if ended.is_empty() {
@@ -4049,6 +4122,10 @@ fn settle_kept_folders(trees: &mut Trees, ids: &mut IdGen, now_ms: u64) {
                 rekey(trees, &id, &NodeId::from(ids.uuid_v7(now_ms)));
                 continue;
             }
+            let rules: Vec<NodeId> = (trees.local_children(&id))
+                .filter(|child| trees.left_rules_file(child))
+                .cloned()
+                .collect();
             let taken = twin(trees, &local, true);
             if taken.is_some() {
                 trees.take_kept_entries(&id);
@@ -4060,11 +4137,10 @@ fn settle_kept_folders(trees: &mut Trees, ids: &mut IdGen, now_ms: u64) {
             if taken.is_some() {
                 trees.set_synced_if_valid(to.clone(), Some(local));
             }
-            let rules: Vec<(NodeId, Shape)> = (trees.local_children(&to))
-                .filter(|child| trees.left_rules_file(child))
-                .filter_map(|child| Some((child.clone(), trees.local().get(child)?.shape.clone())))
-                .collect();
-            for (child, shape) in rules {
+            for child in rules {
+                let Some(shape) = trees.local().get(&child).map(|node| node.shape.clone()) else {
+                    continue;
+                };
                 let deleted = (trees.remote().get(&child))
                     .is_some_and(|remote| same_contents(&remote.shape, &shape));
                 match (twin(trees, &shape, true), taken.is_some() && deleted) {
@@ -5172,6 +5248,7 @@ fn plan(
     let mut emit = |want: Want, scratch: &mut Scratch, moving: &mut BTreeSet<NodeId>| {
         scratch.stalled = false;
         let generated = matches!(want, Want::Retrash { .. });
+        let mut intent = None;
         for node in want.nodes().filter(|_| !generated) {
             if let Some(left) = scratch.unsent.get_mut(node) {
                 *left -= 1;
@@ -5297,6 +5374,13 @@ fn plan(
                 }
                 scratch.trash(&id);
                 deletes.insert(id.clone(), members.into_iter().collect());
+                intent = (trees.remote().get(&id))
+                    .and_then(|node| node.intents.as_ref()?.status.as_ref())
+                    .map(|trash| proto::Intent {
+                        id: trash.id.as_bytes().to_vec(),
+                        author_device_id: trash.author.to_string(),
+                        ..Default::default()
+                    });
                 op::Op::Delete(proto::Delete {
                     node_id: id.into(),
                     requires: None,
@@ -5330,6 +5414,7 @@ fn plan(
         };
         ops.push(proto::Op {
             op: Some(op),
+            intent,
             ..Default::default()
         });
     };
@@ -6293,7 +6378,7 @@ impl<'a> Scratch<'a> {
         if self.inside(parent, id) {
             return Fit::Cycle;
         }
-        if self.kind(parent) != Some(Kind::Dir) {
+        if self.kind(parent) != Some(Kind::Dir) && !self.trees.purged_folder(parent) {
             return Fit::Wait;
         }
         let taken = self.holders(parent, name).any(|other| other != id);
@@ -6849,7 +6934,7 @@ mod ancestry_size_tests {
 
     #[test]
     fn ancestry_heavy_batch_stays_within_the_estimated_record_limit() {
-        let mut trees = Trees::new("root");
+        let mut trees = Trees::new("root", &IdGen::new(0));
         for n in 0..300 {
             let id = version(n + 1000);
             let shape = Shape {
@@ -6876,6 +6961,7 @@ mod ancestry_size_tests {
                     pending_for: None,
                     pending_by: None,
                     chunks: Box::default(),
+                    intents: None,
                 },
             );
             let mut local = LocalNode {
@@ -6977,7 +7063,7 @@ mod compensation_tests {
     #[test]
     fn a_bundle_that_leaves_a_folder_live_that_the_trash_gave_back_and_l_does_not_hold_is_refused()
     {
-        let mut trees = Trees::new("root");
+        let mut trees = Trees::new("root", &IdGen::new(0));
         let local = [
             ("a", dir("root", "new")),
             ("x", dir("root", "x")),
@@ -7021,6 +7107,7 @@ mod compensation_tests {
                 pending_for: None,
                 pending_by: None,
                 chunks: Box::default(),
+                intents: None,
             };
             trees.set_remote(id.into(), node);
         }

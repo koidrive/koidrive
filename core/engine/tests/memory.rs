@@ -6,17 +6,18 @@ use std::cell::Cell;
 use koidrive_engine::classify::Trees;
 use koidrive_engine::commit::Commits;
 use koidrive_engine::ids::IdGen;
+use koidrive_engine::journal::{Field, FieldIntent, NodeIntents};
 use koidrive_engine::state::CommitsState;
 use koidrive_engine::tree::{Content, FileIdentity, Kind, LocalNode, NodeId, RemoteNode, Shape};
-use koidrive_proto::v1::{ChunkRef, CommitResult, OpResult, op, op_result};
+use koidrive_proto::v1::{ChunkRef, CommitResult, OpResult, Welcome, op, op_result};
 use koidrive_sim::world::split;
 
 const ROOT: &str = "01a1eab7-d941-7d6a-9e0d-576a24408e65";
 const NOW: u64 = 1_794_268_740_000;
 const PACKAGES: usize = 600;
 const TARGET: u64 = 600;
-const FIRST_UPLOAD_CEILING: u64 = 1_555;
-const RESTART_CEILING: u64 = 1_760;
+const FIRST_UPLOAD_CEILING: u64 = 3_075;
+const RESTART_CEILING: u64 = 3_440;
 
 struct Live;
 
@@ -133,7 +134,7 @@ fn shape(entry: &Entry, n: usize) -> (Shape, Box<[ChunkRef]>) {
 fn first_upload() -> (Trees, usize) {
     let mut ids = IdGen::new(1);
     let entries = node_modules(&mut ids);
-    let mut trees = Trees::new(ROOT);
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
     trees.skip_provenance_check();
     trees.rules_scanned();
     for (n, entry) in entries.iter().enumerate() {
@@ -154,14 +155,18 @@ fn first_upload() -> (Trees, usize) {
     }
     trees.settle(&Default::default());
     let mut commits = Commits::from_state(CommitsState::default()).unwrap();
+    commits.connected(&Welcome {
+        features: vec!["field_intents".into()],
+        ..Default::default()
+    });
     let mut seq = 0;
     while let Some(commit) = commits
         .build(&mut trees, &mut ids, NOW, "history", "me", seq)
         .cloned()
     {
         seq += 1;
-        for op in commit.ops.iter().filter_map(|op| op.op.as_ref()) {
-            let (id, kind, parent, name, content) = match op {
+        for envelope in &commit.ops {
+            let (id, kind, parent, name, content) = match envelope.op.as_ref().expect("an op") {
                 op::Op::CreateDir(create) => (
                     &create.node_id,
                     Kind::Dir,
@@ -185,6 +190,32 @@ fn first_upload() -> (Trees, usize) {
                 kind,
                 content,
             };
+            let id = NodeId::from(id);
+            let fields = envelope.fields.as_ref();
+            let mut intents = NodeIntents::default();
+            for field in Field::ALL {
+                let given = match field {
+                    Field::Place => fields.and_then(|fields| fields.place.as_ref()),
+                    Field::Content => fields.and_then(|fields| fields.content.as_ref()),
+                    Field::Status => fields.and_then(|fields| fields.status.as_ref()),
+                };
+                let recorded = trees.journal_row(&id, field).map(|row| row.intent);
+                let sent = (given.or(envelope.intent.as_ref()))
+                    .and_then(FieldIntent::from_proto)
+                    .filter(|_| recorded.is_some());
+                assert_eq!(
+                    sent.as_ref().map(|sent| sent.id),
+                    recorded,
+                    "the request sends the {field:?} intent of {id}"
+                );
+                intents.set(
+                    field,
+                    sent.map(|sent| FieldIntent {
+                        applied_at_ms: NOW as i64,
+                        ..sent
+                    }),
+                );
+            }
             let version_id = match shape.kind {
                 Kind::File => ids.uuid_v7(NOW),
                 Kind::Dir => String::new(),
@@ -202,8 +233,9 @@ fn first_upload() -> (Trees, usize) {
                 pending_for: None,
                 pending_by: None,
                 chunks,
+                intents: Some(intents),
             };
-            trees.set_remote_made_here(NodeId::from(id), node);
+            trees.set_remote_made_here(id, node);
         }
         let applied = OpResult {
             code: op_result::Code::Applied as i32,
@@ -227,7 +259,7 @@ fn first_upload() -> (Trees, usize) {
 
 fn restarted() -> (Trees, usize) {
     let (synced, entries) = first_upload();
-    let mut trees = Trees::new(ROOT);
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
     trees.skip_provenance_check();
     for (id, node) in synced.remote().iter() {
         trees.set_remote(id.clone(), node.clone());

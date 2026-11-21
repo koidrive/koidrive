@@ -9,6 +9,10 @@ use koidrive_engine::effects::{Base, BatchLimit, Dir, Displaced, Effect, EffectR
 use koidrive_engine::first_link::PriorSync;
 use koidrive_engine::guard::{Counted, GuardState, RemoteDeletion, Trash};
 use koidrive_engine::ids::{IdGen, uuid_v7};
+use koidrive_engine::journal::{
+    Absent, Author, Field, Flight, HistoryEntry, IntentId, JournalState, Place, Row, RowState,
+    Seen, Value, WireBase,
+};
 use koidrive_engine::question::{
     Answer, Frozen, Held, Limit, Question, QuestionKind, RecoveryCause, RecoveryGroup,
     RecoveryTrigger, Revisions,
@@ -25,8 +29,8 @@ use koidrive_engine::tree::{
 };
 use koidrive_fs::{FileId, VolumeId};
 use koidrive_proto::v1::{
-    ChunkRef, Commit, CommitResult, Content, CreateFile, Delete, NodeKind, NodeState, NodeStatus,
-    Op, OpResult, VersionInfo, Welcome, op, op_result,
+    ChunkRef, Commit, CommitResult, Content, CreateFile, Delete, FieldIntents, Intent, NodeKind,
+    NodeState, NodeStatus, Op, OpResult, VersionInfo, Welcome, op, op_result,
 };
 use koidrive_store::migrations::{LEGACY_STEPS, MIGRATIONS, NAMED};
 use koidrive_store::{
@@ -378,6 +382,8 @@ fn a_store_written_by_alpha_1_upgrades_and_keeps_every_row() {
     without_device(&path, &mut kept);
     let (_, discarded) = kept.remove("discarded_nodes").unwrap();
     assert_eq!(discarded.len(), 1);
+    let (_, generator) = kept.remove("engine_state").unwrap();
+    assert_eq!(generator.len(), 1);
     let moved = moved_in_flight(&path, &mut kept);
     assert_eq!(moved.len(), 1);
     let fresh = dir.path().join("fresh.db");
@@ -764,7 +770,6 @@ fn populate(path: &Path) {
                 answer: None,
             })?;
             tx.put_chunk(&[1; 32], 100, 10)?;
-            tx.set_id_generator(&[1, 2, 3])?;
             tx.request_restore(&id(103), &from_trash(1))?;
             Ok::<_, Error>(())
         })
@@ -777,7 +782,11 @@ fn store_before(path: &Path, migration: &str) {
         rewind(path, position);
         return;
     }
-    let mut skipped = BTreeSet::from([migration]);
+    store_without(path, &[migration]);
+}
+
+fn store_without(path: &Path, migrations: &[&str]) {
+    let mut skipped: BTreeSet<&str> = migrations.iter().copied().collect();
     for m in MIGRATIONS {
         if m.requires.iter().any(|r| skipped.contains(r)) {
             skipped.insert(m.name);
@@ -1151,6 +1160,132 @@ fn three_trees_round_trip() {
         .unwrap();
 }
 
+#[test]
+fn intents_of_r_and_s_and_the_backfill_marker_survive_a_reopen() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.db");
+    let intent = |n: u8, author: &str| Intent {
+        id: vec![n; 16],
+        author_device_id: author.into(),
+        replay: n.is_multiple_of(2),
+        over: vec![n + 100; 16],
+        ..Default::default()
+    };
+    let trashed = NodeState {
+        node_id: "t".into(),
+        parent_id: "root".into(),
+        name: "t.txt".into(),
+        kind: NodeKind::File as i32,
+        status: NodeStatus::Trashed as i32,
+        intents: Some(FieldIntents {
+            place: Some(intent(1, "d1")),
+            content: None,
+            status: Some(intent(2, "")),
+        }),
+        trash_held: vec![vec![3; 16], vec![4; 16]],
+        ..Default::default()
+    };
+    let plain = NodeState {
+        node_id: "p".into(),
+        parent_id: "root".into(),
+        name: "p.txt".into(),
+        kind: NodeKind::File as i32,
+        status: NodeStatus::Live as i32,
+        ..Default::default()
+    };
+    let synced = FieldIntents {
+        place: None,
+        content: Some(intent(5, "d2")),
+        status: None,
+    };
+    let mut store = Store::open(&path).unwrap();
+    store
+        .transaction(|tx| {
+            assert!(tx.journal_backfill_owed()?);
+            tx.put_remote_node(&trashed)?;
+            tx.put_remote_node(&plain)?;
+            tx.put_synced_node(&discarded_in_s())?;
+            tx.put_synced_node(&SyncedNode {
+                node_id: "e".into(),
+                shape: file_shape("root", "e.txt"),
+                pending_for: String::new(),
+            })?;
+            tx.set_synced_intents("d", Some(&synced))?;
+            tx.set_remote_intents("p", Some(&synced))?;
+            tx.journal_backfilled()?;
+            Ok::<_, Error>(())
+        })
+        .unwrap();
+    drop(store);
+    Store::open(&path)
+        .unwrap()
+        .transaction(|tx| {
+            let plain = NodeState {
+                intents: Some(synced.clone()),
+                ..plain.clone()
+            };
+            assert_eq!(tx.remote_nodes()?, [plain, trashed.clone()]);
+            assert_eq!(
+                tx.synced_intents()?,
+                BTreeMap::from([("d".into(), synced.clone())])
+            );
+            assert!(!tx.journal_backfill_owed()?);
+            Ok::<_, Error>(())
+        })
+        .unwrap();
+}
+
+#[test]
+fn a_legacy_place_intent_never_replaces_the_place_a_row_holds() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.db");
+    let intent = |n: u8| Intent {
+        id: vec![n; 16],
+        ..Default::default()
+    };
+    let node = NodeState {
+        node_id: "n".into(),
+        parent_id: "root".into(),
+        name: "n.txt".into(),
+        kind: NodeKind::File as i32,
+        status: NodeStatus::Live as i32,
+        intents: Some(FieldIntents {
+            place: Some(intent(1)),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let mut store = Store::open(&path).unwrap();
+    store.transaction(|tx| tx.put_remote_node(&node)).unwrap();
+    drop(store);
+    let legacy = prost::Message::encode_to_vec(&intent(2));
+    (Connection::open(&path).unwrap())
+        .execute("UPDATE remote_nodes SET place_intent = ?1", [legacy])
+        .unwrap();
+    let read = Store::open(&path)
+        .unwrap()
+        .read(|tx| tx.remote_nodes())
+        .unwrap();
+    assert_eq!(read, std::slice::from_ref(&node));
+    let moved = NodeState {
+        intents: Some(FieldIntents {
+            place: Some(intent(3)),
+            ..Default::default()
+        }),
+        ..node
+    };
+    let mut store = Store::open(&path).unwrap();
+    store.transaction(|tx| tx.put_remote_node(&moved)).unwrap();
+    assert_eq!(store.read(|tx| tx.remote_nodes()).unwrap(), [moved]);
+    drop(store);
+    let column: Option<Vec<u8>> = (Connection::open(&path).unwrap())
+        .query_row("SELECT place_intent FROM remote_nodes", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(column, None);
+}
+
 fn identity(ino: u128) -> FileIdentity {
     FileIdentity {
         ino,
@@ -1252,6 +1387,146 @@ fn placed_and_version() -> [RestoreIntent; 2] {
 
 /// An engine state with every field set, and every kind of effect, location, restore and
 /// restore outcome.
+fn journal_state() -> JournalState {
+    let intent = |n: u8| IntentId::from_bytes(&[n; 16]).unwrap();
+    let content = Value::Content {
+        version_id: Some("v1".into()),
+        value: koidrive_engine::state::ContentValue {
+            size: 3,
+            manifest_digest: vec![1, 2],
+            executable: true,
+        },
+    };
+    let place = Value::Place(Place {
+        parent: "p".into(),
+        name: "Café.txt".into(),
+        mark: Some("Café.txt".into()),
+    });
+    let row = |n: u8, value: Value, state: RowState| Row {
+        intent: intent(n),
+        author: Author::Own,
+        base: Some(intent(n + 100)),
+        value,
+        wire_base: WireBase::None,
+        state,
+        time_ms: i64::from(n) * 1000,
+        replay: n.is_multiple_of(2),
+    };
+    let rows = [
+        (
+            ("a".into(), Field::Content),
+            Row {
+                wire_base: WireBase::Content {
+                    made_over: vec!["v0".into()],
+                    source_version_id: Some("v0".into()),
+                },
+                ..row(
+                    1,
+                    content.clone(),
+                    RowState::Local {
+                        flight: Some(Flight {
+                            intent: intent(9),
+                            value: content.clone(),
+                            base: None,
+                            wire_base: WireBase::None,
+                            time_ms: 7,
+                            author: Author::Carried(Some("other".into())),
+                            replay: true,
+                        }),
+                    },
+                )
+            },
+        ),
+        (
+            ("a".into(), Field::Place),
+            Row {
+                author: Author::Carried(Some("other-device".into())),
+                wire_base: WireBase::Place(Place {
+                    parent: "q".into(),
+                    name: "old".into(),
+                    mark: None,
+                }),
+                ..row(2, place.clone(), RowState::Sent)
+            },
+        ),
+        (
+            ("b".into(), Field::Status),
+            Row {
+                author: Author::Carried(None),
+                base: None,
+                ..row(
+                    3,
+                    Value::Status { live: false },
+                    RowState::Held {
+                        held_as: intent(4),
+                        version_id: Some("v4".into()),
+                    },
+                )
+            },
+        ),
+        (
+            ("c".into(), Field::Status),
+            row(
+                5,
+                Value::Status { live: true },
+                RowState::Local { flight: None },
+            ),
+        ),
+    ];
+    let history = |n: u8| HistoryEntry {
+        intent: intent(n),
+        applied_at_ms: i64::from(n),
+        in_local: n % 2 == 1,
+    };
+    JournalState {
+        rows: rows.into(),
+        history: [
+            (
+                ("a".into(), Field::Content),
+                vec![history(10), history(11), history(12)],
+            ),
+            (("b".into(), Field::Place), vec![history(13)]),
+        ]
+        .into(),
+        seen: [(
+            "b".into(),
+            vec![
+                Seen {
+                    node: "b".into(),
+                    field: Field::Place,
+                    intent: intent(13),
+                    value: Some(place),
+                },
+                Seen {
+                    node: "b-child".into(),
+                    field: Field::Content,
+                    intent: intent(14),
+                    value: None,
+                },
+            ],
+        )]
+        .into(),
+        listed: true,
+        absent: [
+            (
+                "b".into(),
+                Absent {
+                    since_ms: 1_700,
+                    purged: false,
+                },
+            ),
+            (
+                "c".into(),
+                Absent {
+                    since_ms: 1_800,
+                    purged: true,
+                },
+            ),
+        ]
+        .into(),
+    }
+}
+
 fn engine_state() -> EngineState {
     let in_docs = |name: &str| Location::At {
         base: Base::Root,
@@ -1337,6 +1612,7 @@ fn engine_state() -> EngineState {
     };
     EngineState {
         trees: TreesState {
+            journal: JournalState::default(),
             dirty: nodes(["a", "b"]),
             unsearched: nodes(["b"]),
             reverted: nodes(["r"]),
@@ -1733,7 +2009,8 @@ fn engine_state() -> EngineState {
 fn engine_state_survives_a_reopen() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("state.db");
-    let state = engine_state();
+    let mut state = engine_state();
+    state.trees.journal = journal_state();
     let mut store = Store::open(&path).unwrap();
     assert_eq!(
         store.transaction(|tx| tx.engine_state()).unwrap(),
@@ -1975,7 +2252,8 @@ fn an_engine_state_update_writes_rows_for_the_change_alone() {
 fn engine_state_updates_store_every_part() {
     let dir = tempfile::tempdir().unwrap();
     let mut store = Store::open(dir.path().join("state.db")).unwrap();
-    let full = engine_state();
+    let mut full = engine_state();
+    full.trees.journal = journal_state();
     let mut changed = full.clone();
     changed.commits.halted = Some(Halt::Policy { code: 3 });
     changed.commits.cap = Some(2);
@@ -3069,26 +3347,6 @@ fn a_stored_content_whose_digest_no_content_key_holds_is_not_loaded() {
 }
 
 #[test]
-fn id_generator_persists() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("state.db");
-    let mut store = Store::open(&path).unwrap();
-    store
-        .transaction(|tx| {
-            assert_eq!(tx.id_generator()?, None);
-            tx.set_id_generator(&[1, 2, 3])
-        })
-        .unwrap();
-    drop(store);
-
-    let mut store = Store::open(&path).unwrap();
-    assert_eq!(
-        store.transaction(|tx| tx.id_generator()).unwrap(),
-        Some(vec![1, 2, 3])
-    );
-}
-
-#[test]
 fn failed_transaction_rolls_back() {
     let dir = tempfile::tempdir().unwrap();
     let mut store = Store::open(dir.path().join("state.db")).unwrap();
@@ -3561,4 +3819,59 @@ fn opening_a_store_again_keeps_another_connections_write_lock() {
     locked("before");
     drop(Store::open_existing(&path));
     locked("after a second open");
+}
+
+#[test]
+fn a_purged_mark_on_an_absent_node_survives_an_update_and_a_reopen() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.db");
+    let mut before = engine_state();
+    before.trees.journal = journal_state();
+    let mut after = before.clone();
+    after.trees.journal.absent.insert(
+        "b".into(),
+        Absent {
+            since_ms: 1_700,
+            purged: true,
+        },
+    );
+    Store::open(&path)
+        .unwrap()
+        .transaction(|tx| tx.set_engine_state(&before))
+        .unwrap();
+    Store::open(&path)
+        .unwrap()
+        .transaction(|tx| tx.update_engine_state(&before, &after))
+        .unwrap();
+    let mut store = Store::open(&path).unwrap();
+    let loaded = store.transaction(|tx| tx.engine_state()).unwrap();
+    assert_eq!(loaded.trees.journal.absent, after.trees.journal.absent);
+    store
+        .transaction(|tx| tx.update_engine_state(&after, &before))
+        .unwrap();
+    drop(store);
+    let mut store = Store::open(&path).unwrap();
+    let loaded = store.transaction(|tx| tx.engine_state()).unwrap();
+    assert_eq!(loaded.trees.journal.absent, before.trees.journal.absent);
+}
+
+#[test]
+fn an_abandoned_read_stops_while_reading_the_journal() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::open(dir.path().join("state.db")).unwrap();
+    store
+        .transaction(|tx| {
+            let mut state = EngineState::default();
+            state.trees.journal.absent.insert(
+                NodeId::from("gone"),
+                Absent {
+                    since_ms: 1,
+                    purged: false,
+                },
+            );
+            tx.set_engine_state(&state)?;
+            assert!(!tx.engine_state_unless(&mut EngineState::default(), &mut || true)?);
+            Ok::<_, Error>(())
+        })
+        .unwrap();
 }

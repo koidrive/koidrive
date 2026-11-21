@@ -6,12 +6,15 @@ use std::borrow::Cow;
 use std::cell::{Cell, OnceCell, RefCell};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use koidrive_ignore::{Scope, Source, Status};
 use siphasher::sip::SipHasher13;
 
 use crate::first_link;
+use crate::ids::IdGen;
 use crate::ignore::{Key, LocalRules, Matcher, RuleFile, is_rules_file, rules_source};
+use crate::journal::{Journal, NodeIntents};
 use crate::names::{name_key, nfc, same_name};
 use crate::provenance::Provenances;
 use crate::question::Frozen;
@@ -26,6 +29,7 @@ use crate::tree::{
     ContentKey, CountedMap, CountedSet, FileIdentity, Kind, LocalNode, Names, Node, NodeId,
     RemoteNode, Shape, TrackedTree, Tree, TreeError, counted, read_entries, same, same_content,
 };
+use intents::{Carrier, Compact};
 
 use release::Released;
 
@@ -688,6 +692,10 @@ pub struct Trees {
     unsent_marks: TrackedMap<NodeId, String>,
     pending_finishes: TrackedMap<NodeId, PendingFinish>,
     answered_rules: TrackedMap<NodeId, AnsweredRules>,
+    journal: Journal,
+    authors: BTreeSet<Arc<str>>,
+    ended_carriers: BTreeSet<NodeId>,
+    synced_intents: BTreeMap<NodeId, NodeIntents>,
     ignore: Matcher,
     /// Nodes whose local copy the user moved into an ignored folder that is no node. L keeps the
     /// entry each had before the move.
@@ -761,7 +769,8 @@ impl PartialEq for Trees {
 }
 
 impl Trees {
-    pub fn new(root: impl Into<NodeId>) -> Self {
+    /// Empty trees whose journal mints this user's intents from a stream of the engine's generator `ids`.
+    pub fn new(root: impl Into<NodeId>, ids: &IdGen) -> Self {
         let root = root.into();
         Self {
             r: Tree::new(root.clone()),
@@ -821,6 +830,10 @@ impl Trees {
             unsent_marks: TrackedMap::default(),
             pending_finishes: TrackedMap::default(),
             answered_rules: TrackedMap::default(),
+            journal: Journal::new(ids),
+            authors: BTreeSet::new(),
+            ended_carriers: BTreeSet::new(),
+            synced_intents: BTreeMap::new(),
             ignore: Matcher::new(LocalRules::default()),
             outside: TrackedSet::default(),
             lost: TrackedSet::default(),
@@ -1228,7 +1241,10 @@ impl Trees {
         }
     }
 
-    fn apply_remote(&mut self, id: NodeId, node: RemoteNode, made: Made) {
+    fn apply_remote(&mut self, id: NodeId, mut node: RemoteNode, made: Made) {
+        self.write_out_journal(&id);
+        self.journal.r_holds(&id);
+        self.take_remote_intents(&id, &mut node);
         let made_here = made != Made::Elsewhere;
         let edit = matches!(made, Made::Edit | Made::Answer);
         if edit {
@@ -1324,6 +1340,7 @@ impl Trees {
             self.unseen_changes.insert(id.clone());
         }
         self.place_remote(id.clone(), node, made_here);
+        self.settle_synced_intents(&id);
         if let Some(sent) = sent
             && !self.set_synced_if_valid(id.clone(), Some(sent.clone()))
         {
@@ -1360,7 +1377,10 @@ impl Trees {
     /// Sets R's node from a listing, which can take R back to a version that a lost commit
     /// replaced. A listing records no replaced version, and of those recorded it keeps only the ones
     /// up to the version it lists.
-    pub fn set_listed_remote(&mut self, id: NodeId, node: RemoteNode) {
+    pub fn set_listed_remote(&mut self, id: NodeId, mut node: RemoteNode) {
+        self.write_out_journal(&id);
+        self.journal.r_holds(&id);
+        self.take_remote_intents(&id, &mut node);
         let moved = (self.r.get(&id)).is_some_and(|old| old.version_id != node.version_id);
         if moved && let Some(versions) = self.replaced_versions.get_mut(&id) {
             let kept = (versions.iter())
@@ -1371,7 +1391,8 @@ impl Trees {
                 self.replaced_versions.remove(&id);
             }
         }
-        self.place_remote(id, node, false);
+        self.place_remote(id.clone(), node, false);
+        self.settle_synced_intents(&id);
     }
 
     fn place_remote(&mut self, id: NodeId, node: RemoteNode, made_here: bool) {
@@ -1403,8 +1424,8 @@ impl Trees {
                     || holds_local(&node.shape) && !self.r.live(&id).is_some_and(holds_local)
             });
         self.mark(&id);
-        self.lost_creates.remove(&id);
-        self.unsent_creates.remove(&id);
+        self.end_carrier(Carrier::LostCreate, &id);
+        self.end_carrier(Carrier::UnsentCreate, &id);
         if !node.trashed {
             self.unsent_moves.remove(&id);
         }
@@ -1481,11 +1502,10 @@ impl Trees {
         } else {
             self.marked.remove(&id);
         }
-        if (self.s.get(&id)).is_some_and(|synced| synced.same_position(&node.shape))
-            && self.s_marks.get(&id) != node.pending_for.as_ref()
-        {
-            self.set_synced_mark(id.clone(), node.pending_for.clone());
-        }
+        let synced_mark = ((self.s.get(&id))
+            .is_some_and(|synced| synced.same_position(&node.shape))
+            && self.s_marks.get(&id) != node.pending_for.as_ref())
+        .then(|| node.pending_for.clone());
         self.count_held_trash(&id, false);
         self.count_trashed(&id, false);
         self.cycles_may_end |= !made_here
@@ -1498,6 +1518,12 @@ impl Trees {
         self.content_provenance
             .remote_changing(&id, &self.r, Some(&node));
         let old = self.r.insert(id.clone(), node);
+        if let Some(mark) = synced_mark {
+            let before = self.synced_values(&id);
+            self.set_synced_mark(id.clone(), mark);
+            self.note_synced_intents(&id, &before);
+        }
+        self.compact_journal(&id, Compact::AfterChange);
         self.index_remote(&id, old.as_ref());
         self.count_held_trash(&id, true);
         self.count_trashed(&id, true);
@@ -1648,10 +1674,10 @@ impl Trees {
     }
 
     pub(crate) fn end_resend(&mut self, id: &NodeId) -> bool {
-        self.unsent_creates.remove(id);
-        self.lost_creates.remove(id);
+        self.end_carrier(Carrier::UnsentCreate, id);
+        self.end_carrier(Carrier::LostCreate, id);
         self.lost_positions.remove(id);
-        self.resends.remove(id)
+        self.end_carrier(Carrier::Resend, id)
     }
 
     fn local_chain<'a>(&'a self, id: &'a NodeId) -> impl Iterator<Item = &'a NodeId> + 'a {
@@ -1703,7 +1729,9 @@ impl Trees {
     }
 
     pub(crate) fn resend_folders_of_changes(&mut self) {
-        let lacking = |id: &NodeId| self.r.get(id).is_none() && self.acknowledged(id).is_some();
+        let lacking = |id: &NodeId| {
+            self.r.get(id).is_none() && self.acknowledged(id).is_some() && !self.journal.purged(id)
+        };
         if !self.others.iter().any(lacking) {
             self.yield_resends();
             return;
@@ -1748,8 +1776,8 @@ impl Trees {
     }
 
     pub(crate) fn take_local(&mut self, id: NodeId) {
-        self.lost_creates.remove(&id);
-        self.resends.remove(&id);
+        self.end_carrier(Carrier::LostCreate, &id);
+        self.end_carrier(Carrier::Resend, &id);
         self.agree_with_local(id);
     }
 
@@ -1768,8 +1796,8 @@ impl Trees {
             self.end_resend(&id);
             return;
         };
-        self.lost_creates.remove(&id);
-        self.resends.remove(&id);
+        self.end_carrier(Carrier::LostCreate, &id);
+        self.end_carrier(Carrier::Resend, &id);
         self.end_local_claim(&id);
         let shape = Shape {
             parent: local.parent,
@@ -1779,6 +1807,18 @@ impl Trees {
         if !self.set_synced_if_valid(id.clone(), Some(shape.clone())) {
             self.wait(id, Some(shape), origin);
         }
+    }
+
+    pub(crate) fn give_way_to_purge(&mut self, id: NodeId, sent: Shape, origin: Origin) {
+        self.unsent_creates.remove(&id);
+        self.journal.superseded_as_purged(&id);
+        self.take_lost_position(id, sent, origin);
+    }
+
+    /// Whether `id` is a folder whose create the server answered `SUPERSEDED` because it purged it
+    /// ([`Journal::purged`]).
+    pub fn purged_folder(&self, id: &NodeId) -> bool {
+        self.journal.purged(id)
     }
 
     pub(crate) fn write_held_beside(&self, id: &NodeId) -> bool {
@@ -1806,6 +1846,7 @@ impl Trees {
     }
 
     pub fn remove_remote(&mut self, id: &NodeId) {
+        let kept = self.holds_only_entries_it_leaves_out(id);
         if !self.left_out_rename_sent(id) {
             self.names_left_out.remove(id);
         }
@@ -1823,17 +1864,39 @@ impl Trees {
         self.missing.remove(id);
         self.edited_here.remove(id);
         self.replaced_versions.remove(id);
-        self.lost_creates.remove(id);
-        self.resends.remove(id);
+        self.end_carrier(Carrier::LostCreate, id);
+        self.end_carrier(Carrier::Resend, id);
         self.moved_here.remove(id);
         self.past_positions.remove(id);
         self.synced_positions.remove(id);
         self.content_provenance.remote_changing(id, &self.r, None);
         self.discard_members.remove(id);
+        self.write_out_synced_intents(id);
+        self.write_out_journal(id);
+        self.note_remote_leaves(id);
         if let Some(old) = self.r.remove(id) {
             self.index_remote(id, Some(&old));
             self.mark(id);
+            self.journal.r_lacks(id);
         }
+        if kept {
+            self.keep_folder(id);
+        }
+    }
+
+    fn holds_only_entries_it_leaves_out(&self, id: &NodeId) -> bool {
+        let (Some(remote), Some(local)) = (self.r.get(id), self.l.get(id)) else {
+            return false;
+        };
+        !self.kept_folders.contains(id)
+            && remote.shape.kind == Kind::Dir
+            && local.shape.kind == Kind::Dir
+            && !local.parked
+            && !local.shape.same_position(&remote.shape)
+            && !self.excluded(id)
+            && self.local_children_placed_or_parked(id).next().is_some()
+            && (self.local_children_placed_or_parked(id))
+                .all(|child| self.excluded(child) || self.left_rules_file(child))
     }
 
     fn index_remote(&mut self, id: &NodeId, old: Option<&RemoteNode>) {
@@ -2124,6 +2187,7 @@ impl Trees {
     /// Sets L. A reverted node that L now holds at a position other than its old one and R's was
     /// moved by the user, and is no longer reverted: that move is committed instead.
     pub fn set_local(&mut self, id: NodeId, mut node: LocalNode) {
+        self.note_local_leaves(&id, &node.shape);
         let content_changed = !matches!(
             (self.l.get(&id).and_then(|old| old.shape.content.as_ref()), node.shape.content.as_ref()),
             (Some(old), Some(new)) if same_content(old, new)
@@ -2142,13 +2206,13 @@ impl Trees {
         let left_folder = (self.l.get(&id))
             .map(|old| old.shape.parent.clone())
             .filter(|parent| *parent != node.shape.parent);
+        if (self.l.get(&id)).is_some_and(|old| !old.shape.same(&node.shape)) {
+            self.end_carrier(Carrier::Resend, &id);
+            self.end_carrier(Carrier::LostCreate, &id);
+        }
         if let Some(old) = self.l.get(&id) {
             node.left_out_when_placed = old.left_out_when_placed;
             node.content_from_server = old.content_from_server;
-            if !old.shape.same(&node.shape) {
-                self.resends.remove(&id);
-                self.lost_creates.remove(&id);
-            }
             if !old.shape.same_position(&node.shape) {
                 self.lost_positions.remove(&id);
             }
@@ -2240,6 +2304,7 @@ impl Trees {
         if self.unobserved.contains(&id) && !self.parked(&id) && !self.excluded(&id) {
             self.clear_unobserved(&id);
         }
+        self.note_local_holds(&id);
         if let Some((folder, name)) = left_kept_name {
             self.kept_nodes.get_or_insert_with(id.clone(), || None);
             if let Some(mut kept) = self.kept_entries.get(&folder).cloned() {
@@ -2323,6 +2388,7 @@ impl Trees {
                 self.local_changes.insert(id.clone());
             }
         }
+        self.record_user_change(&id, &node);
         self.set_local(id.clone(), node);
         if let Some(provenance) = provenance {
             self.content_provenance
@@ -2373,10 +2439,8 @@ impl Trees {
     /// rules let sync and that the device observes is recorded with the folder L held it in
     /// ([`TreesState::removed_from`]); an unobserved one downloads again (section 5.10).
     pub fn remove_local(&mut self, id: &NodeId) {
-        let left_out = self.excluded(id) && self.ignored_in_remote(id);
-        let unobserved = self.unobserved.contains(id) || self.left_out_by_new_rules(id);
         let removed =
-            (self.l.get(id)).filter(|_| self.r.live(id).is_some() && !left_out && !unobserved);
+            (self.l.get(id)).filter(|_| self.r.live(id).is_some() && !self.removal_unobserved(id));
         if let Some(local) = removed {
             let folder = (self.member_removed_inside(id)).unwrap_or(&local.shape.parent);
             self.removed_from.insert(id.to_owned(), folder.clone());
@@ -2399,6 +2463,12 @@ impl Trees {
             at = &self.l.get(at)?.shape.parent;
         }
         None
+    }
+
+    fn removal_unobserved(&self, id: &NodeId) -> bool {
+        self.excluded(id) && self.ignored_in_remote(id)
+            || self.unobserved.contains(id)
+            || self.left_out_by_new_rules(id)
     }
 
     fn left_out_by_new_rules(&self, id: &NodeId) -> bool {
@@ -4507,7 +4577,7 @@ impl Trees {
                 !node.parked
             }
             Some(Some(_)) if self.placed_alike(id) || self.moved_from_s(id) => false,
-            _ => self.excluded(id),
+            _ => !node.parked && self.ignored_in_place(id),
         }
     }
 
@@ -4714,10 +4784,10 @@ impl Trees {
     pub fn ignored(&self, id: &NodeId) -> bool {
         self.discard_state(id) == Some(Discard::Kept)
             || self.ignored_in_place(id)
-            || self.kept_folder(id)
+            || self.holds_kept_folder(id)
             || self.under_kept_entry(id)
             || (self.l.get(id)).is_some_and(|node| {
-                self.left_rules_file(id) && self.kept_folder(&node.shape.parent)
+                self.left_rules_file(id) && self.holds_kept_folder(&node.shape.parent)
             })
     }
 
@@ -4762,6 +4832,10 @@ impl Trees {
     /// Whether `id` is a folder this device keeps on disk after another device deleted it, for entries it leaves out
     /// (section 5.10).
     pub fn kept_folder(&self, id: &NodeId) -> bool {
+        self.acknowledged(id).is_none() && self.holds_kept_folder(id)
+    }
+
+    pub(crate) fn holds_kept_folder(&self, id: &NodeId) -> bool {
         if !self.kept_folders.contains(id) || self.r.live(id).is_some() {
             return false;
         }
@@ -4785,15 +4859,32 @@ impl Trees {
     /// the names a listing found in it beside them, are counted: L holds nothing below it but rules files it kept unedited
     /// since the delete, and each name in `left` is one of those.
     pub fn emptied_kept_folder(&self, id: &NodeId, left: &[&str]) -> bool {
+        if self.acknowledged(id).is_some() || !self.holds_only_unedited_rules_files(id) {
+            return false;
+        }
         let taken_along: Vec<&str> = (self.local_children_placed_or_parked(id))
             .filter_map(|child| Some(self.l.get(child)?.shape.name.as_str()))
             .collect();
-        self.holds_only_unedited_rules_files(id)
-            && left.iter().all(|name| taken_along.contains(name))
+        left.iter().all(|name| taken_along.contains(name))
+    }
+
+    pub(crate) fn retrying_kept_removal(&self, id: &NodeId) -> bool {
+        self.acknowledged(id).is_some() && self.holds_only_unedited_rules_files(id)
+    }
+
+    fn give_up_kept_removal(&mut self, id: &NodeId) {
+        let mut at = id.clone();
+        while self.kept_folders.contains(&at) {
+            self.give_up(&at);
+            let Some(node) = self.l.get(&at) else {
+                break;
+            };
+            at = node.shape.parent.clone();
+        }
     }
 
     fn holds_only_unedited_rules_files(&self, id: &NodeId) -> bool {
-        self.kept_folder(id)
+        self.holds_kept_folder(id)
             && (self.local_children_placed_or_parked(id))
                 .all(|child| self.unedited_kept_rules_file(child))
     }
@@ -4827,7 +4918,7 @@ impl Trees {
     /// files where L has them, so the delete R holds sends the folder to the local trash and takes the rules files along.
     /// Each kept folder above it that holds nothing else is taken up with it.
     pub fn recheck_kept_folder(&mut self, id: &NodeId) {
-        if !self.holds_only_unedited_rules_files(id) {
+        if self.acknowledged(id).is_some() || !self.holds_only_unedited_rules_files(id) {
             return;
         }
         let mut chain = vec![id.clone()];
@@ -4857,7 +4948,6 @@ impl Trees {
                 if self.holds_remote_content(&id) {
                     self.unsent_edits.remove(&id);
                 }
-                self.end_kept_folder(&id);
                 self.set_synced(id, shape);
             }
         }
@@ -4870,10 +4960,16 @@ impl Trees {
             .collect();
         for child in carried {
             self.give_up(&child);
-            self.kept_folders.insert(child.clone());
-            self.mark(&child);
+            self.keep_local_only(&child);
         }
         self.give_up(id);
+        self.keep_local_only(id);
+    }
+
+    fn keep_local_only(&mut self, id: &NodeId) {
+        for field in crate::journal::Field::ALL {
+            self.journal.end(id, field);
+        }
         self.kept_folders.insert(id.to_owned());
         self.mark(id);
     }
@@ -6156,6 +6252,7 @@ impl Trees {
         held_through: u64,
         accepted: u64,
     ) {
+        self.journal_lost();
         let older_bases: BTreeSet<NodeId> = (records.iter())
             .filter(|(id, record)| {
                 (self.provenance(id)).is_some_and(|provenance| {
@@ -6682,7 +6779,7 @@ impl Trees {
     }
 
     fn end_local_claim(&mut self, id: &NodeId) -> bool {
-        let created = self.unsent_creates.remove(id);
+        let created = self.end_carrier(Carrier::UnsentCreate, id);
         let edited = self.unsent_edits.remove(id);
         self.unsent_moves.remove(id) || edited || created
     }
@@ -6694,7 +6791,7 @@ impl Trees {
     }
 
     pub(crate) fn sent_create(&mut self, id: &NodeId) {
-        if self.unsent_creates.remove(id) {
+        if self.end_carrier(Carrier::UnsentCreate, id) {
             self.mark(id);
         }
     }
@@ -6967,6 +7064,7 @@ impl Trees {
         if std::mem::take(&mut self.release_due) && self.release_vanished() {
             self.settle_marked(abandoned)?;
         }
+        self.end_carried_rows();
         Some(())
     }
 
@@ -7696,8 +7794,8 @@ impl Trees {
         if (shape.as_ref())
             .is_some_and(|shape| (self.l.get(id)).is_some_and(|local| local.shape.same(shape)))
         {
-            self.lost_creates.remove(id);
-            self.resends.remove(id);
+            self.end_carrier(Carrier::LostCreate, id);
+            self.end_carrier(Carrier::Resend, id);
             self.local_changes.remove(id);
         }
         let left = (self.s.get(id))
@@ -7718,6 +7816,7 @@ impl Trees {
                 earlier.remove(0);
             }
         }
+        let before = self.synced_values(id);
         let old = match shape {
             Some(shape) => {
                 self.moved |= self.l.get(id).is_none()
@@ -7763,13 +7862,14 @@ impl Trees {
                     .cloned(),
             }
         });
-        let before = match mark {
+        let before_mark = match mark {
             Some(mark) => self.s_marks.insert(id.to_owned(), mark),
             None => self.s_marks.remove(id),
         };
-        if before.as_ref() != self.s_marks.get(id) {
+        if before_mark.as_ref() != self.s_marks.get(id) {
             self.s.touch(id);
         }
+        self.note_synced_intents(id, &before);
         if let Some(old) = old {
             let kept = self
                 .s
@@ -7854,6 +7954,13 @@ impl Trees {
                 .cloned(),
             None,
             "an unsent create of a node L does not hold or that R holds"
+        );
+        debug_assert_eq!(
+            (self.unsent_creates.iter())
+                .find(|id| self.journal.purged(id))
+                .cloned(),
+            None,
+            "an unsent create of a folder the server purged"
         );
         debug_assert_eq!(
             (self.lost_shapes.keys())
@@ -7973,6 +8080,7 @@ impl Trees {
             unsent_marks: self.unsent_marks.to_map(),
             pending_finishes: self.pending_finishes.to_map(),
             answered_rules: self.answered_rules.to_map(),
+            journal: (self.journal).state(|key, held| intents::full_held(&self.r, key, held)),
         }
     }
 
@@ -8036,6 +8144,10 @@ impl Trees {
             unsent_marks,
             pending_finishes,
             answered_rules,
+            journal,
+            authors: _,
+            ended_carriers: _,
+            synced_intents: _,
             ignore: _,
             outside,
             lost,
@@ -8121,6 +8233,7 @@ impl Trees {
             unsent_marks: unsent_marks.take_changes(),
             pending_finishes: pending_finishes.take_changes(),
             answered_rules: answered_rules.take_changes(),
+            journal: journal.take_changes(|key, held| intents::full_held(r, key, held)),
         }
     }
 
@@ -8374,6 +8487,7 @@ impl Trees {
             unsent_marks,
             pending_finishes,
             answered_rules,
+            journal,
         } = state;
         self.unsettled = dirty.clone();
         self.same.clear();
@@ -8436,6 +8550,13 @@ impl Trees {
         self.unsent_marks = unsent_marks.into();
         self.pending_finishes = pending_finishes.into();
         self.answered_rules = answered_rules.into();
+        self.journal.restore(journal);
+        let held: BTreeSet<NodeId> = (self.journal.held_rows())
+            .map(|((node, _), _)| node.clone())
+            .collect();
+        for node in held {
+            self.compact_journal(&node, Compact::Loaded);
+        }
         self.rules_known = false;
         self.unknown_rules.clear();
         Ok(Some(()))
@@ -8518,6 +8639,7 @@ mod release {
         }
     }
 }
+mod intents;
 
 #[cfg(test)]
 mod checkpoint_changes;

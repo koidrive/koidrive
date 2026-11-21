@@ -62,6 +62,7 @@ fn remote(shape: Shape) -> RemoteNode {
         pending_for: None,
         pending_by: None,
         chunks: Box::default(),
+        intents: None,
     }
 }
 
@@ -87,7 +88,7 @@ fn local(shape: Shape, ino: u128) -> LocalNode {
 type Row = (&'static str, Option<Shape>, Option<Shape>, Option<Shape>);
 
 fn trees(nodes: &[Row]) -> Trees {
-    let mut trees = Trees::new(ROOT);
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
     for (i, (id, l, s, r)) in nodes.iter().enumerate() {
         if let Some(shape) = l {
             trees.set_local((*id).into(), local(shape.clone(), i as u128 + 1));
@@ -1289,7 +1290,7 @@ fn nothing_is_planned_after_a_restore_until_the_rules_are_scanned() {
     trash(&mut before, "gone");
     before.settle(&Default::default());
 
-    let mut trees = Trees::new(ROOT);
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
     for (id, node) in before.remote().iter() {
         trees.set_remote(id.clone(), node.clone());
     }
@@ -1774,7 +1775,7 @@ fn the_mark_of_an_excluded_node_goes_with_it_when_another_device_trashes_it() {
 }
 
 fn restarted(before: &Trees) -> Trees {
-    let mut trees = Trees::new(ROOT);
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
     for (id, node) in before.remote().iter() {
         trees.set_remote(id.clone(), node.clone());
     }
@@ -3943,7 +3944,7 @@ fn a_purged_folder_kept_for_an_excluded_file_sends_nothing_after_rename_or_resta
         )
         .unwrap();
 
-    let mut restarted = Trees::new(ROOT);
+    let mut restarted = Trees::new(ROOT, &IdGen::new(0));
     restarted.set_local("d".into(), trees.local().get(&"d".into()).unwrap().clone());
     restarted.set_rules(&AT_ROOT, Source::Koiignore, rules("*.txt\n"));
     restarted.restore(trees.state()).unwrap();
@@ -3956,6 +3957,33 @@ fn a_purged_folder_kept_for_an_excluded_file_sends_nothing_after_rename_or_resta
             dir(ROOT, name)
         );
     }
+}
+
+#[test]
+fn a_folder_held_apart_from_a_rename_the_rules_leave_out_is_sent_under_a_new_id_once_the_server_purges_it()
+ {
+    let mut trees = trees(&[synced("a", dir(ROOT, "a"))]);
+    trees.set_rules(&AT_ROOT, Source::Koiignore, rules("*.txt\n"));
+    trees.set_remote(
+        "a".into(),
+        RemoteNode {
+            meta_rev: 2,
+            meta_edit_rev: 2,
+            ..remote(dir(ROOT, "c.txt"))
+        },
+    );
+    trees.set_local_changed("b".into(), local(file("a", "b", 1), 9));
+    assert_eq!(ops(&mut trees), []);
+    trash(&mut trees, "a");
+    trees.remove_remote(&"a".into());
+    let sent = ops(&mut trees);
+    let [op::Op::CreateDir(folder), op::Op::CreateFile(entry)] = &sent[..] else {
+        panic!("{sent:?}")
+    };
+    assert_ne!(folder.node_id, "a");
+    assert_eq!((&*folder.parent_id, &*folder.name), (ROOT, "a"));
+    assert_eq!(entry.node_id, "b");
+    assert_eq!((&*entry.parent_id, &*entry.name), (&*folder.node_id, "b"));
 }
 
 fn unanswered_create_in_a_folder_the_server_renamed() -> (Trees, Commits) {
@@ -4784,4 +4812,26 @@ fn a_copy_the_rules_leave_out_around_a_server_rename_waits_for_a_scan_once_they_
         assert!(trees.unobserved(&d), "{renamed_back_first}");
         assert!(!sends_delete_of_d(trees), "{renamed_back_first}");
     }
+}
+
+#[test]
+fn a_folder_kept_after_a_purge_for_entries_the_rules_leave_out_stays_observed_when_the_rules_are_read_again()
+ {
+    let mut trees = trees(&[
+        synced("a", dir(ROOT, "a")),
+        synced("x", file("a", "x.txt", 1)),
+    ]);
+    trees.set_rules(&AT_ROOT, Source::Koiignore, rules("*.txt\n"));
+    trees.rules_scanned();
+    place(&mut trees, "a", ROOT, "b");
+    trees.settle(&Default::default());
+    trees.remove_remote(&"x".into());
+    trees.remove_remote(&"a".into());
+    trees.settle(&Default::default());
+    assert!(trees.kept_folder(&"a".into()));
+    assert!(!trees.unobserved(&"a".into()));
+    trees.set_rules(&AT_ROOT, Source::Koiignore, rules("*.txt\n*.log\n"));
+    trees.settle(&Default::default());
+    assert!(trees.kept_folder(&"a".into()));
+    assert!(!trees.unobserved(&"a".into()));
 }

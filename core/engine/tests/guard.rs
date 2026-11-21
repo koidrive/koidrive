@@ -32,7 +32,7 @@ fn shape(parent: &str, name: &str, kind: Kind) -> Shape {
 }
 
 fn space(loose: usize, inside: usize) -> Trees {
-    let mut trees = Trees::new(ROOT);
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
     let mut nodes = vec![("d".to_owned(), shape(ROOT, "d", Kind::Dir))];
     nodes.extend((0..loose).map(|i| (format!("f{i}"), shape(ROOT, &format!("f{i}"), Kind::File))));
     nodes
@@ -62,6 +62,7 @@ fn serve(trees: &mut Trees, id: String, shape: Shape) {
             pending_for: None,
             pending_by: None,
             chunks: Box::default(),
+            intents: None,
         },
     );
 }
@@ -638,6 +639,7 @@ fn a_held_file_changed_on_the_server_leaves_the_question_and_is_downloaded() {
             pending_for: None,
             pending_by: None,
             chunks: Box::default(),
+            intents: None,
         },
     );
     trees.settle(commits.aliases());
@@ -889,7 +891,7 @@ fn a_folder_deleted_over_several_commits_keeps_every_ancestor_of_an_excluded_fil
         trees.settle(commits.aliases());
         acknowledge(&mut commits, &mut trees, seq);
         commits = Commits::from_state(commits.state()).unwrap();
-        let mut reloaded = Trees::new(ROOT);
+        let mut reloaded = Trees::new(ROOT, &IdGen::new(0));
         for (id, node) in trees.local().iter() {
             reloaded.set_local(id.clone(), node.clone());
         }
@@ -1018,6 +1020,7 @@ fn a_restore_answer_holds_a_node_deleted_under_its_folder_since() {
             pending_for: None,
             pending_by: None,
             chunks: Box::default(),
+            intents: None,
         },
     );
     trees.settle(commits.aliases());
@@ -1095,6 +1098,7 @@ fn trash_remotely(trees: &mut Trees, ids: &[&str]) {
             pending_for: None,
             pending_by: None,
             chunks: Box::default(),
+            intents: None,
         };
         trees.set_remote(id, node);
     }
@@ -1320,6 +1324,7 @@ fn a_folder_restored_after_its_notice_was_dismissed_is_noticed_when_deleted_agai
                 pending_for: None,
                 pending_by: None,
                 chunks: Box::default(),
+                intents: None,
             };
             trees.set_remote(id.clone(), node);
         }
@@ -1571,6 +1576,7 @@ fn a_folder_restored_after_a_dismissal_without_its_record_is_noticed_when_delete
                 pending_for: None,
                 pending_by: None,
                 chunks: Box::default(),
+                intents: None,
             };
             trees.set_remote(id.clone(), node);
         }
@@ -1638,7 +1644,7 @@ fn nested() -> Trees {
         )
     });
     nodes.extend(inner);
-    let mut trees = Trees::new(ROOT);
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
     for (ino, (id, shape)) in nodes.into_iter().enumerate() {
         put_back(&mut trees, &id, shape.clone(), ino as u128 + 1);
         trees.set_synced(NodeId::from(&id), Some(shape.clone()));
@@ -1655,6 +1661,7 @@ fn nested() -> Trees {
             pending_for: None,
             pending_by: None,
             chunks: Box::default(),
+            intents: None,
         };
         trees.set_remote(NodeId::from(id), node);
     }
@@ -1756,7 +1763,7 @@ fn a_notice_names_every_limit_the_removals_crossed() {
 }
 
 fn a_folder_with_old_system_files(files: usize) -> Trees {
-    let mut trees = Trees::new(ROOT);
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
     let mut nodes = vec![
         ("d".to_owned(), shape(ROOT, "d", Kind::Dir)),
         ("d/keep".to_owned(), shape("d", "keep.txt", Kind::File)),

@@ -77,6 +77,7 @@ fn remote(shape: Shape) -> RemoteNode {
         pending_for: None,
         pending_by: None,
         chunks: Box::default(),
+        intents: None,
     }
 }
 
@@ -90,7 +91,7 @@ fn discarded_server_folder_let_in(files: usize, budget: u64) -> u64 {
     let names: Vec<String> = (0..files).map(|i| format!("y{i}")).collect();
     let server = std::iter::once(("x".to_owned(), dir(ROOT, "server")))
         .chain(names.iter().map(|name| (name.clone(), file("x", name, 9))));
-    let mut trees = Trees::new(ROOT);
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
     trees.set_local("f".into(), local(dir(ROOT, "new"), 1));
     for (ino, (id, shape)) in server.enumerate() {
         trees.set_local(NodeId::from(&id), local(shape.clone(), ino as u128 + 2));
@@ -142,7 +143,7 @@ fn a_server_folder_a_discard_took_along_is_planned_in_linear_time_once_the_rules
 }
 
 fn renamed_folder_above(depth: usize, files: usize, budget: u64) -> u64 {
-    let mut trees = Trees::new(ROOT);
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
     for i in 0..depth {
         let parent = if i == 0 {
             ROOT.to_owned()
@@ -197,7 +198,7 @@ fn planning_below_a_folder_renamed_here_is_linear_in_its_files_and_at_most_quadr
 }
 
 fn new_local_folder(files: usize, budget: u64) -> u64 {
-    let mut trees = Trees::new(ROOT);
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
     trees.set_local("n".into(), local(dir(ROOT, "new"), 1));
     for j in 0..files {
         let leaf = file("n", &format!("f{j}.txt"), 1);
@@ -215,4 +216,39 @@ fn new_local_folder(files: usize, budget: u64) -> u64 {
 fn planning_a_new_folder_of_local_files_is_linear_in_its_files() {
     let two_hundred = new_local_folder(200, u64::MAX);
     new_local_folder(2000, two_hundred * 11);
+}
+#[test]
+fn a_backfill_reads_the_waiting_updates_of_a_deleted_folder_by_parent() {
+    let measure = |files: usize, unrelated: usize| {
+        let mut trees = Trees::new(ROOT, &IdGen::new(0));
+        trees.set_remote("d".into(), remote(dir(ROOT, "d")));
+        trees.set_synced("d".into(), Some(dir(ROOT, "d")));
+        for i in 0..files {
+            let id = NodeId::from(format!("c{i}"));
+            let shape = file("d", &format!("c{i}"), 1);
+            trees.set_remote(id.clone(), remote(shape.clone()));
+            trees.set_synced(id, Some(shape));
+        }
+        for j in 0..unrelated {
+            let id = NodeId::from(format!("w{j}"));
+            let shape = file(ROOT, &format!("w{j}"), 2);
+            trees.set_remote(id.clone(), remote(shape.clone()));
+            trees.set_synced(id.clone(), Some(shape.clone()));
+            trees.set_local(id.clone(), local(shape, j as u128 + 10));
+            trees.wait(
+                id,
+                Some(file(ROOT, &format!("x{j}"), 2)),
+                crate::classify::Origin::Other,
+            );
+        }
+        trees.settle(&Default::default());
+        let (_, read) = reads(u64::MAX, || trees.backfill(None, false, NOW));
+        read
+    };
+    let folder = |unrelated| measure(100, unrelated) - measure(0, unrelated);
+    let (few, many) = (folder(100), folder(1_000));
+    assert!(
+        many < few * 2,
+        "the folder read {few} entries beside 100 waiting updates, {many} beside 1000"
+    );
 }

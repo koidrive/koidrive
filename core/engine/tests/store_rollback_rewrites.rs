@@ -44,6 +44,7 @@ fn version(shape: Shape, version_id: &str, made_over: &[&str], rev: u64) -> Remo
         version_id: version_id.into(),
         pending_for: None,
         pending_by: None,
+        intents: None,
     }
 }
 
@@ -57,7 +58,7 @@ fn rolled_back(local: Shape, synced: Shape, later: RemoteNode) -> (Trees, Commit
 }
 
 fn before_rollback(local: Shape, synced: Option<Shape>, later: RemoteNode) -> Trees {
-    let mut trees = Trees::new(ROOT);
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
     let local = LocalNode {
         left_out_when_placed: false,
         content_from_server: false,

@@ -47,14 +47,7 @@
 //!   its user made it again.
 //! - Only the device whose user gave a folder its owed name finishes the pending name (RFC 0017).
 //! - No node a user deleted is live on the server, unless a change whose user did not see the
-//!   delete brought it back. With [`World::revived_deletes`] set, such a delete is reported as one
-//!   that never reached the server when the user made it while the server held the deleted file,
-//!   a restore of the server came before or after it in the same history, and the server holds
-//!   the deleted write or one it was made over live, unless the last restore since the delete took
-//!   them from the server, the author resent a write the server lacked at the delete, the delete
-//!   was only in a store that rolled back or on a device that left before sending it, or a server
-//!   commit carried another device's change, unseen by the deleting user, to the file or to a
-//!   folder above it that the delete removed.
+//!   delete brought it back.
 //! - No write is in two live nodes of the server, unless a user copied it (RFC 0029 section 3.6).
 //!   A restore or a replay excuses none.
 //! - A recovery copy whose device's own retained commit shows the server kept the write holds it
@@ -78,6 +71,7 @@ use koidrive_engine::effects::{
     self, BatchLimit, Effect, EffectRecord, MergeResidue, Stuck, location_of,
 };
 use koidrive_engine::first_link::{self, History, Log, LogRead, Marks};
+use koidrive_engine::ids::IdGen;
 use koidrive_engine::ignore::Source;
 use koidrive_engine::names::{name_key, nfc, same_name};
 use koidrive_engine::question::{Answer, QuestionKind, RecoveryCause, RecoveryTrigger};
@@ -86,15 +80,15 @@ use koidrive_engine::tree::{
 };
 use koidrive_proto::v1::{
     ChunkRef, Commit, Error, ListVersions, NodeKind, NodeState, NodeStatus, PrepareUpload, Resume,
-    UploadReceipt, chunk_plan, error, op, op_result, resync_required,
+    UploadReceipt, change_record, chunk_plan, error, op, op_result, resync_required,
 };
 use sha2::{Digest, Sha256};
 
-use self::deletes::{Deletion, live_nodes};
+use self::deletes::Deletion;
 use self::device::{Device, Engine, Link, Message, Rules};
 pub use self::disk::Cut;
 use self::disk::{Applied, Disk, Place, Precision, Refused};
-use self::intents::{Answered, Intents, RESTORE, RESTORE_ANSWER, Server, Value};
+use self::intents::{Answered, Intents, KEEP, PUBLISH, RESTORE, RESTORE_ANSWER, Server, Value};
 pub use self::intents::{Check, ExpectedRed, allow_red, expect_red};
 use self::rules::{LeftOutOnDisk, Unsynced, excluded_op};
 use crate::space::{Role, Session, SpaceDo};
@@ -395,6 +389,16 @@ fn live_writes(space: &SpaceDo) -> BTreeMap<i64, NodeId> {
         .collect()
 }
 
+fn placed_by(op: &koidrive_proto::v1::Op) -> Option<(NodeId, NodeId, &str)> {
+    let (node, parent, name) = match op.op.as_ref()? {
+        op::Op::Move(moved) => (&moved.node_id, &moved.new_parent_id, &moved.new_name),
+        op::Op::CreateDir(create) => (&create.node_id, &create.parent_id, &create.name),
+        op::Op::CreateFile(create) => (&create.node_id, &create.parent_id, &create.name),
+        _ => return None,
+    };
+    Some((NodeId::from(node), NodeId::from(parent), name.as_str()))
+}
+
 fn uncredit(kept: &mut BTreeMap<i64, BTreeMap<NodeId, u128>>, id: &NodeId, ino: u128, write: i64) {
     let Some(nodes) = kept.get_mut(&write) else {
         return;
@@ -616,9 +620,6 @@ pub struct World {
     /// Sends each `Welcome` without the commit token of the device's commit at its count, as a
     /// server from before RFC 0002's `device_commit_id` does.
     pub tokenless_welcome: bool,
-    /// Fails a phase when a file a user deleted before or after a restore of the server is live on
-    /// the server again with no restore that took the delete.
-    pub revived_deletes: bool,
     /// The tag of the last write.
     writes: i64,
     /// The device whose user made each write.
@@ -672,6 +673,7 @@ pub struct World {
     binned_copies: BTreeSet<i64>,
     /// How many recovery questions the devices answered once the faults stopped.
     answers: usize,
+    loads: IdGen,
 }
 
 fn merge_residue(disk: &Disk, trees: &Trees, commits: &commit::Commits) -> MergeResidue {
@@ -768,7 +770,6 @@ impl World {
             seen: BTreeMap::new(),
             trace: false,
             tokenless_welcome: false,
-            revived_deletes: false,
             writes: 0,
             writers: BTreeMap::new(),
             published: BTreeSet::new(),
@@ -798,6 +799,7 @@ impl World {
             binned_copies: BTreeSet::new(),
             deletions: Vec::new(),
             answers: 0,
+            loads: IdGen::new(200),
         }
     }
 
@@ -911,7 +913,6 @@ impl World {
                 let device = &mut self.devices[d];
                 device.left = true;
                 device.link = None;
-                self.forget_unsent_deletes(d);
             }
             Step::User(action) => self.act(d, action, Act::of(action.kind)),
             Step::Copy(action) => self.act(d, action, Act::Copy),
@@ -947,14 +948,12 @@ impl World {
                     ) {
                         note(&mut self.seen, "store rolled back during a recovery");
                     }
-                    let ids = device.engine.ids.clone();
-                    device.store = Engine { ids, ..copy };
+                    device.store = copy;
                     device.sent = device.sent_copy.clone();
                     device.rolled_back = true;
                     device.down = true;
                     device.link = None;
                     self.intents.rolled_back(d, self.moment);
-                    self.forget_unsent_deletes(d);
                 }
             }
             _ if self.devices[d].down => self.restart(d)?,
@@ -1138,8 +1137,9 @@ impl World {
                     })
                     .collect();
                 let deleted = disk.delete(ino);
-                self.removed[d].extend(deleted.iter().map(tag));
-                self.record_delete(d, ino, (gone, under), &deleted, unsynced);
+                let removed: BTreeSet<i64> = deleted.iter().map(tag).collect();
+                self.removed[d].extend(&removed);
+                self.record_delete(d, ino, (gone, under), removed, unsynced);
                 return;
             }
             (Act::Copy, Some(ino)) => {
@@ -1176,7 +1176,9 @@ impl World {
             let trashed = matches!(value, Value::Trashed { .. });
             let intent = self.intents.record(d, self.moment, ino, kind, value);
             if trashed {
-                self.deletions.push(Deletion::unwatched(d, intent));
+                let deletion =
+                    Deletion::new(&self.space, d, intent, BTreeSet::new(), BTreeSet::new());
+                self.deletions.push(deletion);
             }
         }
     }
@@ -1364,9 +1366,6 @@ impl World {
             .copied()
             .collect();
         self.space.rewind(&backup.space, self.server_now());
-        for deletion in &mut self.deletions {
-            deletion.watched &= deletion.reached;
-        }
         self.restored_to = None;
         self.held_commits = backup.held_commits.clone();
         self.in_history = backup.in_history.clone();
@@ -1606,17 +1605,27 @@ impl World {
                 for id in &ids {
                     if let Some(ino) = self.intents.ino_of(d, id) {
                         let intent = self.intents.answered_delete(d, self.moment, ino, id);
-                        self.deletions.push(Deletion::unwatched(d, intent));
+                        let removed = content(trees.remote().live(id)).into_iter().collect();
+                        (self.deletions).push(Deletion::new(
+                            &self.space,
+                            d,
+                            intent,
+                            BTreeSet::new(),
+                            removed,
+                        ));
                     }
                 }
             }
             Answer::Restore => self.intents.restore_deleted(d, &ids),
             _ => {}
         }
+        let kind = match answer {
+            Answer::Publish => PUBLISH,
+            _ => KEEP,
+        };
         for (ino, value, answered) in published {
             let held = ids.iter().any(|id| self.intents.ino_of(d, id) == Some(ino));
-            self.intents
-                .answered(d, self.moment, ino, value, answered, held);
+            (self.intents).answered((d, self.moment, kind), ino, value, answered, held);
         }
         assert!(
             engine
@@ -1632,7 +1641,6 @@ impl World {
                     (self.intents).record(d, self.moment, ino, RESTORE_ANSWER, Value::Live);
                 }
             }
-            self.forget_restored_deletes(d);
         }
         Ok(true)
     }
@@ -1709,11 +1717,6 @@ impl World {
         }
         self.restored_to = Some(backup.space.head_seq());
         self.space.restore(&backup.space);
-        let live = live_nodes(&self.space);
-        for deletion in &mut self.deletions {
-            deletion.gone = deletion.held(&live, |_, _, _, _| false).is_none();
-            deletion.restored(backup.space.head_seq());
-        }
         self.intents.carried_until(backup.space.head_seq());
         self.held_commits = backup.held_commits.clone();
         self.in_history = backup.in_history.clone();
@@ -2088,9 +2091,11 @@ impl World {
     /// (`Effects::confirms`), and so does an effect whose outcome L no longer takes
     /// (`EffectRecord::applies`).
     fn restart(&mut self, d: usize) -> Result<(), Failure> {
+        let journal = IdGen::new(self.loads.next_u64());
         let device = &mut self.devices[d];
         device.down = false;
-        device.engine = device.store.reload(&device.rules)?;
+        let ids = device.engine.ids.clone();
+        device.engine = device.store.reload(&device.rules, ids, &journal)?;
         let effects = &device.engine.effects;
         let (marker, cleared) = (device.disk.marker(), effects.cleared());
         let ahead = marker > cleared + effects.in_flight().len() as u64;
@@ -2705,6 +2710,13 @@ impl World {
                 if let Err(why) = commits.check_buildable() {
                     panic!("{why}");
                 }
+                let root = NodeId::from(self.space.space_id());
+                let built = commits.in_flight().into_iter();
+                for op in built.flat_map(|flight| &flight.commit.ops) {
+                    if let Some((node, parent, name)) = placed_by(op) {
+                        (self.intents).built(d, self.moment, (&node, &parent, name), &root);
+                    }
+                }
                 let ops = commits.in_flight().map(|flight| &flight.commit.ops);
                 for placed in ops.map_or_else(Vec::new, |ops| excluded_op(trees, ops)) {
                     let why = format!(
@@ -2716,6 +2728,21 @@ impl World {
                 }
                 let bound = copy_bound(&self.held_commits[d], self.restored_to);
                 let ops = commits.in_flight().map(|flight| &flight.commit.ops);
+                for op in ops
+                    .into_iter()
+                    .flatten()
+                    .filter(|_| commits.field_intents())
+                {
+                    match &op.intent {
+                        None if op.fields.is_none() => {
+                            note(&mut self.seen, "an op built without an intent")
+                        }
+                        Some(intent) if intent.replay => {
+                            note(&mut self.seen, "an op built as a replay")
+                        }
+                        _ => {}
+                    }
+                }
                 for op in ops.into_iter().flatten() {
                     let Some(op::Op::CreateFile(create)) = &op.op else {
                         continue;
@@ -2808,6 +2835,25 @@ impl World {
                 let held = self.space.nodes();
                 match self.space.commit(&session, now_ms, &sent) {
                     Ok(committed) => {
+                        let copies = (sent.ops.iter())
+                            .zip(&committed.result.results)
+                            .filter(|(_, outcome)| {
+                                outcome.code == op_result::Code::ConflictCopy as i32
+                            })
+                            .filter_map(|(op, outcome)| match &op.op {
+                                Some(op::Op::UpdateContent(op)) => {
+                                    Some((&op.node_id, tag(op.content.as_ref()?), &outcome.node_id))
+                                }
+                                _ => None,
+                            });
+                        for (from, write, copy) in copies {
+                            let kept = self.kept[d].get_mut(&write);
+                            if let Some(nodes) = kept
+                                && let Some(ino) = nodes.get(&NodeId::from(from)).copied()
+                            {
+                                nodes.insert(NodeId::from(copy), ino);
+                            }
+                        }
                         if let Some(record) = committed.record {
                             self.held_commits[d].insert((record.seq, record.commit_id.clone()));
                             let trashed = |id: &str| {
@@ -2982,32 +3028,6 @@ impl World {
                                     sent.ops
                                 )));
                             }
-                            let live = live_nodes(&self.space);
-                            let deleted: BTreeSet<NodeId> = (sent.ops.iter())
-                                .zip(&committed.result.results)
-                                .filter(|(_, outcome)| {
-                                    outcome.code != op_result::Code::Rejected as i32
-                                })
-                                .filter_map(|(op, _)| match &op.op {
-                                    Some(op::Op::Delete(op)) => Some(NodeId::from(&op.node_id)),
-                                    _ => None,
-                                })
-                                .collect();
-                            let parents_before: BTreeMap<NodeId, NodeId> = (held.iter())
-                                .map(|node| {
-                                    (NodeId::from(&node.node_id), NodeId::from(&node.parent_id))
-                                })
-                                .collect();
-                            for deletion in &mut self.deletions {
-                                if deletion.device == d {
-                                    deletion.carried(record.seq, &deleted, &parents_before);
-                                }
-                                deletion.reached |= deletion
-                                    .held(&live, |write, _, _, at_node| {
-                                        !at_node && self.copied.contains_key(&write)
-                                    })
-                                    .is_none();
-                            }
                             self.published.extend(after.into_keys());
                             for node in self.space.nodes() {
                                 if let Some(content) = node.current.and_then(|v| v.content) {
@@ -3040,29 +3060,43 @@ impl World {
                                     );
                                 }
                             }
+                            if (sent.ops.iter()).any(|op| matches!(op.op, Some(op::Op::Delete(_))))
+                            {
+                                let changed: Vec<&NodeState> = (committed.result.changes.iter())
+                                    .filter_map(|change| match &change.change {
+                                        Some(change_record::Change::Node(state)) => Some(state),
+                                        _ => None,
+                                    })
+                                    .collect();
+                                let content = |node: &NodeState| {
+                                    Some(node.intents.as_ref()?.content.as_ref()?.id.clone())
+                                };
+                                let live =
+                                    |node: &NodeState| node.status == NodeStatus::Live as i32;
+                                for trashed in changed.iter().filter(|node| !live(node)) {
+                                    let Some(intent) = content(trashed) else {
+                                        continue;
+                                    };
+                                    for copy in &changed {
+                                        if live(copy) && content(copy).as_ref() == Some(&intent) {
+                                            self.intents.copied(
+                                                &NodeId::from(&trashed.node_id),
+                                                &NodeId::from(&copy.node_id),
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                            let reached = Server::of(self.space.space_id(), held.clone());
+                            for op in &sent.ops {
+                                if let Some((node, parent, name)) = placed_by(op) {
+                                    let op = (&node, &parent, name);
+                                    (self.intents).reached(d, self.moment, op, &reached);
+                                }
+                            }
                             let server = Server::of(self.space.space_id(), self.space.nodes());
                             self.intents.sync(&server, self.moment, None);
-                            let after_commit = self.space.nodes();
-                            let revived: BTreeSet<NodeId> = (after_commit.iter())
-                                .filter(|node| {
-                                    node.status == NodeStatus::Live as i32 && trashed(&node.node_id)
-                                })
-                                .map(|node| NodeId::from(&node.node_id))
-                                .collect();
-                            let reparented: BTreeSet<NodeId> = (after_commit.iter())
-                                .filter(|node| {
-                                    (parents_before.get(&NodeId::from(&node.node_id)))
-                                        .is_some_and(|parent| *parent != node.parent_id)
-                                })
-                                .map(|node| NodeId::from(&node.node_id))
-                                .collect();
-                            (self.intents).carried_by(
-                                d,
-                                &server,
-                                record.seq,
-                                &revived,
-                                &reparented,
-                            );
+                            (self.intents).carried_by(d, &server, record.seq);
                             note(&mut self.seen, "commit applied");
                             for outcome in &committed.result.results {
                                 use op_result::Code;
@@ -3826,7 +3860,6 @@ impl World {
         }
         let held = Server::of(self.space.space_id(), self.space.nodes());
         let live = live_writes(&self.space);
-        self.revived_delete()?;
         self.undone_delete(&held)?;
         let gone = |d: usize| self.devices[d].left;
         let left_out = |d: usize, ino: u128| unsynced[d].inos.contains(&ino);
@@ -4359,36 +4392,6 @@ mod tests {
     }
 
     #[test]
-    fn a_delete_keeps_only_the_latest_unsent_change_of_another_device() {
-        let mut world = World::new(2);
-        let user = |kind: u8| {
-            Step::User(Action {
-                kind,
-                target: 0,
-                parent: 0,
-                name: 0,
-                text: 0,
-            })
-        };
-        world.phase(0, &[(1, user(1))]).unwrap();
-        world
-            .run(1, &[(1, user(2)), (1, user(2)), (0, user(4))])
-            .unwrap();
-        let edits: Vec<usize> = (0..world.intents.len())
-            .filter(|i| {
-                let intent = world.intents.intent(*i);
-                intent.author == 1
-                    && intent.carried.is_none()
-                    && matches!(intent.value, Value::Content { .. })
-            })
-            .collect();
-        assert_eq!(edits.len(), 2);
-        let deletion = world.deletions.last().unwrap();
-        assert_eq!(deletion.device, 0);
-        assert_eq!(deletion.unsent, BTreeSet::from([edits[1]]));
-    }
-
-    #[test]
     fn a_node_left_at_a_stand_in_name_fails_the_rename_its_user_made() {
         let mut world = World::new(2);
         let rename = Step::User(Action {
@@ -4587,6 +4590,29 @@ mod tests {
     }
 
     #[test]
+    fn devices_mint_intents_from_streams_of_their_own() {
+        let mut minted = BTreeSet::new();
+        for seed in [100, 101] {
+            let mut engine = Engine::new("root", "history", seed);
+            for _ in 0..8 {
+                assert!(minted.insert(engine.trees.journal_mut().mint()));
+            }
+        }
+    }
+
+    #[test]
+    fn a_restart_mints_intents_it_never_minted_before() {
+        let mut world = World::new(1);
+        let mut minted = BTreeSet::new();
+        for _ in 0..3 {
+            let journal = world.devices[0].engine.trees.journal_mut();
+            assert!(minted.insert(journal.mint()));
+            world.devices[0].persist().unwrap();
+            world.restart(0).unwrap();
+        }
+    }
+
+    #[test]
     fn a_reload_keeps_an_effect_planned_after_a_recovery_applicable() {
         let mut engine = Engine::new("root", "history", 1);
         let cause = RecoveryCause::rewind(4, NOW);
@@ -4619,6 +4645,7 @@ mod tests {
             pending_for: None,
             pending_by: None,
             chunks: Box::default(),
+            intents: None,
         };
         engine.trees.set_remote("d".into(), folder);
         engine.trees.settle(engine.commits.aliases());
@@ -4633,7 +4660,9 @@ mod tests {
             )
             .to_vec();
         assert!(planned[0].applies(&engine.trees, None), "{planned:?}");
-        let loaded = engine.reload(&Rules::default()).unwrap();
+        let loaded = engine
+            .reload(&Rules::default(), engine.ids.clone(), &engine.ids)
+            .unwrap();
         assert!(loaded.effects.in_flight()[0].applies(&loaded.trees, None));
     }
 

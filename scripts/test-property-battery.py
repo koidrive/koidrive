@@ -695,6 +695,8 @@ cases = ["{1:064}"]
         takes_along = "a_first_link_discard_takes_along_only_the_server_entries_the_user_leaves_alone"
         w78f3 = "78f33ddc3d91d9ca24ee8db9ad24f0ca0437d7aef0592e880d853f42fbc7443a"
         l14fe = "14fe391f4d7b8011cbf4479f6c7a329d79742ba2970f9a9dba0de41bb92f4f40"
+        onto = "a_node_another_device_moves_onto_a_folder_the_rules_leave_out_here_settles"
+        pe254 = "e254728256babff00e24d42a4a15af9993384fc9a3cc718e665f4c52f90c306b"
         t1437 = "143726c8b8801b7144fea65b7f6befcad226e9320027197f360eb3e51ee4b6f4"
         w570e = "570e17d678be8db7ebb4f77ea1126ef4fb3f78e9e54a571548f9a65426b4a44e"
         l6e1e = "6e1e45a64034f0df942d9c9029a9dba041aeff0631a6fa348d5702b89187059f"
@@ -752,28 +754,27 @@ cases = ["{1:064}"]
         ]
         settles = "a_node_another_device_moves_onto_a_folder_the_rules_leave_out_here_settles"
         n812f = "812f80a55f271edd88172ef1fcd1ced1ec88d3bcd8cfd8aed455c8f842181ebe"
-        no_convergence = "no convergence within 400 steps at core/sim/tests/engine_sync/common.rs:2454."
+        no_convergence = "no convergence within 400 steps; the last commit sent CreateDir of 01a1c2c0-39a0-7f7c-8b0a-00ad9bc6fff8 answered CODE_MERGED_INTO at core/sim/tests/engine_sync/common.rs:2686."
         def replayed(case):
             return next(text for entry in entries for text in entry["examples"] if f"\tcc-{case}\t" in text)
         coarse_once = "devices_on_coarse_volumes_converge_once_the_faults_stop"
         lose_server_restores = "devices_lose_no_write_across_server_restores"
         taken = ("after phase 2: a restore took write 2 from the server while a disk held it, and the server does not hold it "
                  "again, though no user overwrote or deleted it.")
-        kept = (f"\nnot recorded: devices::{server_restores}\tcc-{i764b}\tWriteKept\twrite 3 of the write of node "
+        kept = (f"\nnot recorded: devices::{server_restores}\tcc-{i764b}\ton\tWriteKept\twrite 3 of the write of node "
                 "01a1c2c0-39a0-7c5c-8466-a7d0954b76a3 on device 0 is not in the server's tree, and no later change that saw it, "
                 "no delete that saw it and no rule for lost changes settles it")
-        placed = (f"\nnot recorded: devices::{restores_and_rewinds}\tcc-{ibbe9}\tPlaceKept\tthe move on device 1 that puts node "
+        placed = (f"\nnot recorded: devices::{restores_and_rewinds}\tcc-{ibbe9}\ton\tPlaceKept\tthe move on device 1 that puts node "
                   "01a1c2c0-39a0-7c5c-8466-a7d0954b76a3 at \"a\" is not on the server, though its user saw the place the server "
                   "holds and no rule for lost changes settles it")
         copied = ("after phase 2: write 4 is in more than one file on the server, and no user copied it: "
                   "[[\"A\"], [\"A (conflict from device-1 2026-11-09)\"]].")
         def head_only_undone(test, case):
-            return (f"{copied}\nnot recorded: devices::{test}\tcc-{case}\tDeleteUndone\tthe delete of node "
+            return (f"{copied}\nnot recorded: devices::{test}\tcc-{case}\ton\tDeleteUndone\tthe delete of node "
                     "01a1c2c0-39a0-7c5c-8466-a7d0954b76a3 on device 1 came undone, and no change its user did not see brought the node back")
         elsewhere = ("assertion failed: `(left == right)` \n  left: `(\"01a1c2c0-39a0-75ee-831c-498d57bc0a70\", \"a\")`, \n right: `(\"01a1c2c0-39a0-780a-953a-eb70673e29cb\", \"a\")`: 01a1c2c0-39a0-7895-abc3-b3429e08873f"
                      " is sent to a place the disk does not hold it at at core/sim/tests/engine_sync/common.rs:1330.")
-        never_reached = next(entry for entry in entries
-                             if entry["file"] == "GUN-1012-I-delete-never-reached-server-across-server-restores.toml")["examples"][0]
+        g3a0d = "3a0d2e9f93add5bd8adc686860704064f6142131917fe4203d878de80082695b"
         undone = next(entry for entry in entries if entry["file"] == "GUN-1012-I-delete-came-undone.toml")["examples"][1]
         def example(case):
             return next(entry for entry in entries if case.startswith(tuple(entry.get("cases", ["-"]))))["examples"][0]
@@ -796,11 +797,6 @@ cases = ["{1:064}"]
             (restores_and_rewinds, quiet, ae45, [("D", "GUN-984", None)]),
             (server_restores, quiet, ae45, [("D", "GUN-984", ["45aeea4283bad112a4dfb008e7c67a75c58dea15306a57cb165f8b6cbd33238c"])]),
             (server_restores, quiet, e0a5, [("J", "GUN-1012", ["5e0a61643769"])]),
-            (folder, never_reached, other, []),
-            (rewinds_and_rollbacks, never_reached, other, []),
-            (server_restores, never_reached, other, [("I", "GUN-1012", None)]),
-            (restores_and_rewinds, never_reached, other, [("I", "GUN-1012", None)]),
-            ("devices_on_coarse_volumes_converge_across_restores_and_rewinds", never_reached, other, [("I", "GUN-1012", None)]),
             (lose_rollbacks, example(x2293), x2293, [("X", "GUN-1199", ["2293e681b3bc09faeca001d034140fd95df720190105bcb9a754644310248df5"])]),
             (lose_rollbacks, example(x2293), other, []),
             (lose_rollbacks, example(x2293), "34f34706da29bd847073d489545b53a8e3987583e07c333f9a5301e1fac5421b", []),
@@ -903,6 +899,9 @@ cases = ["{1:064}"]
             (rules_leave_out, parked, vad76, []),
             (takes_along, parked, v73cf, []),
             (takes_along, parked, other, []),
+            (onto, parked, pe254, [("P", "GUN-1450", ["e254728256ba"])]),
+            (onto, parked, other, []),
+            (takes_along, parked, pe254, []),
             (rules_change, excluded_left, v0d10, []),
             (rules_leave_out, excluded_left, vad76, []),
             (lose_coarse, replayed(w74e3), w74e3[:12] + "0" * 52, []),
@@ -974,7 +973,7 @@ cases = ["{1:064}"]
     def test_a_devices_replay_keeps_its_unrecorded_reds_and_drops_the_cases_triage_removed(self):
         entries = triage.known_failures(triage.KNOWN_FAILURES)
         test = "devices_converge_across_restores_and_rewinds"
-        red = (f"not recorded: devices::{test}\tcc-085dc3892c1039055c5cb4b0523f824a775a089818ccdd9b62a5960caad5158f\t"
+        red = (f"not recorded: devices::{test}\tcc-085dc3892c1039055c5cb4b0523f824a775a089818ccdd9b62a5960caad5158f\ton\t"
                "DeleteUndone\tthe delete of node 01a1c2c0-39a0-7510-83bc-38d6c6b89fe4 on device 1 came undone, and no "
                "change its user did not see brought the node back")
         never_ran = (f"devices::{test} never ran case "
@@ -1317,7 +1316,7 @@ class Triage(unittest.TestCase):
         fixed_seed = ("---- rewinds_converge_from_seed_122 stdout ----\nthread 'x' panicked at core/sim/tests/devices.rs:495:5:\n"
                       "devices::rewinds_converge_from_seed_122 case case-17 fails: write 1 is lost\n")
         recorded = ("---- rewinds_converge_from_seed_122 stdout ----\nthread 'x' panicked at core/sim/tests/devices.rs:495:5:\n"
-                    "recorded but passed: devices::rewinds_converge_from_seed_122\tcase-17\tWriteKept\twrite 1 is lost\n")
+                    "recorded but passed: devices::rewinds_converge_from_seed_122\tcase-17\ton\tWriteKept\twrite 1 is lost\n")
         plain = "---- prints_help stdout ----\nproptest regression: cc cc2e\nthread 'x' panicked at t.rs:3:1:\nboom\n"
         self.assertEqual(unsaved(committed + saving), [("a", True)])
         self.assertEqual(unsaved(shared + saving), [("a", False)])

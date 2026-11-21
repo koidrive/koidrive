@@ -198,7 +198,7 @@ fn a_rolled_back_copy_sends_no_edit_again_that_the_server_holds_through_its_rese
 
 #[test]
 fn a_reapplied_commit_does_not_hold_another_devices_edit_from_the_history_a_restore_left() {
-    let _red = expect_red(
+    let _red = expect_red_without_intents(
         Check::OneWriteOneNode,
         "write 3 is in 2 live nodes on the server: [[\"a\"], [\"a (conflict from device-0 2026-11-09)\"]]",
     );

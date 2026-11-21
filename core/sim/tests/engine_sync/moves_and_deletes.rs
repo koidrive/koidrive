@@ -61,7 +61,7 @@ fn a_new_folder_merges_into_a_folder_that_unknown_rules_hold_away_from_its_name(
         .unwrap()
         .node_id;
     let parent = space.node(&holder).unwrap().parent_id;
-    let mut trees = Trees::new(root.clone());
+    let mut trees = Trees::new(root.clone(), &IdGen::new(0));
     for (index, state) in space
         .nodes()
         .iter()
@@ -137,7 +137,7 @@ fn a_new_folder_takes_its_name_once_a_held_back_rename_frees_it() {
     let root = space.space_id().to_owned();
     let holder = nodes_with(&space, 1, Some(1))[0].clone();
     let (_, old) = RemoteNode::from_state(&space.node(&holder).unwrap()).unwrap();
-    let mut trees = Trees::new(root.clone());
+    let mut trees = Trees::new(root.clone(), &IdGen::new(0));
     trees.set_synced(NodeId::from(&holder), Some(old.shape.clone()));
     trees.set_local(
         NodeId::from(&holder),
@@ -331,6 +331,14 @@ fn a_node_moved_into_a_merged_folder_follows_it_on_disk() {
         ),
     ];
     run(&seed, &local, &remote, fits, fresh_dir_names, &during).unwrap();
+}
+
+#[test]
+fn an_edited_file_purged_remotely_settles_as_the_copy_the_server_makes() {
+    let seed = [act(1, 0, 0, 0, 0)];
+    let local = [act(2, 0, 0, 0, 1)];
+    let remote = [act(7, 0, 0, 0, 0), act(7, 0, 0, 0, 0)];
+    run(&seed, &local, &remote, MAX_OPS, false, &[]).unwrap();
 }
 
 #[test]

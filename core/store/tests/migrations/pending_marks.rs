@@ -149,7 +149,7 @@ fn a_rename_a_store_recorded_before_pending_marks_is_finished_after_the_upgrade_
     let mut store = Store::open(&path).unwrap();
     let (mut trees, mut commits) = store
         .transaction(|tx| {
-            let mut trees = Trees::new("root");
+            let mut trees = Trees::new("root", &IdGen::new(0));
             for node in tx.remote_nodes()? {
                 let (id, remote) = RemoteNode::from_state(&node).unwrap();
                 trees.set_remote(id, remote);

@@ -233,6 +233,20 @@ impl<K: Ord + Clone, V: Clone + PartialEq> TrackedMap<K, V> {
         Some(value)
     }
 
+    pub fn hand_off<Q>(&mut self, key: &Q) -> Option<(V, bool)>
+    where
+        K: Borrow<Q>,
+        Q: Ord + ?Sized,
+    {
+        let value = self.map.remove(key)?;
+        let changed = (self.before.remove(key)).is_some_and(|held| held.as_ref() != Some(&value));
+        Some((value, changed))
+    }
+
+    pub fn insert_quietly(&mut self, key: K, value: V) -> Option<V> {
+        self.map.insert(key, value)
+    }
+
     /// The value of `key` to change in place. It is a change once it differs from the value the
     /// key held at the last take.
     pub fn get_mut<Q>(&mut self, key: &Q) -> Option<&mut V>

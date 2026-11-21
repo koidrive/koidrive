@@ -71,6 +71,7 @@ fn remote(shape: Shape) -> RemoteNode {
         pending_for: None,
         pending_by: None,
         chunks: Box::default(),
+        intents: None,
     }
 }
 
@@ -277,7 +278,7 @@ impl Disk {
 
 /// A space whose disk, L and S hold each node's first shape and whose R holds its second.
 fn space(nodes: &[(&str, Option<Shape>, Option<Shape>)]) -> (Trees, Disk) {
-    let mut trees = Trees::new(ROOT);
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
     let mut disk = Disk {
         next: nodes.len() as u128,
         ..Disk::default()

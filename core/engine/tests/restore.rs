@@ -65,6 +65,7 @@ fn remote(shape: Shape) -> RemoteNode {
         pending_for: None,
         pending_by: None,
         chunks: Box::default(),
+        intents: None,
     }
 }
 
@@ -79,7 +80,7 @@ fn trashed(shape: Shape) -> RemoteNode {
 type Row = (String, Option<Shape>, Option<Shape>, Option<RemoteNode>);
 
 fn trees(nodes: &[Row]) -> Trees {
-    let mut trees = Trees::new(root());
+    let mut trees = Trees::new(root(), &IdGen::new(0));
     for (ino, (id, l, s, r)) in nodes.iter().enumerate() {
         if let Some(shape) = l {
             let identity = FileIdentity {

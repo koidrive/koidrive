@@ -26,12 +26,13 @@ fn remote(shape: Shape) -> RemoteNode {
         pending_for: None,
         pending_by: None,
         chunks: Box::default(),
+        intents: None,
     }
 }
 
 #[test]
 fn a_listed_place_has_to_match_each_field_of_a_move_base() {
-    let mut trees = Trees::new("root");
+    let mut trees = Trees::new("root", &IdGen::new(0));
     let id = NodeId::from("n");
     let place = crate::ids::IdGen::new(1).uuid_v7_bytes(1);
     let old = remote(dir(&"root".into(), "b"));
@@ -82,7 +83,7 @@ fn ancestry_file(value: u8) -> Shape {
 #[test]
 fn each_kind_of_evidence_keeps_an_id_off_the_new_server_path_rule() {
     let id = NodeId::from("f");
-    let fresh = Trees::new("root");
+    let fresh = Trees::new("root", &IdGen::new(0));
     assert!(fresh.wholly_new_to_server(&id));
     for source in ["R", "S", "waiting", "watch"] {
         let mut trees = fresh.clone();
@@ -108,7 +109,7 @@ fn ancestry_remote(value: u8, version: &str, bases: &[&str]) -> RemoteNode {
 }
 
 fn ancestry_tree() -> Trees {
-    let mut trees = Trees::new("root");
+    let mut trees = Trees::new("root", &IdGen::new(0));
     trees.set_remote("f".into(), ancestry_remote(1, "held", &["foreign-base"]));
     trees.set_local(
         "f".into(),
@@ -447,7 +448,7 @@ fn waiting(shape: Shape) -> Waiting {
 }
 
 fn reclaimable(child_to: &NodeId, own_wait: bool) -> Trees {
-    let mut trees = Trees::new("root");
+    let mut trees = Trees::new("root", &IdGen::new(0));
     let synced = [
         ("f", dir(&"root".into(), "a")),
         ("c", dir(&"f".into(), "child")),
@@ -534,7 +535,7 @@ fn a_reclaim_that_cannot_keep_s_valid_changes_nothing() {
 }
 
 fn a_server_folder_in_a_discarded_folder(folders: usize, waiting: bool) -> (Trees, Vec<NodeId>) {
-    let mut trees = Trees::new("root");
+    let mut trees = Trees::new("root", &IdGen::new(0));
     let mut ino = 0;
     let mut add = |trees: &mut Trees, id: NodeId, shape: Shape, server: bool| {
         ino += 1;
@@ -631,7 +632,7 @@ fn a_server_folder_of_fifty_thousand_files_in_a_discarded_folder_is_checked_in_l
 
 #[test]
 fn two_server_folders_swapped_below_a_discarded_folder_stay_discarded() {
-    let mut trees = Trees::new("root");
+    let mut trees = Trees::new("root", &IdGen::new(0));
     let mut ino = 0;
     let mut place = |trees: &mut Trees, id: &NodeId, shape: Shape, server: bool| {
         ino += 1;
@@ -683,7 +684,7 @@ fn two_server_folders_swapped_below_a_discarded_folder_stay_discarded() {
 
 #[test]
 fn a_discarded_node_drops_its_unsent_move_and_follows_the_server() {
-    let mut trees = Trees::new("root");
+    let mut trees = Trees::new("root", &IdGen::new(0));
     let shape = dir(&"root".into(), "c");
     let local = LocalNode {
         left_out_when_placed: false,
@@ -715,7 +716,7 @@ fn a_discarded_node_drops_its_unsent_move_and_follows_the_server() {
 
 #[test]
 fn a_resend_that_yields_to_the_server_trash_drops_its_unsent_move() {
-    let mut trees = Trees::new("root");
+    let mut trees = Trees::new("root", &IdGen::new(0));
     let shape = dir(&"root".into(), "c");
     let local = LocalNode {
         left_out_when_placed: false,
@@ -747,7 +748,7 @@ fn a_resend_that_yields_to_the_server_trash_drops_its_unsent_move() {
 
 #[test]
 fn a_resend_that_gave_way_to_a_delete_stays_a_resend_when_a_loss_follows() {
-    let mut trees = Trees::new("root");
+    let mut trees = Trees::new("root", &IdGen::new(0));
     let local = |shape: Shape, ino: u128| LocalNode {
         left_out_when_placed: false,
         content_from_server: false,
@@ -792,7 +793,7 @@ fn a_resend_that_gave_way_to_a_delete_stays_a_resend_when_a_loss_follows() {
 
 #[test]
 fn a_resend_that_gave_way_to_a_delete_stays_a_resend_when_the_loss_also_takes_the_delete() {
-    let mut trees = Trees::new("root");
+    let mut trees = Trees::new("root", &IdGen::new(0));
     let local = |shape: Shape, ino: u128| LocalNode {
         left_out_when_placed: false,
         content_from_server: false,
@@ -838,7 +839,7 @@ fn a_resend_that_gave_way_to_a_delete_stays_a_resend_when_the_loss_also_takes_th
 
 #[test]
 fn a_discard_check_over_a_deep_chain_of_taken_along_server_folders_finishes() {
-    let mut trees = Trees::new("root");
+    let mut trees = Trees::new("root", &IdGen::new(0));
     let local = |shape: Shape, ino: u128, left_out_when_placed: bool| LocalNode {
         left_out_when_placed,
         content_from_server: false,
@@ -870,7 +871,7 @@ fn a_discard_check_over_a_deep_chain_of_taken_along_server_folders_finishes() {
 
 #[test]
 fn a_discard_check_over_a_deep_chain_of_kept_back_folders_finishes() {
-    let mut trees = Trees::new("root");
+    let mut trees = Trees::new("root", &IdGen::new(0));
     let mut parent = "root".to_string();
     for k in 0..40 {
         let (x, c) = (format!("x{k}"), format!("c{k}"));
@@ -927,7 +928,7 @@ fn nodes_sharing_an_identity_or_a_name_key_are_found_in_id_order_as_they_come_an
         content_from_server: false,
         chunks: Box::default(),
     };
-    let mut trees = Trees::new("root");
+    let mut trees = Trees::new("root", &IdGen::new(0));
     for (id, name) in [
         ("b", "Notes"),
         ("c", "notes"),
@@ -1144,7 +1145,7 @@ mod holders_against_a_rebuild {
         ))]
         #[test]
         fn holders_match_a_rebuild_from_l(ops in proptest::collection::vec(op(), 1..40)) {
-            let mut trees = Trees::new("root");
+            let mut trees = Trees::new("root", &IdGen::new(0));
             for op in ops {
                 match op {
                     Op::Set(i, n, k, p) => trees.set_local(id(i), node(n, k, p)),
@@ -1191,7 +1192,7 @@ fn kept_local(parent: &NodeId, name: &str, kind: Kind, ino: u128) -> LocalNode {
 }
 
 fn with_a_kept_env() -> Trees {
-    let mut trees = Trees::new("root");
+    let mut trees = Trees::new("root", &IdGen::new(0));
     trees.set_local(
         "app".into(),
         kept_local(&"root".into(), "app", Kind::Dir, 1),
@@ -1487,7 +1488,7 @@ fn a_kept_entry_stays_kept_when_another_devices_negation_lands_in_the_settle_the
 
 #[test]
 fn a_listing_reserves_an_entry_whose_name_differs_from_a_held_one_only_in_case() {
-    let mut trees = Trees::new("root");
+    let mut trees = Trees::new("root", &IdGen::new(0));
     trees.set_local(
         "app".into(),
         kept_local(&"root".into(), "app", Kind::Dir, 1),
@@ -1539,7 +1540,7 @@ fn a_listing_reserves_an_entry_whose_name_differs_from_a_held_one_only_in_case()
 
 #[test]
 fn a_restored_node_moved_out_of_an_ignored_folder_is_not_excluded_while_its_removal_from_s_waits() {
-    let mut trees = Trees::new("root");
+    let mut trees = Trees::new("root", &IdGen::new(0));
     trees.set_rules(
         &[] as &[&str],
         koidrive_ignore::Source::Koiignore,
@@ -1620,7 +1621,7 @@ fn a_synced_rename_between_names_whose_keys_share_a_hash_keeps_the_node_held() {
         kind: Kind::File,
         content: None,
     };
-    let mut trees = Trees::new("root");
+    let mut trees = Trees::new("root", &IdGen::new(0));
     trees.set_synced("n".into(), Some(file(&a)));
     trees.set_synced("n".into(), Some(file(&b)));
     assert_eq!(
@@ -1664,7 +1665,7 @@ fn names_built_to_share_an_fnv_hash_are_synced_in_linear_reads() {
         })
     };
     let reads = |stages, budget: u64| {
-        let mut trees = Trees::new("root");
+        let mut trees = Trees::new("root", &IdGen::new(0));
         let before = ENTRIES_READ.with(Cell::get);
         ENTRIES_BUDGET.with(|limit| limit.set(before.saturating_add(budget)));
         for (i, name) in colliding(stages).enumerate() {
@@ -1713,7 +1714,7 @@ fn discarded_cycle_holding_a_file(
     above_a: &str,
     on_server: bool,
 ) -> Trees {
-    let mut trees = Trees::new("root");
+    let mut trees = Trees::new("root", &IdGen::new(0));
     let file = |digest: u8| Shape {
         parent: "a".into(),
         name: id.into(),

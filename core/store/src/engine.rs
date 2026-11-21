@@ -804,7 +804,7 @@ impl Tx<'_> {
                 Effect::try_from(effect)?,
             );
         }
-        Ok(true)
+        self.journal_state_unless(&mut state.trees.journal, abandoned)
     }
 
     /// Replaces the stored engine state with `state`.
@@ -875,6 +875,7 @@ impl Tx<'_> {
             unsent_marks,
             pending_finishes,
             answered_rules,
+            journal,
         } = trees;
         let CommitsChanges {
             accepted,
@@ -1501,6 +1502,7 @@ impl Tx<'_> {
                 put.execute(params![node, StoredEffect::from(effect).encode_to_vec()])
             },
         )?;
+        self.write_journal_changes(journal)?;
         Ok(())
     }
 

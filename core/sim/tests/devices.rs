@@ -20,8 +20,8 @@ use koidrive_proto::v1::{NodeStatus, error};
 use koidrive_sim::world::device::Ruling;
 use koidrive_sim::world::disk::{Place, Precision};
 use koidrive_sim::world::{
-    Action, Check, Cut, Failure, NAMES, Outcome, PENDING_NAME, Reply, Step, TEXTS, World,
-    allow_red, expect_red, tag,
+    Action, Check, Cut, ExpectedRed, Failure, NAMES, Outcome, PENDING_NAME, Reply, Step, TEXTS,
+    World, allow_red, expect_red, tag,
 };
 use proptest::prelude::*;
 use proptest::strategy::ValueTree;
@@ -283,6 +283,15 @@ fn reviving_an_owed_rename() -> impl Strategy<Value = Vec<Vec<(usize, Step)>>> {
 
 thread_local! {
     static TOKENLESS_WELCOME: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static FIELD_INTENTS: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
+}
+
+fn expect_red_without_intents(check: Check, why: &str) -> Option<ExpectedRed> {
+    (!FIELD_INTENTS.get()).then(|| expect_red(check, why))
+}
+
+fn expect_red_with_intents(check: Check, why: &str) -> Option<ExpectedRed> {
+    FIELD_INTENTS.get().then(|| expect_red(check, why))
 }
 
 fn world(devices: usize) -> World {
@@ -295,9 +304,11 @@ fn on(volumes: &[Precision]) -> World {
 
 /// Devices that print every step with the state it leaves when `KOIDRIVE_SIM_TRACE` is set.
 fn configured(mut world: World) -> World {
+    world
+        .space_mut()
+        .announce_field_intents(FIELD_INTENTS.get());
     world.trace = std::env::var_os("KOIDRIVE_SIM_TRACE").is_some();
     world.tokenless_welcome = TOKENLESS_WELCOME.get();
-    world.revived_deletes = std::env::var_os("KOIDRIVE_SIM_REVIVED_DELETES").is_some();
     world
 }
 
@@ -480,6 +491,7 @@ impl FailurePersistence for NewCases {
 
 struct Reds {
     test: &'static str,
+    mode: &'static str,
     recorded: BTreeMap<&'static str, BTreeSet<(Check, String)>>,
     wrong: Vec<String>,
 }
@@ -487,17 +499,26 @@ struct Reds {
 impl Reds {
     fn new(test: &'static str, kind: &str) -> Self {
         let mut recorded: BTreeMap<_, BTreeSet<_>> = BTreeMap::new();
+        let mode = if FIELD_INTENTS.get() { "on" } else { "off" };
         for line in RECORDED_REDS.lines() {
-            let fields: Vec<&str> = line.splitn(4, '\t').collect();
-            let [name, case, check, why] = fields[..] else {
+            let fields: Vec<&str> = line.split('\t').collect();
+            let [name, case, modes, check, why, ref issue @ ..] = fields[..] else {
                 panic!(
-                    "devices-oracle-reds.tsv: {line:?} is not a test, a case, a check and a message"
+                    "devices-oracle-reds.tsv: {line:?} is not a test, a case, the intents modes, a check and a message"
                 );
             };
+            assert!(
+                matches!(issue, [] | [_]) && issue.iter().all(|issue| issue.starts_with("GUN-")),
+                "devices-oracle-reds.tsv: {line:?} ends in something other than one GUN issue"
+            );
+            assert!(
+                ["both", "on", "off"].contains(&modes),
+                "devices-oracle-reds.tsv: {line:?} names no intents mode"
+            );
             let Some(check) = (Check::ALL.into_iter()).find(|c| format!("{c:?}") == check) else {
                 panic!("devices-oracle-reds.tsv: {line:?} names no check");
             };
-            if name == test && case.starts_with(kind) {
+            if name == test && case.starts_with(kind) && [mode, "both"].contains(&modes) {
                 recorded
                     .entry(case)
                     .or_default()
@@ -506,6 +527,7 @@ impl Reds {
         }
         Reds {
             test,
+            mode,
             recorded,
             wrong: Vec::new(),
         }
@@ -518,18 +540,19 @@ impl Reds {
             .flat_map(|(check, guard)| guard.fired().into_iter().map(move |why| (check, why)))
             .collect();
         let recorded = self.recorded.remove(case).unwrap_or_default();
-        let test = self.test;
+        let (test, mode) = (self.test, self.mode);
         if let Err(failure) = result {
             self.wrong
                 .push(format!("{test} case {case} fails: {failure}"));
         }
         for (check, why) in failed.difference(&recorded) {
-            self.wrong
-                .push(format!("not recorded: {test}\t{case}\t{check:?}\t{why}"));
+            self.wrong.push(format!(
+                "not recorded: {test}\t{case}\t{mode}\t{check:?}\t{why}"
+            ));
         }
         for (check, why) in recorded.difference(&failed) {
             self.wrong.push(format!(
-                "recorded but passed: {test}\t{case}\t{check:?}\t{why}"
+                "recorded but passed: {test}\t{case}\t{mode}\t{check:?}\t{why}"
             ));
         }
     }
@@ -575,6 +598,11 @@ fn generates<S: Strategy>(
 ) -> Vec<String> {
     let reds = RefCell::new(Reds::new(test, "case-"));
     let count = Cell::new(0);
+    let config = ProptestConfig {
+        fork: false,
+        timeout: 0,
+        ..config
+    };
     let result = TestRunner::new(config).run(strategy, |value| {
         let case = format!("case-{}", count.replace(count.get() + 1));
         reds.borrow_mut().case(&case, || run(value));
@@ -664,9 +692,24 @@ fn replays<S: Strategy>(
         .map(|entry| entry.expect("read a saved case").path())
         .collect();
     cases.sort();
+    let mut wrong = Vec::new();
+    for intents in [true, false] {
+        let mode = FIELD_INTENTS.replace(intents);
+        wrong.extend(replays_in_mode(test, &cases, strategy, run));
+        FIELD_INTENTS.set(mode);
+    }
+    wrong
+}
+
+fn replays_in_mode<S: Strategy>(
+    test: &'static str,
+    cases: &[std::path::PathBuf],
+    strategy: &S,
+    run: &impl Fn(S::Value) -> Result<(), Failure>,
+) -> Vec<String> {
     let reds = RefCell::new(Reds::new(test, "cc-"));
     for path in cases {
-        let line = fs::read_to_string(&path).expect("read a saved case");
+        let line = fs::read_to_string(path).expect("read a saved case");
         let seed = (line.split('#').next()).and_then(|seed| seed.trim().parse().ok());
         let Some(seed) = seed else {
             panic!("{} holds no seed", path.display());
@@ -675,6 +718,8 @@ fn replays<S: Strategy>(
         let mut runner = TestRunner::new(ProptestConfig {
             test_name: Some(test),
             failure_persistence: Some(Box::new(SavedCase(seed))),
+            fork: false,
+            timeout: 0,
             ..ProptestConfig::with_cases(0)
         });
         let result = runner.run(strategy, |value| {
@@ -724,6 +769,17 @@ fn devices_with_rules_converge_once_the_faults_stop() {
     holds(
         test_name!(devices_with_rules_converge_once_the_faults_stop),
         None,
+        (2..=3usize, excludes(), phases(Losses::None), rulings()),
+        |(devices, exclude, phases, rulings)| {
+            converge_ruled(&exclude[..devices], &rulings, &phases).map(drop)
+        },
+    );
+}
+
+#[test]
+fn devices_with_rules_converge_once_the_faults_stop_on_the_oracle_reds() {
+    holds_on_the_oracle_reds(
+        test_name!(devices_with_rules_converge_once_the_faults_stop_on_the_oracle_reds),
         (2..=3usize, excludes(), phases(Losses::None), rulings()),
         |(devices, exclude, phases, rulings)| {
             converge_ruled(&exclude[..devices], &rulings, &phases).map(drop)
@@ -950,6 +1006,61 @@ fn devices_converge_across_restores_and_rewinds_on_the_oracle_reds() {
     );
 }
 
+#[test]
+fn every_saved_case_replays_with_intents_on_and_then_off() {
+    let modes = RefCell::new(Vec::new());
+    let wrong = replays(
+        "replays",
+        ORACLE_REDS,
+        &(2..=3usize, phases(Losses::Restores)),
+        &|_| {
+            modes.borrow_mut().push(FIELD_INTENTS.get());
+            Ok(())
+        },
+    );
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+    let cases = fs::read_dir(ORACLE_REDS)
+        .expect("read the saved cases")
+        .count();
+    assert_eq!(
+        modes.into_inner(),
+        [vec![true; cases], vec![false; cases]].concat()
+    );
+}
+
+#[test]
+fn a_wrong_red_prints_a_row_the_oracle_reds_file_takes() {
+    let intents = FIELD_INTENTS.replace(false);
+    let mut reds = Reds::new("rows", "case-");
+    let why = "the delete of node 01a1c2c0-39a0-7510-83bc-38d6c6b89fe4 on device 0 came undone, and no change its user did not see brought the node back";
+    reds.recorded.insert(
+        "case-1",
+        BTreeSet::from([(Check::DeleteUndone, why.to_owned())]),
+    );
+    reds.case("case-0", || {
+        an_own_lost_create_under_a_folder_deleted_after_the_loss_leaves_the_folder_deleted();
+        Ok(())
+    });
+    reds.case("case-1", || Ok(()));
+    FIELD_INTENTS.set(intents);
+    let rows: Vec<Vec<&str>> = (reds.wrong.iter())
+        .map(|wrong| {
+            wrong
+                .split_once(": ")
+                .expect("a wrong red names its kind")
+                .1
+        })
+        .map(|row| row.split('\t').collect())
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            ["rows", "case-0", "off", "DeleteUndone", why],
+            ["rows", "case-1", "off", "DeleteUndone", why],
+        ]
+    );
+}
+
 proptest! {
     #![proptest_config(koidrive_test_support::battery_config(DEVICES_CASES, 256))]
 
@@ -1111,6 +1222,91 @@ fn rewinds_converge_from_seed_3413() {
 #[ignore = "a device goes quiet out of sync after a rewind (GUN-551)"]
 fn rewinds_converge_from_seed_3417() {
     converges_from(test_name!(rewinds_converge_from_seed_3417), 3417, 4096);
+}
+
+#[test]
+fn a_write_a_rewind_took_comes_back_beside_the_later_write_when_a_user_publishes_it() {
+    let phases = vec![
+        vec![
+            (1, user(0, 0, 0, "b")),
+            (1, user(1, 0, 3642928213778471807, "a")),
+            (1, Step::CopyStore),
+        ],
+        vec![
+            (1, Step::RollBack),
+            (0, Step::Backup),
+            (1, user(3, 0, 3499421453867702510, "a")),
+            (0, user(2, 39621527937367609, 0, "a")),
+            (0, Step::CopyStore),
+        ],
+        vec![
+            (0, user(0, 0, 0, "A")),
+            (1, user(3, 2810357682821646583, 0, "A")),
+            (0, user(2, 7676191507830041038, 0, "a")),
+            (0, Step::Rewind),
+            (0, Step::RollBack),
+        ],
+    ];
+    for intents in [false, true] {
+        FIELD_INTENTS.set(intents);
+        let world = converge(2, &phases).unwrap();
+        let mut writes: Vec<i64> = (world.space().nodes().into_iter())
+            .filter(|node| node.status == NodeStatus::Live as i32)
+            .filter_map(|node| Some(tag(&node.current?.content?)))
+            .collect();
+        writes.sort();
+        let kept = match intents {
+            false => vec![2],
+            true => vec![2, 3],
+        };
+        assert_eq!(writes, kept, "intents {intents}");
+    }
+}
+
+#[test]
+fn a_name_a_user_kept_after_a_rollback_goes_with_the_file_onto_its_conflict_copy() {
+    let phases = vec![
+        vec![
+            (0, Step::CopyStore),
+            (0, user(1, 0, 0, "b")),
+            (0, user(0, 0, 0, "a")),
+            (0, Step::Backup),
+        ],
+        vec![
+            (0, Step::Restore),
+            (1, Step::CopyStore),
+            (0, Step::RollBack),
+            (1, user(2, 860696635666478654, 0, "a")),
+        ],
+        vec![
+            (1, Step::RollBack),
+            (1, Step::Work(0)),
+            (1, Step::Connect),
+            (1, Step::Deliver(0)),
+            (1, Step::Answer(0)),
+        ],
+    ];
+    for intents in [false, true] {
+        FIELD_INTENTS.set(intents);
+        let world = converge(3, &phases).unwrap();
+        let mut files: Vec<(String, i64)> = (world.space().nodes().into_iter())
+            .filter(|node| node.status == NodeStatus::Live as i32)
+            .filter_map(|node| Some((node.name, tag(&node.current?.content?))))
+            .collect();
+        files.sort();
+        let copy = "b (conflict from device-1 2026-11-09)";
+        let twice = format!("{copy} (conflict from device-1 2026-11-09)");
+        let kept = match intents {
+            false => vec![("b".to_owned(), 1), (copy.to_owned(), 2), (twice, 2)],
+            true => vec![
+                ("b".to_owned(), 1),
+                (copy.to_owned(), 2),
+                (format!("{copy} (conflict from device-1 2026-11-09 2)"), 2),
+                (twice, 1),
+            ],
+        };
+        assert_eq!(files, kept, "intents {intents}");
+    }
 }
 
 #[test]
@@ -3177,20 +3373,47 @@ fn an_edit_of_a_trashed_conflict_named_file() -> (World, koidrive_proto::v1::Nod
 
 #[test]
 fn an_edit_revives_a_file_at_the_conflict_name_the_server_already_holds() {
-    let (mut world, conflict) = an_edit_of_a_trashed_conflict_named_file();
-    world.phase(2, &[]).unwrap();
-    let revived = world
-        .space()
-        .nodes()
-        .into_iter()
-        .find(|node| node.node_id == conflict.node_id)
-        .unwrap();
-    assert_eq!(revived.status, koidrive_proto::v1::NodeStatus::Live as i32);
-    assert_eq!(
-        (revived.parent_id, revived.name),
-        (conflict.parent_id, conflict.name)
-    );
-    assert_eq!(tag(&revived.current.unwrap().content.unwrap()), 4);
+    for intents in [false, true] {
+        FIELD_INTENTS.set(intents);
+        let (mut world, conflict) = an_edit_of_a_trashed_conflict_named_file();
+        world.phase(2, &[]).unwrap();
+        let live = |id: &str| {
+            let node = (world.space().nodes().into_iter())
+                .find(|node| node.node_id == id)
+                .unwrap();
+            assert_eq!(node.status, koidrive_proto::v1::NodeStatus::Live as i32);
+            let content = tag(&node.current.unwrap().content.unwrap());
+            (node.parent_id, node.name, content)
+        };
+        let revived = live(&conflict.node_id);
+        let copies: Vec<_> = (world.space().nodes().into_iter())
+            .filter(|node| {
+                node.name
+                    .starts_with(&format!("{} (conflict from ", conflict.name))
+            })
+            .map(|node| live(&node.node_id))
+            .collect();
+        let (revived_content, expected_copies) = match intents {
+            false => (4, vec![]),
+            true => (
+                3,
+                vec![(
+                    conflict.parent_id.clone(),
+                    format!("{} (conflict from device-0 2026-11-09)", conflict.name),
+                    4,
+                )],
+            ),
+        };
+        assert_eq!(
+            revived,
+            (
+                conflict.parent_id.clone(),
+                conflict.name.clone(),
+                revived_content
+            )
+        );
+        assert_eq!(copies, expected_copies);
+    }
 }
 
 #[test]
@@ -3243,7 +3466,7 @@ fn a_revival_at_an_unasked_name_or_parent_is_rejected() {
 
 #[test]
 fn a_restore_that_loses_an_edit_leaves_its_file_deleted() {
-    let _red = expect_red(
+    let _red = expect_red_without_intents(
         Check::DeleteUndone,
         "the delete of node 01a1c2c0-39a0-7ea7-93f8-3d888a182e12 on device 0 came undone, and no change its user did not see brought the node back",
     );
@@ -5113,7 +5336,7 @@ fn a_file_a_restore_moves_back_stays_deleted_when_a_user_deletes_it_after() {
 
 #[test]
 fn an_own_lost_create_under_a_folder_deleted_after_the_loss_leaves_the_folder_deleted() {
-    let _red = expect_red(
+    let _red = expect_red_without_intents(
         Check::DeleteUndone,
         "the delete of node 01a1c2c0-39a0-7510-83bc-38d6c6b89fe4 on device 0 came undone, and no change its user did not see brought the node back",
     );
@@ -5129,6 +5352,43 @@ fn an_own_lost_create_under_a_folder_deleted_after_the_loss_leaves_the_folder_de
     steps.extend(commit(0));
     steps.extend([(1, DELIVER); 4]);
     world.phase(1, &steps).unwrap();
+}
+
+#[test]
+fn a_replayed_edit_a_delete_listed_as_unseen_stays_on_the_copy_the_delete_makes() {
+    let _red = expect_red_without_intents(
+        Check::DeleteUndone,
+        "the delete of node 01a1c2c0-39a0-7c5c-8466-a7d0954b76a3 on device 1 came undone, and no change its user did not see brought the node back",
+    );
+    let make = |kind, target, parent, name, text| {
+        Step::User(Action {
+            kind,
+            target,
+            parent,
+            name,
+            text,
+        })
+    };
+    let phases = [
+        vec![
+            (2, make(1, 0, 2, 9, 0)),
+            (2, make(1, 3, 1, 1, 0)),
+            (0, make(0, 0, 3, 7, 2)),
+            (2, make(0, 2, 2, 4, 1)),
+            (1, make(1, 0, 0, 3, 3)),
+        ],
+        vec![
+            (1, make(4, 0, 2, 6, 3)),
+            (1, BACKUP),
+            (0, make(2, 18216757102927397494, 4343495607357845745, 5, 0)),
+            (0, Step::Work(0)),
+            (2, Step::Work(0)),
+            (0, Step::Work(0)),
+            (0, Step::Work(0)),
+            (0, RESTORE),
+        ],
+    ];
+    converge(2, &phases).unwrap();
 }
 
 fn paths_on(world: &World, device: usize) -> Vec<String> {
@@ -5297,6 +5557,34 @@ fn a_resend_built_before_a_delete_reaches_the_server_yields_to_it() {
 
 #[test]
 fn a_resend_applied_before_a_delete_built_without_it_yields_to_it() {
+    known_red(
+        "GUN-1012",
+        "assertion failed: world.devices.iter().all(|device| device.disk.entries().is_empty())",
+        a_resend_applied_before_a_delete_built_without_it,
+    );
+}
+
+fn known_red(issue: &str, message: &str, test: fn()) {
+    FIELD_INTENTS.set(false);
+    test();
+    FIELD_INTENTS.set(true);
+    let panic = std::panic::catch_unwind(test).expect_err(&format!(
+        "{issue} no longer fails here: delete this known red"
+    ));
+    let got = (panic.downcast_ref::<String>().map(String::as_str))
+        .or_else(|| panic.downcast_ref::<&str>().copied());
+    assert_eq!(
+        got,
+        Some(message),
+        "{issue}: the known red fails another way"
+    );
+}
+
+fn a_resend_applied_before_a_delete_built_without_it() {
+    let _gun_665 = expect_red_with_intents(
+        Check::DeleteUndone,
+        "write 2 that the delete of node 01a1c2c0-39a0-7510-83bc-38d6c6b89fe4 on device 0 saw is live again on node 01a1c2c0-39bc-7a9c-a2fe-ec8a5505a73c, and no user copied it",
+    );
     let mut world = converge(
         2,
         &[vec![(0, file("a"))], vec![(0, BACKUP), (0, overwrite(0))]],
@@ -5627,9 +5915,13 @@ fn no_device_holds_a_file(world: &World) -> bool {
 #[test]
 fn a_delete_whose_user_held_the_lost_edit_beats_the_authors_edit_sent_after_another_devices_resend()
 {
-    let _red = expect_red(
+    let _red = expect_red_without_intents(
         Check::DeleteUndone,
         "the delete of node 01a1c2c0-39a0-7510-83bc-38d6c6b89fe4 on device 2 came undone, and no change its user did not see brought the node back",
+    );
+    let _gun_665 = expect_red_with_intents(
+        Check::DeleteUndone,
+        "write 2 that the delete of node 01a1c2c0-39a0-7510-83bc-38d6c6b89fe4 on device 2 saw is live again on node 01a1c2c0-39c8-7a9c-a2fe-ec8a5505a73c, and no user copied it",
     );
     let mut world = a_lost_edit_three_devices_held(overwrite(0));
     let mut steps = connect(&[1, 0, 2]);
@@ -5643,9 +5935,13 @@ fn a_delete_whose_user_held_the_lost_edit_beats_the_authors_edit_sent_after_anot
 #[test]
 fn a_file_trashed_by_a_user_who_held_the_lost_edit_stays_trashed_when_the_author_sends_it_after_a_resend()
  {
-    let _red = expect_red(
+    let _red = expect_red_without_intents(
         Check::DeleteUndone,
         "the delete of node 01a1c2c0-39a0-7510-83bc-38d6c6b89fe4 on device 2 came undone, and no change its user did not see brought the node back",
+    );
+    let _gun_665 = expect_red_with_intents(
+        Check::DeleteUndone,
+        "write 2 that the delete of node 01a1c2c0-39a0-7510-83bc-38d6c6b89fe4 on device 2 saw is live again on node 01a1c2c0-39c5-7a9c-a2fe-ec8a5505a73c, and no user copied it",
     );
     let mut world = a_lost_edit_three_devices_held(overwrite(0));
     let mut steps = connect(&[1, 0, 2]);
@@ -5658,15 +5954,53 @@ fn a_file_trashed_by_a_user_who_held_the_lost_edit_stays_trashed_when_the_author
 
 #[test]
 fn a_file_deleted_at_the_restored_version_by_a_user_who_held_the_lost_edit_stays_deleted() {
-    let _red = expect_red(
-        Check::DeleteUndone,
-        "the delete of node 01a1c2c0-39a0-7510-83bc-38d6c6b89fe4 on device 2 came undone, and no change its user did not see brought the node back",
-    );
-    let mut world = a_lost_edit_three_devices_held(overwrite(0));
-    let mut steps = connect(&[1, 0, 2]);
-    steps.extend([(2, delete(0)), (2, SCAN), (2, COMMIT), (2, COMMIT)]);
-    steps.extend([(0, SCAN), (0, COMMIT), (0, COMMIT)]);
-    world.phase(2, &steps).unwrap();
+    for intents in [false, true] {
+        FIELD_INTENTS.set(intents);
+        let _red = expect_red_without_intents(
+            Check::DeleteUndone,
+            "the delete of node 01a1c2c0-39a0-7510-83bc-38d6c6b89fe4 on device 2 came undone, and no change its user did not see brought the node back",
+        );
+        let mut world = a_lost_edit_three_devices_held(overwrite(0));
+        let original = world
+            .space()
+            .nodes()
+            .into_iter()
+            .find(|node| node.kind == koidrive_proto::v1::NodeKind::File as i32)
+            .unwrap()
+            .node_id;
+        let mut steps = connect(&[1, 0, 2]);
+        steps.extend([(2, delete(0)), (2, SCAN), (2, COMMIT), (2, COMMIT)]);
+        steps.extend([(0, SCAN), (0, COMMIT), (0, COMMIT)]);
+        world.phase(2, &steps).unwrap();
+        let kept: &[i64] = match intents {
+            false => &[2],
+            true => &[],
+        };
+        for device in &world.devices {
+            let contents: Vec<_> = device
+                .disk
+                .entries()
+                .values()
+                .filter_map(|entry| entry.content.as_ref().map(tag))
+                .collect();
+            assert_eq!(contents, kept);
+        }
+        let live: Vec<_> = world
+            .space()
+            .nodes()
+            .into_iter()
+            .filter(|node| {
+                node.kind == koidrive_proto::v1::NodeKind::File as i32
+                    && node.status == koidrive_proto::v1::NodeStatus::Live as i32
+            })
+            .map(|node| node.node_id)
+            .collect();
+        let expected = match intents {
+            false => vec![original],
+            true => vec![],
+        };
+        assert_eq!(live, expected);
+    }
 }
 
 #[test]
@@ -5727,7 +6061,7 @@ fn an_unasked_delete_of_restored_content_is_rejected_after_an_older_overwrite() 
 
 #[test]
 fn a_delete_whose_user_held_the_lost_edit_beats_the_authors_resend() {
-    let _red = expect_red(
+    let _red = expect_red_without_intents(
         Check::DeleteUndone,
         "the delete of node 01a1c2c0-39a0-7510-83bc-38d6c6b89fe4 on device 2 came undone, and no change its user did not see brought the node back",
     );
@@ -5768,9 +6102,13 @@ fn an_owed_rename_in_flight_while_another_device_changes_it(change: Step) -> Wor
 #[test]
 fn a_device_that_deleted_the_file_after_holding_the_lost_edit_keeps_it_deleted_past_a_resend_it_planned_against()
  {
-    let _red = expect_red(
+    let _red = expect_red_without_intents(
         Check::DeleteUndone,
         "the delete of node 01a1c2c0-39a0-7510-83bc-38d6c6b89fe4 on device 2 came undone, and no change its user did not see brought the node back",
+    );
+    let _gun_665 = expect_red_with_intents(
+        Check::DeleteUndone,
+        "write 2 that the delete of node 01a1c2c0-39a0-7510-83bc-38d6c6b89fe4 on device 2 saw is live again on node 01a1c2c0-39d1-7a9c-a2fe-ec8a5505a73c, and no user copied it",
     );
     a_delete_pulled_after_the_authors_edit(true);
 }
@@ -5778,7 +6116,7 @@ fn a_device_that_deleted_the_file_after_holding_the_lost_edit_keeps_it_deleted_p
 #[test]
 fn a_device_that_deleted_the_file_after_holding_the_lost_edit_keeps_it_deleted_when_it_pulls_the_resend()
  {
-    let _red = expect_red(
+    let _red = expect_red_without_intents(
         Check::DeleteUndone,
         "the delete of node 01a1c2c0-39a0-7510-83bc-38d6c6b89fe4 on device 2 came undone, and no change its user did not see brought the node back",
     );
@@ -5882,16 +6220,20 @@ fn the_authors_edit_after_two_losses(resend_first: bool) -> World {
 #[test]
 fn a_delete_whose_user_held_the_lost_edit_stays_across_a_second_loss_after_another_devices_resend()
 {
-    let _red = expect_red(
+    let _red = expect_red_without_intents(
         Check::DeleteUndone,
         "the delete of node 01a1c2c0-39a0-7510-83bc-38d6c6b89fe4 on device 2 came undone, and no change its user did not see brought the node back",
+    );
+    let _gun_665 = expect_red_with_intents(
+        Check::DeleteUndone,
+        "write 2 that the delete of node 01a1c2c0-39a0-7510-83bc-38d6c6b89fe4 on device 2 saw is live again on node 01a1c2c0-39f6-7bed-b3e4-9ef55c94cb0d, and no user copied it",
     );
     the_authors_edit_after_two_losses(true);
 }
 
 #[test]
 fn a_delete_whose_user_held_the_lost_edit_stays_across_a_second_loss() {
-    let _red = expect_red(
+    let _red = expect_red_without_intents(
         Check::DeleteUndone,
         "the delete of node 01a1c2c0-39a0-7510-83bc-38d6c6b89fe4 on device 2 came undone, and no change its user did not see brought the node back",
     );
@@ -12172,10 +12514,42 @@ fn a_file_a_restore_took_after_a_rollback_and_created_again_stays_one_file() {
 
 #[test]
 fn a_rename_a_restore_lost_gives_way_to_the_delete_of_its_file() {
-    let _red = expect_red(
-        Check::DeleteUndone,
-        "the delete of node 01a1c2c0-39a0-7510-83bc-38d6c6b89fe4 on device 0 came undone, and no change its user did not see brought the node back",
-    );
+    for intents in [false, true] {
+        FIELD_INTENTS.set(intents);
+        let _red = expect_red_without_intents(
+            Check::DeleteUndone,
+            "the delete of node 01a1c2c0-39a0-7510-83bc-38d6c6b89fe4 on device 0 came undone, and no change its user did not see brought the node back",
+        );
+        let world = a_rename_a_restore_lost_and_a_resend_the_server_refuses();
+        let kept = match intents {
+            false => "A",
+            true => "A (conflict from device-1 2026-11-09)",
+        };
+        for device in &world.devices {
+            let entries: Vec<(&str, Option<i64>)> = (device.disk.entries().values())
+                .map(|entry| (entry.name.as_str(), entry.content.as_ref().map(tag)))
+                .collect();
+            assert_eq!(entries, [(kept, Some(2))]);
+        }
+        let mut files: Vec<(String, bool)> = (world.space().nodes().into_iter())
+            .filter(|node| node.kind == koidrive_proto::v1::NodeKind::File as i32)
+            .map(|node| {
+                (
+                    node.name,
+                    node.status == koidrive_proto::v1::NodeStatus::Live as i32,
+                )
+            })
+            .collect();
+        files.sort();
+        let server = match intents {
+            false => vec![("A".to_owned(), true)],
+            true => vec![("A".to_owned(), false), (kept.to_owned(), true)],
+        };
+        assert_eq!(files, server);
+    }
+}
+
+fn a_rename_a_restore_lost_and_a_resend_the_server_refuses() -> World {
     let mut world = world(2);
     world.phase(0, &[(0, BACKUP), (0, file("a"))]).unwrap();
     let mut lost = vec![(0, rename(0, 0, "A"))];
@@ -12216,6 +12590,7 @@ fn a_rename_a_restore_lost_gives_way_to_the_delete_of_its_file() {
     ]);
     world.run(1, &lost).unwrap();
     world.phase(2, &[]).unwrap();
+    world
 }
 
 #[test]
@@ -12734,11 +13109,12 @@ mod planned_against_the_server {
             pending_for: None,
             pending_by: None,
             chunks: Box::default(),
+            intents: None,
         }
     }
 
     fn trees(root: &str, rows: Vec<(&String, Option<Shape>, Option<RemoteNode>, Shape)>) -> Trees {
-        let mut trees = Trees::new(root);
+        let mut trees = Trees::new(root, &IdGen::new(0));
         for (ino, (id, synced, held, local)) in (1..).zip(rows) {
             let identity = FileIdentity {
                 ino,

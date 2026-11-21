@@ -38,6 +38,30 @@ fn a_restart_during_a_bootstrap_reads_the_tree_again() {
 }
 
 #[test]
+fn the_first_session_that_announces_field_intents_reads_the_tree_again_once() {
+    let mut remote = Remote::new();
+    let (site, mut a) = linked(&mut remote, "a");
+    a.create(&mut remote, &site.root.join("notes.txt"), b"written on a");
+    drop(a);
+    let mut ran = Vec::new();
+    for announced in [false, true, true] {
+        remote.space.announce_field_intents(announced);
+        let mut a = site.start();
+        a.connect(&remote);
+        a.scan_until(|a| a.folder.scanned);
+        ran.push(a.run(&mut remote));
+    }
+    assert_eq!(
+        ran,
+        [
+            vec!["subscribe"],
+            vec!["list", "subscribe"],
+            vec!["subscribe"]
+        ]
+    );
+}
+
+#[test]
 fn a_reconnect_while_a_commit_is_sent_starts_no_second_send() {
     for reached_the_server in [false, true] {
         let mut remote = Remote::new();

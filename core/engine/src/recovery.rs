@@ -306,6 +306,7 @@ pub(crate) fn release(
     trees: &Trees,
     question: &Question,
     answer: Answer,
+    recovery_deletes: &mut BTreeSet<NodeId>,
 ) -> Vec<(NodeId, Option<Shape>)> {
     let QuestionKind::Recovery { group, .. } = question.kind else {
         return Vec::new();
@@ -340,6 +341,7 @@ pub(crate) fn release(
                 (RecoveryGroup::CreatedAfterRestorePoint, Answer::Keep) => None,
                 (RecoveryGroup::ChangedOnThisDevice, Answer::Publish) => published(id),
                 (RecoveryGroup::DeletedOnThisDevice, Answer::Delete) if seen_here(trees, id) => {
+                    recovery_deletes.insert(id.clone());
                     remote(id)
                 }
                 (RecoveryGroup::DeletedOnThisDevice, Answer::Delete | Answer::Restore) => None,

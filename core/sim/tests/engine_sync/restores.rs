@@ -73,7 +73,7 @@ fn a_store_rolled_back_past_a_sent_restore_starts_recovery_and_sends_nothing() {
     let (mut space, mut other) = seeded(&a_folder_with_a_file());
     remote_action(&mut space, &mut other, 2, &act(4, 0, 0, 0, 0));
     let trashed = nodes_with(&space, 2, None);
-    let mut trees = Trees::new(space.space_id().to_owned());
+    let mut trees = Trees::new(space.space_id().to_owned(), &IdGen::new(0));
     for state in space.nodes().iter().skip(1) {
         let (id, node) = RemoteNode::from_state(state).unwrap();
         trees.set_remote(id, node);
@@ -248,6 +248,7 @@ struct Bench {
     trees: Trees,
     commits: Commits,
     ids: IdGen,
+    loads: IdGen,
     other: IdGen,
     last_seq: u64,
     cut: Cut,
@@ -261,9 +262,10 @@ impl Bench {
         let (space, other) = seeded(&[]);
         let root = space.space_id().to_owned();
         let mut bench = Bench {
-            trees: Trees::new(root.clone()),
+            trees: Trees::new(root.clone(), &IdGen::new(0)),
             commits: Commits::default(),
             ids: IdGen::new(7),
+            loads: IdGen::new(8),
             space,
             other,
             last_seq: 0,
@@ -374,7 +376,14 @@ impl Bench {
 
     fn restart(&mut self) {
         let effects = Effects::default();
-        let (trees, commits, _) = reload(&self.trees, &self.commits, &effects, &rules()).unwrap();
+        let (trees, commits, _) = reload(
+            &self.trees,
+            &self.commits,
+            &effects,
+            &rules(),
+            &mut self.loads,
+        )
+        .unwrap();
         (self.trees, self.commits) = (trees, commits);
         self.commits.connected(&self.space.welcome(&session("me")));
     }
