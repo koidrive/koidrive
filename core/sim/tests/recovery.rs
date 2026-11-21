@@ -3,9 +3,13 @@
 use koidrive_engine::commit::{Commits, InFlight};
 use koidrive_engine::effects::{Base, Dir, Effect, EffectRecord, Location};
 use koidrive_engine::first_link::{LogRead, Marks};
+use koidrive_engine::ids::IdGen;
 use koidrive_engine::question::{Answer, QuestionKind, RecoveryCause, RecoveryTrigger};
 use koidrive_engine::tree::NodeId;
-use koidrive_proto::v1::{Commit, Move, NodeStatus, Op, error, op};
+use koidrive_proto::v1::{
+    Commit, GetVersionChunks, Move, NodeState, NodeStatus, Op, UpdateContent, error, op, op_result,
+};
+use koidrive_sim::space::SpaceDo;
 use koidrive_sim::world::disk::{Disk, Place, Refused, identity};
 use koidrive_sim::world::{
     Action, Check, Cut, Failure, NAMES, Outcome, Reply, Step, World, expect_red, tag,
@@ -750,7 +754,12 @@ fn an_overwrite_after_a_keep_through_a_rewind_replaces_the_kept_write_on_every_d
                 "writer {writer}, device {d}: {questions:?}"
             );
         }
+        let kept = live_node(world.space(), "a");
         world.phase(3, &[(writer, overwrite(0))]).unwrap();
+        if writer == 0 {
+            let replayed = resent(&world, 1, &kept);
+            assert_eq!(replayed, (op_result::Code::Superseded, 2));
+        }
         let root = world.space().space_id().to_owned();
         let current: Vec<i64> = (world.space().nodes().into_iter())
             .filter(|node| node.node_id != root && node.status == NodeStatus::Live as i32)
@@ -764,6 +773,49 @@ fn an_overwrite_after_a_keep_through_a_rewind_replaces_the_kept_write_on_every_d
             assert!(!disk.shows(1), "writer {writer}, device {d}");
         }
     }
+}
+
+fn live_node(space: &SpaceDo, name: &str) -> NodeState {
+    (space.nodes().into_iter())
+        .find(|node| node.status == NodeStatus::Live as i32 && node.name == name)
+        .unwrap()
+}
+
+fn resent(world: &World, d: usize, kept: &NodeState) -> (op_result::Code, i64) {
+    let mut space = world.space().clone();
+    let version = kept.current.clone().unwrap();
+    let request = GetVersionChunks {
+        version_id: version.version_id.clone(),
+        page: 0,
+    };
+    let mut content = version.content.unwrap();
+    content.chunks = space.version_chunks(&request).unwrap().chunks;
+    let session = &world.devices[d].session;
+    let now = live_node(&space, &kept.name).current.unwrap().created_at_ms + 1_000;
+    let update = UpdateContent {
+        node_id: kept.node_id.clone(),
+        content: Some(content),
+        resend: true,
+        source_version_id: version.version_id,
+        ..Default::default()
+    };
+    let commit = Commit {
+        commit_id: IdGen::new(98).uuid_v7(now as u64),
+        base_seq: space.head_seq(),
+        device_seq: space.device_seq(&session.device_id) + 1,
+        history_id: space.history_id().to_owned(),
+        ops: vec![Op {
+            op: Some(op::Op::UpdateContent(update)),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let done = space.commit(session, now, &commit).unwrap();
+    let current = live_node(&space, &kept.name).current.unwrap();
+    (
+        done.result.results[0].code(),
+        tag(&current.content.unwrap()),
+    )
 }
 
 #[test]

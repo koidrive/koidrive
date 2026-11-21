@@ -230,8 +230,8 @@ fn an_unanswered_question_is_asked_again_under_its_own_id_each_time_the_session_
     let before = asked.lock().unwrap().len();
     for round in 1..=3 {
         koi.core.start();
-        koi.core.stop();
         let seen = asked.lock().unwrap().clone();
+        koi.core.stop();
         assert_eq!(seen.len(), before + round, "{seen:?}");
         assert_eq!(seen.last().unwrap(), &["q1".to_owned()], "{seen:?}");
     }

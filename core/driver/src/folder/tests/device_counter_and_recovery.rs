@@ -291,12 +291,14 @@ fn trashed_bytes(root: &Path) -> Vec<Vec<u8>> {
 
 fn reclaims_only_when_due(site: &Site, a: &mut Device, remote: &mut Remote) {
     let (sent, served) = (a.sent.len(), remote.tree());
-    let now = SystemTime::now();
-    let early = a.folder.disk.reclaim_trash(now, u64::MAX).unwrap();
+    let cutoff = SystemTime::now() + koidrive_fs::TRASH_RETENTION;
+    let minute = Duration::from_secs(60);
+    let early = a.folder.disk.reclaim_trash(cutoff - minute, u64::MAX);
+    let early = early.unwrap();
     assert!(early.removed.is_empty(), "{early:?}");
     assert!(early.recovered.is_empty(), "{early:?}");
     assert_eq!(trashed_bytes(&site.root).len(), 1);
-    let due = now + koidrive_fs::TRASH_RETENTION + Duration::from_secs(60);
+    let due = cutoff + minute;
     let reclaimed = a.folder.disk.reclaim_trash(due, u64::MAX).unwrap();
     assert_eq!(reclaimed.removed.len(), 1, "{reclaimed:?}");
     assert!(reclaimed.recovered.is_empty(), "{reclaimed:?}");
