@@ -1,0 +1,14 @@
+class = "V"
+issue = "GUN-1459"
+tests = [
+  "a_first_link_discard_keeps_a_folder_the_user_changes_after_the_server_drops_part_of_it",
+]
+message = '''<id> was discarded and is created on the server with no later answer to publish it, and below it the user took out an entry it held at \S+\.rs:<line>\.'''
+examples = [
+  "01a1c2c0-39a0-780a-953a-eb70673e29cb was discarded and is created on the server with no later answer to publish it, and below it the user took out an entry it held at core/sim/tests/engine_sync/common.rs:2978.",
+]
+cases = [
+  "1d79bd12eb6ef53aee75764f4b90b0deb5ae78c62c49274a3c8e267541cd287d",
+  "a4bae3220f0a66bfc90c3d28c9e15edbbf41aa06ad91b914fecfbe0fb83392d0",
+  "808592607842d33ddb7f6768eaae405b2190d45d943c557270a27cc41afe76f6",
+]

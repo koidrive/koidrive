@@ -1348,6 +1348,10 @@ fn engine_state() -> EngineState {
             ]),
             discard_members: BTreeMap::from([("m".into(), "f".into())]),
             left_out_by_server: nodes(["u"]),
+            discard_stays: BTreeSet::from([("a".into(), "f".into()), ("a".into(), "g".into())]),
+            discard_answered: nodes(["f"]),
+            first_link_held: BTreeMap::from([("h".into(), "f".into())]),
+            first_link_open: BTreeMap::from([("f".into(), false), ("h".into(), true)]),
             parked_as: BTreeMap::from([("p".into(), "p-before".into())]),
             waiting: BTreeMap::from([
                 (
@@ -1803,6 +1807,76 @@ fn an_abandoned_engine_state_read_stops_in_every_commit_part() {
             Ok::<_, Error>(())
         })
         .unwrap();
+}
+
+#[test]
+fn an_engine_state_read_asks_whether_to_stop_once_per_frozen_answer_row() {
+    use koidrive_engine::question::{Frozen, FrozenAnswer};
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::open(dir.path().join("state.db")).unwrap();
+    let mut polls = |rows: usize| {
+        let mut state = engine_state();
+        let below = (0..rows).map(|n| {
+            let frozen = Frozen {
+                parent: "p".into(),
+                name: format!("f{n}"),
+                taken: true,
+                member_of: None,
+            };
+            (NodeId::from(format!("f{n}")), frozen)
+        });
+        let whole = true;
+        state.commits.questions[0].frozen = Some(FrozenAnswer {
+            below: below.collect(),
+            whole,
+        });
+        store
+            .transaction(|tx| {
+                tx.set_engine_state(&state)?;
+                let mut polls = 0;
+                let mut count = || {
+                    polls += 1;
+                    false
+                };
+                assert!(tx.engine_state_unless(&mut EngineState::default(), &mut count)?);
+                Ok::<_, Error>(polls)
+            })
+            .unwrap()
+    };
+    assert_eq!(polls(5) - polls(0), 5);
+    drop(polls);
+    let raw = Connection::open(dir.path().join("state.db")).unwrap();
+    raw.pragma_update(None, "foreign_keys", false).unwrap();
+    raw.execute(
+        "INSERT INTO open_question_frozen
+             (question_id, node_id, parent_id, name, taken, member, member_of)
+             VALUES ('unknown', 'o', 'p', 'o', 1, 0, NULL)",
+        [],
+    )
+    .unwrap();
+    let mut read = |stop_at: Option<usize>| {
+        let mut polls = 0;
+        let read = store.transaction(|tx| {
+            let mut stop = || {
+                polls += 1;
+                Some(polls) == stop_at
+            };
+            tx.engine_state_unless(&mut EngineState::default(), &mut stop)
+        });
+        (read, polls)
+    };
+    let (whole, rows) = read(None);
+    assert!(
+        matches!(whole, Err(Error::InvalidEngineState(_))),
+        "{whole:?}"
+    );
+    for stop_at in 1..=rows {
+        let (stopped, _) = read(Some(stop_at));
+        assert!(
+            matches!(stopped, Ok(false)),
+            "{stop_at} of {rows}: {stopped:?}"
+        );
+    }
 }
 
 #[test]
@@ -3127,6 +3201,37 @@ fn failed_transaction_rolls_back() {
             Ok::<_, Error>(())
         })
         .unwrap();
+}
+
+#[test]
+fn an_acknowledgement_and_the_stay_it_records_commit_together() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.db");
+    let mut store = Store::open(&path).unwrap();
+    let before = engine_state();
+    store
+        .transaction(|tx| tx.set_engine_state(&before))
+        .unwrap();
+    let mut acked = before.clone();
+    acked.commits.accepted += 1;
+    acked.commits.in_flight = None;
+    (acked.trees.discard_stays).insert(("acked".into(), "f".into()));
+    let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _ = store.transaction(|tx| {
+            tx.update_engine_state(&before, &acked)?;
+            panic!("crash before the transaction commits");
+            #[allow(unreachable_code)]
+            Ok::<_, Error>(())
+        });
+    }));
+    assert!(panicked.is_err());
+    assert_eq!(store.transaction(|tx| tx.engine_state()).unwrap(), before);
+    store
+        .transaction(|tx| tx.update_engine_state(&before, &acked))
+        .unwrap();
+    drop(store);
+    let mut store = Store::open(&path).unwrap();
+    assert_eq!(store.transaction(|tx| tx.engine_state()).unwrap(), acked);
 }
 
 #[test]

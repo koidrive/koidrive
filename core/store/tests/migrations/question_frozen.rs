@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use super::*;
+use koidrive_engine::question::FrozenAnswer;
 use koidrive_engine::tree::NodeId;
 
 fn frozen(id: &str, parent: &str, taken: bool) -> (NodeId, Frozen) {
@@ -11,6 +12,7 @@ fn frozen(id: &str, parent: &str, taken: bool) -> (NodeId, Frozen) {
             parent,
             name,
             taken,
+            member_of: None,
         },
     )
 }
@@ -33,7 +35,7 @@ fn first_link_discard(id: &str, frozen: Option<BTreeMap<NodeId, Frozen>>) -> Que
         )]),
         answer: Some(Answer::Discard),
         shown: BTreeMap::from([("f".into(), engine_shape("root", "f"))]),
-        frozen,
+        frozen: frozen.map(|below| FrozenAnswer { below, whole: true }),
     }
 }
 
@@ -42,6 +44,10 @@ fn a_store_from_before_discards_froze_what_was_below_leaves_the_build_to_decide(
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("state.db");
     let mut before = engine_state();
+    before.trees.discard_stays.clear();
+    before.trees.discard_answered.clear();
+    before.trees.first_link_held.clear();
+    before.trees.first_link_open.clear();
     before.commits.questions = vec![first_link_discard("older", None)];
     Store::open(&path)
         .unwrap()

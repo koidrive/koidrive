@@ -30,16 +30,27 @@ pub struct Question {
     /// What was below a first-link question's folders when the person answered Discard, apart
     /// from what it shows, and which of it the Discard takes along. `None` until then, and when
     /// the build decides instead.
-    pub frozen: Option<BTreeMap<NodeId, Frozen>>,
+    pub frozen: Option<FrozenAnswer>,
+}
+
+/// A first-link Discard answer as the person gave it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FrozenAnswer {
+    pub below: BTreeMap<NodeId, Frozen>,
+    /// Whether `below` also lists each server entry R held below an entry the Discard takes along
+    /// that L did not hold yet. An answer frozen before these were listed lacks them.
+    pub whole: bool,
 }
 
 /// A node below a first-link question's folders when the person answered: where L held it then,
-/// and whether the Discard takes it along as a server entry.
+/// whether the Discard takes it along as a server entry, and the folder the Discard takes along
+/// that R held it below then, if any.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Frozen {
     pub parent: NodeId,
     pub name: String,
     pub taken: bool,
+    pub member_of: Option<NodeId>,
 }
 
 impl Question {

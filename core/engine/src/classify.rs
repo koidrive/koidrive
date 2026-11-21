@@ -14,7 +14,7 @@ use crate::first_link;
 use crate::ignore::{Key, LocalRules, Matcher, RuleFile, is_rules_file, rules_source};
 use crate::names::{name_key, nfc, same_name};
 use crate::provenance::Provenances;
-use crate::question::Frozen;
+use crate::question::{Frozen, FrozenAnswer};
 use crate::state::{
     Agreed, AnsweredRules, ContentProvenance, ContentValue, ContentVersion, FinishOrigin,
     KeptCause, KeptEntries, KeptRules, KeptRulesFile, LostPosition, MoveHistory, MovePosition,
@@ -635,6 +635,11 @@ pub struct Trees {
     born_as_temp: TrackedMap<NodeId, TempBirth>,
     discard_members: TrackedMap<NodeId, NodeId>,
     left_out_by_server: TrackedSet<NodeId>,
+    discard_stays: TrackedSet<(NodeId, NodeId)>,
+    discard_answered: TrackedSet<NodeId>,
+    first_link_held: TrackedMap<NodeId, NodeId>,
+    first_link_open: TrackedMap<NodeId, bool>,
+    brought: Option<Brought>,
     rules_changed: BTreeSet<Vec<String>>,
     relist: BTreeSet<NodeId>,
     relist_asked: BTreeSet<NodeId>,
@@ -760,6 +765,12 @@ impl PartialEq for Trees {
     }
 }
 
+#[derive(Clone, Debug, Default)]
+struct Brought {
+    placed: BTreeMap<NodeId, (bool, Option<Vec<NodeId>>)>,
+    before: BTreeMap<NodeId, Option<NodeId>>,
+}
+
 impl Trees {
     pub fn new(root: impl Into<NodeId>) -> Self {
         let root = root.into();
@@ -779,6 +790,11 @@ impl Trees {
             born_as_temp: TrackedMap::default(),
             discard_members: TrackedMap::default(),
             left_out_by_server: TrackedSet::default(),
+            discard_stays: TrackedSet::default(),
+            discard_answered: TrackedSet::default(),
+            first_link_held: TrackedMap::default(),
+            first_link_open: TrackedMap::default(),
+            brought: None,
             rules_changed: BTreeSet::new(),
             relist: BTreeSet::new(),
             relist_asked: BTreeSet::new(),
@@ -1210,6 +1226,16 @@ impl Trees {
         self.apply_remote(id, node, Made::Answer);
     }
 
+    /// Applies the changes of one server commit through `apply`, then records who placed each entry it moved,
+    /// from where the whole commit leaves them in R.
+    pub fn apply_batch<T>(&mut self, apply: impl FnOnce(&mut Self) -> T) -> T {
+        self.brought = Some(Brought::default());
+        let applied = apply(self);
+        let brought = self.brought.take().unwrap_or_default();
+        self.record_placements(brought);
+        applied
+    }
+
     fn all_trees_hold(&self, id: &NodeId) -> bool {
         (self.l.get(id).zip(self.s.live(id)).zip(self.r.live(id))).is_some_and(
             |((local, synced), remote)| local.shape.same(synced) && synced.same(remote),
@@ -1317,6 +1343,22 @@ impl Trees {
                 ..synced.clone()
             });
         let shape = node.shape.clone();
+        let placed_elsewhere = (self.records_stays()
+            && !made_here
+            && !node.trashed
+            && self.r.live(&id).map(|old| &old.parent) != Some(&node.shape.parent))
+        .then(|| {
+            let users_move = (self.l.get(&id))
+                .is_some_and(|local| !local.parked && local.shape.same_position(&node.shape))
+                && !(self.acknowledged(&id))
+                    .is_some_and(|synced| synced.same_position(&node.shape));
+            (!users_move, users_move.then(|| self.synced_ancestors(&id)))
+        });
+        let before = (self.brought.is_some() || placed_elsewhere.is_some())
+            .then(|| self.r.live(&id).map(|old| old.parent.clone()));
+        if let (Some(brought), Some(before)) = (&mut self.brought, &before) {
+            brought.before.entry(id.clone()).or_insert(before.clone());
+        }
         if edited_here {
             self.edited_here.insert(id.clone(), node.edit_rev);
         }
@@ -1324,6 +1366,17 @@ impl Trees {
             self.unseen_changes.insert(id.clone());
         }
         self.place_remote(id.clone(), node, made_here);
+        if let Some(placed) = placed_elsewhere {
+            match &mut self.brought {
+                Some(brought) => {
+                    brought.placed.insert(id.clone(), placed);
+                }
+                None => self.record_placements(Brought {
+                    placed: BTreeMap::from([(id.clone(), placed)]),
+                    before: BTreeMap::from([(id.clone(), before.flatten())]),
+                }),
+            }
+        }
         if let Some(sent) = sent
             && !self.set_synced_if_valid(id.clone(), Some(sent.clone()))
         {
@@ -1830,6 +1883,14 @@ impl Trees {
         self.synced_positions.remove(id);
         self.content_provenance.remote_changing(id, &self.r, None);
         self.discard_members.remove(id);
+        let stays: Vec<(NodeId, NodeId)> =
+            (self.discard_stays.range((id.clone(), NodeId::from(""))..))
+                .take_while(|(node, _)| node == id)
+                .cloned()
+                .collect();
+        for key in stays {
+            self.discard_stays.remove(&key);
+        }
         if let Some(old) = self.r.remove(id) {
             self.index_remote(id, Some(&old));
             self.mark(id);
@@ -2917,9 +2978,237 @@ impl Trees {
                 self.kept_as_discarded_in(child, id, judged)
                     || self.held_folder_discarded_in(child, id)
                     || self.held(child)
+                    || self.arrived_in(child, id, &seen)
                     || self.as_the_server_holds(child, &mut seen)
             })
             && self.keeps_the_synced_children(id, &BTreeSet::new(), &mut seen)
+    }
+
+    fn recorded_folder_of(&self, id: &NodeId) -> Option<&NodeId> {
+        let mut at = id;
+        for _ in 0..=self.r.len() {
+            if let Some(folder) = self.discard_members.get(at) {
+                return Some(folder);
+            }
+            at = &self.r.live(at)?.parent;
+        }
+        None
+    }
+
+    fn arrived_in<'a>(
+        &'a self,
+        id: &'a NodeId,
+        folder: &NodeId,
+        seen: &BTreeSet<&'a NodeId>,
+    ) -> bool {
+        (self.recorded_folder_of(folder)).is_some_and(|taken_along| {
+            self.changes_only_arrivals(id, taken_along, &mut seen.clone())
+        })
+    }
+
+    fn changes_only_arrivals<'a>(
+        &'a self,
+        id: &'a NodeId,
+        taken_along: &NodeId,
+        seen: &mut BTreeSet<&'a NodeId>,
+    ) -> bool {
+        self.placed_by_another_device(id, taken_along)
+            && (self.local_children_placed_or_parked(id)).all(|child| {
+                self.changes_only_arrivals(child, taken_along, &mut seen.clone())
+                    || self.as_the_server_holds(child, seen)
+            })
+            && self.keeps_the_synced_children(id, &BTreeSet::new(), seen)
+    }
+
+    fn placed_by_another_device(&self, id: &NodeId, folder: &NodeId) -> bool {
+        self.discard_members.get(id) != Some(folder)
+            && self.agreed_below(id, folder)
+            && self.stay_began_by_another_device(id, folder)
+    }
+
+    fn agreed_below(&self, id: &NodeId, folder: &NodeId) -> bool {
+        let mut at = id;
+        for _ in 0..=self.r.len() {
+            if at == folder {
+                return true;
+            }
+            let Some(agreed) = self.acknowledged(at).or_else(|| self.r.live(at)) else {
+                return false;
+            };
+            at = &agreed.parent;
+        }
+        false
+    }
+
+    pub(crate) fn record_stays_while_asked(
+        &mut self,
+        held: impl IntoIterator<Item = NodeId>,
+        asked_before: bool,
+    ) {
+        let began_unrecorded = self.first_link_open.is_empty()
+            && (asked_before
+                || !self.discard_answered.is_empty()
+                || !self.discard_members.is_empty());
+        if began_unrecorded {
+            return;
+        }
+        for folder in held {
+            self.first_link_open.insert(folder, true);
+        }
+    }
+
+    pub(crate) fn set_first_link_asked(&mut self, asked: bool) {
+        let changed: Vec<NodeId> = (self.first_link_open.iter())
+            .filter(|(_, was)| **was != asked)
+            .map(|(folder, _)| folder.clone())
+            .collect();
+        for folder in changed {
+            self.first_link_open.insert(folder, asked);
+        }
+        self.end_the_first_link_when_done();
+    }
+
+    fn records_stays(&self) -> bool {
+        !self.first_link_open.is_empty()
+    }
+
+    fn end_the_first_link_when_done(&mut self) {
+        if !self.records_stays()
+            || self.first_link_open.values().any(|asked| *asked)
+            || !self.discard_answered.is_empty()
+            || !self.discard_members.is_empty()
+        {
+            return;
+        }
+        self.first_link_open.clear();
+        self.discard_stays.clear();
+    }
+
+    fn stay_began_by_another_device(&self, id: &NodeId, folder: &NodeId) -> bool {
+        !(self.discard_stays).contains(&(id.clone(), folder.clone()))
+            && self.records_stays()
+            && self.r.live(id).is_some()
+    }
+
+    pub(crate) fn record_placed_here(
+        &mut self,
+        id: &NodeId,
+        parent: Option<NodeId>,
+        sent: &BTreeMap<NodeId, NodeId>,
+        seq: u64,
+    ) {
+        let Some(parent) = parent.or_else(|| {
+            (self.r.get(id))
+                .filter(|remote| !remote.trashed && remote.meta_rev == seq)
+                .map(|remote| remote.shape.parent.clone())
+        }) else {
+            return;
+        };
+        if !self.records_stays() || self.r.live(id).map(|remote| &remote.parent) != Some(&parent) {
+            return;
+        }
+        let mut into = Vec::new();
+        let mut above = Some(parent);
+        while let Some(at) = above.filter(|at| !into.contains(at)) {
+            above = (sent.get(&at).cloned())
+                .or_else(|| self.s.live(&at).map(|synced| synced.parent.clone()));
+            into.push(at);
+        }
+        let from = self.synced_ancestors(id).into_iter().collect();
+        let placed = BTreeSet::from([id.clone()]);
+        self.record_stays(vec![(id.clone(), from, into, false)], &placed);
+    }
+
+    fn synced_ancestors(&self, id: &NodeId) -> Vec<NodeId> {
+        let mut chain = Vec::new();
+        let mut above = self.s.live(id).map(|synced| synced.parent.clone());
+        while let Some(at) = above.filter(|at| !chain.contains(at)) {
+            above = self.s.live(&at).map(|synced| synced.parent.clone());
+            chain.push(at);
+        }
+        chain
+    }
+
+    fn remote_ancestors(&self, parent: Option<&NodeId>) -> Vec<NodeId> {
+        let mut chain = Vec::new();
+        let mut above = parent.cloned();
+        while let Some(at) = above.filter(|at| !chain.contains(at)) {
+            above = self.r.live(&at).map(|remote| remote.parent.clone());
+            chain.push(at);
+        }
+        chain
+    }
+
+    fn record_placements(&mut self, brought: Brought) {
+        let Brought { placed, before } = brought;
+        let parent_before = |at: &NodeId| match before.get(at) {
+            Some(parent) => parent.clone(),
+            None => self.r.live(at).map(|remote| remote.parent.clone()),
+        };
+        let mut moved = Vec::new();
+        for (id, (by_another_device, origin)) in &placed {
+            let Some(shape) = self.r.live(id) else {
+                continue;
+            };
+            let from: BTreeSet<NodeId> = match origin {
+                Some(origin) => origin.iter().cloned().collect(),
+                None => {
+                    let mut chain = BTreeSet::new();
+                    let mut above = parent_before(id);
+                    while let Some(at) = above.filter(|at| !chain.contains(at)) {
+                        above = parent_before(&at);
+                        chain.insert(at);
+                    }
+                    chain
+                }
+            };
+            let into = self.remote_ancestors(Some(&shape.parent));
+            moved.push((id.clone(), from, into, *by_another_device));
+        }
+        self.record_stays(moved, &placed.into_keys().collect());
+    }
+
+    fn record_stays(
+        &mut self,
+        moved: Vec<(NodeId, BTreeSet<NodeId>, Vec<NodeId>, bool)>,
+        placed: &BTreeSet<NodeId>,
+    ) {
+        for (id, from, into, by_another_device) in moved {
+            let entered: Vec<&NodeId> = (into.iter())
+                .filter(|folder| !from.contains(*folder) && self.r.live(folder).is_some())
+                .collect();
+            let left: Vec<&NodeId> = (from.iter())
+                .filter(|folder| !by_another_device && !into.contains(folder))
+                .collect();
+            if entered.is_empty() && left.is_empty() {
+                continue;
+            }
+            let mut below = vec![id];
+            while let Some(at) = below.pop() {
+                below.extend(
+                    (self.remote_children(&at))
+                        .filter(|child| !placed.contains(*child))
+                        .cloned(),
+                );
+                for folder in &left {
+                    self.discard_stays.remove(&(at.clone(), (*folder).clone()));
+                }
+                for folder in &entered {
+                    let stay = (at.clone(), (*folder).clone());
+                    match by_another_device && !self.users_move_into(&at, folder) {
+                        true => self.discard_stays.remove(&stay),
+                        false => self.discard_stays.insert(stay),
+                    };
+                }
+            }
+        }
+    }
+
+    fn users_move_into(&self, id: &NodeId, folder: &NodeId) -> bool {
+        self.watched_positions.contains_key(id)
+            && (self.l.get(id)).is_some_and(|local| !local.parked)
+            && self.local_chain(id).any(|at| at == folder)
+            && !self.synced_ancestors(id).contains(folder)
     }
 
     fn reached_after_discard(&self, id: &NodeId, folder: &NodeId) -> bool {
@@ -2941,7 +3230,8 @@ impl Trees {
 
     fn held_folder_discarded_in(&self, id: &NodeId, folder: &NodeId) -> bool {
         self.r.get(id).is_none()
-            && (self.discarded.get(id)).is_some_and(|shape| shape.parent == *folder)
+            && ((self.discarded.get(id)).is_some_and(|shape| shape.parent == *folder)
+                || self.first_link_held.get(id) == Some(folder))
             && (self.l.get(id)).is_some_and(|node| node.shape.kind == Kind::Dir)
     }
 
@@ -2993,8 +3283,9 @@ impl Trees {
                 .is_some_and(|(local, shape)| local.shape.same(shape))
         };
         (holds(self.r.live(id)) || holds(self.acknowledged(id)))
-            && (self.local_children_placed_or_parked(id))
-                .all(|child| self.as_the_server_holds(child, seen))
+            && (self.local_children_placed_or_parked(id)).all(|child| {
+                self.arrived_in(child, id, seen) || self.as_the_server_holds(child, seen)
+            })
             && self.keeps_the_synced_children(id, &BTreeSet::new(), seen)
     }
 
@@ -3216,6 +3507,10 @@ impl Trees {
             }
             if let (None, Some(shape)) = (self.r.get(&id), shown.get(&id)) {
                 self.unsort(&id);
+                if shape.kind == Kind::Dir {
+                    self.first_link_held
+                        .insert(id.clone(), shape.parent.clone());
+                }
                 self.discarded.insert(id.clone(), shape.clone());
                 self.record_discarded_rules(&id);
             }
@@ -3255,20 +3550,92 @@ impl Trees {
         kept
     }
 
-    pub(crate) fn discard_taken(&mut self, taken: Vec<(NodeId, Shape)>) {
+    pub(crate) fn discard_taken(
+        &mut self,
+        taken: Vec<(NodeId, Shape)>,
+        frozen: Option<&FrozenAnswer>,
+    ) {
         let ids: BTreeSet<&NodeId> = taken.iter().map(|(id, _)| id).collect();
+        let back = |id: &NodeId| self.r.live(id).map(|remote| &remote.parent);
+        let tops: Vec<&NodeId> = (taken.iter())
+            .filter(|(_, shape)| !ids.contains(&shape.parent))
+            .map(|(id, _)| id)
+            .collect();
         let folders: BTreeSet<NodeId> = (taken.iter())
-            .filter(|(_, shape)| shape.kind == Kind::Dir && !ids.contains(&shape.parent))
+            .filter(|(id, shape)| {
+                shape.kind == Kind::Dir
+                    && !ids.contains(&shape.parent)
+                    && !back(id).is_some_and(|parent| ids.contains(parent))
+            })
             .map(|(id, _)| id.clone())
             .collect();
         self.discard_members
             .retain(|_, folder| !folders.contains(folder));
         for folder in &folders {
-            let mut at = vec![folder.clone()];
+            self.discard_answered.remove(folder);
+        }
+        let returning: Vec<(NodeId, NodeId)> = (tops.iter())
+            .filter_map(|id| {
+                let parent = back(id).filter(|parent| !ids.contains(parent))?;
+                Some(((*id).clone(), self.recorded_folder_of(parent)?.clone()))
+            })
+            .collect();
+        for (top, folder) in returning {
+            let mut at = vec![top];
             while let Some(id) = at.pop() {
                 at.extend(self.remote_children(&id).cloned());
                 self.discard_members.insert(id, folder.clone());
             }
+        }
+        let Some(answered) = frozen
+            .filter(|frozen| frozen.whole)
+            .map(|frozen| &frozen.below)
+        else {
+            for folder in &folders {
+                let mut at = vec![folder.clone()];
+                while let Some(id) = at.pop() {
+                    at.extend(self.remote_children(&id).cloned());
+                    self.discard_members.insert(id, folder.clone());
+                }
+            }
+            for (id, shape) in taken {
+                self.discarded.insert(id, shape);
+            }
+            return;
+        };
+        let mut in_r: BTreeMap<NodeId, &NodeId> = BTreeMap::new();
+        for folder in &folders {
+            let mut at = vec![folder.clone()];
+            while let Some(id) = at.pop() {
+                if self.r.live(&id).is_some() && !in_r.contains_key(&id) {
+                    at.extend(
+                        (self.remote_children(&id))
+                            .filter(|child| !folders.contains(*child))
+                            .cloned(),
+                    );
+                    in_r.insert(id, folder);
+                }
+            }
+        }
+        let taken_along_in = |id: &NodeId| {
+            let was = &answered[id];
+            if was.member_of.is_some() {
+                return was.member_of.clone();
+            }
+            let folder = in_r.get(id).filter(|_| was.taken)?;
+            (!self.stay_began_by_another_device(id, folder)).then(|| (*folder).clone())
+        };
+        let members: BTreeMap<NodeId, NodeId> = (answered.keys())
+            .filter_map(|id| Some((id.clone(), taken_along_in(id)?)))
+            .filter(|(_, folder)| folders.contains(folder))
+            .chain(
+                folders
+                    .iter()
+                    .map(|folder| (folder.clone(), folder.clone())),
+            )
+            .collect();
+        for (id, folder) in members {
+            self.discard_members.insert(id, folder);
         }
         for (id, shape) in taken {
             self.discarded.insert(id, shape);
@@ -3339,20 +3706,50 @@ impl Trees {
         left_out
     }
 
+    pub(crate) fn keep_answered<'a>(&mut self, frozen: impl Iterator<Item = &'a FrozenAnswer>) {
+        let folders: BTreeSet<&NodeId> = (frozen.filter(|frozen| frozen.whole))
+            .flat_map(|frozen| {
+                (frozen.below.iter()).filter(|(_, was)| {
+                    was.taken
+                        && !frozen
+                            .below
+                            .get(&was.parent)
+                            .is_some_and(|parent| parent.taken)
+                })
+            })
+            .map(|(id, _)| id)
+            .collect();
+        self.discard_answered
+            .retain(|folder| folders.contains(folder));
+    }
+
     pub(crate) fn below(
         &mut self,
         shown: &BTreeMap<NodeId, Shape>,
         landing: &Landing,
-    ) -> BTreeMap<NodeId, Frozen> {
+    ) -> FrozenAnswer {
         let frozen = |shape: &Shape, taken| Frozen {
             parent: shape.parent.clone(),
             name: shape.name.clone(),
             taken,
+            member_of: None,
         };
-        let mut below: BTreeMap<NodeId, Frozen> =
-            (self.server_entries_below(shown, landing).iter())
-                .map(|(id, shape)| (id.clone(), frozen(shape, true)))
-                .collect();
+        let taken = self.server_entries_below(shown, landing);
+        let ids: BTreeSet<&NodeId> = taken.iter().map(|(id, _)| id).collect();
+        let held_folders: Vec<NodeId> = (taken.iter())
+            .filter(|(_, shape)| shape.kind == Kind::Dir && !ids.contains(&shape.parent))
+            .map(|(id, _)| id.clone())
+            .collect();
+        let mut held = held_folders.clone();
+        let mut members = BTreeSet::new();
+        while let Some(id) = held.pop() {
+            if self.r.live(&id).is_some() && members.insert(id.clone()) {
+                held.extend(self.remote_children(&id).cloned());
+            }
+        }
+        let mut below: BTreeMap<NodeId, Frozen> = (taken.iter())
+            .map(|(id, shape)| (id.clone(), frozen(shape, true)))
+            .collect();
         let mut at: Vec<&NodeId> = shown.keys().collect();
         let mut walked = BTreeSet::new();
         while let Some(id) = at.pop() {
@@ -3366,7 +3763,56 @@ impl Trees {
                 }
             }
         }
-        below
+        let mut at: Vec<NodeId> = (below.iter())
+            .filter(|(_, was)| was.taken)
+            .map(|(id, _)| id.clone())
+            .collect();
+        while let Some(id) = at.pop() {
+            let mut folder = &id;
+            for _ in 0..below.len() {
+                match below.get(&below[folder].parent) {
+                    Some(parent) if parent.taken => folder = &below[folder].parent,
+                    _ => break,
+                }
+            }
+            let folder = folder.clone();
+            for child in self.remote_children(&id) {
+                let Some(remote) = self.r.live(child) else {
+                    continue;
+                };
+                if !below.contains_key(child) && !self.left_by_the_user(child, &folder) {
+                    below.insert(child.clone(), frozen(remote, true));
+                    at.push(child.clone());
+                }
+            }
+        }
+        let member_of: BTreeMap<NodeId, NodeId> = (members.iter())
+            .filter(|id| below.get(*id).is_some_and(|was| was.taken))
+            .map(|id| {
+                let mut top = id;
+                for _ in 0..below.len() {
+                    match self.r.live(top) {
+                        Some(remote) if below.get(&remote.parent).is_some_and(|was| was.taken) => {
+                            top = &remote.parent
+                        }
+                        _ => break,
+                    }
+                }
+                (id.clone(), top.clone())
+            })
+            .collect();
+        for (id, was) in &mut below {
+            was.member_of = member_of.get(id).cloned();
+        }
+        for folder in held_folders {
+            self.discard_answered.insert(folder);
+        }
+        FrozenAnswer { below, whole: true }
+    }
+
+    fn left_by_the_user(&self, id: &NodeId, folder: &NodeId) -> bool {
+        self.synced_ancestors(id).contains(folder)
+            && (self.l.get(id).is_some() || self.removed_from.contains_key(id))
     }
 
     pub(crate) fn frozen_server_entries(
@@ -3435,6 +3881,7 @@ impl Trees {
             }
             if was.taken
                 && removed_here.is_none()
+                && self.acknowledged(id).is_some()
                 && let Some(remote) = self.r.live(id)
             {
                 kept.push((id.clone(), remote.clone()));
@@ -6913,6 +7360,9 @@ impl Trees {
     ) -> Option<()> {
         self.discard_members
             .retain(|_, folder| self.discarded.contains_key(folder));
+        self.first_link_held
+            .retain(|_, parent| self.discarded.contains_key(parent));
+        self.end_the_first_link_when_done();
         self.release_kept_entries_the_person_let_in();
         self.note_kept_causes();
         let mut carried = Vec::new();
@@ -7935,6 +8385,10 @@ impl Trees {
             born_as_temp: self.born_as_temp.to_map(),
             discard_members: self.discard_members.to_map(),
             left_out_by_server: self.left_out_by_server.to_set(),
+            discard_stays: self.discard_stays.to_set(),
+            discard_answered: self.discard_answered.to_set(),
+            first_link_held: self.first_link_held.to_map(),
+            first_link_open: self.first_link_open.to_map(),
             parked_as: self.parked_as.to_map(),
             waiting: self.waiting.to_map(),
             watched: self.watched.to_map(),
@@ -7994,6 +8448,11 @@ impl Trees {
             born_as_temp,
             discard_members,
             left_out_by_server,
+            discard_stays,
+            discard_answered,
+            first_link_held,
+            first_link_open,
+            brought: _,
             rules_changed: _,
             relist: _,
             relist_asked: _,
@@ -8083,6 +8542,10 @@ impl Trees {
             born_as_temp: born_as_temp.take_changes(),
             discard_members: discard_members.take_changes(),
             left_out_by_server: left_out_by_server.take_changes(),
+            discard_stays: discard_stays.take_changes(),
+            discard_answered: discard_answered.take_changes(),
+            first_link_held: first_link_held.take_changes(),
+            first_link_open: first_link_open.take_changes(),
             parked_as: parked_as.take_changes(),
             waiting: waiting.take_changes(),
             watched: watched.take_changes(),
@@ -8336,6 +8799,10 @@ impl Trees {
             born_as_temp,
             discard_members,
             left_out_by_server,
+            discard_stays,
+            discard_answered,
+            first_link_held,
+            first_link_open,
             parked_as,
             waiting,
             watched,
@@ -8389,6 +8856,10 @@ impl Trees {
         self.born_as_temp = born_as_temp.into();
         self.discard_members = discard_members.into();
         self.left_out_by_server = left_out_by_server.into();
+        self.discard_stays = discard_stays.into();
+        self.discard_answered = discard_answered.into();
+        self.first_link_held = first_link_held.into();
+        self.first_link_open = first_link_open.into();
         self.copies_gone = (self.unobserved.iter())
             .filter(|id| self.l.get(id).is_none())
             .cloned()

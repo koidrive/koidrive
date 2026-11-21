@@ -1,0 +1,10 @@
+class = "H"
+issue = "GUN-1215"
+tests = ["devices_with_rules_converge_once_the_faults_stop"]
+message = '''not recorded: devices::devices_with_rules_converge_once_the_faults_stop \S+ NameLeftOut device <n> is quiet, but the effects for \["<id>"(, "<id>")*\] wait for names that entries its rules leave out hold'''
+examples = [
+  "not recorded: devices::devices_with_rules_converge_once_the_faults_stop\tcc-9b75d7bcddec1cfd8d11c98e5bcf2cc084663e7c0e6cd56a9cc77ce87fb62c8b\tNameLeftOut\tdevice 0 is quiet, but the effects for [\"01a1c2c0-39a0-7c5c-8466-a7d0954b76a3\"] wait for names that entries its rules leave out hold",
+]
+cases = [
+  "9b75d7bcddec1cfd8d11c98e5bcf2cc084663e7c0e6cd56a9cc77ce87fb62c8b",
+]

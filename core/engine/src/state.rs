@@ -272,6 +272,20 @@ pub struct TreesState {
     /// scans watch. Each is also in `unobserved`, and each stops being unobserved once that change no longer excludes
     /// it. Every other unobserved node waits for an event or a scan.
     pub left_out_by_server: BTreeSet<NodeId>,
+    /// The server entries whose current stay in a folder this device began while `first_link_open` held a folder, each
+    /// paired with that folder: this device's acknowledged create or move began it, or a record that put the entry where
+    /// the user's own move had put it. Another device's record that begins a stay ends the pair. A change the user makes
+    /// to an entry R holds live with no pair, while its agreed place is in the folder, is a change to that entry alone.
+    pub discard_stays: BTreeSet<(NodeId, NodeId)>,
+    /// The folders a first-link Discard answer will take along, from the answer until that Discard is carried out.
+    pub discard_answered: BTreeSet<NodeId>,
+    /// The folders a first-link Discard dropped that R does not hold, each with the folder it held them in, kept while
+    /// that folder's discard record lasts. A change that makes such a folder the user's is a change to it alone.
+    pub first_link_held: BTreeMap<NodeId, NodeId>,
+    /// The folders a first link held for its question, each with whether a first-link question still shows it. From the
+    /// link until none is shown and no first-link Discard record is left, the engine records the stays this device begins
+    /// in `discard_stays`. Once that ends, the stays go with it.
+    pub first_link_open: BTreeMap<NodeId, bool>,
     /// For a parked node re-keyed while parked, the name of its entry in the parked directory.
     /// Each key is a node L holds as parked.
     pub parked_as: BTreeMap<NodeId, NodeId>,
@@ -552,6 +566,10 @@ pub struct TreesChanges {
     pub born_as_temp: MapChanges<NodeId, TempBirth>,
     pub discard_members: MapChanges<NodeId, NodeId>,
     pub left_out_by_server: SetChanges<NodeId>,
+    pub discard_stays: SetChanges<(NodeId, NodeId)>,
+    pub discard_answered: SetChanges<NodeId>,
+    pub first_link_held: MapChanges<NodeId, NodeId>,
+    pub first_link_open: MapChanges<NodeId, bool>,
     pub parked_as: MapChanges<NodeId, NodeId>,
     pub waiting: MapChanges<NodeId, Waiting>,
     pub watched: MapChanges<NodeId, bool>,
@@ -604,6 +622,10 @@ impl TreesChanges {
             born_as_temp,
             discard_members,
             left_out_by_server,
+            discard_stays,
+            discard_answered,
+            first_link_held,
+            first_link_open,
             parked_as,
             waiting,
             watched,
@@ -652,6 +674,10 @@ impl TreesChanges {
             born_as_temp: map_changes(&before.born_as_temp, born_as_temp),
             discard_members: map_changes(&before.discard_members, discard_members),
             left_out_by_server: set_changes(&before.left_out_by_server, left_out_by_server),
+            discard_stays: set_changes(&before.discard_stays, discard_stays),
+            discard_answered: set_changes(&before.discard_answered, discard_answered),
+            first_link_held: map_changes(&before.first_link_held, first_link_held),
+            first_link_open: map_changes(&before.first_link_open, first_link_open),
             parked_as: map_changes(&before.parked_as, parked_as),
             waiting: map_changes(&before.waiting, waiting),
             watched: map_changes(&before.watched, watched),
