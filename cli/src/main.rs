@@ -6,14 +6,11 @@
 //! versions commands talk to the server directly with the credential. With `--json` every command prints one
 //! envelope (see [`report`]) and exits with the status of its [`koidrive_ipc::Code`].
 
-/// Linux builds allocate through mimalloc. On the static musl release builds it also replaces C `malloc`, so SQLite
-/// and the TLS library don't take musl's allocator lock.
 #[cfg(target_os = "linux")]
 #[global_allocator]
 static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
-/// mimalloc 3.3's `mi_option_purge_delay`, which libmimalloc-sys 0.1.49 doesn't name. `main` sets it to 0, so freed
-/// pages go back to the system at once.
+/// mimalloc 3.3's `mi_option_purge_delay`, which libmimalloc-sys 0.1.49 doesn't name.
 #[cfg(target_os = "linux")]
 const PURGE_DELAY: libmimalloc_sys::mi_option_t = 15;
 
