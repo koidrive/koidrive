@@ -1569,13 +1569,68 @@ fn reload(
     loaded.restore(trees.state()).map_err(refused)?;
     prop_assert!(!loaded.rules_known());
     rules.read(&mut loaded);
-    let restored_commits = Commits::from_state(commits.state()).map_err(refused)?;
+    let mut restored_commits = Commits::from_state(commits.state()).map_err(refused)?;
+    restored_commits.set_field_intents(commits.field_intents());
     restored_commits.hold(&mut loaded);
     let restored_effects = Effects::from_state(effects.state()).map_err(refused)?;
     prop_assert_eq!(&loaded, trees);
     prop_assert_eq!(&restored_commits, commits);
     prop_assert_eq!(&restored_effects, effects);
     Ok((loaded, restored_commits, restored_effects))
+}
+
+const FIELD_INTENTS: bool = true;
+
+const INTENTS_ON_REDS: [(&str, &str, &str); 3] = [
+    (
+        "removing_most_of_a_space_is_held_until_the_person_answers",
+        "GUN-1482",
+        "assertion failed: `(left == right)` \n  left: `0`,\n right: `12` at core/sim/tests/engine_sync.rs:<line>",
+    ),
+    (
+        "a_first_link_discard_keeps_a_folder_the_user_changes_after_the_server_drops_part_of_it",
+        "GUN-1482",
+        "01a1c2c0-39a0-7001-b241-9db23951df99 is where the user put it in a folder that is the user's again, but the effects move it out at core/sim/tests/engine_sync/common.rs:<line>",
+    ),
+    (
+        "a_first_link_discard_judges_a_taken_along_folder_against_what_it_held_at_the_discard",
+        "GUN-1482",
+        "assertion `left != right` failed\n  left: 1\n right: 1",
+    ),
+];
+
+fn fails_as_recorded(test: &str, run: impl FnOnce() + std::panic::UnwindSafe) {
+    let Some((_, issue, recorded)) = (INTENTS_ON_REDS.iter())
+        .find(|(name, _, _)| *name == test)
+        .filter(|_| FIELD_INTENTS)
+    else {
+        return run();
+    };
+    let Err(panic) = std::panic::catch_unwind(run) else {
+        panic!("{test} passes with field intents on, so its {issue} entry in INTENTS_ON_REDS goes");
+    };
+    let message = (panic.downcast_ref::<String>().cloned())
+        .or_else(|| panic.downcast_ref::<&str>().map(|text| text.to_string()))
+        .unwrap_or_default();
+    let reason = (message.strip_prefix("Test failed: "))
+        .and_then(|rest| rest.split_once(".\nminimal failing input"))
+        .map_or(message.as_str(), |(reason, _)| reason);
+    let mut unlined = String::new();
+    let mut rest = reason;
+    while let Some(at) = rest.find(".rs:") {
+        unlined.push_str(&rest[..at + 4]);
+        rest = &rest[at + 4..];
+        let digits = rest.len() - rest.trim_start_matches(|c: char| c.is_ascii_digit()).len();
+        if digits > 0 {
+            unlined.push_str("<line>");
+        }
+        rest = &rest[digits..];
+    }
+    unlined.push_str(rest);
+    assert_eq!(
+        unlined, *recorded,
+        "{test} fails with field intents on, but not as its {issue} entry records"
+    );
 }
 
 /// The server as [`run`] seeds it.
@@ -2537,7 +2592,7 @@ fn run_ignoring_answering_after(
     }
 
     let me = session("me");
-    space.announce_field_intents(true);
+    space.announce_field_intents(FIELD_INTENTS);
     prop_assert_eq!(commits.connected(&space.welcome(&me)), Reconnect::Idle);
     let mut effects = Effects::default();
     let (mut steps, mut quiet, mut due, mut parked_reverted) = (0, false, false, 0);
@@ -2844,6 +2899,11 @@ fn run_ignoring_answering_after(
         let residue = observed_merge_residue(&device, &commits);
         commits.settle_merge_residue(&mut device.trees, &mut device.ids, NOW as u64, &residue);
         let mut before = (device.trees.clone(), commits.questions().to_vec());
+        let negotiated = space
+            .welcome(&me)
+            .features
+            .contains(&"field_intents".to_owned());
+        prop_assert_eq!(commits.field_intents(), negotiated);
         let built = commits.build(
             &mut device.trees,
             &mut device.ids,

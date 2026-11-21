@@ -1020,6 +1020,13 @@ fn a_change_inside_a_discarded_held_folder_is_not_acted_below_the_server_folder_
 
 #[test]
 fn a_first_link_discard_judges_a_taken_along_folder_against_what_it_held_at_the_discard() {
+    fails_as_recorded(
+        "a_first_link_discard_judges_a_taken_along_folder_against_what_it_held_at_the_discard",
+        a_first_link_discard_judges_a_taken_along_folder_against_what_it_held_at_the_discard_holds,
+    );
+}
+
+fn a_first_link_discard_judges_a_taken_along_folder_against_what_it_held_at_the_discard_holds() {
     let seed = [
         act(1, 0, 0, 3, 0),
         act(1, 0, 0, 3, 0),

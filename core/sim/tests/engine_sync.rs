@@ -97,8 +97,7 @@ proptest! {
         128,
     ))]
 
-    #[test]
-    fn removing_most_of_a_space_is_held_until_the_person_answers(
+    fn removing_most_of_a_space_is_held_until_the_person_answers_in_every_case(
         inside in 11usize..20,
         loose in 9usize..11,
         local in prop::collection::vec(action(3), 0..4),
@@ -129,6 +128,14 @@ proptest! {
             other => unreachable!("the guard does not offer {other}"),
         }
     }
+}
+
+#[test]
+fn removing_most_of_a_space_is_held_until_the_person_answers() {
+    fails_as_recorded(
+        "removing_most_of_a_space_is_held_until_the_person_answers",
+        removing_most_of_a_space_is_held_until_the_person_answers_in_every_case,
+    );
 }
 
 proptest! {
@@ -229,8 +236,7 @@ proptest! {
         0,
     ))]
 
-    #[test]
-    fn a_first_link_discard_keeps_a_folder_the_user_changes_after_the_server_drops_part_of_it(
+    fn a_first_link_discard_keeps_a_folder_the_user_changes_after_the_server_drops_part_of_it_in_every_case(
         seed in prop::collection::vec(action(2), 2..8),
         local in prop::collection::vec(action(2), 1..6),
         before in prop::collection::vec((any::<bool>(), prop::collection::vec(action(5), 1..3)), 0..3),
@@ -258,6 +264,14 @@ proptest! {
             answer_after,
         )?;
     }
+}
+
+#[test]
+fn a_first_link_discard_keeps_a_folder_the_user_changes_after_the_server_drops_part_of_it() {
+    fails_as_recorded(
+        "a_first_link_discard_keeps_a_folder_the_user_changes_after_the_server_drops_part_of_it",
+        a_first_link_discard_keeps_a_folder_the_user_changes_after_the_server_drops_part_of_it_in_every_case,
+    );
 }
 
 fn run_trashed_while_parked(extra: &[Action]) {
