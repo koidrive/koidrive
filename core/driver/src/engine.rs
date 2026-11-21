@@ -1313,17 +1313,18 @@ impl Engine {
                         EntryKind::File => Kind::File,
                         EntryKind::Dir => Kind::Dir,
                     };
-                    let at_to = local_at(&self.trees, to);
-                    'place: {
+                    let placed = 'place: {
                         if names(to).is_some_and(|to| self.trees.ignores(&to, node_kind)) {
-                            let Some(node) = &before else { break 'place };
+                            let Some(node) = &before else {
+                                break 'place None;
+                            };
                             if to
                                 .parent()
                                 .and_then(|dir| local_at(&self.trees, dir))
                                 .is_none()
                             {
                                 self.trees.ignore_local(node);
-                                break 'place;
+                                break 'place None;
                             }
                         }
                         let content = before
@@ -1341,12 +1342,11 @@ impl Engine {
                             &moving,
                             &mut touched,
                             &mut gone,
-                        );
-                    }
+                        )
+                    };
                     let Some(held) = refused_folder else { continue };
-                    let Some(folder) = local_at(&self.trees, to).filter(|folder| {
+                    let Some(folder) = placed.filter(|folder| {
                         *folder != held
-                            && Some(folder) != at_to.as_ref()
                             && (self.trees.local().get(folder))
                                 .is_some_and(|node| node.shape.kind == Kind::Dir)
                     }) else {
@@ -1977,13 +1977,13 @@ impl Engine {
         moving: &BTreeSet<NodeId>,
         touched: &mut BTreeSet<NodeId>,
         gone: &mut Gone,
-    ) {
+    ) -> Option<NodeId> {
         let (Some(parent), Some(name)) = (
             path.parent()
                 .and_then(|parent| local_at(&self.trees, parent)),
             path.file_name().and_then(|name| name.to_str()),
         ) else {
-            return;
+            return None;
         };
         let kind = match kind {
             EntryKind::File => Kind::File,
@@ -2036,7 +2036,7 @@ impl Engine {
             if let (Some(id), Some(content)) = (&given, &shape.content) {
                 self.trees.restamp_local(id, content.mtime_ns);
             }
-            return;
+            return given;
         }
         let (shape, chunks) = match existing.filter(|_| kind == Kind::File) {
             Some(old) if shape.content.is_none() => (
@@ -2049,7 +2049,7 @@ impl Engine {
             _ => (shape, chunks),
         };
         if kind == Kind::File && shape.content.is_none() {
-            return;
+            return None;
         }
         let mut bound = node.unwrap_or_else(|| Bound::fresh(&mut self.ids, now_ms));
         if let Some(holder) =
@@ -2149,7 +2149,7 @@ impl Engine {
         if born {
             self.trees.mark_born_as_temp(id.clone());
         }
-        touched.insert(id);
+        touched.insert(id.clone());
         let mut above = left;
         while let Some(folder) = above.filter(|folder| {
             self.trees.lost_local().contains(folder)
@@ -2158,6 +2158,7 @@ impl Engine {
             above = (self.trees.local().get(&folder)).map(|node| node.shape.parent.clone());
             self.remove(&folder, moving, true, false, touched, gone);
         }
+        Some(id)
     }
 
     /// Removes `id` and every node placed under it from L, except the nodes in `moving`, which the batch moves
@@ -4772,6 +4773,46 @@ mod tests {
             assert!(engine.trees.local().get(node).is_none());
             assert!(engine.trees.displaced_local().contains_key(node));
         }
+        assert_eq!(engine.trees.check(), Ok(()));
+    }
+
+    #[test]
+    fn a_refused_folder_rename_can_adopt_after_placing_into_a_kept_destination_node() {
+        let (_dir, mut engine) = mapper();
+        let (report, _) = saved_report(&mut engine);
+        let archive = Observed::Created {
+            path: "archive".into(),
+            kind: EntryKind::Dir,
+            id: ino(7),
+            linked: false,
+            content: None,
+            marked_node: None,
+        };
+        engine.observe(&[archive], 100);
+        synced_everywhere(&mut engine);
+        let archive = holding(&engine, "archive").unwrap().0;
+        engine.trees.ignore_local(&archive);
+        let moved = Observed::Renamed {
+            from: "docs".into(),
+            to: "archive".into(),
+            kind: EntryKind::Dir,
+            id: ino(9),
+            linked: false,
+            marked_node: Some(archive.to_string()),
+        };
+        engine.observe(&[moved], 1_000);
+        let (placed, identity, _) = holding(&engine, "archive").unwrap();
+        assert_eq!(placed, archive);
+        assert_eq!(
+            identity,
+            file_identity(ino(9)),
+            "the new directory was placed"
+        );
+        assert_eq!(
+            engine.path_of(&report).as_deref(),
+            Some(Path::new("archive/report.txt")),
+            "successful placement must adopt the child",
+        );
         assert_eq!(engine.trees.check(), Ok(()));
     }
 
