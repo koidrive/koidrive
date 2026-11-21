@@ -3883,10 +3883,10 @@ impl Trees {
     /// let in leaves S in one group with every node below it whose copy went too, excluded ones included, and the
     /// folders below it the server keeps only for an excluded file, so the group downloads again and no deletion
     /// is sent (section 5.10). A node S holds below them that L holds elsewhere, where the user moved it, goes with
-    /// them together with every node S holds below it through folders L holds. Below a folder L no longer holds, only
-    /// the nodes whose copy went too or that L holds elsewhere go, so a node the user removed there keeps the group
-    /// in S until that removal is sent. Each of those L holds keeps the shape S held for it, or the one its waiting
-    /// S update holds, as its base ([`Origin::Released`]), so it is not downloaded again. A group leaves whole or stays, and one that stays is tried again at the next
+    /// them together with every node S holds below it. Each of those L holds keeps the shape S held for it, or the
+    /// one its waiting S update holds, as its base ([`Origin::Released`]), so it is not downloaded again. So does
+    /// each node below such a moved node that the user removed while the device observed it, also a folder R holds
+    /// only for what the moved node's new place leaves out, so the user's removal is still sent, topmost first. A group leaves whole or stays, and one that stays is tried again at the next
     /// settle that changes anything: while the rules are not scanned since a restore, while the rules leave out its
     /// top where S or R holds it, while the rules of a folder above one of its nodes are unknown, while the place
     /// S or R holds for one of its nodes is at or below a [`Pending`] path, or while S cannot drop it. Only the
@@ -3932,11 +3932,11 @@ impl Trees {
         let groups: Vec<(Released, Vec<(NodeId, Shape)>)> = (tops.into_iter())
             .filter(|top| !self.ignored(top))
             .map(|top| {
-                let mut group = vec![top];
+                let mut group = vec![(top, false)];
                 let mut next = 0;
-                while let Some(id) = group.get(next).cloned() {
+                while let Some((id, below_moved)) = group.get(next).cloned() {
                     next += 1;
-                    let moved_out = self.l.get(&id).is_some();
+                    let moved_out = below_moved || self.l.get(&id).is_some();
                     group.extend(
                         (self.s_names.children(&id))
                             .filter(|child| {
@@ -3945,22 +3945,24 @@ impl Trees {
                                     || (self.l.get(child))
                                         .is_some_and(|node| node.shape.parent != id)
                             })
-                            .cloned(),
+                            .map(|child| (child.clone(), moved_out)),
                     );
                 }
                 group
             })
             .filter_map(|group| {
                 let Some(released) =
-                    self.release(group.iter().map(|id| (id.clone(), None)).collect())
+                    self.release(group.iter().map(|(id, _)| (id.clone(), None)).collect())
                 else {
-                    held_for_scan.extend(group);
+                    held_for_scan.extend(group.into_iter().map(|(id, _)| id));
                     return None;
                 };
                 let bases: Vec<(NodeId, Shape)> = (group.iter())
-                    .filter(|id| self.l.get(id).is_some() || !self.unobserved.contains(*id))
-                    .filter(|id| !goes(id))
-                    .filter_map(|id| {
+                    .filter(|(id, _)| self.l.get(id).is_some() || !self.unobserved.contains(id))
+                    .filter(|(id, below_moved)| {
+                        !goes(id) || *below_moved && self.removed_from.contains_key(id)
+                    })
+                    .filter_map(|(id, _)| {
                         let waiting = self
                             .waiting
                             .get(id)
@@ -3968,7 +3970,7 @@ impl Trees {
                         Some((id.clone(), waiting.or(self.s.get(id))?.clone()))
                     })
                     .collect();
-                (!group.iter().any(|id| self.below_unknown_rules(id))
+                (!group.iter().any(|(id, _)| self.below_unknown_rules(id))
                     && self.fits_synced_together(released.nodes()))
                 .then_some((released, bases))
             })

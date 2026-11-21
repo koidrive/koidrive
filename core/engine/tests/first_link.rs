@@ -7978,3 +7978,70 @@ fn an_adopted_file_another_device_trashes_with_its_bytes_goes_to_the_local_trash
         "{planned:?}"
     );
 }
+
+#[test]
+fn a_folder_moved_out_of_a_vanished_folder_sends_the_users_removals_below_it_once_its_place_is_let_in()
+ {
+    for removed in [&["c", "y"][..], &["c"]] {
+        let shapes = [
+            ("d", dir(ROOT, "d")),
+            ("x", dir("d", "x")),
+            ("y", dir("x", "y")),
+            ("c", file("y", "c", 5)),
+            ("g", dir(ROOT, "g")),
+        ];
+        let mut trees = trees(&shapes, &shapes);
+        let (mut commits, mut ids) = (Commits::default(), IdGen::new(7));
+        commits.first_link(&mut trees, &mut ids, NOW, PriorSync::Shown);
+        trees.set_rules(
+            &[] as &[&str],
+            Source::Koiignore,
+            Some(RuleFile::parse(b"/build/\n/g/\n")),
+        );
+        trees.settle(commits.aliases());
+        for id in removed {
+            trees.remove_local(&(*id).into());
+        }
+        trees.settle(commits.aliases());
+        trees.ignore_local(&"d".into());
+        let mut moved = trees.local().get(&"x".into()).unwrap().clone();
+        moved.shape.parent = "g".into();
+        trees.set_local_changed("x".into(), moved);
+        trees.remove_local(&"d".into());
+        trees.settle(commits.aliases());
+        let sent = drive_until_quiet(&mut commits, &mut trees, &mut ids);
+        assert_eq!(sent, [], "{removed:?}");
+        let held = |trees: &Trees, id: &str| trees.local().get(&id.into()).is_some();
+        assert!(held(&trees, "d"), "{removed:?}: {:?}", local(&trees));
+        assert!(!held(&trees, "c"), "{removed:?}");
+        assert_eq!(held(&trees, "y"), removed.len() == 1, "{removed:?}");
+        trees.set_rules(
+            &[] as &[&str],
+            Source::Koiignore,
+            Some(RuleFile::parse(b"/build/\n")),
+        );
+        trees.listed(&[ROOT.into(), "g".into()], Pending::default());
+        trees.settle(commits.aliases());
+        let mut sent = drive_until_quiet(&mut commits, &mut trees, &mut ids);
+        sent.sort();
+        let deleted = removed.last().unwrap().to_string();
+        assert_eq!(
+            sent,
+            [("delete", deleted.clone()), ("move", "x".into())],
+            "{removed:?}"
+        );
+        assert!(!held(&trees, "c"), "{removed:?}");
+        assert_eq!(held(&trees, "y"), removed.len() == 1, "{removed:?}");
+        assert!(
+            trees
+                .remote()
+                .get(&deleted.as_str().into())
+                .unwrap()
+                .trashed
+        );
+        assert_eq!(drive_until_quiet(&mut commits, &mut trees, &mut ids), []);
+        let mut effects = Effects::default();
+        let planned = effects.plan(&trees, commits.in_flight(), &mut ids, NOW, BatchLimit::ONE);
+        assert!(planned.is_empty(), "{removed:?}: {planned:?}");
+    }
+}
