@@ -58,13 +58,16 @@ pub(crate) struct Engine {
     unstored_ctimes: BTreeMap<NodeId, i64>,
     pub local_written_since_load: bool,
     removed_at: BTreeMap<NodeId, u64>,
-    renamed_away: BTreeMap<NodeId, (NodeId, String, u64)>,
+    renamed_away: BTreeMap<NodeId, (NodeId, String, u64, Option<u64>)>,
     took_slot: BTreeMap<(NodeId, String), (NodeId, u64, bool)>,
+    backup_gone: BTreeMap<NodeId, bool>,
     owed: BTreeSet<NodeId>,
     stored_owed: BTreeSet<NodeId>,
 }
 
 const DELETE_WAIT_MS: u64 = 2_000;
+
+const BACKUP_CHECK_SLACK_MS: u64 = 250;
 
 /// What applying a batch of the log did.
 #[derive(Debug, PartialEq)]
@@ -939,8 +942,10 @@ impl Engine {
     pub fn observe(&mut self, changes: &[Observed], now_ms: u64) -> BTreeSet<NodeId> {
         let unscanned = self.unscanned.take();
         let wait = 2 * DELETE_WAIT_MS;
-        (self.renamed_away).retain(|_, (_, _, at)| now_ms < at.saturating_add(wait));
+        (self.renamed_away).retain(|_, (_, _, at, _)| now_ms < at.saturating_add(wait));
         (self.took_slot).retain(|_, (_, at, _)| now_ms < at.saturating_add(wait));
+        let away = &self.renamed_away;
+        (self.backup_gone).retain(|id, _| away.contains_key(id));
         let mut before: Vec<Option<NodeId>> = changes
             .iter()
             .map(|change| match change {
@@ -1133,14 +1138,17 @@ impl Engine {
                 Observed::Removed { path, .. } | Observed::Missing { path, .. } => {
                     if let Some(id) = before {
                         let missing = matches!(change, Observed::Missing { .. });
-                        if !missing
+                        let file = !missing
                             && (self.trees.local().get(&id))
-                                .is_some_and(|node| node.shape.kind == Kind::File)
-                            && names(path)
-                                .is_some_and(|names| !self.trees.ignores(&names, Kind::File))
-                        {
+                                .is_some_and(|node| node.shape.kind == Kind::File);
+                        let excluded =
+                            names(path).is_none_or(|names| self.trees.ignores(&names, Kind::File));
+                        if file && !excluded {
                             self.removed_at.insert(id.clone(), now_ms);
                             self.owed.insert(id.clone());
+                        }
+                        if file && let Some((_, _, _, removed)) = self.renamed_away.get_mut(&id) {
+                            *removed = Some(now_ms);
                         }
                         self.remove(&id, &moving, true, missing, &mut touched, &mut gone);
                     }
@@ -1370,12 +1378,13 @@ impl Engine {
             Option<Content>,
         );
         let mut saves: Vec<Save> = (self.renamed_away.iter())
-            .filter_map(|(id, (parent, name, renamed))| {
-                let removed = *self.removed_at.get(id)?;
+            .filter_map(|(id, (parent, name, renamed, removed))| {
+                let removed = (*removed)?;
                 let (taker, took, staged) = self.took_slot.get(&(parent.clone(), name.clone()))?;
                 let saved = self.trees.local().get(taker)?;
                 let continues = self.trees.local_child(parent, name) == Some(taker)
-                    && removed < renamed.saturating_add(DELETE_WAIT_MS)
+                    && (removed < renamed.saturating_add(DELETE_WAIT_MS)
+                        || self.backup_gone.get(id) == Some(&true))
                     && now_ms < removed.saturating_add(DELETE_WAIT_MS)
                     && took >= renamed
                     && *staged
@@ -1440,7 +1449,8 @@ impl Engine {
                             .is_none()
                 })
         });
-        self.removed_at.keys().cloned().collect()
+        let held: Vec<NodeId> = self.held_takers(now_ms).map(|(taker, _)| taker).collect();
+        self.removed_at.keys().cloned().chain(held).collect()
     }
 
     pub fn forget_removals(&mut self) {
@@ -1476,8 +1486,55 @@ impl Engine {
         ready
     }
 
-    pub fn deletes_due(&self) -> Option<u64> {
-        (self.removed_at.values().min()).map(|at| at + DELETE_WAIT_MS)
+    pub fn deletes_due(&self, now_ms: u64) -> Option<u64> {
+        (self.removed_at.values().map(|at| at + DELETE_WAIT_MS))
+            .chain(self.holds_due(now_ms))
+            .min()
+    }
+
+    pub fn holds_due(&self, now_ms: u64) -> Option<u64> {
+        self.held_takers(now_ms).map(|(_, until)| until).min()
+    }
+
+    pub(super) fn end_backup_waits(
+        &mut self,
+        now_ms: u64,
+        name_absent: impl Fn(&Trees, &Shape) -> (Option<bool>, u64),
+    ) {
+        for (id, (parent, name, renamed, _)) in &self.renamed_away {
+            if now_ms < renamed.saturating_add(DELETE_WAIT_MS)
+                || self.backup_gone.contains_key(id)
+                || !self.took_slot.contains_key(&(parent.clone(), name.clone()))
+                || !self.excluded_backup(id)
+            {
+                continue;
+            }
+            let Some(node) = self.trees.local().get(id) else {
+                continue;
+            };
+            let late = renamed.saturating_add(DELETE_WAIT_MS + BACKUP_CHECK_SLACK_MS);
+            let gone = now_ms < late
+                && matches!(name_absent(&self.trees, &node.shape), (Some(true), seen_ms) if seen_ms < late);
+            self.backup_gone.insert(id.clone(), gone);
+        }
+    }
+
+    fn excluded_backup(&self, id: &NodeId) -> bool {
+        (self.trees.local().path(id)).is_some_and(|path| {
+            names(&path).is_some_and(|names| self.trees.ignores(&names, Kind::File))
+        })
+    }
+
+    fn held_takers(&self, now_ms: u64) -> impl Iterator<Item = (NodeId, u64)> {
+        (self.renamed_away.iter()).filter_map(move |(id, (parent, name, renamed, _))| {
+            let until = match self.backup_gone.get(id) {
+                None => renamed.saturating_add(DELETE_WAIT_MS),
+                Some(true) => renamed.saturating_add(2 * DELETE_WAIT_MS),
+                Some(false) => return None,
+            };
+            let (taker, _, _) = self.took_slot.get(&(parent.clone(), name.clone()))?;
+            (now_ms < until && self.excluded_backup(id)).then(|| (taker.clone(), until))
+        })
     }
 
     fn scanned(&self, id: &NodeId) -> bool {
@@ -1713,7 +1770,8 @@ impl Engine {
                 self.took_slot
                     .insert(slot, (id.clone(), now_ms, tmp(&from.1) && !own_identity));
                 self.renamed_away
-                    .insert(id.clone(), (from.0, from.1, now_ms));
+                    .insert(id.clone(), (from.0, from.1, now_ms, None));
+                self.backup_gone.remove(&id);
             } else if !held {
                 let new_entry = !self.trees.displaced_local().contains_key(&id);
                 self.took_slot.insert(slot, (id.clone(), now_ms, new_entry));
@@ -2002,6 +2060,7 @@ impl Stored {
             removed_at: BTreeMap::new(),
             renamed_away: BTreeMap::new(),
             took_slot: BTreeMap::new(),
+            backup_gone: BTreeMap::new(),
             owed: owed.clone(),
             stored_owed: owed,
         }))
@@ -2929,6 +2988,7 @@ mod tests {
             removed_at: BTreeMap::new(),
             renamed_away: BTreeMap::new(),
             took_slot: BTreeMap::new(),
+            backup_gone: BTreeMap::new(),
             owed: BTreeSet::new(),
             stored_owed: BTreeSet::new(),
         };
@@ -5282,6 +5342,83 @@ mod tests {
                 Ok::<_, Stop>(())
             })
             .unwrap();
+    }
+
+    #[test]
+    fn current_backup_removal_decides_the_save() {
+        for (missing, again, moved) in [(false, 0, 0), (true, 1_600, 1_700), (true, 1_500, 1_500)] {
+            let (_dir, mut engine, report) = removed_report();
+            let path = "docs/report.txt";
+            engine.observe(&[created(path, ino(3), false, 1)], 1_100);
+            assert_eq!(holding(&engine, path).unwrap().0, report);
+            engine.observe(&[renamed(path, "docs/Thumbs.db", ino(3), false)], 1_200);
+            assert!(engine.excluded_backup(&report));
+            engine.observe(
+                &[
+                    Observed::Removed {
+                        path: "docs/Thumbs.db".into(),
+                        kind: EntryKind::File,
+                    },
+                    created("docs/incoming.tmp", ino(5), false, 7),
+                ],
+                1_500,
+            );
+            assert_eq!(engine.removed_at.get(&report), Some(&1_000));
+            assert_eq!(engine.renamed_away[&report].3, Some(1_500));
+            if missing {
+                engine.observe(&[created(path, ino(6), false, 1)], again);
+                assert_eq!(holding(&engine, path).unwrap().0, report);
+                engine.observe(&[renamed(path, "docs/elsewhere.txt", ino(6), false)], moved);
+                engine.observe(
+                    &[Observed::Missing {
+                        path: "docs/elsewhere.txt".into(),
+                        kind: EntryKind::File,
+                    }],
+                    2_700,
+                );
+                assert!(engine.trees.missing().contains(&report));
+            }
+            engine.observe(&[renamed("docs/incoming.tmp", path, ino(5), false)], 3_001);
+            let (holder, _, size) = holding(&engine, path).unwrap();
+            assert_eq!(size, 7);
+            assert_eq!(
+                holder == report,
+                !missing,
+                "the missing file must keep its own node"
+            );
+            assert_eq!(engine.trees.missing().contains(&report), missing);
+        }
+    }
+
+    #[test]
+    fn a_backup_seen_gone_only_after_its_tolerance_does_not_count() {
+        for (seen_ms, counts) in [(3_200, true), (3_250, false), (60_000, false)] {
+            let (_dir, mut engine) = mapper();
+            engine.trees.rules_scanned();
+            let docs = Observed::Created {
+                path: "docs".into(),
+                kind: EntryKind::Dir,
+                id: ino(1),
+                linked: false,
+                content: None,
+                marked_node: None,
+            };
+            engine.observe(&[docs, created("docs/report.txt", ino(2), false, 1)], 0);
+            synced_everywhere(&mut engine);
+            let (report, _, _) = holding(&engine, "docs/report.txt").unwrap();
+            engine.observe(
+                &[renamed("docs/report.txt", "docs/Thumbs.db", ino(2), false)],
+                1_000,
+            );
+            engine.observe(&[created("docs/report.txt", ino(5), false, 7)], 1_100);
+            assert_eq!(engine.holds_due(1_500), Some(3_000));
+            engine.end_backup_waits(3_100, |_, _| (Some(true), seen_ms));
+            assert_eq!(
+                engine.backup_gone.get(&report),
+                Some(&counts),
+                "seen at {seen_ms}"
+            );
+        }
     }
 
     fn removed_report() -> (tempfile::TempDir, Engine, NodeId) {

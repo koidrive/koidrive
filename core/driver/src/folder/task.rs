@@ -426,7 +426,8 @@ impl FolderTask {
                         Work::ResendAfter(after) => {
                             wait = Some(Box::pin(tokio::time::sleep(after)))
                         }
-                        Work::RetryAfter(after) => {
+                        Work::RetryAt(at) => {
+                            let after = at.saturating_duration_since(crate::clock::instant());
                             retry = Some(Box::pin(tokio::time::sleep(after)))
                         }
                         Work::Reconnect => break 'session Halt::Reconnect,

@@ -856,7 +856,7 @@ fn a_file_written_again_once_the_wait_ended_is_a_new_node_after_the_delete() {
     let (site, mut a, before) = report_removed(&mut remote);
     let waits: Vec<Duration> = (a.work.iter())
         .map(|work| match work {
-            Work::RetryAfter(wait) => *wait,
+            Work::RetryAt(at) => at.saturating_duration_since(clock::instant()),
             _ => Duration::MAX,
         })
         .collect();
@@ -900,8 +900,7 @@ fn an_edit_from_another_device_during_the_wait_is_kept_beside_the_file_written_a
             fs::write(site.root.join("docs/report.txt"), b"version two").unwrap();
         }
         for _ in 0..6 {
-            while let Some(at) =
-                (a.work.iter()).position(|work| !matches!(work, Work::RetryAfter(_)))
+            while let Some(at) = (a.work.iter()).position(|work| !matches!(work, Work::RetryAt(_)))
             {
                 let work = a.work.remove(at).unwrap();
                 a.perform(work, &mut remote).unwrap();

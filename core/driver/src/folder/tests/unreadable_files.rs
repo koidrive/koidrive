@@ -66,7 +66,7 @@ fn every_file_but_the_unreadable_ones_is_uploaded(unreadable: &[bool]) {
         for _ in 0..50 {
             let Some(work) = a.work.pop_front() else { break };
             match work {
-                Work::RetryAfter(_) => timers.push(work),
+                Work::RetryAt(_) => timers.push(work),
                 work => a.perform(work, &mut remote).unwrap(),
             }
         }
@@ -93,7 +93,7 @@ fn leave_out_until_the_upload_fails(a: &mut Device, remote: &mut Remote, path: &
     fs::set_permissions(path, fs::Permissions::from_mode(0o000)).unwrap();
     eventually("the file is left out of commits", || {
         while let Some(work) = a.work.pop_front() {
-            if !matches!(work, Work::RetryAfter(_)) {
+            if !matches!(work, Work::RetryAt(_)) {
                 a.perform(work, remote).unwrap();
             }
         }
@@ -185,7 +185,7 @@ fn a_timer_for_another_retry_keeps_a_left_out_file_out_until_its_own_wait_ends()
     fs::set_permissions(&secret, fs::Permissions::from_mode(0o644)).unwrap();
     assert_eq!(held, 1, "a timer that fired early let the file back in");
     assert!(
-        (a.work.iter()).any(|work| matches!(work, Work::RetryAfter(wait) if *wait > Duration::from_secs(10))),
+        (a.work.iter()).any(|work| matches!(work, Work::RetryAt(at) if *at > clock::instant() + Duration::from_secs(10))),
         "the file's own retry is still scheduled"
     );
 }
@@ -207,7 +207,7 @@ fn a_left_out_file_saved_again_is_sent_without_waiting_for_its_retry() {
     fs::write(&secret, b"third, saved after the fix").unwrap();
     eventually("the saved file reaches the server", || {
         while let Some(work) = a.work.pop_front() {
-            if !matches!(work, Work::RetryAfter(_)) {
+            if !matches!(work, Work::RetryAt(_)) {
                 a.perform(work, &mut remote).unwrap();
             }
         }
@@ -236,7 +236,7 @@ fn fail_upload_of(a: &mut Device, remote: &mut Remote, size: usize) {
                     a.take(step).unwrap();
                     return true;
                 }
-                Work::RetryAfter(_) => {}
+                Work::RetryAt(_) => {}
                 work => a.perform(work, remote).unwrap(),
             }
         }
@@ -325,7 +325,7 @@ fn every_file_but_the_unwritable_ones_is_downloaded(unwritable: &[bool]) {
         for _ in 0..50 {
             let Some(work) = b.work.pop_front() else { break };
             match work {
-                Work::RetryAfter(_) => timers.push(work),
+                Work::RetryAt(_) => timers.push(work),
                 work => b.perform(work, &mut remote).unwrap(),
             }
         }
@@ -364,7 +364,7 @@ fn a_file_let_back_in_without_an_upload_keeps_the_servers_refusal_of_its_next_ch
     eventually("the file is let back in", || {
         a.scan(Duration::from_millis(100));
         while let Some(work) = a.work.pop_front() {
-            if !matches!(work, Work::RetryAfter(_)) {
+            if !matches!(work, Work::RetryAt(_)) {
                 a.perform(work, &mut remote).unwrap();
             }
         }
@@ -378,7 +378,7 @@ fn a_file_let_back_in_without_an_upload_keeps_the_servers_refusal_of_its_next_ch
         while let Some(work) = a.work.pop_front() {
             match work {
                 Work::Send(commit) => sent = Some(commit),
-                Work::RetryAfter(_) => {}
+                Work::RetryAt(_) => {}
                 work => a.perform(work, &mut remote).unwrap(),
             }
         }
@@ -457,7 +457,7 @@ fn run_holding_timers(b: &mut Device, remote: &mut Remote, timers: &mut Vec<Work
     for _ in 0..20 {
         while let Some(work) = b.work.pop_front() {
             match work {
-                Work::RetryAfter(_) => timers.push(work),
+                Work::RetryAt(_) => timers.push(work),
                 work => {
                     stages += usize::from(matches!(work, Work::Stage(_) | Work::StageAfter(..)));
                     b.perform(work, remote).unwrap();
