@@ -82,6 +82,7 @@ function keyPath(key: string): string {
 
 async function send(account: Account, method: string, path: string, init: { body?: unknown; allowMissing?: boolean; deadline?: Deadline } = {}): Promise<Response | undefined> {
   const what = method + " " + path.split("?")[0];
+  const label = method + " " + path.split("?")[0]!.split("/").map((segment, at) => (at === 2 ? "{account}" : /^[a-z_0-9]*$/.test(segment) || /^koidrive-test-[1-9]\d*-[1-9]\d*$/.test(segment) ? segment : "{name}")).join("/");
   for (let attempt = 1; ; attempt++) {
     const remaining = init.deadline === undefined ? REQUEST_MS : init.deadline.atMs - Date.now();
     if (remaining <= 0) throw new DeadlineError(init.deadline!.what);
@@ -95,7 +96,7 @@ async function send(account: Account, method: string, path: string, init: { body
       });
     } catch (error) {
       if (init.deadline && Date.now() >= init.deadline.atMs) throw new DeadlineError(init.deadline.what);
-      if (attempt >= ATTEMPTS) throw new ApiError(what + " failed: " + (error instanceof Error ? error.message : String(error)), 0, what + " failed");
+      if (attempt >= ATTEMPTS) throw new ApiError(what + " failed: " + (error instanceof Error ? error.message : String(error)), 0, label + " failed");
       await sleep(Math.max(0, Math.min(2000 * attempt, init.deadline === undefined ? Infinity : init.deadline.atMs - Date.now())));
       continue;
     }
@@ -116,7 +117,7 @@ async function send(account: Account, method: string, path: string, init: { body
       if (errors.length > 0) detail = errors.map((error) => error.code + " " + error.message).join("; ");
     } catch {}
     const hint = response.status === 403 ? " (the token lacks a permission this call needs; see docs/deploy-test.md)" : "";
-    throw new ApiError(what + " returned HTTP " + response.status + ": " + detail + hint, response.status, what + " returned HTTP " + response.status + hint);
+    throw new ApiError(what + " returned HTTP " + response.status + ": " + detail + hint, response.status, label + " returned HTTP " + response.status + hint);
   }
 }
 

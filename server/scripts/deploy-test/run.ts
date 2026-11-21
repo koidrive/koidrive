@@ -568,7 +568,7 @@ const SWEEP_MS = 3 * 60_000;
 const LOOKBACK_DAYS = 14;
 const RERUN_DAYS = 30;
 const NAMESPACE_ID = /^[0-9a-f]{32}$/;
-const CLASS_NAME = /^[A-Za-z][A-Za-z0-9_]{0,63}$/;
+const KNOWN_CLASSES = ["AccountDO", "SpaceDO"];
 const TEST_WORKFLOWS = [".github/workflows/deploy-test.yml", ".github/workflows/load-test.yml"];
 
 interface RunAttempt {
@@ -635,7 +635,7 @@ function reason(error: unknown): string {
 }
 
 function label(namespace: Namespace): string {
-  return (CLASS_NAME.test(namespace.class) ? namespace.class : "(a class that is not an identifier)") + " " + (NAMESPACE_ID.test(namespace.id) ? namespace.id : "(an id that is not 32 hex digits)");
+  return (KNOWN_CLASSES.includes(namespace.class) ? namespace.class : "(a class Koidrive does not define)") + " " + (NAMESPACE_ID.test(namespace.id) ? namespace.id : "(an id that is not 32 hex digits)");
 }
 
 function instant(value: string): string | undefined {
@@ -750,6 +750,10 @@ async function sweep(account: Account): Promise<void> {
   for (const namespace of namespaces ?? []) {
     const script = namespace.script;
     if (script === undefined || !script.startsWith(NAME_PREFIX) || live.has(script)) continue;
+    if (!NAMESPACE_ID.test(namespace.id)) {
+      leftAlone.push("the Durable Object namespace " + label(namespace) + " of the deleted Worker " + shown(script) + ", because its id is not 32 hex digits");
+      continue;
+    }
     await visit("Durable Object namespace " + label(namespace) + " of the deleted Worker " + shown(script), () => orphaned(script), async () => {
       await deleteNamespace(account, namespace.id, deadline);
       console.log("Deleted the Durable Object namespace " + label(namespace) + ", which outlived the Worker " + script + " of a finished run");

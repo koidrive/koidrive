@@ -80,7 +80,7 @@ export class MockCloudflare {
   addWorker(name: string, id: string = crypto.randomUUID(), tag?: string): MockWorker {
     const worker = { id, createdOn: new Date().toISOString(), versions: [{ id: crypto.randomUUID(), tag }] };
     this.workers.set(name, worker);
-    this.namespaces.push({ id: id + "-account", class: "AccountDO", script: name }, { id: id + "-space", class: "SpaceDO", script: name });
+    this.namespaces.push({ id: crypto.randomUUID().replaceAll("-", ""), class: "AccountDO", script: name }, { id: crypto.randomUUID().replaceAll("-", ""), class: "SpaceDO", script: name });
     return worker;
   }
 
