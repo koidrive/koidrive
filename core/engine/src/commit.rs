@@ -668,7 +668,7 @@ impl Commits {
         &self.aliases
     }
 
-    /// Settles each folder of `residue` against the live node of the server that holds its name key now (filesystem §5.10). With none, or a folder this device's user moved away in a move the server takes, the folder gets a new ID and uploads as a new folder. A folder whose move is reverted (state model §2.6) keeps the name key on the server, so the folder stays merged. With a folder this device never synced, while every other folder of this device at the key is merged too, the merged folder whose name is the live folder's takes its ID, otherwise one whose name differs from it only in Unicode normalization, otherwise any of them, and among equals the one with the lowest ID. Otherwise, and while its parent is still merged, the folder stays merged.
+    /// Settles each folder of `residue` against the live node of the server that holds its name key now (filesystem §5.10). With none, or a folder this device's user moved away in a move the server takes, the folder gets a new ID and uploads as a new folder. A move that leaves the folder reverted (state model §2.6) does not count as moving it away. With a folder this device never synced, while every other folder of this device at the key is merged too, the merged folder whose name is the live folder's takes its ID, otherwise one whose name differs from it only in Unicode normalization, otherwise any of them, and among equals the one with the lowest ID. Otherwise, and while its parent is still merged, the folder stays merged.
     pub fn settle_merge_residue(
         &mut self,
         trees: &mut Trees,
