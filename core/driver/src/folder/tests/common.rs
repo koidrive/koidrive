@@ -6,7 +6,6 @@ use std::fs;
 
 use std::os::fd::AsFd;
 use std::os::unix::fs::MetadataExt;
-use std::time::UNIX_EPOCH;
 
 use koidrive_engine::commit::Lift;
 use koidrive_engine::effects::BatchLimit;
@@ -781,6 +780,7 @@ fn put_off(code: koidrive_proto::v1::error::Code) -> ServerError {
 /// on `b`, which no batch has reported, so the effect fails with the name taken and the node is blocked. The user's
 /// file is left as it was.
 fn failed_at_a_taken_name(remote: &mut Remote) -> (Site, Device, Duration) {
+    clock::freeze();
     let (site_a, mut a) = linked(remote, "a");
     let (site, mut b) = linked(remote, "b");
     a.create(remote, &site_a.root.join("notes.txt"), b"written on a");

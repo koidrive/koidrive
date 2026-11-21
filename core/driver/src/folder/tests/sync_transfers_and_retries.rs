@@ -135,6 +135,7 @@ fn a_remote_file_becomes_one_effect_and_its_observation_changes_nothing() {
 
 #[test]
 fn a_download_the_server_puts_off_for_an_hour_shows_in_the_status_until_it_goes_through() {
+    clock::freeze();
     let mut remote = Remote::new();
     let (site_a, mut a) = linked(&mut remote, "a");
     a.create(&mut remote, &site_a.root.join("notes.txt"), b"written on a");
@@ -170,11 +171,7 @@ fn a_download_the_server_puts_off_for_an_hour_shows_in_the_status_until_it_goes_
         .wait
         .expect("the wait is typed in the status");
     assert_eq!(wait.kind, WaitKind::Quota);
-    let now_ms = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_millis() as i64;
-    assert!(wait.until_ms.is_some_and(|at| at > now_ms + 3_500_000), "{wait:?}");
+    assert_eq!(wait.until_ms, Some(clock::unix_ms() as i64 + 3_600_000));
 
     *remote.chunks.refusal.lock().unwrap() = None;
     assert_eq!(b.run(&mut remote), ["stage again"]);
@@ -360,6 +357,7 @@ fn a_tree_listing_put_off_for_an_hour_shows_in_the_status_and_one_put_off_for_a_
 
 #[test]
 fn a_quota_wait_of_a_second_is_typed_in_the_status_without_a_problem() {
+    clock::freeze();
     let mut remote = Remote::new();
     let (site_a, mut a) = linked(&mut remote, "a");
     a.create(&mut remote, &site_a.root.join("one.txt"), b"one");
@@ -383,11 +381,7 @@ fn a_quota_wait_of_a_second_is_typed_in_the_status_without_a_problem() {
         .wait
         .expect("a wait of a second is typed in the status");
     assert_eq!(wait.kind, WaitKind::Quota);
-    let now_ms = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_millis() as i64;
-    assert!(wait.until_ms.is_some_and(|at| at <= now_ms + 1_000), "{wait:?}");
+    assert_eq!(wait.until_ms, Some(clock::unix_ms() as i64 + 1_000));
 
     b.run(&mut remote);
     assert_eq!(b.folder.view().wait, None);
@@ -774,7 +768,10 @@ fn a_node_the_server_refused_is_committed_again_after_the_scan_of_the_next_start
 fn an_effect_that_failed_at_a_name_taken_for_a_moment_is_planned_again_after_a_wait() {
     let mut remote = Remote::new();
     let (site, mut b, first) = failed_at_a_taken_name(&mut remote);
-    assert!(first <= Duration::from_secs(1), "{first:?}");
+    assert!(
+        (Duration::from_millis(500)..=Duration::from_secs(1)).contains(&first),
+        "{first:?}"
+    );
 
     // The user's file is gone before the observer saw it, so L is as it was and the engine plans the same effect.
     fs::remove_file(site.root.join("notes.txt")).unwrap();
@@ -788,7 +785,10 @@ fn an_effect_that_failed_at_a_name_taken_for_a_moment_is_planned_again_after_a_w
         panic!("the same effect is planned again");
     };
     let second = take_the_name_and_apply(&remote, &site, &mut b, pending);
-    assert!(second >= Duration::from_secs(1), "{second:?}");
+    assert!(
+        (Duration::from_secs(1)..=Duration::from_secs(2)).contains(&second),
+        "{second:?}"
+    );
 
     fs::remove_file(site.root.join("notes.txt")).unwrap();
     let step = b.folder.retry();
