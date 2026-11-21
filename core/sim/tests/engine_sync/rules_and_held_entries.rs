@@ -1774,3 +1774,26 @@ fn moving_in_an_entry_another_device_brought_in_and_took_out_again_makes_the_dis
     device.acted_on(arrival);
     assert!(revive(&device, &discarded, &kept, &BTreeSet::new()).contains(&"h".into()));
 }
+
+#[test]
+fn renaming_an_entry_another_device_adds_between_the_answer_and_the_build_changes_that_entry_alone()
+{
+    for between in [true, false] {
+        let (mut device, kept, discarded) = a_file_in_a_taken_along_server_folder();
+        let (s, arrival): (NodeId, NodeId) = ("s".into(), "arrival".into());
+        let at_answer = device.on_server();
+        if between {
+            an_arrival(&mut device, "s");
+            device.note_taken_along_from([&s], &at_answer);
+        } else {
+            device.note_taken_along_from([&s], &at_answer);
+            an_arrival(&mut device, "s");
+        }
+        place_dir(&mut device, "arrival", Some(("s", "arrival")), None);
+        let synced = device.trees.remote().live(&arrival).cloned();
+        device.trees.set_synced(arrival.clone(), synced);
+        place_dir(&mut device, "arrival", Some(("s", "renamed")), None);
+        device.acted_on(arrival);
+        assert!(!acted_below(&device, &s, &kept, &discarded), "{between}");
+    }
+}

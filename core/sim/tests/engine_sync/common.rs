@@ -621,12 +621,19 @@ impl Device {
         folders: impl IntoIterator<Item = &'a NodeId>,
         on_server: &BTreeMap<NodeId, NodeId>,
     ) {
-        for folder in folders {
+        let folders: BTreeSet<NodeId> = folders.into_iter().cloned().collect();
+        for folder in &folders {
             (self.on_server_when_taken_along).insert(folder.clone(), on_server.clone());
         }
+        self.note_arrivals_in(self.on_server().into_keys().collect(), &folders);
     }
 
     fn note_arrivals(&mut self, nodes: BTreeSet<NodeId>) {
+        let folders = self.on_server_when_taken_along.keys().cloned().collect();
+        self.note_arrivals_in(nodes, &folders);
+    }
+
+    fn note_arrivals_in(&mut self, nodes: BTreeSet<NodeId>, folders: &BTreeSet<NodeId>) {
         let inside =
             |from: &NodeId, parent: &dyn Fn(&NodeId) -> Option<NodeId>, folder: &NodeId| {
                 let mut seen = BTreeSet::new();
@@ -657,7 +664,9 @@ impl Device {
             }
         }
         let mut arrived = Vec::new();
-        for (folder, baseline) in &self.on_server_when_taken_along {
+        for (folder, baseline) in
+            (self.on_server_when_taken_along.iter()).filter(|(folder, _)| folders.contains(*folder))
+        {
             for entry in came.iter().filter(|entry| {
                 inside(entry, &remote, folder)
                     && !inside(entry, &|at| baseline.get(at).cloned(), folder)
