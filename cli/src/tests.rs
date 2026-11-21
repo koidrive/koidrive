@@ -3072,3 +3072,42 @@ async fn readers_of_the_status_find_a_linked_folder_whose_name_is_not_utf8() {
         ]
     );
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+fn the_option_koi_zeroes_is_mimallocs_purge_delay() {
+    const CHILD: &str = "KOIDRIVE_TEST_PURGE_DELAY_CHILD";
+    if std::env::var_os(CHILD).is_some() {
+        assert_eq!(
+            unsafe { libmimalloc_sys::mi_option_get(crate::PURGE_DELAY) },
+            4321
+        );
+        return;
+    }
+    let mut child = std::process::Command::new(std::env::current_exe().unwrap());
+    child.args([
+        "--exact",
+        "tests::the_option_koi_zeroes_is_mimallocs_purge_delay",
+        "--nocapture",
+    ]);
+    for (name, _) in std::env::vars_os() {
+        if name
+            .as_encoded_bytes()
+            .get(..9)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case(b"MIMALLOC_"))
+        {
+            child.env_remove(name);
+        }
+    }
+    let output = child
+        .env(CHILD, "1")
+        .env("MIMALLOC_PURGE_DELAY", "4321")
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success() && stdout.contains("1 passed"),
+        "{stdout}{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
