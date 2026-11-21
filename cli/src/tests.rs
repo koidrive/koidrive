@@ -3076,8 +3076,20 @@ async fn readers_of_the_status_find_a_linked_folder_whose_name_is_not_utf8() {
 #[cfg(target_os = "linux")]
 #[test]
 fn the_option_koi_zeroes_is_mimallocs_purge_delay() {
-    assert_eq!(
-        unsafe { libmimalloc_sys::mi_option_get(crate::PURGE_DELAY) },
-        1000
-    );
+    use std::ffi::{CStr, c_char, c_void};
+
+    unsafe extern "C" {
+        fn mi_options_print_out(out: libmimalloc_sys::mi_output_fun, arg: *mut c_void);
+    }
+    unsafe extern "C" fn collect(text: *const c_char, printed: *mut c_void) {
+        let printed = unsafe { &mut *printed.cast::<String>() };
+        printed.push_str(&unsafe { CStr::from_ptr(text) }.to_string_lossy());
+    }
+
+    let before = unsafe { libmimalloc_sys::mi_option_get(crate::PURGE_DELAY) };
+    unsafe { libmimalloc_sys::mi_option_set(crate::PURGE_DELAY, 4321) };
+    let mut printed = String::with_capacity(1 << 16);
+    unsafe { mi_options_print_out(Some(collect), (&raw mut printed).cast()) };
+    unsafe { libmimalloc_sys::mi_option_set(crate::PURGE_DELAY, before) };
+    assert!(printed.contains("option 'purge_delay': 4321 "), "{printed}");
 }

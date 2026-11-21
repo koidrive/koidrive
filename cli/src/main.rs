@@ -13,8 +13,7 @@
 static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 /// mimalloc 3.3's `mi_option_purge_delay`, which libmimalloc-sys 0.1.49 doesn't name. `main` sets it to 0, so freed
-/// pages go back to the system at once instead of after a second: on a 200k-entry first sync that holds about 9%
-/// less memory at about the same speed.
+/// pages go back to the system at once.
 #[cfg(target_os = "linux")]
 const PURGE_DELAY: libmimalloc_sys::mi_option_t = 15;
 
