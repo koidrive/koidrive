@@ -3764,6 +3764,7 @@ impl Trees {
             return;
         };
         self.readmitted_from.remove(id);
+        self.born_as_temp.remove(id);
         match node.parked {
             false => self.l_names.remove(id, &node.shape),
             true => self.l_parked.remove(id, &node.shape),

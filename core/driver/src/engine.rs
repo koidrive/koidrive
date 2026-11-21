@@ -6204,6 +6204,31 @@ mod tests {
     }
 
     #[test]
+    fn a_temp_file_another_entry_displaces_or_a_scan_misses_loads_again_unmarked() {
+        for missed in [false, true] {
+            let (dir, mut store) = store();
+            let mut engine = store.transaction(|tx| Engine::load(tx, ROOT)).unwrap();
+            engine.root_volume = Some(VolumeId::Uuid([1; 16]));
+            let file_id = FileId::stored(2, Some(10), Some(20));
+            engine.observe(&[created("~WRD0000.tmp", file_id, false, 7)], 0);
+            let file = local_at(&engine.trees, Path::new("~WRD0000.tmp")).unwrap();
+            assert!(engine.trees.born_as_temp(&file).is_some());
+            match missed {
+                true => {
+                    synced_everywhere(&mut engine);
+                    engine.trees.miss_local(&file);
+                }
+                false => engine.trees.displace_local(&file),
+            }
+            store.transaction(|tx| engine.checkpoint(tx)).unwrap();
+            drop(store);
+            let mut store = Store::open(dir.path().join("store.sqlite")).unwrap();
+            let engine = store.transaction(|tx| Engine::load(tx, ROOT)).unwrap();
+            assert_eq!(engine.trees.born_as_temp(&file), None, "missed {missed}");
+        }
+    }
+
+    #[test]
     fn a_new_file_at_the_path_of_a_displaced_file_is_a_node_of_its_own() {
         let (_dir, mut engine) = mapper();
         engine.trees.rules_scanned();
