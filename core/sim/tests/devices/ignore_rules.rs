@@ -248,11 +248,7 @@ fn a_folder_made_at_the_name_l_keeps_for_a_file_moved_into_an_excluded_folder_wa
 }
 
 #[test]
-fn a_folder_made_at_the_name_of_a_file_renamed_to_an_excluded_name_waits_with_what_it_holds() {
-    let _red = expect_red(
-        Check::NameLeftOut,
-        "device 0 is quiet, but nodes [\"01a1c2c0-39a0-7504-af4d-4d6a531020af\", \"01a1c2c0-39a0-796a-8df8-fb6da7904e2f\"] wait for names that entries its rules leave out hold",
-    );
+fn a_folder_made_at_the_name_of_a_file_renamed_to_an_excluded_name_syncs_with_what_it_holds() {
     let phases = [
         vec![(0, file("\u{c9}"))],
         vec![
