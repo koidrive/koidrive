@@ -3091,7 +3091,11 @@ fn the_option_koi_zeroes_is_mimallocs_purge_delay() {
         "--nocapture",
     ]);
     for (name, _) in std::env::vars_os() {
-        if name.to_string_lossy().starts_with("MIMALLOC_") {
+        if name
+            .as_encoded_bytes()
+            .get(..9)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case(b"MIMALLOC_"))
+        {
             child.env_remove(name);
         }
     }
