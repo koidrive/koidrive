@@ -1,4 +1,4 @@
-4812
+5701
 # The RFC 0029 journal is new, so no test on main covers it. Redundant tests were merged and each kept test turned red under at least one mutant of the code it covers.
 # Engine journal unit tests: the §5.1 row states (a change over a sent or held row, a value returning to the one in flight), each §5.2 result holding, superseding or ending rows, the bounded history, delete seen lists, replays after a loss, the journal generator's own stream, and the legacy id vectors.
 # Engine intents: the row each scan, create, edit, move and delete writes; commits naming intents only when the server announces them; every result kind (APPLIED, APPLIED_RENAMED, SUPERSEDED, CONFLICT_COPY, MERGED_INTO, ID_EXISTS); compact held rows written out unchanged on every trigger and through the store; the backfill of a store from an earlier release; the first listing that names intents.
@@ -25,3 +25,4 @@
 # Engine recovery: a Delete answer to a DeletedOnThisDevice question writes no status row for an entry the rules leave out, which only the answer path reaches.
 # Engine kept folders: a folder kept after a purge for entries the rules leave out stays observed when the rules are read again, which cc 713c2efdd8a8 stopped catching once the recheck of left folders landed.
 # Main tests added after the branch point (#926, #961) set the intents field each RemoteNode carries.
+# CodeRabbit follow-ups: each proven finding reachable with field_intents off keeps the test that proved it, renamed and mutant-checked: a superseded edit keeps the content S took, the journal store and its abandoned read, journal rows, history and seen evidence after results, backfill and S updates, the intents oracle settling only what a device saw, the fixtures and harness checks those findings named, and the clock visiting only lapsed absent nodes.
