@@ -2806,7 +2806,11 @@ fn a_copy_a_rule_added_here_excludes_where_it_sits_after_its_removal_was_planned
     let keep = site.root.join("keep.txt");
     assert_eq!(fs::read(&keep).unwrap(), b"keep");
 
-    fs::rename(site_a.root.join("keep.txt"), site_a.root.join("archive/keep.txt")).unwrap();
+    fs::rename(
+        site_a.root.join("keep.txt"),
+        site_a.root.join("archive/keep.txt"),
+    )
+    .unwrap();
     a.scan_until(|a| !a.work.is_empty());
     a.run(&mut remote);
     b.pull(&remote);
@@ -2820,7 +2824,15 @@ fn a_copy_a_rule_added_here_excludes_where_it_sits_after_its_removal_was_planned
 
     let trash: Vec<_> = trashed(&site.root)
         .into_iter()
-        .map(|name| fs::read(site.root.join(koidrive_fs::PRIVATE_DIR).join("trash").join(name)).unwrap())
+        .map(|name| {
+            fs::read(
+                site.root
+                    .join(koidrive_fs::PRIVATE_DIR)
+                    .join("trash")
+                    .join(name),
+            )
+            .unwrap()
+        })
         .collect();
     assert_eq!(
         (fs::read(&keep).ok(), trash),
