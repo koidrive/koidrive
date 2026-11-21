@@ -19,6 +19,7 @@ fn a_store_from_before_kept_folders_were_recorded_opens_with_none_recorded() {
     before.trees.kept_folders.clear();
     before.trees.kept_entries.clear();
     before.trees.kept_nodes.clear();
+    before.trees.kept_paths.clear();
     assert!(!after.trees.kept_folders.is_empty());
     assert!(!after.trees.kept_entries.is_empty());
     assert!(!after.trees.kept_nodes.is_empty());

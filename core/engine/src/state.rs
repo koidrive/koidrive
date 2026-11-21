@@ -108,6 +108,24 @@ pub struct KeptEntries {
     pub causes: BTreeMap<String, KeptCause>,
 }
 
+/// What [`TreesState::kept_folders`], [`TreesState::kept_entries`] and [`TreesState::kept_nodes`] held for one entry
+/// before a relink forgot every local ID. It is held by the entry's names from the root, and the first link gives it back
+/// to the node L holds at that path (section 5.10).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct KeptAtPath {
+    pub kept_folders: bool,
+    pub kept_entries: Option<KeptEntries>,
+    pub kept_nodes: Option<KeptNode>,
+}
+
+/// A kept node of a [`KeptAtPath`] with its [`KeptCause`], or none while no rule left it out at its place.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct KeptNode {
+    pub cause: Option<KeptCause>,
+}
+
 /// The rules that left a kept entry out at its place at the last settle with every rule known: the path, and the rules in
 /// force in each folder from the root to the entry's. The entry is released only when the rules let it in with every
 /// change another device made since put back as it was, whether or not Koidrive was running when the person made
@@ -374,6 +392,9 @@ pub struct TreesState {
     /// until the person changes the rules so that rules that excluded it there include it. Each carries its
     /// [`KeptCause`], or none while no rule left it out at its place.
     pub kept_nodes: BTreeMap<NodeId, Option<KeptCause>>,
+    /// The kept state a relink carried by path, until the first link gives it to the nodes L holds there and ends
+    /// every record, found or not.
+    pub kept_paths: BTreeMap<Vec<String>, KeptAtPath>,
     /// The nodes S holds for which R took a record of another device's commit that moved `edit_rev` or
     /// `meta_edit_rev` since S took its shape, a change undone by a later record included. S does not take such a
     /// node's shape past a record that carries no user's change, so a delete never passes over a change its user did not
@@ -579,6 +600,7 @@ pub struct TreesChanges {
     pub kept_folders: SetChanges<NodeId>,
     pub kept_entries: MapChanges<NodeId, KeptEntries>,
     pub kept_nodes: MapChanges<NodeId, Option<KeptCause>>,
+    pub kept_paths: MapChanges<Vec<String>, KeptAtPath>,
     pub unseen_changes: SetChanges<NodeId>,
     pub replaced_versions: MapChanges<NodeId, Vec<String>>,
     pub content_provenance: MapChanges<NodeId, ContentProvenance>,
@@ -631,6 +653,7 @@ impl TreesChanges {
             kept_folders,
             kept_entries,
             kept_nodes,
+            kept_paths,
             unseen_changes,
             replaced_versions,
             content_provenance,
@@ -679,6 +702,7 @@ impl TreesChanges {
             kept_folders: set_changes(&before.kept_folders, kept_folders),
             kept_entries: map_changes(&before.kept_entries, kept_entries),
             kept_nodes: map_changes(&before.kept_nodes, kept_nodes),
+            kept_paths: map_changes(&before.kept_paths, kept_paths),
             unseen_changes: set_changes(&before.unseen_changes, unseen_changes),
             replaced_versions: map_changes(&before.replaced_versions, replaced_versions),
             content_provenance: map_changes(&before.content_provenance, content_provenance),

@@ -562,6 +562,16 @@ impl Tx<'_> {
                 .kept_nodes
                 .insert(NodeId::from(row.get::<_, String>(0)?), cause);
         }
+        let mut stmt = self.0.prepare_cached("SELECT path, kept FROM kept_paths")?;
+        let mut rows = stmt.query([])?;
+        while let Some(row) = next_row!(rows, abandoned) {
+            let path: String = row.get(0)?;
+            let bytes: Vec<u8> = row.get(1)?;
+            let kept = serde_json::from_slice(&bytes)
+                .map_err(|error| invalid(format!("kept path: {error}")))?;
+            let path = path.split('/').map(str::to_owned).collect();
+            state.trees.kept_paths.insert(path, kept);
+        }
         let mut stmt = self
             .0
             .prepare_cached("SELECT node_id FROM unseen_changes")?;
@@ -864,6 +874,7 @@ impl Tx<'_> {
             kept_folders,
             kept_entries,
             kept_nodes,
+            kept_paths,
             unseen_changes,
             replaced_versions,
             content_provenance,
@@ -1164,6 +1175,25 @@ impl Tx<'_> {
                 }
                 None => {
                     remove.execute([node])?;
+                }
+            }
+        }
+        let mut remove = self
+            .0
+            .prepare_cached("DELETE FROM kept_paths WHERE path = ?1")?;
+        let mut put = self
+            .0
+            .prepare_cached("INSERT OR REPLACE INTO kept_paths (path, kept) VALUES (?1, ?2)")?;
+        for (path, kept) in kept_paths {
+            let path = path.join("/");
+            match kept {
+                Some(kept) => {
+                    let bytes = serde_json::to_vec(kept)
+                        .map_err(|error| invalid(format!("kept path: {error}")))?;
+                    put.execute(params![path, bytes])?;
+                }
+                None => {
+                    remove.execute([path])?;
                 }
             }
         }

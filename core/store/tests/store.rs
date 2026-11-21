@@ -15,9 +15,9 @@ use koidrive_engine::question::{
 };
 use koidrive_engine::restore::{Outcome, Rejection, Resolved, RestoreIntent, SplitRestore};
 use koidrive_engine::state::{
-    Agreed, AnsweredRules, CommitsState, EffectsState, FinishOrigin, GivenUp, KeptCause,
-    KeptEntries, KeptRules, KeptRulesFile, LostPosition, MovedHere, PendingFinish, RenamedOver,
-    SyncedPosition, TempBirth, TreesState,
+    Agreed, AnsweredRules, CommitsState, EffectsState, FinishOrigin, GivenUp, KeptAtPath,
+    KeptCause, KeptEntries, KeptNode, KeptRules, KeptRulesFile, LostPosition, MovedHere,
+    PendingFinish, RenamedOver, SyncedPosition, TempBirth, TreesState,
 };
 use koidrive_engine::tree::{
     ContentKey, FileIdentity, Kind, LocalNode as EngineLocalNode, NodeId, RemoteNode,
@@ -1475,6 +1475,35 @@ fn engine_state() -> EngineState {
             kept_nodes: BTreeMap::from([
                 ("n1".into(), None),
                 ("n2".into(), Some(kept_cause(b"*.env\n"))),
+            ]),
+            kept_paths: BTreeMap::from([
+                (
+                    vec!["app".into()],
+                    KeptAtPath {
+                        kept_folders: true,
+                        kept_entries: Some(KeptEntries {
+                            names: [".env".into()].into(),
+                            ..Default::default()
+                        }),
+                        kept_nodes: None,
+                    },
+                ),
+                (
+                    vec!["app".into(), "settings.txt".into()],
+                    KeptAtPath {
+                        kept_nodes: Some(KeptNode { cause: None }),
+                        ..Default::default()
+                    },
+                ),
+                (
+                    vec!["app".into(), ".env".into()],
+                    KeptAtPath {
+                        kept_nodes: Some(KeptNode {
+                            cause: Some(kept_cause(b".env\n")),
+                        }),
+                        ..Default::default()
+                    },
+                ),
             ]),
             unseen_changes: nodes(["u"]),
             resends: nodes(["u"]),

@@ -17,9 +17,9 @@ use crate::provenance::Provenances;
 use crate::question::Frozen;
 use crate::state::{
     Agreed, AnsweredRules, ContentProvenance, ContentValue, ContentVersion, FinishOrigin,
-    KeptCause, KeptEntries, KeptRules, KeptRulesFile, LostPosition, MoveHistory, MovePosition,
-    MovedHere, PendingFinish, RenamedOver, StateError, SyncedPosition, TempBirth, TreesChanges,
-    TreesState, made_over,
+    KeptAtPath, KeptCause, KeptEntries, KeptNode, KeptRules, KeptRulesFile, LostPosition,
+    MoveHistory, MovePosition, MovedHere, PendingFinish, RenamedOver, StateError, SyncedPosition,
+    TempBirth, TreesChanges, TreesState, made_over,
 };
 use crate::tracked::{TrackedMap, TrackedSet};
 use crate::tree::{
@@ -677,6 +677,7 @@ pub struct Trees {
     kept_folders: TrackedSet<NodeId>,
     kept_entries: TrackedMap<NodeId, KeptEntries>,
     kept_nodes: TrackedMap<NodeId, Option<KeptCause>>,
+    kept_paths: TrackedMap<Vec<String>, KeptAtPath>,
     unseen_changes: TrackedSet<NodeId>,
     replaced_versions: TrackedMap<NodeId, Vec<String>>,
     content_provenance: Provenances,
@@ -810,6 +811,7 @@ impl Trees {
             kept_folders: TrackedSet::default(),
             kept_entries: TrackedMap::default(),
             kept_nodes: TrackedMap::default(),
+            kept_paths: TrackedMap::default(),
             unseen_changes: TrackedSet::default(),
             replaced_versions: TrackedMap::default(),
             content_provenance: Provenances::default(),
@@ -4996,6 +4998,81 @@ impl Trees {
         };
     }
 
+    /// Carries what `before` kept of each entry by the entry's names from the root, since a relink forgets every local
+    /// ID, together with the records an earlier relink carried that no first link has given back yet (section 5.10).
+    pub fn carry_kept_paths(&mut self, before: &Trees) {
+        let mut carried = before.kept_paths.to_map();
+        for id in before.kept_folders.iter() {
+            if let Some(path) = before.local_names(id) {
+                carried.entry(path).or_default().kept_folders = true;
+            }
+        }
+        for (id, entries) in before.kept_entries.iter() {
+            if let Some(path) = before.local_names(id) {
+                carried.entry(path).or_default().kept_entries = Some(entries.clone());
+            }
+        }
+        for (id, cause) in before.kept_nodes.iter() {
+            if let Some(path) = before.local_names(id) {
+                carried.entry(path).or_default().kept_nodes = Some(KeptNode {
+                    cause: cause.clone(),
+                });
+            }
+        }
+        for (path, kept) in carried {
+            self.kept_paths.insert(path, kept);
+        }
+    }
+
+    pub(crate) fn give_back_kept_paths(&mut self) {
+        for (path, kept) in self.kept_paths.to_map() {
+            self.kept_paths.remove(&path);
+            let Some(id) = self.local_at(&path) else {
+                continue;
+            };
+            let folder = (self.l.get(&id)).is_some_and(|node| node.shape.kind == Kind::Dir);
+            if kept.kept_folders {
+                self.kept_folders.insert(id.clone());
+            }
+            if let Some(entries) = kept.kept_entries.filter(|_| folder) {
+                self.kept_entries.insert(id.clone(), entries);
+            }
+            if let Some(node) = kept.kept_nodes {
+                self.kept_nodes.insert(id.clone(), node.cause);
+            }
+            self.mark(&id);
+        }
+    }
+
+    fn local_names(&self, id: &NodeId) -> Option<Vec<String>> {
+        let mut names = Vec::new();
+        let mut current = id;
+        for _ in 0..=self.l.len() {
+            if *current == self.l.root {
+                names.reverse();
+                return (!names.is_empty()).then_some(names);
+            }
+            let node = self.l.get(current)?;
+            names.push(node.shape.name.clone());
+            current = &node.shape.parent;
+        }
+        None
+    }
+
+    fn local_at(&self, path: &[String]) -> Option<NodeId> {
+        let mut current = self.l.root.clone();
+        for name in path {
+            let mut holders = (self.local_holders(&current, name))
+                .filter(|id| self.l.get(id).is_some_and(|node| node.shape.name == *name));
+            let found = holders.next()?.clone();
+            if holders.next().is_some() {
+                return None;
+            }
+            current = found;
+        }
+        Some(current)
+    }
+
     pub(crate) fn rekey_kept_entries(&mut self, from: &NodeId, to: &NodeId) {
         if let Some(kept) = self.kept_entries.remove(from) {
             self.kept_entries.insert(to.to_owned(), kept);
@@ -7962,6 +8039,7 @@ impl Trees {
             kept_folders: self.kept_folders.to_set(),
             kept_entries: self.kept_entries.to_map(),
             kept_nodes: self.kept_nodes.to_map(),
+            kept_paths: self.kept_paths.to_map(),
             unseen_changes: self.unseen_changes.to_set(),
             replaced_versions: self.replaced_versions.to_map(),
             content_provenance: self.content_provenance.state(&self.r),
@@ -8025,6 +8103,7 @@ impl Trees {
             kept_folders,
             kept_entries,
             kept_nodes,
+            kept_paths,
             unseen_changes,
             replaced_versions,
             content_provenance,
@@ -8110,6 +8189,7 @@ impl Trees {
             kept_folders: kept_folders.take_changes(),
             kept_entries: kept_entries.take_changes(),
             kept_nodes: kept_nodes.take_changes(),
+            kept_paths: kept_paths.take_changes(),
             unseen_changes: unseen_changes.take_changes(),
             replaced_versions: replaced_versions.take_changes(),
             content_provenance: content_provenance.take_changes(r),
@@ -8363,6 +8443,7 @@ impl Trees {
             kept_folders,
             kept_entries,
             kept_nodes,
+            kept_paths,
             unseen_changes,
             replaced_versions,
             content_provenance,
@@ -8425,6 +8506,7 @@ impl Trees {
         self.kept_folders = kept_folders.into();
         self.kept_entries = kept_entries.into();
         self.kept_nodes = kept_nodes.into();
+        self.kept_paths = kept_paths.into();
         self.unseen_changes = unseen_changes.into();
         self.replaced_versions = replaced_versions.into();
         self.content_provenance.restore(content_provenance, &self.r);
