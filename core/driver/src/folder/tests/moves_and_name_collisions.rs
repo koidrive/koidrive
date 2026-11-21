@@ -900,8 +900,7 @@ fn an_edit_from_another_device_during_the_wait_is_kept_beside_the_file_written_a
             fs::write(site.root.join("docs/report.txt"), b"version two").unwrap();
         }
         for _ in 0..6 {
-            while let Some(at) =
-                (a.work.iter()).position(|work| !matches!(work, Work::RetryAt(_)))
+            while let Some(at) = (a.work.iter()).position(|work| !matches!(work, Work::RetryAt(_)))
             {
                 let work = a.work.remove(at).unwrap();
                 a.perform(work, &mut remote).unwrap();
