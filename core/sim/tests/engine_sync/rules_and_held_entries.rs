@@ -1863,7 +1863,7 @@ fn renames_after_sync(device: &mut Device, id: &str, parent: &str) {
 
 #[test]
 fn renaming_an_entry_this_device_moved_in_after_another_device_changed_it_in_place_changes_the_folder()
-{
+ {
     for edited_by_another in [false, true] {
         let (mut device, kept, discarded) = a_file_in_a_taken_along_server_folder();
         let s: NodeId = "s".into();
@@ -1875,13 +1875,16 @@ fn renaming_an_entry_this_device_moved_in_after_another_device_changed_it_in_pla
         device.receive(&[a_dir_record("g", "s", 3)], true);
         device.note_taken_along_at_answer([&s], &answered);
         renames_after_sync(&mut device, "g", "s");
-        assert!(acted_below(&device, &s, &kept, &discarded), "{edited_by_another}");
+        assert!(
+            acted_below(&device, &s, &kept, &discarded),
+            "{edited_by_another}"
+        );
     }
 }
 
 #[test]
 fn renaming_an_entry_this_device_moved_in_after_another_device_edits_it_in_place_changes_the_folder()
-{
+ {
     let (mut device, kept, discarded) = a_file_in_a_taken_along_server_folder();
     let s: NodeId = "s".into();
     place_dir(&mut device, "g", Some(("s", "g")), Some(("root", "g")));

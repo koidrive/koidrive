@@ -645,8 +645,8 @@ impl Device {
         (at_answer, answered_at): &(BTreeMap<NodeId, NodeId>, u64),
     ) {
         let mut on_server = self.on_server();
-        for (id, _) in (self.placed.iter())
-            .filter(|(_, (by_other, at))| *by_other && at > answered_at)
+        for (id, _) in
+            (self.placed.iter()).filter(|(_, (by_other, at))| *by_other && at > answered_at)
         {
             match at_answer.get(id) {
                 Some(parent) => on_server.insert(id.clone(), parent.clone()),
@@ -718,7 +718,8 @@ impl Device {
             };
             if parent_before.as_ref() != Some(&remote.parent) {
                 self.placements += 1;
-                self.placed.insert(node.clone(), (!answered, self.placements));
+                self.placed
+                    .insert(node.clone(), (!answered, self.placements));
             }
             let Some(moved) = self.relocated.get_mut(&node) else {
                 continue;
