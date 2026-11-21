@@ -108,9 +108,7 @@ pub struct KeptEntries {
     pub causes: BTreeMap<String, KeptCause>,
 }
 
-/// What [`TreesState::kept_folders`], [`TreesState::kept_entries`] and [`TreesState::kept_nodes`] held for one entry
-/// before a relink forgot every local ID. It is held by the entry's names from the root, and the first link gives it back
-/// to the node L holds at that path (section 5.10).
+/// See [`TreesState::kept_paths`].
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct KeptAtPath {
@@ -119,7 +117,7 @@ pub struct KeptAtPath {
     pub kept_nodes: Option<KeptNode>,
 }
 
-/// A kept node of a [`KeptAtPath`] with its [`KeptCause`], or none while no rule left it out at its place.
+/// See [`TreesState::kept_nodes`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct KeptNode {
