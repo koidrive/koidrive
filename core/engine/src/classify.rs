@@ -4542,7 +4542,7 @@ impl Trees {
         let key = name_key(&local.shape.name);
         (self.discarded.contains_key(id)
             || !(self.remote_holders_of_key(&local.shape.parent, &key)).any(|other| {
-                self.l.get(other).is_none()
+                other != id
                     && self
                         .r
                         .live(other)

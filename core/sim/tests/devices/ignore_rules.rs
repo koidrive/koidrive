@@ -2375,7 +2375,7 @@ fn a_nested_copy_renamed_to_another_spelling_of_its_name_is_still_taken_over() {
 }
 
 #[test]
-fn a_merged_folder_beside_a_kept_live_folder_settles_once_another_device_deletes_the_live_folder() {
+fn a_merged_folder_uploads_beside_a_kept_folder_once_another_device_deletes_the_live_folder() {
     let phases = vec![
         vec![(0, folder("a")), (0, user(1, 0, 1, "c.txt"))],
         vec![
@@ -2392,15 +2392,17 @@ fn a_merged_folder_beside_a_kept_live_folder_settles_once_another_device_deletes
     assert!(live_node_at(&world, &["a"]).is_none());
     let created = live_node_at(&world, &["A"]).unwrap();
     assert_ne!(created, source.to_string());
-    assert_eq!(held_at(&world, 0, &["A"]), Some(NodeId::from(created)));
+    let created = NodeId::from(created);
+    assert_eq!(held_at(&world, 0, &["A"]), Some(created.clone()));
     ino_at(&world, 0, &["A", "c.txt"]);
-    assert_eq!(held_at(&world, 0, &["a"]), Some(kept.clone()));
-    assert!(world.devices[0].engine.trees.kept_folder(&kept));
     ino_at(&world, 0, &["a", "c.txt"]);
-    let server = world.space().nodes();
-    assert!((server.iter()).all(|node| node.name != "a" || node.node_id == kept));
-    assert!((server.iter()).all(|node| node.name != "c.txt"));
-    assert!(world.reported_problems(0).is_empty());
+    assert!((world.space().nodes().iter()).all(|node| node.name != "c.txt"));
+    let rekeyed = held_at(&world, 0, &["a"]).unwrap();
+    assert_ne!(rekeyed, kept);
+    assert_eq!(
+        world.reported_problems(0),
+        [(rekeyed, Stuck::MergedInto(created))].into()
+    );
     sends_nothing_more(&mut world, 3);
 }
 

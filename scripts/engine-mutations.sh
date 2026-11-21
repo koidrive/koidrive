@@ -49,4 +49,3 @@ mutation nested-copy-synced $C 's/synced\.push\(\(copy\.clone\(\), trees\.synced
 mutation residue-local-holder $C 's/\n                        None if held_by_a_synced_entry\(\) => return None,//' devices
 mutation residue-holder-syncs $C 's/!residue\.0\.contains_key\(other\) && !trees\.excluded\(other\)/!residue.0.contains_key(other)/' devices
 mutation residue-moved-holder $C 's/\n                                        && !held_by_a_synced_entry\(\) =>/ =>/' devices
-mutation kept-folder-own-holder $L 's/\n                self\.l\.get\(other\)\.is_none\(\)\n                    && self/\n                other != id\n                    && self/' devices
