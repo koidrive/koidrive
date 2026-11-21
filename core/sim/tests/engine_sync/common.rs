@@ -1919,13 +1919,15 @@ fn what_the_user_did_below(device: &Device, folder: &NodeId) -> &'static str {
             if node == *folder {
                 return true;
             }
-            at = trees.local().get(&node).map(|local| local.shape.parent.clone());
+            at = trees
+                .local()
+                .get(&node)
+                .map(|local| local.shape.parent.clone());
         }
         false
     };
     let arrived = |entry: &NodeId| {
-        (device.stays.get(entry))
-            .is_some_and(|stays| stays.values().any(|(by_other, _)| *by_other))
+        (device.stays.get(entry)).is_some_and(|stays| stays.values().any(|(by_other, _)| *by_other))
     };
     let taken_out: Vec<&NodeId> = (device.removed_from.iter())
         .filter(|(_, from)| reaches(Some(from)))
@@ -1935,7 +1937,10 @@ fn what_the_user_did_below(device: &Device, folder: &NodeId) -> &'static str {
         .filter(|entry| reaches(trees.local().get(entry).map(|local| &local.shape.parent)))
         .chain(taken_out.iter().copied())
         .collect();
-    if taken_out.iter().any(|entry| device.kept_back.contains(*entry)) {
+    if taken_out
+        .iter()
+        .any(|entry| device.kept_back.contains(*entry))
+    {
         "kept back an entry"
     } else if changed.iter().any(|entry| arrived(entry)) {
         "changed an entry another device brought in"
