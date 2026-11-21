@@ -17,9 +17,9 @@ use crate::provenance::Provenances;
 use crate::question::Frozen;
 use crate::state::{
     Agreed, AnsweredRules, ContentProvenance, ContentValue, ContentVersion, FinishOrigin,
-    KeptCause, KeptEntries, KeptRules, KeptRulesFile, LostPosition, MoveHistory, MovePosition,
-    MovedHere, PendingFinish, RenamedOver, StateError, SyncedPosition, TempBirth, TreesChanges,
-    TreesState, made_over,
+    KeptAtPath, KeptCause, KeptEntries, KeptNode, KeptRules, KeptRulesFile, LostPosition,
+    MoveHistory, MovePosition, MovedHere, PendingFinish, RenamedOver, StateError, SyncedPosition,
+    TempBirth, TreesChanges, TreesState, made_over,
 };
 use crate::tracked::{TrackedMap, TrackedSet};
 use crate::tree::{
@@ -148,6 +148,12 @@ fn below<N: Node>(tree: &Tree<N>, id: &NodeId, folders: &CountedSet<NodeId>) -> 
         }
     }
     false
+}
+
+enum LocalAt {
+    Found(NodeId),
+    Unlisted,
+    Gone,
 }
 
 fn excluded(matcher: &Matcher, path: &[&str], kinds: &[Kind]) -> bool {
@@ -677,6 +683,7 @@ pub struct Trees {
     kept_folders: TrackedSet<NodeId>,
     kept_entries: TrackedMap<NodeId, KeptEntries>,
     kept_nodes: TrackedMap<NodeId, Option<KeptCause>>,
+    kept_paths: TrackedMap<Vec<String>, KeptAtPath>,
     unseen_changes: TrackedSet<NodeId>,
     replaced_versions: TrackedMap<NodeId, Vec<String>>,
     content_provenance: Provenances,
@@ -810,6 +817,7 @@ impl Trees {
             kept_folders: TrackedSet::default(),
             kept_entries: TrackedMap::default(),
             kept_nodes: TrackedMap::default(),
+            kept_paths: TrackedMap::default(),
             unseen_changes: TrackedSet::default(),
             replaced_versions: TrackedMap::default(),
             content_provenance: Provenances::default(),
@@ -4996,6 +5004,139 @@ impl Trees {
         };
     }
 
+    /// Carries what `before` kept of each entry by the entry's names from the root, since a relink forgets every local
+    /// ID, together with the records an earlier relink carried that no first link has given back yet (section 5.10).
+    pub fn carry_kept_paths(&mut self, before: &Trees) {
+        let mut carried: BTreeMap<Vec<String>, KeptAtPath> = (before.kept_paths.iter())
+            .map(|(path, kept)| {
+                let kept = KeptAtPath {
+                    waits_for_scan: false,
+                    ..kept.clone()
+                };
+                (path.clone(), kept)
+            })
+            .collect();
+        for id in before.kept_folders.iter() {
+            if let Some(path) = before.local_names(id) {
+                carried.entry(path).or_default().kept_folders = true;
+            }
+        }
+        for (id, entries) in before.kept_entries.iter() {
+            if let Some(path) = before.local_names(id) {
+                carried.entry(path).or_default().kept_entries = Some(entries.clone());
+            }
+        }
+        for (id, cause) in before.kept_nodes.iter() {
+            if let Some(path) = before.local_names(id) {
+                carried.entry(path).or_default().kept_nodes = Some(KeptNode {
+                    cause: cause.clone(),
+                });
+            }
+        }
+        for (path, kept) in carried {
+            self.kept_paths.insert(path, kept);
+        }
+    }
+
+    pub(crate) fn give_back_kept_paths(&mut self, at_first_link: bool) {
+        let mut folders = Vec::new();
+        for (path, kept) in self.kept_paths.to_map() {
+            if !at_first_link && !kept.waits_for_scan {
+                continue;
+            }
+            let at = match self.rules_known {
+                true => self.local_at(&path),
+                false => LocalAt::Unlisted,
+            };
+            let id = match at {
+                LocalAt::Found(id) => id,
+                LocalAt::Unlisted => {
+                    let waiting = KeptAtPath {
+                        waits_for_scan: true,
+                        ..kept
+                    };
+                    self.kept_paths.insert(path, waiting);
+                    continue;
+                }
+                LocalAt::Gone => {
+                    self.kept_paths.remove(&path);
+                    continue;
+                }
+            };
+            self.kept_paths.remove(&path);
+            let folder = (self.l.get(&id)).is_some_and(|node| node.shape.kind == Kind::Dir);
+            if kept.kept_folders {
+                self.kept_folders.insert(id.clone());
+                if folder {
+                    folders.push((path.len(), id.clone()));
+                }
+            }
+            if let Some(entries) = kept.kept_entries.filter(|_| folder) {
+                self.kept_entries.insert(id.clone(), entries);
+            }
+            if let Some(node) = kept.kept_nodes {
+                self.kept_nodes.insert(id.clone(), node.cause);
+            }
+            self.mark(&id);
+        }
+        folders.sort_by_key(|folder| std::cmp::Reverse(folder.0));
+        for (_, id) in folders {
+            let children: Vec<NodeId> = (self.local_children_placed_or_parked(&id))
+                .cloned()
+                .collect();
+            if (children.iter()).all(|child| self.left_rules_file(child) || self.excluded(child)) {
+                continue;
+            }
+            let rules_files: Vec<NodeId> = (children.into_iter())
+                .filter(|child| self.left_rules_file(child))
+                .collect();
+            self.kept_folders.remove(&id);
+            for child in rules_files {
+                self.kept_folders.remove(&child);
+            }
+        }
+    }
+
+    fn local_names(&self, id: &NodeId) -> Option<Vec<String>> {
+        let mut names = Vec::new();
+        let mut current = id;
+        for _ in 0..=self.l.len() {
+            if *current == self.l.root {
+                names.reverse();
+                return (!names.is_empty()).then_some(names);
+            }
+            let node = self.l.get(current)?;
+            names.push(node.shape.name.clone());
+            current = &node.shape.parent;
+        }
+        None
+    }
+
+    fn local_at(&self, path: &[String]) -> LocalAt {
+        let mut current = self.l.root.clone();
+        for (depth, name) in path.iter().enumerate() {
+            let mut holders = (self.local_holders(&current, name))
+                .filter(|id| self.l.get(id).is_some_and(|node| node.shape.name == *name));
+            match (holders.next(), holders.next()) {
+                (Some(found), None) => current = found.clone(),
+                (Some(_), Some(_)) => return LocalAt::Gone,
+                (None, _) => {
+                    let names: Vec<&str> = path[..=depth].iter().map(String::as_str).collect();
+                    let keys: Vec<String> = names.iter().map(|name| name_key(name)).collect();
+                    let unlisted = self.unknown_rules.contains(&current)
+                        || self.held(&current)
+                        || (self.awaiting_scan.iter()).any(|held| keys.starts_with(held))
+                        || excluded(&self.ignore, &names, &[Kind::File, Kind::Dir]);
+                    return match unlisted {
+                        true => LocalAt::Unlisted,
+                        false => LocalAt::Gone,
+                    };
+                }
+            }
+        }
+        LocalAt::Found(current)
+    }
+
     pub(crate) fn rekey_kept_entries(&mut self, from: &NodeId, to: &NodeId) {
         if let Some(kept) = self.kept_entries.remove(from) {
             self.kept_entries.insert(to.to_owned(), kept);
@@ -5186,7 +5327,10 @@ impl Trees {
         then: &Option<KeptRulesFile>,
     ) -> bool {
         match (now, then) {
-            (Some(file), _) => self.edited(&file.id) || self.local_changes.contains(&file.id),
+            (Some(file), _) => {
+                !self.held(&file.id)
+                    && (self.edited(&file.id) || self.local_changes.contains(&file.id))
+            }
             (None, Some(file)) if self.l.get(&file.id).is_some() => {
                 self.local_changes.contains(&file.id)
             }
@@ -6913,6 +7057,7 @@ impl Trees {
     ) -> Option<()> {
         self.discard_members
             .retain(|_, folder| self.discarded.contains_key(folder));
+        self.give_back_kept_paths(false);
         self.release_kept_entries_the_person_let_in();
         self.note_kept_causes();
         let mut carried = Vec::new();
@@ -7962,6 +8107,7 @@ impl Trees {
             kept_folders: self.kept_folders.to_set(),
             kept_entries: self.kept_entries.to_map(),
             kept_nodes: self.kept_nodes.to_map(),
+            kept_paths: self.kept_paths.to_map(),
             unseen_changes: self.unseen_changes.to_set(),
             replaced_versions: self.replaced_versions.to_map(),
             content_provenance: self.content_provenance.state(&self.r),
@@ -8025,6 +8171,7 @@ impl Trees {
             kept_folders,
             kept_entries,
             kept_nodes,
+            kept_paths,
             unseen_changes,
             replaced_versions,
             content_provenance,
@@ -8110,6 +8257,7 @@ impl Trees {
             kept_folders: kept_folders.take_changes(),
             kept_entries: kept_entries.take_changes(),
             kept_nodes: kept_nodes.take_changes(),
+            kept_paths: kept_paths.take_changes(),
             unseen_changes: unseen_changes.take_changes(),
             replaced_versions: replaced_versions.take_changes(),
             content_provenance: content_provenance.take_changes(r),
@@ -8363,6 +8511,7 @@ impl Trees {
             kept_folders,
             kept_entries,
             kept_nodes,
+            kept_paths,
             unseen_changes,
             replaced_versions,
             content_provenance,
@@ -8425,6 +8574,7 @@ impl Trees {
         self.kept_folders = kept_folders.into();
         self.kept_entries = kept_entries.into();
         self.kept_nodes = kept_nodes.into();
+        self.kept_paths = kept_paths.into();
         self.unseen_changes = unseen_changes.into();
         self.replaced_versions = replaced_versions.into();
         self.content_provenance.restore(content_provenance, &self.r);

@@ -2214,7 +2214,8 @@ fn a_rules_file_edited_while_its_emptied_kept_folder_waits_to_go_survives_a_purg
     }
 }
 #[test]
-fn discarding_the_rules_file_a_relinked_copy_of_a_kept_folder_holds_asks_about_its_kept_entries() {
+fn discarding_the_rules_file_a_relinked_copy_of_a_kept_folder_holds_leaves_its_kept_entries_out_unasked()
+ {
     let ignored = [".env", "node_modules/pkg/index.js"];
     let (mut remote, site_a, mut a, site, b, _) = deleted_with_rules_files(
         &[(".koiignore", ".env\nnode_modules/\n")],
@@ -2248,10 +2249,287 @@ fn discarding_the_rules_file_a_relinked_copy_of_a_kept_folder_holds_asks_about_i
     drop(b);
     drop(answered_and_restarted(&site, &mut remote, Answer::Discard));
 
-    assert_eq!(asked(&site), ["app/.env", "app/node_modules"]);
+    assert!(asked(&site).is_empty());
     assert_eq!(server_paths(&remote), ["app", "app/README.md"]);
     for path in ignored {
         let path = site.root.join("app").join(path);
         assert_eq!(fs::read_to_string(&path).unwrap(), local_only(&path));
+    }
+}
+
+const KEPT: [&str; 2] = [".env", "node_modules/pkg/index.js"];
+
+fn swapped_for_a_copy(site: &Site, b: Device, on_copy: impl FnOnce(&Path)) {
+    drop(b);
+    let copy = site.root.with_file_name("copy");
+    copy_folder(&site.root, &copy);
+    drop(site.start());
+    fs::rename(&site.root, site.root.with_file_name("original")).unwrap();
+    fs::rename(&copy, &site.root).unwrap();
+    on_copy(&site.root);
+    assert!(halts_as_a_copy(site));
+}
+
+fn published_after_the_first_link(site: &Site, remote: &mut Remote) -> (Vec<String>, Vec<String>) {
+    let mut b = restarted(site, remote);
+    b.rest(remote);
+    let asked = asked(site);
+    drop(b);
+    if !asked.is_empty() {
+        answer(site, Answer::Publish);
+    }
+    let mut b = restarted(site, remote);
+    settled(&mut b, remote);
+    for path in KEPT {
+        let path = site.root.join("app").join(path);
+        assert_eq!(fs::read_to_string(&path).unwrap(), local_only(&path));
+    }
+    (asked, server_paths(remote))
+}
+
+fn on_the_server(paths: &[&str]) -> Vec<String> {
+    paths.iter().map(|path| path.to_string()).collect()
+}
+
+#[test]
+fn a_relinked_copy_of_a_folder_taken_over_without_rules_neither_asks_about_nor_uploads_its_kept_entries()
+ {
+    let (mut remote, _, _, site, b) = taken_over_without_rules(&KEPT);
+    swapped_for_a_copy(&site, b, |root| {
+        fs::write(root.join("app/notes.txt"), b"made on the copy").unwrap();
+    });
+    relink(&site).unwrap();
+    assert_eq!(
+        published_after_the_first_link(&site, &mut remote),
+        (
+            on_the_server(&["app/notes.txt"]),
+            on_the_server(&["app", "app/README.md", "app/notes.txt"])
+        )
+    );
+    assert!(site.stored().trees.state().kept_paths.is_empty());
+}
+
+#[test]
+fn a_relinked_copy_keeps_out_a_kept_entry_the_person_moved_away_from_its_name() {
+    let (mut remote, _, _, site, mut b) = taken_over_without_rules(&KEPT);
+    fs::rename(
+        site.root.join("app/.env"),
+        site.root.join("app/settings.txt"),
+    )
+    .unwrap();
+    settled(&mut b, &mut remote);
+    assert!((b.folder.view().kept_entries).contains(&"app/settings.txt".into()));
+    swapped_for_a_copy(&site, b, |_| {});
+    fs::copy(
+        site.root.join("app/settings.txt"),
+        site.root.join("app/.env"),
+    )
+    .unwrap();
+    relink(&site).unwrap();
+    assert_eq!(
+        published_after_the_first_link(&site, &mut remote).1,
+        on_the_server(&["app", "app/README.md"])
+    );
+}
+
+#[test]
+fn a_relinked_copy_keeps_a_kept_entry_its_rules_hid_once_another_device_lets_its_folder_in() {
+    let (mut remote, site_a, mut a, site, mut b) = taken_over_without_rules(&KEPT);
+    fs::rename(
+        site.root.join("app/.env"),
+        site.root.join("app/settings.txt"),
+    )
+    .unwrap();
+    settled(&mut b, &mut remote);
+    swapped_for_a_copy(&site, b, |root| {
+        fs::write(root.join(".koiignore"), b"app/\n").unwrap();
+        fs::copy(root.join("app/settings.txt"), root.join("app/.env")).unwrap();
+    });
+    a.create(&mut remote, &site_a.root.join(".koiignore"), b"app/\n");
+    relink(&site).unwrap();
+    let mut b = restarted(&site, &mut remote);
+    b.rest(&mut remote);
+    a.create(&mut remote, &site_a.root.join(".koiignore"), b"other/\n");
+    b.pull(&remote);
+    settled(&mut b, &mut remote);
+    drop(b);
+    let on_server = published_after_the_first_link(&site, &mut remote).1;
+    let kept = |path: &String| {
+        ["app/settings.txt", "app/.env", "app/node_modules"].contains(&path.as_str())
+    };
+    assert!(!on_server.iter().any(kept), "{on_server:?}");
+}
+
+#[test]
+fn a_relinked_copy_whose_new_rules_would_let_a_kept_entry_in_sends_nothing_before_the_answer() {
+    let (mut remote, _, _, site, b) = kept_by_root_rules();
+    swapped_for_a_copy(&site, b, |root| {
+        fs::write(root.join(".koiignore"), b"*.tmp\n").unwrap()
+    });
+    relink(&site).unwrap();
+    let mut b = restarted(&site, &mut remote);
+    b.rest(&mut remote);
+    settled(&mut b, &mut remote);
+    assert_eq!(asked(&site), [".koiignore"]);
+    assert!(
+        !remote.tree().contains_key("app/.env"),
+        "{:?}",
+        server_paths(&remote)
+    );
+}
+
+#[test]
+fn a_relinked_older_copy_of_a_kept_folder_that_still_holds_a_deleted_file_is_asked_about_whole() {
+    let mut remote = Remote::new();
+    let (site_a, mut a) = linked(&mut remote, "a");
+    fs::create_dir(site_a.root.join("app")).unwrap();
+    a.create(&mut remote, &site_a.root.join("app/.koiignore"), b".env\n");
+    a.create(&mut remote, &site_a.root.join("app/README.md"), b"synced");
+    let site = Site::new(&remote, "b");
+    let mut b = site.start();
+    b.connect(&remote);
+    b.scan_until(|b| b.folder.scanned);
+    settled(&mut b, &mut remote);
+    fs::write(site.root.join("app/.env"), b"SECRET=b").unwrap();
+    settled(&mut b, &mut remote);
+    let copy = site.root.with_file_name("copy");
+    copy_folder(&site.root, &copy);
+    fs::remove_dir_all(site_a.root.join("app")).unwrap();
+    a.scan_until(|a| !a.work.is_empty());
+    a.run(&mut remote);
+    pulled(&mut b, &mut remote);
+    assert!(server_paths(&remote).is_empty());
+    drop(b);
+    drop(site.start());
+    fs::rename(&site.root, site.root.with_file_name("original")).unwrap();
+    fs::rename(&copy, &site.root).unwrap();
+    relink(&site).unwrap();
+    let mut b = restarted(&site, &mut remote);
+    b.rest(&mut remote);
+    settled(&mut b, &mut remote);
+    assert_eq!(
+        (asked(&site), server_paths(&remote)),
+        (on_the_server(&["app"]), vec![])
+    );
+}
+
+#[test]
+fn a_relinked_copy_keeps_a_kept_entry_in_a_folder_its_first_scan_could_not_read() {
+    use std::os::unix::fs::PermissionsExt;
+    let (mut remote, _, _, site, mut b) = taken_over_without_rules(&KEPT);
+    fs::rename(
+        site.root.join("app/.env"),
+        site.root.join("app/settings.txt"),
+    )
+    .unwrap();
+    settled(&mut b, &mut remote);
+    swapped_for_a_copy(&site, b, |root| {
+        fs::copy(root.join("app/settings.txt"), root.join("app/.env")).unwrap();
+        fs::set_permissions(root.join("app"), fs::Permissions::from_mode(0o000)).unwrap();
+    });
+    relink(&site).unwrap();
+    let mut b = restarted(&site, &mut remote);
+    b.rest(&mut remote);
+    drop(b);
+    let waiting = site.stored().trees.state().kept_paths;
+    assert!(waiting[&vec!["app".to_owned(), "settings.txt".to_owned()]].waits_for_scan);
+    fs::set_permissions(site.root.join("app"), fs::Permissions::from_mode(0o755)).unwrap();
+    let on_server = published_after_the_first_link(&site, &mut remote).1;
+    let kept = |path: &String| {
+        ["app/settings.txt", "app/.env", "app/node_modules"].contains(&path.as_str())
+    };
+    assert!(!on_server.iter().any(kept), "{on_server:?}");
+    assert!(site.stored().trees.state().kept_paths.is_empty());
+}
+
+#[test]
+fn a_relinked_copy_of_a_kept_folder_uploads_nothing_of_it() {
+    let (mut remote, _, _, site, b, _) = deleted_with_rules_files(
+        &[(".koiignore", ".env\nnode_modules/\n")],
+        &["README.md"],
+        &KEPT,
+    );
+    swapped_for_a_copy(&site, b, |_| {});
+    relink(&site).unwrap();
+    assert_eq!(
+        published_after_the_first_link(&site, &mut remote),
+        (vec![], vec![])
+    );
+}
+
+#[test]
+fn a_relinked_copy_that_lost_a_kept_entry_ends_its_record_and_still_keeps_its_name() {
+    let (mut remote, _, _, site, b) = taken_over_without_rules(&KEPT);
+    swapped_for_a_copy(&site, b, |root| {
+        fs::remove_file(root.join("app/.env")).unwrap()
+    });
+    relink(&site).unwrap();
+    let mut b = restarted(&site, &mut remote);
+    b.rest(&mut remote);
+    assert!(site.stored().trees.state().kept_paths.is_empty());
+    assert!(asked(&site).is_empty());
+    fs::write(site.root.join("app/.env"), local_only(Path::new(".env"))).unwrap();
+    settled(&mut b, &mut remote);
+    assert_eq!(
+        server_paths(&remote),
+        on_the_server(&["app", "app/README.md"])
+    );
+}
+
+#[test]
+fn a_relinked_copy_keeps_its_kept_entries_out_after_the_server_renames_their_folder() {
+    let (mut remote, site_a, mut a, site, b) = taken_over_without_rules(&KEPT);
+    swapped_for_a_copy(&site, b, |_| {});
+    relink(&site).unwrap();
+    fs::rename(site_a.root.join("app"), site_a.root.join("renamed")).unwrap();
+    a.scan_until(|a| !a.work.is_empty());
+    a.run(&mut remote);
+    let (asked, on_server) = published_after_the_first_link(&site, &mut remote);
+    assert_eq!(asked, ["app"]);
+    assert_eq!(
+        on_server,
+        on_the_server(&["app", "app/README.md", "renamed", "renamed/README.md"])
+    );
+}
+
+#[test]
+fn a_relink_that_crashes_or_fails_keeps_the_kept_entries() {
+    for cut in [
+        None,
+        Some(disk::Cut::TokenPended),
+        Some(disk::Cut::TokenWritten),
+        Some(disk::Cut::TokenCommitted),
+    ] {
+        let (mut remote, _, _, site, b) = taken_over_without_rules(&KEPT);
+        swapped_for_a_copy(&site, b, |_| {});
+        match cut {
+            None => {
+                let db = rusqlite::Connection::open(&site.db).unwrap();
+                let refuse = "CREATE TRIGGER refuse BEFORE UPDATE ON link BEGIN SELECT RAISE(ABORT, 'refused'); END";
+                db.execute_batch(refuse).unwrap();
+                assert!(relink(&site).is_err());
+                db.execute_batch("DROP TRIGGER refuse").unwrap();
+                assert!(site.stored().trees.state().kept_paths.is_empty());
+                relink(&site).unwrap();
+            }
+            Some(cut) => {
+                let crashed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    relink_until(&site, crash_at(cut))
+                }));
+                assert!(crashed.is_err(), "{cut:?}");
+                assert!(
+                    !site.stored().trees.state().kept_paths.is_empty(),
+                    "{cut:?}"
+                );
+                if cut == disk::Cut::TokenPended {
+                    relink(&site).unwrap();
+                }
+            }
+        }
+        assert_eq!(
+            published_after_the_first_link(&site, &mut remote),
+            (vec![], on_the_server(&["app", "app/README.md"])),
+            "{cut:?}"
+        );
     }
 }
