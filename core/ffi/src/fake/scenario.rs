@@ -88,6 +88,7 @@ fn signed_in() -> Saved {
         state: FolderState::UpToDate,
         activity: None,
         bytes_moved: 0,
+        answered_questions: 0,
     };
     Saved {
         server: Some(ServerInfo {

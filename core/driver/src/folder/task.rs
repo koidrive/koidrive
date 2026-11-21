@@ -629,6 +629,7 @@ impl FolderTask {
             problem: status.problem.clone(),
             wait: status.wait.clone(),
             questions: status.questions,
+            answered_questions: status.answered_questions,
             recovery: status.recovery,
             held_disks: status.held_disks.clone(),
             kept_entries: status.kept_entries.clone(),
@@ -646,6 +647,7 @@ impl FolderTask {
         status.problem = view.problem;
         status.wait = view.wait;
         status.questions = view.questions;
+        status.answered_questions = view.answered_questions;
         status.recovery = view.recovery;
         status.held_disks = view.held_disks;
         status.kept_entries = view.kept_entries;

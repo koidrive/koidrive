@@ -333,6 +333,7 @@ pub(crate) struct View {
     pub problem: Option<String>,
     pub wait: Option<Wait>,
     pub questions: u64,
+    pub answered_questions: u64,
     pub recovery: Option<RecoveryCause>,
     pub held_disks: Vec<HeldDisk>,
     pub kept_entries: Vec<koidrive_fs::ItemPath>,
@@ -721,13 +722,19 @@ impl Folder {
     /// `Driver::restore` recorded a request, or `Driver::answer` an answer. The engine takes what the inbox holds,
     /// and the next commit carries its `Restore` op (design §6.3), and it takes the answers to its questions (§6.1).
     pub fn requested(&mut self) -> Result<Vec<Work>, Stop> {
+        self.accept_requests()?;
+        let mut work = Vec::new();
+        self.drive(&mut work)?;
+        Ok(work)
+    }
+
+    fn accept_requests(&mut self) -> Result<(), Stop> {
         self.step(|engine, tx| {
             engine.accept_restores(tx)?;
             Ok(engine.accept_answers(tx)?)
         })?;
-        let mut work = Vec::new();
-        self.drive(&mut work)?;
-        Ok(work)
+        self.recount_at = None;
+        Ok(())
     }
 
     /// The staging of `pending` ended. A staged batch is applied here, in the effect section. A transfer that

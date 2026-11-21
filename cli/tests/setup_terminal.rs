@@ -528,6 +528,7 @@ fn folder_status(folder: &Path, space: &SpaceInfo) -> FolderStatus {
         remote_nodes: 0,
         local_entries: None,
         questions: 0,
+        answered_questions: 0,
         problem: None,
         relinkable: false,
         remedy: None,

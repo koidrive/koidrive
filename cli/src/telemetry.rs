@@ -969,6 +969,7 @@ mod tests {
             remote_nodes,
             local_entries: None,
             questions: 0,
+            answered_questions: 0,
             problem: None,
             relinkable: false,
             remedy: None,

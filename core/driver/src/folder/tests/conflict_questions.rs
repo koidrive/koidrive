@@ -254,6 +254,67 @@ fn a_conflict_answer_the_server_rejects_is_asked_again_under_the_same_id() {
 }
 
 #[test]
+fn a_conflict_answer_whose_commit_the_server_drops_waits_to_be_sent_again() {
+    let mut remote = Remote::new();
+    let (_, (site_b, mut b)) = edited_on_both(&mut remote);
+    answer(&site_b, Answer::KeepOriginal);
+    let step = b.folder.requested();
+    b.take(step).unwrap();
+    let Some(Work::Send(_)) = b.work.pop_front() else {
+        panic!("the answer is sent");
+    };
+    let ahead = koidrive_proto::v1::Error {
+        code: Code::AheadOfServer as i32,
+        ..Default::default()
+    };
+    let step = b.folder.sent(Err(CallError::Server(ServerError(ahead))));
+    b.take(step).unwrap();
+    assert!(b.folder.engine.commits.in_flight().is_none());
+    assert_eq!(b.folder.view().answered_questions, 1);
+}
+
+#[test]
+fn a_conflict_answer_an_older_daemon_kept_with_a_dropped_commit_waits_after_an_upgrade() {
+    let mut remote = Remote::new();
+    let (_, (site_b, mut b)) = edited_on_both(&mut remote);
+    answer(&site_b, Answer::KeepOriginal);
+    let step = b.folder.requested();
+    b.take(step).unwrap();
+    let Some(Work::Send(commit)) = b.work.pop_front() else {
+        panic!("the answer is sent");
+    };
+    let ahead = koidrive_proto::v1::Error {
+        code: Code::AheadOfServer as i32,
+        ..Default::default()
+    };
+    let step = b.folder.sent(Err(CallError::Server(ServerError(ahead))));
+    b.take(step).unwrap();
+    let mut questions = b.folder.engine.commits.questions().to_vec();
+    let [question] = &mut questions[..] else {
+        panic!("one question: {questions:?}");
+    };
+    let koidrive_engine::question::QuestionKind::Conflict { sent_in, .. } = &mut question.kind
+    else {
+        panic!("a conflict: {question:?}");
+    };
+    *sent_in = Some(commit.commit_id.clone());
+    drop(b);
+    let changes = koidrive_store::EngineChanges {
+        commits: koidrive_engine::state::CommitsChanges {
+            questions: Some(questions),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    (Store::open(&site_b.db).unwrap())
+        .transaction(|tx| tx.write_engine_changes(&changes))
+        .unwrap();
+    let b = site_b.start();
+    assert!(b.folder.engine.commits.in_flight().is_none());
+    assert_eq!(b.folder.view().answered_questions, 1);
+}
+
+#[test]
 fn a_conflict_shows_its_files_at_their_new_paths_after_their_folder_is_renamed() {
     let mut remote = Remote::new();
     let (site_a, mut a) = linked(&mut remote, "a");

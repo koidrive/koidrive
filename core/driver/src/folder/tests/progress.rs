@@ -598,21 +598,66 @@ fn a_question_that_holds_no_change_is_not_waited_on() {
     assert_eq!(b.folder.activity(FolderState::CatchingUp), Some(Activity::CatchingUp));
 }
 
+fn a_first_link_whose_file_waits(remote: &mut Remote) -> (Site, Device) {
+    let site = synced_before(remote, "b");
+    let (site_a, mut a) = linked(remote, "a");
+    a.create(remote, &site_a.root.join("theirs.txt"), b"written on a");
+    fs::write(site.root.join("mine.txt"), b"mine").unwrap();
+    let mut b = site.start();
+    b.connect(remote);
+    b.scan_until(|b| b.folder.scanned);
+    b.run(remote);
+    b.settle();
+    b.run(remote);
+    assert_eq!(b.folder.view().questions, 1);
+    (site, b)
+}
+
 #[test]
 fn a_first_link_whose_files_wait_for_the_person_says_so() {
     let mut remote = Remote::new();
-    let site = synced_before(&mut remote, "b");
-    let (site_a, mut a) = linked(&mut remote, "a");
-    a.create(&mut remote, &site_a.root.join("theirs.txt"), b"written on a");
-    fs::write(site.root.join("mine.txt"), b"mine").unwrap();
-    let mut b = site.start();
-    b.connect(&remote);
-    b.scan_until(|b| b.folder.scanned);
-    b.run(&mut remote);
-    b.settle();
-    b.run(&mut remote);
-    assert_eq!(b.folder.view().questions, 1);
+    let (_site, mut b) = a_first_link_whose_file_waits(&mut remote);
     b.folder.track_progress(b.state());
     assert_eq!((b.state(), counts(&b)), (FolderState::CatchingUp, None));
     assert_eq!(activity(&b), Some(Activity::AwaitingAnswers { questions: 1 }));
+    assert_eq!(b.folder.view().answered_questions, 0);
+}
+
+#[test]
+fn an_answer_that_waits_to_take_effect_is_not_awaited_from_the_person() {
+    let mut remote = Remote::new();
+    let (site, mut b) = a_first_link_whose_file_waits(&mut remote);
+    b.folder.recount_progress(b.state());
+    b.folder.recount_at = Some(Instant::now() + Duration::from_secs(60));
+    answer(&site, Answer::Publish);
+    b.folder.accept_requests().unwrap();
+    b.folder.recount_progress(b.state());
+    let view = b.folder.view();
+    assert_eq!((view.questions, view.answered_questions), (0, 1));
+    assert_eq!(activity(&b), Some(Activity::CatchingUp));
+}
+
+#[test]
+fn an_answer_taken_while_a_commit_is_in_flight_counts_apart_until_it_is_sent() {
+    let mut remote = Remote::new();
+    let (site, mut b) = a_first_link_whose_file_waits(&mut remote);
+    fs::write(site.root.join("other.txt"), b"other").unwrap();
+    b.rescan();
+    b.scan_until(|b| !b.work.is_empty());
+    while !matches!(b.work.front(), Some(Work::Send(_))) {
+        let work = b.work.pop_front().unwrap();
+        b.perform(work, &mut remote).unwrap();
+    }
+    let send = b.work.pop_front().unwrap();
+    answer(&site, Answer::Publish);
+    let step = b.folder.requested();
+    b.take(step).unwrap();
+    let view = b.folder.view();
+    assert_eq!((view.questions, view.answered_questions), (0, 1));
+    b.perform(send, &mut remote).unwrap();
+    b.run(&mut remote);
+    assert_eq!(
+        (b.state(), b.folder.view().answered_questions),
+        (FolderState::UpToDate, 0)
+    );
 }

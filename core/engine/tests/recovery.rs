@@ -645,6 +645,7 @@ fn an_answer_whose_commit_finds_the_head_moved_is_asked_again() {
         ..Default::default()
     };
     assert_eq!(commits.failed(&mut trees, &moved), Ok(Failure::Abandoned));
+    assert!(commits.questions()[0].answer_waits(in_flight(&commits)));
     trees.set_remote(
         "n".into(),
         RemoteNode {
@@ -2610,8 +2611,14 @@ fn an_answer_split_across_commits_keeps_its_approval_only_for_what_it_showed() {
     );
     let (mut commits, mut ids) = recovered(&mut trees, 0);
     let question = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["a", "b"]);
+    assert!(!question.answer_waits(None));
     assert!(commits.decide(&mut trees, &question.id, Answer::Publish));
+    assert!(commits.questions()[0].answer_waits(None));
     assert_eq!(ops(&mut commits, &mut trees, &mut ids).len(), 2);
+    assert!(
+        !commits.questions()[0].answer_waits(in_flight(&commits)),
+        "the commit carries it"
+    );
     assert_eq!(
         commits.failed(&mut trees, &limit_exceeded()),
         Ok(Failure::Split)
@@ -2645,6 +2652,7 @@ fn an_answer_split_across_commits_keeps_its_approval_only_for_what_it_showed() {
     trees.settle(commits.aliases());
     let kept = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &[rest]);
     assert_eq!(kept.answer, Some(Answer::Publish));
+    assert!(kept.answer_waits(in_flight(&commits)));
     let mut changed = trees.local().get(&NodeId::from(rest)).unwrap().clone();
     changed.shape.content = Some(content(9));
     trees.set_local(rest.into(), changed);
@@ -2652,6 +2660,7 @@ fn an_answer_split_across_commits_keeps_its_approval_only_for_what_it_showed() {
     assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
     let again = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &[rest]);
     assert_eq!(again.answer, None);
+    assert!(!again.answer_waits(in_flight(&commits)));
     assert!(commits.decide(&mut trees, &again.id, Answer::Publish));
     assert_eq!(
         ops(&mut commits, &mut trees, &mut ids),
@@ -6740,4 +6749,8 @@ fn a_file_s_lacks_that_the_server_holds_in_the_trash_with_its_bytes_goes_to_the_
         );
         assert_eq!(ops(&mut commits, &mut trees, &mut ids), [], "{cause:?}");
     }
+}
+
+fn in_flight(commits: &Commits) -> Option<&str> {
+    (commits.in_flight()).map(|flight| flight.commit.commit_id.as_str())
 }
