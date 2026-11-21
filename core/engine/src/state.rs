@@ -146,8 +146,9 @@ pub struct KeptRulesFile {
     pub on_server: bool,
 }
 
-/// A rules file the person discarded in answer to a first-link question: the folder that held it, whether it is a
-/// `.gitignore` file, and the rules the matcher applied from it (mass-deletion section 6.4).
+/// A rules file a Discard answer sent to the local trash or replaced with the server's: the folder that held it, whether
+/// it is a `.gitignore` file, and the rules the matcher applied from it until they stopped applying (mass-deletion
+/// section 6.4).
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct AnsweredRules {
@@ -413,8 +414,8 @@ pub struct TreesState {
     pub unsent_marks: BTreeMap<NodeId, String>,
     /// The pending renames this device is finishing, by node (RFC 0017 §3).
     pub pending_finishes: BTreeMap<NodeId, PendingFinish>,
-    /// The rules files a first-link Discard sent to the local trash or replaced with the server's, until the build
-    /// after their folder's rules reload holds what they excluded (mass-deletion section 6.4).
+    /// The rules files of a carried-out Discard, from the moment the file or its rules leave until the build that
+    /// judges what they excluded. Meanwhile nothing is planned for those entries (mass-deletion section 6.4).
     pub answered_rules: BTreeMap<NodeId, AnsweredRules>,
     /// For a node S forgot as a resend while R lacked it, the position R held it at before the loss
     /// when that differs from the position L and S held: a move another device made that L had not

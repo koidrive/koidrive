@@ -26,8 +26,8 @@ use crate::restore::{
     Outcome, RESOLVED_KEPT, Rejection, Resolved, RestoreId, RestoreIntent, SplitRestore,
 };
 use crate::state::{
-    Agreed, AnsweredRules, CONTENT_ANCESTRY_LIMIT, CommitsChanges, CommitsState, FinishOrigin,
-    GivenUp, MovePosition, RenamedOver, StateError,
+    Agreed, CONTENT_ANCESTRY_LIMIT, CommitsChanges, CommitsState, FinishOrigin, GivenUp,
+    MovePosition, RenamedOver, StateError,
 };
 use crate::tracked::{Marked, TrackedMap, TrackedSet};
 use crate::tree::{
@@ -1289,9 +1289,8 @@ impl Commits {
         if judged.is_empty() {
             return;
         }
-        let folders: Vec<NodeId> = judged
-            .iter()
-            .map(|(_, answered)| answered.folder.clone())
+        let folders: Vec<NodeId> = (judged.iter())
+            .map(|answered| answered.folder.clone())
             .collect();
         let (tops, _) = first_link::adopt_around(
             trees,
@@ -1305,14 +1304,7 @@ impl Commits {
             .flat_map(|question| question.shown.keys().chain(question.holds()))
             .collect();
         let tops: Vec<NodeId> = tops.into_iter().filter(|id| !asked.contains(id)).collect();
-        let answered: Vec<AnsweredRules> = judged
-            .iter()
-            .map(|(_, answered)| answered.clone())
-            .collect();
-        let left_out = trees.left_out_by_answered_rules(&answered, tops);
-        for (id, _) in &judged {
-            trees.end_answered_rules(id);
-        }
+        let left_out = trees.left_out_by_answered_rules(&judged, tops);
         if let Some(question) = first_link::ask(trees, left_out, None, cause, ids, now_ms) {
             self.questions.get_mut().push(question);
             self.hold(trees);
@@ -1369,7 +1361,6 @@ impl Commits {
                             index += 1;
                             continue;
                         };
-                        trees.record_answered_rules(&question.shown);
                         let shown: BTreeSet<NodeId> = question.shown.keys().cloned().collect();
                         trees.discard(shown.iter().cloned(), &question.shown);
                         trees.discard_taken(taken);

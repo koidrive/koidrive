@@ -2410,6 +2410,7 @@ impl Trees {
     }
 
     pub(crate) fn drop_local(&mut self, id: &NodeId) {
+        self.record_discarded_rules(id);
         let deleted_in_place = (self.l.get(id))
             .zip(self.discarded.get(id))
             .is_some_and(|(old, shape)| old.parked || shape.parent == old.shape.parent)
@@ -2419,6 +2420,29 @@ impl Trees {
             self.discarded.remove(id);
         }
         self.take_out_local(id);
+    }
+
+    fn record_discarded_rules(&mut self, id: &NodeId) {
+        let Some(shape) = self.discarded.get(id) else {
+            return;
+        };
+        let Some(source) = rules_source(&shape.name).filter(|_| shape.kind == Kind::File) else {
+            return;
+        };
+        if self.answered_rules.contains_key(id) || !self.discard_pending(id) {
+            return;
+        }
+        let rules = (self.folder_path(&shape.parent))
+            .and_then(|dir| self.ignore.rules_file(&dir, source))
+            .map(|rules| rules.source().to_vec());
+        if let Some(rules) = rules {
+            let answered = AnsweredRules {
+                folder: shape.parent.clone(),
+                gitignore: source == Source::Gitignore,
+                rules,
+            };
+            self.answered_rules.insert(id.clone(), answered);
+        }
     }
 
     fn take_out_local(&mut self, id: &NodeId) {
@@ -2539,6 +2563,19 @@ impl Trees {
     /// root to it, or removes them with `None`. The driver parses each rules file it observes on
     /// this device's disk and passes the rules here with the observation.
     pub fn set_rules<S: AsRef<str>>(&mut self, dir: &[S], source: Source, rules: Option<RuleFile>) {
+        let leaving: Vec<NodeId> = (self.discarded.iter())
+            .filter(|(_, shape)| rules_source(&shape.name) == Some(source))
+            .filter(|(_, shape)| {
+                self.folder_path(&shape.parent).is_some_and(|at| {
+                    at.len() == dir.len()
+                        && at.iter().zip(dir).all(|(at, name)| *at == name.as_ref())
+                })
+            })
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in leaving {
+            self.record_discarded_rules(&id);
+        }
         self.ignore
             .set_rules(dir, source, rules, std::iter::empty());
         self.forget_reclaims();
@@ -2605,7 +2642,37 @@ impl Trees {
     /// Whether an open question holds the node's local entry ([`Trees::set_asked`]), or L, S or R places it below a
     /// folder whose rules are unknown ([`Trees::set_rules_unknown`]).
     pub fn set_aside(&self, id: &NodeId) -> bool {
-        self.asked.contains(id) || self.vanished(id) || self.below_unknown_rules(id)
+        self.asked.contains(id)
+            || self.vanished(id)
+            || self.below_unknown_rules(id)
+            || self.left_out_by_an_answer(id)
+    }
+
+    fn left_out_by_an_answer(&self, id: &NodeId) -> bool {
+        if self.answered_rules.is_empty() {
+            return false;
+        }
+        let Some((names, kind)) = path(&self.l, id) else {
+            return false;
+        };
+        let mut matcher = Matcher::new(LocalRules::default());
+        let mut below = false;
+        for answered in self.answered_rules.values() {
+            let Some(dir) = self.folder_path(&answered.folder) else {
+                continue;
+            };
+            if names.len() <= dir.len() || names[..dir.len()] != dir[..] {
+                continue;
+            }
+            below = true;
+            let source = match answered.gitignore {
+                true => Source::Gitignore,
+                false => Source::Koiignore,
+            };
+            let rules = RuleFile::parse(&answered.rules);
+            matcher.set_rules(&dir, source, Some(rules), std::iter::empty());
+        }
+        below && excluded(&matcher, &names, &[kind])
     }
 
     /// Sets the paths, each a list of names below the root, that a scan must report before anything L, S or R places
@@ -3207,27 +3274,7 @@ impl Trees {
         }
     }
 
-    pub(crate) fn record_answered_rules(&mut self, shown: &BTreeMap<NodeId, Shape>) {
-        for (id, shape) in shown {
-            let Some(source) = rules_source(&shape.name).filter(|_| shape.kind == Kind::File)
-            else {
-                continue;
-            };
-            let rules = (self.folder_path(&shape.parent))
-                .and_then(|dir| self.ignore.rules_file(&dir, source))
-                .map(|rules| rules.source().to_vec());
-            if let Some(rules) = rules {
-                let answered = AnsweredRules {
-                    folder: shape.parent.clone(),
-                    gitignore: source == Source::Gitignore,
-                    rules,
-                };
-                self.answered_rules.insert(id.clone(), answered);
-            }
-        }
-    }
-
-    pub(crate) fn answered_rules_to_judge(&mut self) -> Vec<(NodeId, AnsweredRules)> {
+    pub(crate) fn answered_rules_to_judge(&mut self) -> Vec<AnsweredRules> {
         let mut ready = Vec::new();
         for (id, answered) in self.answered_rules.to_map() {
             if self.l.get(&id).is_some() && !self.discard_pending(&id) {
@@ -3241,7 +3288,8 @@ impl Trees {
                     && self.l.get(child).is_none()
             });
             if self.l.get(&id).is_none() && !self.held(&answered.folder) && !unwritten {
-                ready.push((id, answered));
+                self.answered_rules.remove(&id);
+                ready.push(answered);
             }
         }
         ready
@@ -3283,10 +3331,6 @@ impl Trees {
             }
         }
         left_out
-    }
-
-    pub(crate) fn end_answered_rules(&mut self, id: &NodeId) {
-        self.answered_rules.remove(id);
     }
 
     pub(crate) fn below(
