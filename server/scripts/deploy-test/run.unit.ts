@@ -226,7 +226,14 @@ describe("sweep", () => {
     mock.namespaces.push({ id: "no-script", class: "AccountDO" }, { id: "null-script", class: "SpaceDO", script: null }, { id: "orphan-account", class: "AccountDO", script: "koidrive-test-8-2" });
     mock.unnamedListings.push({ created_on: new Date().toISOString() });
     const { status, output } = await runTs("sweep");
-    expect({ status, warnings: output.includes("::warning::") }).toEqual({ status: 0, warnings: false });
+    expect(status).toBe(0);
+    expect(output.split("\n").filter((line) => line.startsWith("The sweep listed") || line.startsWith("::warning::"))).toEqual([
+      "The sweep listed 1 Workers named koidrive-test-*: koidrive-test-7-1",
+      "The sweep listed 2 R2 buckets named koidrive-test-*: koidrive-test-7-1, koidrive-test-8-2",
+      "The sweep listed 3 Durable Object namespaces, 2 of them with no Worker name",
+      "::warning::The sweep left alone the Durable Object namespace AccountDO no-script, because the API names no Worker for it",
+      "::warning::The sweep left alone the Durable Object namespace SpaceDO null-script, because the API names no Worker for it",
+    ]);
     expect(mock.workers.size).toBe(0);
     expect(mock.namespaces.map((namespace) => namespace.id)).toEqual(["no-script", "null-script"]);
     expect([...mock.buckets.keys()].sort()).toEqual(["koidrive-test-8-2", "user-koidrive-test-7-1"]);
@@ -347,6 +354,18 @@ describe("sweep", () => {
     expect(status).toBe(0);
     expect(mock.namespaces).toEqual(orphans);
     expect(output).toContain("::warning::The sweep left alone the Durable Object namespace SpaceDO b of the deleted Worker koidrive-test-10-1");
+  });
+
+  it("says what it listed when no earlier run left anything", async () => {
+    mock.addBucket("user-bucket");
+    mock.namespaces.push({ id: "theirs", class: "SpaceDO", script: "someone-else" });
+    const { status, output } = await runTs("sweep");
+    expect(status).toBe(0);
+    expect(output).toContain("The sweep listed 0 Workers named koidrive-test-*\n");
+    expect(output).toContain("The sweep listed 0 R2 buckets named koidrive-test-*\n");
+    expect(output).toContain("The sweep listed 1 Durable Object namespaces, 0 of them with no Worker name");
+    expect(output).not.toContain("::warning::");
+    expect(mock.deletes()).toEqual([]);
   });
 
   it("fails and deletes nothing when GitHub cannot say whether the run finished", async () => {

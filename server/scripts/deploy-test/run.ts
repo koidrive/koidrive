@@ -598,6 +598,10 @@ async function runAttempt(repository: string, id: string, attempt: string, deadl
 
 type Verdict = "sweep" | "running" | { leftAlone: string };
 
+function inventory(kind: string, found: { name: string }[]): string {
+  return "The sweep listed " + found.length + " " + kind + " named " + NAME_PREFIX + "*" + (found.length ? ": " + found.map((item) => item.name).join(", ") : "");
+}
+
 async function sweep(account: Account): Promise<void> {
   const current = testName();
   const repository = process.env.GITHUB_REPOSITORY || fail("GITHUB_REPOSITORY must name the repository whose runs the sweep checks");
@@ -658,7 +662,9 @@ async function sweep(account: Account): Promise<void> {
   startPhase();
   const workers = await listWorkers(account, deadline).catch((error: unknown) => void failed("listing the Workers", error));
   const live = new Set(workers?.map((worker) => worker.name));
-  for (const worker of workers?.filter((candidate) => candidate.name.startsWith(NAME_PREFIX)) ?? []) {
+  const testWorkers = workers?.filter((candidate) => candidate.name.startsWith(NAME_PREFIX));
+  if (testWorkers) console.log(inventory("Workers", testWorkers));
+  for (const worker of testWorkers ?? []) {
     await visit("Worker " + worker.name, () => createdDuring(worker.name, worker.createdOn), async () => {
       await deleteWorker(account, worker.name, deadline);
       console.log("Deleted the Worker " + worker.name + " and its Durable Objects, which its finished run left behind");
@@ -666,7 +672,9 @@ async function sweep(account: Account): Promise<void> {
     });
   }
   startPhase();
-  for (const bucket of (await listBuckets(account, NAME_PREFIX, deadline).catch((error: unknown) => void failed("listing the R2 buckets", error))) ?? []) {
+  const buckets = await listBuckets(account, NAME_PREFIX, deadline).catch((error: unknown) => void failed("listing the R2 buckets", error));
+  if (buckets) console.log(inventory("R2 buckets", buckets));
+  for (const bucket of buckets ?? []) {
     await visit("R2 bucket " + bucket.name, () => createdDuring(bucket.name, bucket.creationDate), async () => {
       try {
         await deleteBucket(account, bucket.name, deadline);
@@ -680,6 +688,9 @@ async function sweep(account: Account): Promise<void> {
   }
   startPhase();
   const namespaces = await listNamespaces(account, deadline).catch((error: unknown) => void failed("listing the Durable Object namespaces", error));
+  const unnamed = namespaces?.filter((namespace) => namespace.script === undefined) ?? [];
+  if (namespaces) console.log("The sweep listed " + namespaces.length + " Durable Object namespaces, " + unnamed.length + " of them with no Worker name");
+  for (const namespace of unnamed) leftAlone.push("the Durable Object namespace " + described([namespace]) + ", because the API names no Worker for it");
   for (const namespace of namespaces ?? []) {
     const script = namespace.script;
     if (script === undefined || !script.startsWith(NAME_PREFIX) || live.has(script)) continue;
