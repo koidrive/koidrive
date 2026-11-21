@@ -534,6 +534,13 @@ fn ruling() -> impl Strategy<Value = Ruling> {
 
 /// The rules as the disk and the configuration hold them. They are not part of the stored
 /// state, so the device reads them again after every restart.
+#[derive(Clone, Debug)]
+struct Placement {
+    by_other: bool,
+    order: u64,
+    from: Vec<NodeId>,
+}
+
 #[derive(Clone, Debug, Default)]
 struct Rules {
     file: Vec<&'static str>,
@@ -578,7 +585,7 @@ struct Device {
     acted: BTreeSet<NodeId>,
     acked: BTreeSet<NodeId>,
     removed_from: BTreeMap<NodeId, NodeId>,
-    placed: BTreeMap<NodeId, (bool, u64)>,
+    placed: BTreeMap<NodeId, Vec<Placement>>,
     placements: u64,
     taken_since: BTreeMap<NodeId, u64>,
     on_server_when_taken_along: BTreeMap<NodeId, BTreeMap<NodeId, NodeId>>,
@@ -644,10 +651,16 @@ impl Device {
         folders: impl IntoIterator<Item = &'a NodeId>,
         (at_answer, answered_at): &(BTreeMap<NodeId, NodeId>, u64),
     ) {
+        let folders: Vec<&NodeId> = folders.into_iter().collect();
         let mut on_server = self.on_server();
-        for (id, _) in
-            (self.placed.iter()).filter(|(_, (by_other, at))| *by_other && at > answered_at)
-        {
+        for (id, _) in (self.placed.iter()).filter(|(_, history)| {
+            (history.iter().rev())
+                .take_while(|placement| placement.order > *answered_at)
+                .find(|placement| {
+                    placement.by_other || !folders.iter().any(|f| placement.from.contains(f))
+                })
+                .is_some_and(|placement| placement.by_other)
+        }) {
             match at_answer.get(id) {
                 Some(parent) => on_server.insert(id.clone(), parent.clone()),
                 None => on_server.remove(id),
@@ -704,6 +717,16 @@ impl Device {
                     .map(|remote| remote.parent.clone()),
                 _ => None,
             };
+            let mut from = Vec::new();
+            let mut above = parent_before.clone();
+            while let Some(at) = above.filter(|at| !from.contains(at)) {
+                above = self
+                    .trees
+                    .remote()
+                    .live(&at)
+                    .map(|remote| remote.parent.clone());
+                from.push(at);
+            }
             apply(&mut self.trees, std::slice::from_ref(change));
             if let Some(change_record::Change::Purged(purged)) = &change.change {
                 self.acted.remove(&NodeId::from(&purged.node_id));
@@ -718,8 +741,11 @@ impl Device {
             };
             if parent_before.as_ref() != Some(&remote.parent) {
                 self.placements += 1;
-                self.placed
-                    .insert(node.clone(), (!answered, self.placements));
+                (self.placed.entry(node.clone()).or_default()).push(Placement {
+                    by_other: !answered,
+                    order: self.placements,
+                    from,
+                });
             }
             let Some(moved) = self.relocated.get_mut(&node) else {
                 continue;
@@ -2086,13 +2112,28 @@ fn acted_below(
         if !reaches(entry, &agreed) {
             return false;
         }
-        let mut seen = BTreeSet::new();
-        let mut current = Some(entry.to_owned());
-        while let Some(at) = current.filter(|at| at != id && seen.insert(at.clone())) {
-            if let Some((by_other, _)) = (device.placed.get(&at)).filter(|(_, when)| when > since) {
-                return *by_other;
+        let history = |at: &NodeId| device.placed.get(at).map_or(&[][..], Vec::as_slice);
+        let mut seen = BTreeSet::from([entry.to_owned()]);
+        let (mut at, mut parent) = (entry.to_owned(), agreed(entry));
+        let mut placements = history(&at);
+        while at != *id {
+            match placements
+                .split_last()
+                .filter(|(last, _)| last.order > *since)
+            {
+                Some((last, earlier)) if !last.by_other && last.from.contains(id) => {
+                    parent = last.from.first().cloned();
+                    placements = earlier;
+                }
+                Some((last, _)) => return last.by_other,
+                None => {
+                    let Some(next) = parent.filter(|next| seen.insert(next.clone())) else {
+                        return false;
+                    };
+                    (at, parent) = (next.clone(), agreed(&next));
+                    placements = history(&at);
+                }
             }
-            current = agreed(&at);
         }
         false
     };

@@ -764,7 +764,12 @@ fn renaming_an_entry_another_device_brought_into_a_taken_along_folder_changes_th
         device.trees.set_local(g.clone(), local);
         if brought {
             device.placements += 1;
-            device.placed.insert(g.clone(), (true, device.placements));
+            let order = device.placements;
+            (device.placed.entry(g.clone()).or_default()).push(Placement {
+                by_other: true,
+                order,
+                from: Vec::new(),
+            });
         }
         device.acted.insert(g);
         assert_eq!(
@@ -1732,7 +1737,11 @@ fn a_batch_that_moves_a_folder_into_its_former_child_records_the_arrival_once_it
     device.note_taken_along([&b.as_str().into()]);
     device.receive(&changes, false);
     let placed = device.placed.get(&a.as_str().into());
-    assert!(placed.is_some_and(|(by_other, _)| *by_other));
+    assert!(
+        placed
+            .and_then(|history| history.last())
+            .is_some_and(|last| last.by_other)
+    );
 }
 
 #[test]
@@ -1921,5 +1930,80 @@ fn renaming_an_entry_this_device_put_in_a_folder_before_another_device_brought_t
     place_dir(&mut device, "x", Some(("s", "x")), None);
     device.receive(&[a_dir_record("x", "s", 2)], false);
     renames_after_sync(&mut device, "g", "x");
+    assert!(!acted_below(&device, &s, &kept, &discarded));
+}
+
+#[test]
+fn renaming_an_arrival_this_device_moved_within_the_folder_changes_that_entry_alone() {
+    for (came_with_a_folder, confirmed) in
+        [(true, false), (true, true), (false, false), (false, true)]
+    {
+        let (mut device, kept, discarded) = a_file_in_a_taken_along_server_folder();
+        let s: NodeId = "s".into();
+        place_dir(&mut device, "m", Some(("s", "m")), Some(("s", "m")));
+        device.note_taken_along([&s]);
+        let (from, to) = if came_with_a_folder {
+            device.receive(
+                &[a_dir_record("a", "s", 1), a_dir_record("c", "a", 1)],
+                false,
+            );
+            place_dir(&mut device, "a", Some(("s", "a")), None);
+            let synced = device.trees.remote().live(&"a".into()).cloned();
+            device.trees.set_synced("a".into(), synced);
+            ("a", "s")
+        } else {
+            device.receive(&[a_dir_record("c", "s", 1)], false);
+            ("s", "m")
+        };
+        place_dir(&mut device, "c", Some((from, "c")), None);
+        let synced = device.trees.remote().live(&"c".into()).cloned();
+        device.trees.set_synced("c".into(), synced);
+        place_dir(&mut device, "c", Some((to, "c")), None);
+        if confirmed {
+            device.receive(&[a_dir_record("c", to, 2)], true);
+        } else {
+            device.acted_on("c".into());
+        }
+        renames_after_sync(&mut device, "c", to);
+        assert!(
+            !acted_below(&device, &s, &kept, &discarded),
+            "{came_with_a_folder} {confirmed}"
+        );
+    }
+}
+
+#[test]
+fn renaming_an_entry_that_came_with_an_arrival_after_this_device_moved_it_out_and_back_changes_the_folder()
+ {
+    let (mut device, kept, discarded) = a_file_in_a_taken_along_server_folder();
+    let s: NodeId = "s".into();
+    device.note_taken_along([&s]);
+    device.receive(
+        &[a_dir_record("a", "s", 1), a_dir_record("c", "a", 1)],
+        false,
+    );
+    place_dir(&mut device, "a", Some(("s", "a")), None);
+    for (parent, meta_rev) in [("a", 1), ("root", 2), ("s", 3)] {
+        place_dir(&mut device, "c", Some((parent, "c")), None);
+        if meta_rev > 1 {
+            device.receive(&[a_dir_record("c", parent, meta_rev)], true);
+        }
+    }
+    renames_after_sync(&mut device, "c", "s");
+    assert!(acted_below(&device, &s, &kept, &discarded));
+}
+
+#[test]
+fn renaming_an_entry_another_device_adds_in_the_answer_window_and_this_device_moves_within_the_folder_changes_that_entry_alone()
+ {
+    let (mut device, kept, discarded) = a_file_in_a_taken_along_server_folder();
+    let s: NodeId = "s".into();
+    place_dir(&mut device, "m", Some(("s", "m")), Some(("s", "m")));
+    let answered = (device.on_server(), device.placements);
+    device.receive(&[a_dir_record("c", "s", 1)], false);
+    place_dir(&mut device, "c", Some(("m", "c")), None);
+    device.receive(&[a_dir_record("c", "m", 2)], true);
+    device.note_taken_along_at_answer([&s], &answered);
+    renames_after_sync(&mut device, "c", "m");
     assert!(!acted_below(&device, &s, &kept, &discarded));
 }
