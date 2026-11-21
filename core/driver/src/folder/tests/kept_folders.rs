@@ -2214,7 +2214,8 @@ fn a_rules_file_edited_while_its_emptied_kept_folder_waits_to_go_survives_a_purg
     }
 }
 #[test]
-fn discarding_the_rules_file_a_relinked_copy_of_a_kept_folder_holds_leaves_its_kept_entries_out_unasked() {
+fn discarding_the_rules_file_a_relinked_copy_of_a_kept_folder_holds_leaves_its_kept_entries_out_unasked()
+ {
     let ignored = [".env", "node_modules/pkg/index.js"];
     let (mut remote, site_a, mut a, site, b, _) = deleted_with_rules_files(
         &[(".koiignore", ".env\nnode_modules/\n")],
@@ -2311,11 +2312,19 @@ fn a_relinked_copy_of_a_folder_taken_over_without_rules_neither_asks_about_nor_u
 #[test]
 fn a_relinked_copy_keeps_out_a_kept_entry_the_person_moved_away_from_its_name() {
     let (mut remote, _, _, site, mut b) = taken_over_without_rules(&KEPT);
-    fs::rename(site.root.join("app/.env"), site.root.join("app/settings.txt")).unwrap();
+    fs::rename(
+        site.root.join("app/.env"),
+        site.root.join("app/settings.txt"),
+    )
+    .unwrap();
     settled(&mut b, &mut remote);
     assert!((b.folder.view().kept_entries).contains(&"app/settings.txt".into()));
     swapped_for_a_copy(&site, b, |_| {});
-    fs::copy(site.root.join("app/settings.txt"), site.root.join("app/.env")).unwrap();
+    fs::copy(
+        site.root.join("app/settings.txt"),
+        site.root.join("app/.env"),
+    )
+    .unwrap();
     relink(&site).unwrap();
     assert_eq!(
         published_after_the_first_link(&site, &mut remote).1,
@@ -2332,13 +2341,18 @@ fn a_relinked_copy_of_a_kept_folder_uploads_nothing_of_it() {
     );
     swapped_for_a_copy(&site, b, |_| {});
     relink(&site).unwrap();
-    assert_eq!(published_after_the_first_link(&site, &mut remote), (vec![], vec![]));
+    assert_eq!(
+        published_after_the_first_link(&site, &mut remote),
+        (vec![], vec![])
+    );
 }
 
 #[test]
 fn a_relinked_copy_that_lost_a_kept_entry_ends_its_record_and_still_keeps_its_name() {
     let (mut remote, _, _, site, b) = taken_over_without_rules(&KEPT);
-    swapped_for_a_copy(&site, b, |root| fs::remove_file(root.join("app/.env")).unwrap());
+    swapped_for_a_copy(&site, b, |root| {
+        fs::remove_file(root.join("app/.env")).unwrap()
+    });
     relink(&site).unwrap();
     let mut b = restarted(&site, &mut remote);
     b.rest(&mut remote);
@@ -2346,7 +2360,10 @@ fn a_relinked_copy_that_lost_a_kept_entry_ends_its_record_and_still_keeps_its_na
     assert!(asked(&site).is_empty());
     fs::write(site.root.join("app/.env"), local_only(Path::new(".env"))).unwrap();
     settled(&mut b, &mut remote);
-    assert_eq!(server_paths(&remote), on_the_server(&["app", "app/README.md"]));
+    assert_eq!(
+        server_paths(&remote),
+        on_the_server(&["app", "app/README.md"])
+    );
 }
 
 #[test]
@@ -2390,7 +2407,10 @@ fn a_relink_that_crashes_or_fails_keeps_the_kept_entries() {
                     relink_until(&site, crash_at(cut))
                 }));
                 assert!(crashed.is_err(), "{cut:?}");
-                assert!(!site.stored().trees.state().kept_paths.is_empty(), "{cut:?}");
+                assert!(
+                    !site.stored().trees.state().kept_paths.is_empty(),
+                    "{cut:?}"
+                );
                 if cut == disk::Cut::TokenPended {
                     relink(&site).unwrap();
                 }
