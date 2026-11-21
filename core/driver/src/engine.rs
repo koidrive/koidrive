@@ -1352,6 +1352,7 @@ impl Engine {
                         )
                     };
                     if refused && placed.is_none() && *kind == EntryKind::File {
+                        self.arrive_unread(to, identity, mark.clone(), now_ms);
                         self.reread.push(to.clone());
                     }
                     let Some(held) = refused_folder else { continue };
@@ -4585,6 +4586,32 @@ mod tests {
         saved_over_by_a_temp(&mut engine);
         engine.observe(&[rewritten("docs/report.txt", 9, 0, None)], 1_200);
         assert!(!continued(&mut engine, &report));
+    }
+
+    #[test]
+    fn a_refused_rename_onto_a_saved_name_does_not_continue_the_save() {
+        for together in [false, true] {
+            let (_dir, mut engine) = mapper();
+            let (report, _) = saved_report(&mut engine);
+            saved_over_by_a_temp(&mut engine);
+            let refused = Observed::Renamed {
+                from: "docs/draft.txt".into(),
+                to: "docs/report.txt".into(),
+                kind: EntryKind::File,
+                id: ino(9),
+                linked: false,
+                marked_node: Some("elsewhere".into()),
+            };
+            let removed = removed_file("docs/~WRL0001.tmp");
+            if together {
+                engine.observe(&[refused, removed], 1_200);
+            } else {
+                engine.observe(&[refused], 1_200);
+                engine.observe(&[removed], 1_300);
+            }
+            let held = holding(&engine, "docs/report.txt").map(|held| held.0);
+            assert_ne!(held, Some(report), "{together}");
+        }
     }
 
     #[test]
