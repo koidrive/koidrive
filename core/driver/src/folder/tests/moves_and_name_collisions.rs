@@ -2243,7 +2243,7 @@ fn a_word_save_whose_temp_file_was_written_while_stopped_keeps_its_node() {
     let stage = site.root.join("~WRD0000.tmp");
     fs::write(&stage, b"version two").unwrap();
     let mut a = site.start();
-    a.connect(&mut remote);
+    a.connect(&remote);
     a.scan_until(|a| a.folder.scanned && tracks(a, "~WRD0000.tmp"));
     assert_eq!(remote.names(), ["report.docx"]);
     safe_save_swap(&site, &mut a);
