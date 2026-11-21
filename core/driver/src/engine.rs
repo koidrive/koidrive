@@ -1380,7 +1380,10 @@ impl Engine {
         );
         let mut saves: Vec<Save> = (self.renamed_away.iter())
             .filter_map(|(id, (parent, name, renamed))| {
-                let removed = *(self.removed_at.get(id)).or_else(|| self.backup_removed.get(id))?;
+                let removed = (self.removed_at.get(id).into_iter())
+                    .chain(self.backup_removed.get(id))
+                    .max()
+                    .copied()?;
                 let (taker, took, staged) = self.took_slot.get(&(parent.clone(), name.clone()))?;
                 let saved = self.trees.local().get(taker)?;
                 let continues = self.trees.local_child(parent, name) == Some(taker)
