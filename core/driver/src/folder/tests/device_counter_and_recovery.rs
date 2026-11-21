@@ -244,6 +244,7 @@ fn a_synced_edit_a_rewind_takes_back_stays_in_the_local_trash_until_its_retentio
     a.create(&mut remote, &site.root.join("f.txt"), b"before");
     let backup = remote.space.clone();
     a.create(&mut remote, &site.root.join("f.txt"), b"after");
+    let before_trash = SystemTime::now();
     remote.space.rewind(&backup, NOW);
 
     a.pull(&remote);
@@ -253,7 +254,7 @@ fn a_synced_edit_a_rewind_takes_back_stays_in_the_local_trash_until_its_retentio
     assert!(shown(&site).is_empty(), "{:?}", shown(&site));
     assert_eq!(fs::read(site.root.join("f.txt")).unwrap(), b"before");
     assert_eq!(trashed_bytes(&site.root), [b"after".to_vec()]);
-    reclaims_only_when_due(&site, &mut a, &mut remote);
+    reclaims_only_when_due(&site, &mut a, &mut remote, before_trash);
     assert_eq!(fs::read(site.root.join("f.txt")).unwrap(), b"before");
 }
 
@@ -264,6 +265,7 @@ fn a_write_discarded_after_a_rewind_stays_in_the_local_trash_until_its_retention
     a.create(&mut remote, &site.root.join("kept.txt"), b"kept");
     let backup = remote.space.clone();
     a.create(&mut remote, &site.root.join("rewound.txt"), b"rewound");
+    let before_trash = SystemTime::now();
     remote.space.rewind(&backup, NOW);
     a.pull(&remote);
     assert_eq!(a.run(&mut remote).first(), Some(&"reconnect"));
@@ -278,7 +280,7 @@ fn a_write_discarded_after_a_rewind_stays_in_the_local_trash_until_its_retention
     assert_eq!(names(&site.root), ["kept.txt"]);
     assert_eq!(remote.names(), ["kept.txt"]);
     assert_eq!(trashed_bytes(&site.root), [b"rewound".to_vec()]);
-    reclaims_only_when_due(&site, &mut a, &mut remote);
+    reclaims_only_when_due(&site, &mut a, &mut remote, before_trash);
     assert_eq!(names(&site.root), ["kept.txt"]);
 }
 
@@ -289,24 +291,17 @@ fn trashed_bytes(root: &Path) -> Vec<Vec<u8>> {
         .collect()
 }
 
-fn reclaims_only_when_due(site: &Site, a: &mut Device, remote: &mut Remote) {
+fn reclaims_only_when_due(site: &Site, a: &mut Device, remote: &mut Remote, before_trash: SystemTime) {
     let (sent, served) = (a.sent.len(), remote.tree());
-    let index = site.root.join(koidrive_fs::PRIVATE_DIR).join("trash.json");
-    let index: serde_json::Value = serde_json::from_slice(&fs::read(index).unwrap()).unwrap();
-    let [trashed_s] = (index["entries"].as_object().unwrap().values())
-        .map(|entry| entry["trashed_s"].as_u64().unwrap())
-        .collect::<Vec<_>>()[..]
-    else {
-        panic!("one trash entry: {index}");
-    };
-    let cutoff = UNIX_EPOCH + Duration::from_secs(trashed_s + 7 * 24 * 60 * 60);
+    let after_trash = SystemTime::now();
+    let retention = Duration::from_secs(7 * 24 * 60 * 60);
     let minute = Duration::from_secs(60);
-    let early = a.folder.disk.reclaim_trash(cutoff - minute, u64::MAX);
+    let early = a.folder.disk.reclaim_trash(before_trash + retention - minute, u64::MAX);
     let early = early.unwrap();
     assert!(early.removed.is_empty(), "{early:?}");
     assert!(early.recovered.is_empty(), "{early:?}");
     assert_eq!(trashed_bytes(&site.root).len(), 1);
-    let due = cutoff + minute;
+    let due = after_trash + retention + minute;
     let reclaimed = a.folder.disk.reclaim_trash(due, u64::MAX).unwrap();
     assert_eq!(reclaimed.removed.len(), 1, "{reclaimed:?}");
     assert!(reclaimed.recovered.is_empty(), "{reclaimed:?}");
