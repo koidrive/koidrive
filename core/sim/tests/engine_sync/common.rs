@@ -3293,6 +3293,7 @@ fn run_ignoring_answering_after(
         !folder
             || inside_itself(id, &shape.parent)
             || (shape.parent == local.root && device.left_out_root_holds(&shape.name))
+            || device.disk_name_taken(&shape.parent, &[], &shape.name)
             || (local.iter()).any(|(other, node)| {
                 other != id
                     && !node.parked

@@ -696,3 +696,27 @@ fn a_blocked_unpark_home_onto_a_name_an_ignored_entry_holds_is_excused() {
     let at = still_planned_target(&device, &effects, &failed, None, &id).unwrap();
     assert!(device.disk_name_taken(&at.parent, &[], &at.name));
 }
+
+#[test]
+fn a_parked_file_whose_two_places_a_folder_and_a_left_out_entry_hold_stays_parked_and_reported() {
+    run_ignoring(
+        &[act(1, 0, 0, 0, 0)],
+        &[act(0, 0, 0, 6, 0), act(3, 0, 0, 4, 0)],
+        &[act(3, 0, 0, 6, 0), act(0, 0, 0, 4, 0)],
+        MAX_OPS,
+        false,
+        &[
+            (false, vec![act(3, 0, 1, 3, 0)]),
+            (true, vec![act(0, 0, 1, 3, 0)]),
+        ],
+        Cut::None,
+        &[
+            Ruling::Exclude(vec!["ss/"]),
+            Ruling::Include(vec![]),
+            Ruling::File(vec!["c.txt"]),
+        ],
+        Answer::Delete,
+        None,
+    )
+    .unwrap();
+}
