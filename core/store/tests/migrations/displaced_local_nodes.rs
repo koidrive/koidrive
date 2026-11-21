@@ -111,50 +111,53 @@ fn a_displaced_copy_waiting_for_its_legacy_create_survives_the_upgrade() {
     use koidrive_proto::v1::{Commit, CreateFile, Op, op};
     use prost::Message;
 
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("state.db");
-    drop(Store::open(&path).unwrap());
-    store_before(&path, "displaced_local_nodes");
-    let id = NodeId::from("pending");
-    let content = file_shape("root", "pending").content.unwrap();
-    let commit = Commit {
-        ops: vec![Op {
-            op: Some(op::Op::CreateFile(CreateFile {
-                node_id: id.to_string(),
-                parent_id: "root".into(),
-                name: "pending.txt".into(),
-                content: Some(content.clone()),
+    for name in ["pending.txt", "~WRD0000.tmp"] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.db");
+        drop(Store::open(&path).unwrap());
+        store_before(&path, "displaced_local_nodes");
+        let id = NodeId::from("pending");
+        let content = file_shape("root", "pending").content.unwrap();
+        let commit = Commit {
+            ops: vec![Op {
+                op: Some(op::Op::CreateFile(CreateFile {
+                    node_id: id.to_string(),
+                    parent_id: "root".into(),
+                    name: name.into(),
+                    content: Some(content.clone()),
+                    ..Default::default()
+                })),
                 ..Default::default()
-            })),
+            }],
             ..Default::default()
-        }],
-        ..Default::default()
-    };
-    let conn = Connection::open(&path).unwrap();
-    conn.execute(
-        "INSERT INTO recorded_nodes (node_id, displaced, ino, birth_ns) VALUES (?1, 1, 9, 11)",
-        [id.to_string()],
-    )
-    .unwrap();
-    conn.execute(
-        "INSERT INTO commit_in_flight (id, commit_message) VALUES (1, ?1)",
-        [commit.encode_to_vec()],
-    )
-    .unwrap();
-    drop(conn);
-
-    Store::open(&path)
-        .unwrap()
-        .transaction(|tx| {
-            let state = tx.engine_state()?;
-            assert!(state.trees.displaced_while_creating.contains(&id));
-            assert_eq!(state.trees.displaced[&id].ino, 9);
-            let local = tx.local_nodes()?.pop().unwrap();
-            assert_eq!(local.node_id, id);
-            assert_eq!(local.shape.parent_id, "root");
-            assert_eq!(local.shape.name, "pending.txt");
-            assert_eq!(local.shape.content, Some(content));
-            Ok::<_, Error>(())
-        })
+        };
+        let conn = Connection::open(&path).unwrap();
+        conn.execute(
+            "INSERT INTO recorded_nodes (node_id, displaced, ino, birth_ns) VALUES (?1, 1, 9, 11)",
+            [id.to_string()],
+        )
         .unwrap();
+        conn.execute(
+            "INSERT INTO commit_in_flight (id, commit_message) VALUES (1, ?1)",
+            [commit.encode_to_vec()],
+        )
+        .unwrap();
+        drop(conn);
+
+        Store::open(&path)
+            .unwrap()
+            .transaction(|tx| {
+                let state = tx.engine_state()?;
+                assert!(state.trees.displaced_while_creating.contains(&id));
+                assert_eq!(state.trees.displaced[&id].ino, 9);
+                assert_eq!(state.trees.born_as_temp.get(&id), None, "{name}");
+                let local = tx.local_nodes()?.pop().unwrap();
+                assert_eq!(local.node_id, id);
+                assert_eq!(local.shape.parent_id, "root");
+                assert_eq!(local.shape.name, name);
+                assert_eq!(local.shape.content, Some(content));
+                Ok::<_, Error>(())
+            })
+            .unwrap();
+    }
 }
