@@ -1792,7 +1792,10 @@ fn a_discard_keeps_the_ancestry_an_entry_left_when_that_place_moves_before_the_s
         device.trees.local().get(&item).unwrap().shape.parent,
         NodeId::from("root")
     );
-    assert_eq!(device.trees.local().get(&parent).unwrap().shape.parent, folder);
+    assert_eq!(
+        device.trees.local().get(&parent).unwrap().shape.parent,
+        folder
+    );
     assert_eq!(
         what_the_user_did_below(&device, &folder),
         "changed an entry it holds"
