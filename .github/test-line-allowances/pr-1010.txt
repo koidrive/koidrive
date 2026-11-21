@@ -1,0 +1,13 @@
+1381
+# A first sync's cost as the tree grows had no test on main. Each block below guards one fix commit and fails without it.
+# core/driver/src/folder/tests/sync_transfers_and_retries.rs and folder/ahead.rs: uploads ahead of a commit (receipt reuse, a refused receipt, a failed upload, a crash with a commit and an upload ahead out, a file that changes after its upload ahead).
+# core/driver/src/observe.rs: one open per folder and file per observation, including a folder renamed, replaced by a symbolic link or moved out of the root between two reads.
+# core/engine/src/commit.rs, core/engine/src/tree.rs and core/engine/tests/first_upload.rs: a first-link commit's build and the adoption walk after its result read as many entries whatever the tree's size (with the adoption walk's cfg(test) counter), and the next commit's files are upcoming while one is out.
+# core/fs/src/entries.rs and core/fs/tests/mark.rs: the mount index follows every write to the entries, and a batch of marks marks each entry a single mark would.
+# core/driver/src/engine.rs: a batch that lists the rules files the trees hold plans nothing again (42 lines).
+# core/fs/src/mark.rs: a mark recorded while a scan carries the marks before it is kept (42 lines, with its cfg(test) hook).
+# core/driver/tests/first_sync_bench.rs and tests/common/mod.rs: the two-million-entry stall gate and the per-entry heap gate, which share the Worker claim helpers moved out of tests/sync.rs.
+# core/driver/src/folder/tests/ignored_entries_and_moves.rs: the outstanding folders match a rebuild after a folder leaves a removed one and a file below it moves into an ignored folder.
+# core/driver/src/folder/tests/moves_and_name_collisions.rs and observe.rs: a file opened after its folder left the root never reaches the server, no read through a folder that left its path carries content, and a folder replaced and opened again in one batch still counts as left (with its cfg(test) hook).
+# core/driver/src/folder/tests/sync_transfers_and_retries.rs: an upload ahead of chunks the server holds is not started again, and a LogTruncated or AheadOfServer resync while a commit waits for its uploads ahead still sends it.
+# core/driver/tests/first_sync_bench.rs: the stall gate and the whole-tree check judged on fake status traces.
