@@ -3580,9 +3580,11 @@ fn local_writes_check(
         .map(|(_, node)| node.shape.content);
     let in_ignored_folders = (device.ignored.iter())
         .filter(|((holder, below), entry)| {
-            device.in_parked_folder(holder)
-                || (device.ignored_disk_path(holder, below))
-                    .is_some_and(|path| device.trees.ignores(&path, entry.kind))
+            match device.in_parked_folder(holder) {
+                true => device.disk_path(holder, below),
+                false => device.ignored_disk_path(holder, below),
+            }
+            .is_some_and(|path| device.trees.ignores(&path, entry.kind))
         })
         .map(|(_, entry)| entry.content);
     let kept = written(
