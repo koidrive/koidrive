@@ -142,7 +142,7 @@ An `UpdateContent` with an intent whose content equals the file's current conten
 
 The ancestry test counts the current version's `source_version_id` (RFC 0026 §2) as the current version, since a replay holds the value its source names: an edit made over that value is made over the replay. An incoming op's own source alias still does not count (RFC 0026 §3). When the alias makes an op count as made over the current version, the new version's chain is the op's expanded `made_over` followed by the current version and its chain, as for an edit back to equal bytes.
 
-RFC 0026 §3's checks for a resend apply to every replay, after §3.1's same-intent check. A replay whose `source_version_id` RFC 0026 §3 finds in a retained version of the target, and whose intent the field does not hold, is `SUPERSEDED`. A replay prepends its `source_version_id` to the version it creates and stores it as that version's alias, as RFC 0026 §2 says for a resend, even when the op has no `resend`.
+RFC 0026 §3's checks for a resend apply to every replay, after §3.1's same-intent check. A replay whose `source_version_id` RFC 0026 §3 finds in a retained version of the target, and whose intent the field does not hold, is `SUPERSEDED`, also when the target is trashed: this check comes before §3.4's. A replay prepends its `source_version_id` to the version it creates and stores it as that version's alias, as RFC 0026 §2 says for a resend, even when the op has no `resend`.
 
 ## 4. A lost change against a later delete
 
