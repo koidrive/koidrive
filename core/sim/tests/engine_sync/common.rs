@@ -617,6 +617,7 @@ struct Device {
     acted: BTreeSet<NodeId>,
     acked: BTreeSet<NodeId>,
     removed_from: BTreeMap<NodeId, NodeId>,
+    left_from: BTreeMap<NodeId, Vec<NodeId>>,
     stays: BTreeMap<NodeId, BTreeMap<NodeId, (bool, u64)>>,
     last_other: BTreeMap<NodeId, u64>,
     placements: u64,
@@ -695,6 +696,7 @@ impl Device {
             acted: BTreeSet::new(),
             acked: BTreeSet::new(),
             removed_from: BTreeMap::new(),
+            left_from: BTreeMap::new(),
             stays: BTreeMap::new(),
             last_other: BTreeMap::new(),
             placements: 0,
@@ -714,17 +716,19 @@ impl Device {
         before: &koidrive_engine::tree::Shape,
         after: &koidrive_engine::tree::Shape,
     ) {
-        let (from, origin) = (self.relocated.remove(id))
-            .filter(|moved| moved.to.same_position(before))
-            .map_or_else(
-                || {
-                    (
-                        before.clone(),
-                        ancestors(&self.trees, Some(before.parent.clone())),
-                    )
-                },
-                |moved| (moved.from, moved.origin),
-            );
+        let kept = (self.relocated.remove(id)).filter(|moved| moved.to.same_position(before));
+        if kept.is_none() {
+            self.leave(id, &before.parent);
+        }
+        let (from, origin) = kept.map_or_else(
+            || {
+                (
+                    before.clone(),
+                    ancestors(&self.trees, Some(before.parent.clone())),
+                )
+            },
+            |moved| (moved.from, moved.origin),
+        );
         if !from.same_position(after) {
             let to = after.clone();
             self.relocated
@@ -894,8 +898,9 @@ impl Device {
         }) {
             above = (self.trees.local().get(&folder)).map(|node| node.shape.parent.clone());
             self.off_disk.remove(&folder);
-            self.removed_from
-                .insert(folder.clone(), above.clone().expect("lost folder in L"));
+            let parent = above.clone().expect("lost folder in L");
+            self.leave(&folder, &parent);
+            self.removed_from.insert(folder.clone(), parent);
             self.kept_back.remove(&folder);
             self.relocated.remove(&folder);
             self.acted_on(folder.clone());
@@ -953,6 +958,16 @@ impl Device {
             .filter(|id| visible(&self.trees, id))
             .collect();
         self.trees.listed(&moved, Pending::default());
+    }
+
+    fn leave(&mut self, id: &NodeId, parent: &NodeId) {
+        let mut chain = Vec::new();
+        let mut at = Some(parent.clone());
+        while let Some(node) = at.filter(|node| !chain.contains(node)) {
+            at = (self.trees.local().get(&node)).map(|local| local.shape.parent.clone());
+            chain.push(node);
+        }
+        self.left_from.insert(id.to_owned(), chain);
     }
 
     fn acted_on(&mut self, id: NodeId) {
@@ -1193,9 +1208,11 @@ impl Device {
                 }
                 self.off_disk.extend(only_in_l);
                 for other in doomed.into_iter().rev() {
-                    if let Some(node) = self.trees.local().get(&other) {
-                        self.removed_from
-                            .insert(other.clone(), node.shape.parent.clone());
+                    if let Some(parent) =
+                        (self.trees.local().get(&other)).map(|node| node.shape.parent.clone())
+                    {
+                        self.leave(&other, &parent);
+                        self.removed_from.insert(other.clone(), parent);
                     }
                     self.kept_back.remove(&other);
                     self.relocated.remove(&other);
@@ -1930,14 +1947,11 @@ fn what_the_user_did_below(device: &Device, folder: &NodeId) -> &'static str {
         (device.stays.get(entry)).is_some_and(|stays| stays.values().any(|(by_other, _)| *by_other))
     };
     let below = |entry: &NodeId| reaches(trees.local().get(entry).map(|local| &local.shape.parent));
-    let taken_out: Vec<&NodeId> = (device.removed_from.iter())
-        .filter(|(_, from)| reaches(Some(from)))
-        .map(|(entry, _)| entry)
-        .chain(
-            (device.relocated.iter())
-                .filter(|(entry, moved)| reaches(Some(&moved.from.parent)) && !below(entry))
-                .map(|(entry, _)| entry),
-        )
+    let left_it =
+        |entry: &NodeId| (device.left_from.get(entry)).is_some_and(|chain| chain.contains(folder));
+    let taken_out: Vec<&NodeId> = (device.removed_from.keys())
+        .filter(|entry| left_it(entry))
+        .chain((device.relocated.keys()).filter(|entry| left_it(entry) && !below(entry)))
         .collect();
     let changed: Vec<&NodeId> = (device.acted.iter())
         .filter(|entry| below(entry))
