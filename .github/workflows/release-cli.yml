@@ -50,7 +50,7 @@ jobs:
             changed="$(tr '\0' '\n' < "$RUNNER_TEMP/changed")"
             echo "Files this pull request changes against $BASE:"
             printf '%s\n' "$changed"
-            pattern='^(cli/|core/|server/|\.cargo/|install\.sh$|scripts/test-install\.sh$|scripts/(stamp|test)-release-version\.py$|scripts/release-commit\.py$|scripts/(test-)?publish-release\.sh$|scripts/sign-checksums\.sh$|\.github/release-allowed-signers$|scripts/(test-)?homebrew-[a-z-]+\.sh$|\.github/requirements-musl\.txt$|\.github/workflows/release-cli\.yml$|Cargo\.[^/]*$|rust-toolchain\.toml$)'
+            pattern='^(cli/|core/|server/|\.cargo/|install\.sh$|scripts/test-install\.sh$|scripts/(stamp|test)-release-version\.py$|scripts/release-commit\.py$|scripts/(test-)?publish-release\.sh$|scripts/sign-checksums\.sh$|\.github/release-allowed-signers$|scripts/(test-)?homebrew-[a-z-]+\.sh$|scripts/(test-)?third-party-notices(\.py$|/)|\.github/requirements-musl\.txt$|\.github/workflows/release-cli\.yml$|Cargo\.[^/]*$|rust-toolchain\.toml$)'
             if grep -Eq "$pattern" <<<"$changed"; then
               echo "Linux targets: build, because a changed file matches $pattern"
             else
@@ -170,6 +170,13 @@ jobs:
           python3 -m venv "$RUNNER_TEMP/zigbuild"
           "$RUNNER_TEMP/zigbuild/bin/pip" install --require-hashes --only-binary=:all: -r .github/requirements-musl.txt
           echo "$RUNNER_TEMP/zigbuild/bin" >> "$GITHUB_PATH"
+      - name: Check that the third-party notices cover every linked component
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: |
+          rustup component add rust-src
+          rustup target add aarch64-apple-darwin aarch64-unknown-linux-musl x86_64-unknown-linux-musl
+          python3 scripts/test-third-party-notices.py -v
+          "$RUNNER_TEMP/zigbuild/bin/python3" scripts/third-party-notices.py check
       - name: Install ShellCheck on macOS
         if: runner.os == 'macOS'
         run: brew install shellcheck
@@ -233,14 +240,11 @@ jobs:
         env:
           TARGET: ${{ matrix.target }}
         run: |
+          python3 scripts/third-party-notices.py covers "$TARGET"
           mkdir -p dist package
           cp "target/$TARGET/release/koi" package/koi
-          files=(koi)
-          if [[ "$TARGET" == *linux-musl ]]; then
-            cp cli/THIRD-PARTY-NOTICES package/THIRD-PARTY-NOTICES
-            files+=(THIRD-PARTY-NOTICES)
-          fi
-          tar -czf "dist/koidrive-$TARGET.tar.gz" -C package "${files[@]}"
+          cp cli/THIRD-PARTY-NOTICES package/THIRD-PARTY-NOTICES
+          tar -czf "dist/koidrive-$TARGET.tar.gz" -C package koi THIRD-PARTY-NOTICES
           tar -tzf "dist/koidrive-$TARGET.tar.gz"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -379,7 +383,7 @@ jobs:
             codesign --verify --strict --verbose=2 "$package/koi"
             ditto -c -k "$package/koi" "$package.zip"
             NOTARY_KEY_PATH="$secrets_dir/notary-key.p8" apps/macos/scripts/notarize.sh "$package.zip"
-            tar -czf "$archive" -C "$package" koi
+            tar -czf "$archive" -C "$package" koi THIRD-PARTY-NOTICES
             echo "Signed and notarized koi in $archive."
           done
       - name: Remove signing material

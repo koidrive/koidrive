@@ -57,6 +57,7 @@ $(release x86_64-unknown-linux-musl)
 
   def install
     bin.install "koi"
+    prefix.install "THIRD-PARTY-NOTICES"
   end
 
   def caveats

@@ -80,9 +80,10 @@ exec /bin/ps "$@"
 EOF
 chmod +x "$tmp/services/systemctl" "$tmp/services/launchctl" "$tmp/services/codesign" "$tmp/services/ps"
 cp "$binary" "$tmp/package/koi"
+cp "$root/cli/THIRD-PARTY-NOTICES" "$tmp/package/THIRD-PARTY-NOTICES"
 archive=koidrive-$target.tar.gz
 release=$tmp/releases/download/v0.0.0
-tar -czf "$release/$archive" -C "$tmp/package" koi
+tar -czf "$release/$archive" -C "$tmp/package" koi THIRD-PARTY-NOTICES
 if command -v sha256sum >/dev/null 2>&1; then
     (cd "$release" && sha256sum "$archive") > "$release/SHA256SUMS"
 else
