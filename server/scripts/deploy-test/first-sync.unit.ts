@@ -30,7 +30,9 @@ import {
   type Status,
   shapeOf,
   summary,
+  RPC_KINDS,
 } from "./first-sync-model.ts";
+import { RpcRequestSchema } from "../../src/gen/koidrive/v1/messages_pb";
 
 const ENTRIES = 1000;
 
@@ -533,6 +535,23 @@ describe("server events", () => {
     const share = serverEvent({ $metadata: { trigger: "GET /v1/share/AbCdEf/file/board-deck.pptx?x=1", spanName: "fetch https://example.com/board-deck.pptx", origin: "fetch" } });
     expect(share.$metadata).toEqual({ route: "get_share", origin: "fetch" });
     expect(serverEvent({ $metadata: { trigger: "SpaceDO.webSocketMessage" } }).$metadata).toEqual({ trigger: "SpaceDO.webSocketMessage" });
+  });
+
+  it("keeps a Space RPC log line's kind and item count and nothing else from its source", () => {
+    const kept = serverEvent({
+      $metadata: { type: "cf-worker", requestId: "r1", message: "secret" },
+      source: { koidrive_rpc: "commit", koidrive_items: 1000, koidrive_note: "/fixture/private.txt", message: "secret", nested: { koidrive_rpc: "commit" } },
+    });
+    expect(kept.$metadata).toEqual({ type: "cf-worker", requestId: "r1" });
+    expect(kept.attributes).toEqual({ koidrive_rpc: "commit", koidrive_items: 1000 });
+    for (const source of [{ koidrive_rpc: "/fixture/private.txt" }, { koidrive_rpc: "constructor" }, { koidrive_items: -1 }, { koidrive_items: 1.5 }, { koidrive_items: "12" }, { constructor: "commit" }]) {
+      expect(serverEvent({ source }).attributes, JSON.stringify(source)).toEqual({});
+    }
+  });
+
+  it("knows every RPC kind a Space can log", () => {
+    const kinds = RpcRequestSchema.oneofs.find((oneof) => oneof.localName === "call")!.fields.map((field) => field.localName);
+    expect([...RPC_KINDS].sort()).toEqual([...kinds, "empty"].sort());
   });
 
   it("halves a window that returns the query limit, drops events read twice at a boundary, and reports windows too short to halve", async () => {

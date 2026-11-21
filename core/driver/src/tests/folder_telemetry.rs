@@ -1,7 +1,109 @@
 // SPDX-License-Identifier: Apache-2.0
 
+use std::io;
+
 use super::*;
 use koidrive_telemetry::Recorder;
+
+#[derive(Clone, Default)]
+struct Captured(Arc<Mutex<Vec<u8>>>);
+
+impl io::Write for Captured {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+fn landed_lines(run: impl FnOnce()) -> Vec<String> {
+    let captured = Captured::default();
+    let writer = captured.clone();
+    let subscriber = tracing_subscriber::fmt()
+        .with_writer(move || writer.clone())
+        .with_ansi(false)
+        .finish();
+    let _second_dispatch_so_other_threads_do_not_cache_never =
+        tracing::Dispatch::new(tracing::subscriber::NoSubscriber::default());
+    tracing::subscriber::with_default(subscriber, run);
+    let log = String::from_utf8(captured.0.lock().unwrap().clone()).unwrap();
+    let landed: Vec<String> = (log.lines())
+        .filter(|line| line.contains("koidrive commit landed"))
+        .map(str::to_owned)
+        .collect();
+    for line in &landed {
+        let fields = line
+            .split_whitespace()
+            .filter_map(|word| word.split_once('='));
+        for (name, _) in fields {
+            assert!(
+                ["ops", "chunks", "since_last_ms", "upload_ms", "send_ms"].contains(&name),
+                "{name} in {line}"
+            );
+        }
+    }
+    landed
+}
+
+#[test]
+fn each_landed_commit_logs_its_ops_chunks_and_the_time_of_its_upload_and_send() {
+    let landed = landed_lines(|| {
+        let mut remote = Remote::new_at(Time::now().unix_ms - 10_000);
+        let (site, mut a) = linked(&mut remote, "device-a");
+        fs::write(site.root.join("one"), b"first bytes").unwrap();
+        fs::write(site.root.join("two"), b"second bytes").unwrap();
+        a.scan_until(|a| !a.work.is_empty());
+        a.rest(&mut remote);
+        fs::create_dir(site.root.join("folder")).unwrap();
+        a.scan_until(|a| !a.work.is_empty());
+        a.rest(&mut remote);
+    });
+    assert_eq!(landed.len(), 2, "{landed:?}");
+    for field in ["upload_ms=", "send_ms="] {
+        assert!(landed.iter().all(|line| line.contains(field)), "{landed:?}");
+    }
+    assert!(
+        landed[0].contains("chunks=2") && !landed[0].contains("since_last_ms="),
+        "{landed:?}"
+    );
+    assert!(
+        landed[1].contains("chunks=0") && landed[1].contains("since_last_ms="),
+        "{landed:?}"
+    );
+}
+
+#[test]
+fn a_stored_commit_that_lands_after_a_restart_logs_its_ops_without_timings() {
+    for reached_the_server in [false, true] {
+        let landed = landed_lines(|| {
+            let mut remote = Remote::new();
+            let (site, mut a) = linked(&mut remote, "a");
+            fs::write(site.root.join("notes.txt"), b"written on a").unwrap();
+            a.scan_until(|a| !a.work.is_empty());
+            let upload = a.work.pop_front().unwrap();
+            a.perform(upload, &mut remote).unwrap();
+            let Some(Work::Send(commit)) = a.work.pop_front() else {
+                panic!("the commit is sent after its upload");
+            };
+            if reached_the_server {
+                remote.commit(&a.caller, &commit).unwrap();
+            }
+            drop(a);
+            let mut a = site.start();
+            a.connect(&remote);
+            a.scan_until(|a| a.folder.scanned);
+            a.run(&mut remote);
+            a.settle();
+            assert_eq!(remote.space.head_seq(), 1);
+        });
+        assert_eq!(landed.len(), 1, "reached the server: {reached_the_server}");
+        assert!(landed[0].contains("ops=1"), "{landed:?}");
+        assert!(!landed[0].contains("_ms="), "{landed:?}");
+    }
+}
 
 fn histograms(recorder: &Recorder) -> serde_json::Value {
     let mut all = koidrive_telemetry::HourlyReport::default();

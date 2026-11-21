@@ -152,6 +152,52 @@ async fn small_chunks_go_in_bundles_of_at_most_32_when_the_server_offers_them() 
     assert!(sent.iter().all(|sent| matches!(sent, Wire::Bundle(_))));
 }
 
+#[derive(Clone, Default)]
+struct Captured(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl std::io::Write for Captured {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn a_finished_upload_logs_its_chunks_units_bundles_and_where_its_time_went() {
+    let captured = Captured::default();
+    let writer = captured.clone();
+    let subscriber = tracing_subscriber::fmt()
+        .with_writer(move || writer.clone())
+        .with_ansi(false)
+        .finish();
+    let _second_dispatch_so_other_threads_do_not_cache_never =
+        tracing::Dispatch::new(tracing::subscriber::NoSubscriber::default());
+    let _default = tracing::subscriber::set_default(subscriber);
+    let parts = named(40);
+    let (receipts, _, _, _) = bundled_upload(offering(), Some(stored_all), &parts).await;
+    receipts.unwrap();
+    let log = String::from_utf8(captured.0.lock().unwrap().clone()).unwrap();
+    let finished: Vec<_> = (log.lines())
+        .filter(|line| line.contains("koidrive chunk upload finished"))
+        .collect();
+    assert_eq!(finished.len(), 1, "{log}");
+    for field in [
+        "chunks=40",
+        "units=2",
+        "bundles=2",
+        "peak=",
+        "prepare_ms=",
+        "busy_ms=",
+        " ms=",
+    ] {
+        assert!(finished[0].contains(field), "{field} in {log}");
+    }
+}
+
 fn unordered(sent: &[Wire]) -> Vec<String> {
     sorted(sent.iter().map(|sent| format!("{sent:?}")).collect())
 }

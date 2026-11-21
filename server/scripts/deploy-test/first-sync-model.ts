@@ -409,6 +409,11 @@ export const TELEMETRY_KEPT = {
   $workers: ["eventType", "entrypoint", "executionModel", "outcome", "wallTimeMs", "cpuTimeMs", "requestId", "traceId", "spanId", "durableObjectId"],
 } as const;
 const SPAN_ATTRIBUTE = /cloudflare\.(r2\.(operation|response\.success|error\.code)|durable_object\.id|entrypoint|execution_model)$/;
+export const RPC_KINDS: readonly Scalar[] = ["commit", "prepareUpload", "getDownloadTargets", "getVersionChunks", "listVersions", "listTree", "listTrash", "empty"];
+const LOG_FIELDS = new Map<string, (value: Scalar) => boolean>([
+  ["koidrive_rpc", (value) => RPC_KINDS.includes(value)],
+  ["koidrive_items", (value) => typeof value === "number" && Number.isSafeInteger(value) && value >= 0],
+]);
 const FIELD_DEPTH = 4;
 const MAX_FIELDS = 500;
 
@@ -455,6 +460,8 @@ export function serverEvent(event: Raw): ServerEvent {
     const name = path.join(".");
     const match = SPAN_ATTRIBUTE.exec(name);
     if (match && isScalar(value)) attributes[match[0]] = value;
+    const [group, field, ...rest] = path;
+    if (group === "source" && field !== undefined && !rest.length && isScalar(value) && LOG_FIELDS.get(field)?.(value)) attributes[field] = value;
   }
   return { timestamp: typeof event.timestamp === "number" ? event.timestamp : null, $metadata: kept("$metadata"), $workers: kept("$workers"), attributes };
 }

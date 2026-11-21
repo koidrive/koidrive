@@ -200,6 +200,8 @@ impl Transfer {
         let mut todo = distinct(chunks);
         let mut receipts = Vec::new();
         let mut round = 0;
+        let began = Instant::now();
+        let mut pace = Pace::default();
         while !todo.is_empty() {
             let mut deferred = Vec::new();
             let mut wait = Duration::ZERO;
@@ -207,7 +209,9 @@ impl Transfer {
                 .step_by(MAX_CHUNKS_PER_CALL)
                 .zip(todo.chunks(MAX_CHUNKS_PER_CALL))
             {
+                let asked = Instant::now();
                 let result = session.prepare_upload(batch.to_vec()).await?;
+                pace.preparing += asked.elapsed();
                 let prepared = SystemTime::now();
                 let plans: HashMap<_, _> = result
                     .chunks
@@ -245,7 +249,8 @@ impl Transfer {
                         && !session.bundles().confirmed();
                     tokio::select! {
                         biased;
-                        Some((probe, sent, result)) = running.next() => {
+                        Some((probe, sent, result, took)) = running.next() => {
+                            pace.busy += took;
                             if probe {
                                 probing = false;
                             }
@@ -277,8 +282,11 @@ impl Transfer {
                             let url = unit.url.as_deref().filter(|_| members.len() > 1 && session.bundles_offered());
                             let probe = url.is_some() && !session.bundles().confirmed();
                             probing |= probe;
+                            pace.units += 1;
+                            pace.bundles += usize::from(url.is_some());
                             running.push(async move {
                                 let _permit = permit;
+                                let began = Instant::now();
                                 let mut sent = Vec::new();
                                 let out = &mut sent;
                                 let result = async move {
@@ -301,8 +309,9 @@ impl Transfer {
                                     }
                                 }
                                 .await;
-                                (probe, sent, result)
+                                (probe, sent, result, began.elapsed())
                             });
+                            pace.peak = pace.peak.max(running.len());
                         }
                         else => break,
                     }
@@ -336,6 +345,16 @@ impl Transfer {
                 .map(|index| todo[index].clone())
                 .collect();
         }
+        tracing::info!(
+            chunks = chunks.len(),
+            units = pace.units,
+            bundles = pace.bundles,
+            peak = pace.peak,
+            prepare_ms = pace.preparing.as_millis() as u64,
+            busy_ms = pace.busy.as_millis() as u64,
+            ms = began.elapsed().as_millis() as u64,
+            "koidrive chunk upload finished"
+        );
         Ok(receipts)
     }
 
@@ -933,6 +952,15 @@ fn retry_after(error: &ChunkError) -> Option<Duration> {
 
 const MAX_BUNDLE_CHUNKS: usize = 32;
 const MAX_BUNDLE_BYTES: u32 = 1 << 20;
+
+#[derive(Default)]
+struct Pace {
+    units: usize,
+    bundles: usize,
+    peak: usize,
+    preparing: Duration,
+    busy: Duration,
+}
 
 struct Unit<'a> {
     url: Option<String>,
