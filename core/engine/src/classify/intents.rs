@@ -538,15 +538,8 @@ impl Trees {
         let mut next = 0;
         while let Some(node) = nodes.get(next).cloned() {
             next += 1;
-            let waiting = (self.waiting.iter())
-                .filter(|(_, waiting)| {
-                    waiting
-                        .shape
-                        .as_ref()
-                        .is_some_and(|shape| shape.parent == node)
-                })
-                .map(|(child, _)| child);
-            let lacked: BTreeSet<NodeId> = (self.s_names.children(&node).chain(waiting))
+            let lacked: BTreeSet<NodeId> = (self.s_names.children(&node))
+                .chain(self.waiting.children(&node))
                 .filter(|child| {
                     self.l.get(child).is_none()
                         && self

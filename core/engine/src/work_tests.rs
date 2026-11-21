@@ -217,3 +217,38 @@ fn planning_a_new_folder_of_local_files_is_linear_in_its_files() {
     let two_hundred = new_local_folder(200, u64::MAX);
     new_local_folder(2000, two_hundred * 11);
 }
+#[test]
+fn a_backfill_reads_the_waiting_updates_of_a_deleted_folder_by_parent() {
+    let measure = |files: usize, unrelated: usize| {
+        let mut trees = Trees::new(ROOT, &IdGen::new(0));
+        trees.set_remote("d".into(), remote(dir(ROOT, "d")));
+        trees.set_synced("d".into(), Some(dir(ROOT, "d")));
+        for i in 0..files {
+            let id = NodeId::from(format!("c{i}"));
+            let shape = file("d", &format!("c{i}"), 1);
+            trees.set_remote(id.clone(), remote(shape.clone()));
+            trees.set_synced(id, Some(shape));
+        }
+        for j in 0..unrelated {
+            let id = NodeId::from(format!("w{j}"));
+            let shape = file(ROOT, &format!("w{j}"), 2);
+            trees.set_remote(id.clone(), remote(shape.clone()));
+            trees.set_synced(id.clone(), Some(shape.clone()));
+            trees.set_local(id.clone(), local(shape, j as u128 + 10));
+            trees.wait(
+                id,
+                Some(file(ROOT, &format!("x{j}"), 2)),
+                crate::classify::Origin::Other,
+            );
+        }
+        trees.settle(&Default::default());
+        let (_, read) = reads(u64::MAX, || trees.backfill(None, false, NOW));
+        read
+    };
+    let folder = |unrelated| measure(100, unrelated) - measure(0, unrelated);
+    let (few, many) = (folder(100), folder(1_000));
+    assert!(
+        many < few * 2,
+        "the folder read {few} entries beside 100 waiting updates, {many} beside 1000"
+    );
+}
