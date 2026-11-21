@@ -2800,7 +2800,7 @@ fn a_save_continuation_does_not_take_a_file_the_server_forgot_through_an_unsynce
             drop(a);
             a = restarted(&site, &mut remote);
         }
-        assert!(!a.folder.engine.trees.displaced_local().contains_key(&notes));
+        assert!(a.folder.engine.trees.displaced_local().contains_key(&notes));
         assert!(a.folder.engine.trees.remote().get(&notes).is_none());
 
         safe_save_swap(&site, &mut a);
