@@ -224,9 +224,16 @@ jobs:
         with:
           ref: ${{ needs.build.outputs.sha }}
           persist-credentials: false
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
+      - id: download_battery_binaries_try
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        timeout-minutes: 2
+        continue-on-error: true
+        with: &download-battery-binaries
           name: battery-binaries
+      - if: steps.download_battery_binaries_try.outcome == 'failure'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        timeout-minutes: 2
+        with: *download-battery-binaries
       - name: Run the property tests
         run: |
           tar -xf battery.tar
@@ -373,11 +380,18 @@ jobs:
     permissions:
       actions: read
     steps:
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
+      - id: download_result_try
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        timeout-minutes: 2
+        continue-on-error: true
+        with: &download-result
           pattern: result-*
           path: results
           merge-multiple: true
+      - if: steps.download_result_try.outcome == 'failure'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        timeout-minutes: 2
+        with: *download-result
       - name: Summarize the shards
         env:
           GH_TOKEN: ${{ github.token }}
@@ -471,12 +485,19 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
+      - id: download_failure_shard_try
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        timeout-minutes: 2
+        continue-on-error: true
+        with: &download-failure-shard
           pattern: failure-shard-*
           path: failures
           run-id: ${{ env.RUN }}
           github-token: ${{ github.token }}
+      - if: steps.download_failure_shard_try.outcome == 'failure'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        timeout-minutes: 2
+        with: *download-failure-shard
       - name: Collect the new cases
         id: collect
         env:
@@ -531,9 +552,16 @@ jobs:
           workspaces: side -> target
           shared-key: property-battery-${{ hashFiles('side/Cargo.toml') }}
           save-if: false
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
+      - id: download_triage_cases_try
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        timeout-minutes: 2
+        continue-on-error: true
+        with: &download-triage-cases
           name: triage-cases
+      - if: steps.download_triage_cases_try.outcome == 'failure'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        timeout-minutes: 2
+        with: *download-triage-cases
       - name: Replay each case alone
         run: python3 scripts/triage-battery.py replay --cases cases.json --side "$SIDE" --checkout side --out "replay-$SIDE.json"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -555,11 +583,18 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
+      - id: download_triage_try
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        timeout-minutes: 2
+        continue-on-error: true
+        with: &download-triage
           pattern: triage-*
           path: triage
           merge-multiple: true
+      - if: steps.download_triage_try.outcome == 'failure'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        timeout-minutes: 2
+        with: *download-triage
       - name: Compare the head with the base
         env:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ inputs.triage_run || github.run_id }}

@@ -256,10 +256,17 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
+      - id: download_cli_try
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        timeout-minutes: 2
+        continue-on-error: true
+        with: &download-cli
           name: cli-${{ matrix.target }}
           path: dist
+      - if: steps.download_cli_try.outcome == 'failure'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        timeout-minutes: 2
+        with: *download-cli
       - name: Install the CLI from a local tap in the Homebrew image
         if: runner.os == 'Linux'
         env:
@@ -297,11 +304,18 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
+      - id: download_cli_apple_darwin_try
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        timeout-minutes: 2
+        continue-on-error: true
+        with: &download-cli-apple-darwin
           pattern: cli-*-apple-darwin
           merge-multiple: true
           path: dist
+      - if: steps.download_cli_apple_darwin_try.outcome == 'failure'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        timeout-minutes: 2
+        with: *download-cli-apple-darwin
       - name: Sign and notarize with the Developer ID
         env:
           P12_BASE64: ${{ secrets.MACOS_DEVELOPER_ID_P12_BASE64 }}
@@ -397,27 +411,55 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
+      - id: download_cli_linux_musl_try
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        timeout-minutes: 2
+        continue-on-error: true
+        with: &download-cli-linux-musl
           pattern: cli-*-linux-musl
           merge-multiple: true
           path: dist
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+      - if: steps.download_cli_linux_musl_try.outcome == 'failure'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        timeout-minutes: 2
+        with: *download-cli-linux-musl
+      - id: download_cli_macos_release_try
         if: needs.sign-macos.result == 'success'
-        with:
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        timeout-minutes: 2
+        continue-on-error: true
+        with: &download-cli-macos-release
           name: cli-macos-release
           path: dist
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+      - if: steps.download_cli_macos_release_try.outcome == 'failure'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        timeout-minutes: 2
+        with: *download-cli-macos-release
+      - id: download_dmg_try
         if: needs.macos-app.result == 'success'
-        with:
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        timeout-minutes: 2
+        continue-on-error: true
+        with: &download-dmg
           name: ${{ needs.macos-app.outputs.dmg-artifact }}
           path: dist
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+      - if: steps.download_dmg_try.outcome == 'failure'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        timeout-minutes: 2
+        with: *download-dmg
+      - id: download_cli_apple_darwin_try
         if: needs.sign-macos.result == 'skipped' && needs.changes.outputs.macos == 'true'
-        with:
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        timeout-minutes: 2
+        continue-on-error: true
+        with: &download-cli-apple-darwin-2
           pattern: cli-*-apple-darwin
           merge-multiple: true
           path: dist
+      - if: steps.download_cli_apple_darwin_try.outcome == 'failure'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        timeout-minutes: 2
+        with: *download-cli-apple-darwin-2
       - name: Write and verify SHA256SUMS
         env:
           COUNT: ${{ needs.changes.outputs.count }}
@@ -484,10 +526,17 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
+      - id: download_release_assets_try
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        timeout-minutes: 2
+        continue-on-error: true
+        with: &download-release-assets
           name: release-assets
           path: dist
+      - if: steps.download_release_assets_try.outcome == 'failure'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        timeout-minutes: 2
+        with: *download-release-assets
       - name: Sign SHA256SUMS with the release key
         env:
           RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
@@ -515,14 +564,28 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
+      - id: download_release_assets_try
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        timeout-minutes: 2
+        continue-on-error: true
+        with: &download-release-assets-2
           name: release-assets
           path: dist
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
+      - if: steps.download_release_assets_try.outcome == 'failure'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        timeout-minutes: 2
+        with: *download-release-assets-2
+      - id: download_release_signature_try
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        timeout-minutes: 2
+        continue-on-error: true
+        with: &download-release-signature
           name: release-signature
           path: dist
+      - if: steps.download_release_signature_try.outcome == 'failure'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        timeout-minutes: 2
+        with: *download-release-signature
       - name: Attach the tarballs, the app, checksums and their signature to the tagged release
         env:
           GH_TOKEN: ${{ github.token }}

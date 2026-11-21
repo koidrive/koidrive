@@ -406,6 +406,43 @@ class CachePrune(unittest.TestCase):
                 self.assertIn(re.search(r"(?m)^name: (.*)$", path.read_text())[1], triggers)
 
 
+def download_steps(text):
+    lines = text.split("\n")
+    steps = []
+    for i, line in enumerate(lines):
+        m = re.match(r"^(\s*)- ", line)
+        if not m:
+            continue
+        indent = m[1] + "  "
+        end = i + 1
+        while end < len(lines) and (lines[end].startswith(indent) or not lines[end].strip()):
+            end += 1
+        step = "\n".join([indent + line[len(indent):]] + lines[i + 1:end])
+        if "uses: actions/download-artifact@" in step:
+            steps.append(textwrap.dedent(step))
+    return steps
+
+
+class ArtifactDownloads(unittest.TestCase):
+    def test_every_download_gives_up_within_minutes_and_is_tried_again(self):
+        found = 0
+        for path in sorted((ROOT / ".github/workflows").glob("*.yml")):
+            steps = download_steps(path.read_text())
+            self.assertEqual(len(steps) % 2, 0, f"{path.name}: every download-artifact step needs a retry step right after it")
+            for attempt, again in zip(steps[::2], steps[1::2]):
+                with self.subTest(workflow=path.name, step=attempt.split("\n")[0]):
+                    found += 1
+                    first = re.search(r"(?m)^id: (\S+_try)$", attempt)
+                    anchor = re.search(r"(?m)^with: &(\S+)$", attempt)
+                    self.assertIsNotNone(first)
+                    self.assertIsNotNone(anchor)
+                    self.assertRegex(attempt, r"(?m)^continue-on-error: true$")
+                    self.assertRegex(again, rf"(?m)^if: steps\.{first[1]}\.outcome == 'failure'$")
+                    self.assertRegex(again, rf"(?m)^with: \*{anchor[1]}$")
+                    for step in (attempt, again):
+                        self.assertRegex(step, r"(?m)^timeout-minutes: [1-3]$")
+        self.assertGreater(found, 0)
+
 class Runners(unittest.TestCase):
     def test_no_workflow_targets_self_hosted_runners(self):
         for path in sorted((ROOT / ".github/workflows").glob("*.yml")):
