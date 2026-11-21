@@ -259,7 +259,7 @@ The store writes, per `handle` call and in one transaction:
 - the nodes a scan missed after a walk that did not search every ignored folder, which the ambiguous-disappearance question holds (§5.10);
 - every open question with what it holds.
 
-Connection state, the ID generator and queued outputs other than the commit and effects in flight are not persisted. Each load seeds the ID generator afresh, so a store restored from a backup never mints an ID twice. Restoring `koidrive_engine::state` refuses a state that breaks an invariant. After a restart the engine emits `AskUser` again for every unanswered question. The driver shows a question ID once, so a repeat is harmless.
+Connection state, the ID generator and queued outputs other than the commit and effects in flight are not persisted. Each load seeds the ID generator with a fresh random 64-bit seed, so a store restored from a backup does not mint the IDs it minted before unless two loads draw the same seed. Restoring `koidrive_engine::state` refuses a state that breaks an invariant. After a restart the engine emits `AskUser` again for every unanswered question. The driver shows a question ID once, so a repeat is harmless.
 
 ### Restart
 
