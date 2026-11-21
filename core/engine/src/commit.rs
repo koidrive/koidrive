@@ -2434,7 +2434,8 @@ impl Commits {
     ///
     /// Once R holds the record of the commit in flight and its result has not arrived
     /// ([`Commits::own_record`]), what the record shows of the commit is recorded as the result
-    /// would record it: the nodes its deletes trashed and the positions its moves set,
+    /// would record it: the nodes its deletes trashed, the positions its moves set and the
+    /// entries its creates, moves and restores placed in a folder a first-link Discard keeps,
     /// as its edits are recorded when the record arrives ([`Commits::edits_in_flight`]). A loss
     /// that drops the commit before its result then sends those changes again as this device's own
     /// ([`Trees::forget_lost`]).
@@ -2464,6 +2465,23 @@ impl Commits {
         .filter(|&&seq| seq <= last_seq) else {
             return;
         };
+        let sent: BTreeMap<NodeId, NodeId> = (flight.commit.ops.iter())
+            .filter_map(|op| match op.op.as_ref()? {
+                op::Op::CreateDir(create) => {
+                    Some((NodeId::from(&create.node_id), &create.parent_id))
+                }
+                op::Op::CreateFile(create) => {
+                    Some((NodeId::from(&create.node_id), &create.parent_id))
+                }
+                op::Op::Move(moved) => Some((NodeId::from(&moved.node_id), &moved.new_parent_id)),
+                op::Op::Restore(restore) => {
+                    Some((NodeId::from(&restore.node_id), &restore.target_parent_id))
+                        .filter(|(_, parent)| !parent.is_empty())
+                }
+                op::Op::UpdateContent(_) | op::Op::Delete(_) | op::Op::MarkGitTracked(_) => None,
+            })
+            .map(|(id, parent)| (id, NodeId::from(parent)))
+            .collect();
         for op in flight.commit.ops.iter().filter_map(|op| op.op.as_ref()) {
             match op {
                 op::Op::Delete(delete) => {
@@ -2485,12 +2503,12 @@ impl Commits {
                 op::Op::Move(_) => {
                     let node = op_node(op);
                     trees.record_moved(&node, seq, flight.move_bases.get(&node).map(Vec::as_slice));
+                    trees.record_placed_here(&node, None, &sent, seq);
                 }
-                op::Op::CreateDir(_)
-                | op::Op::CreateFile(_)
-                | op::Op::UpdateContent(_)
-                | op::Op::Restore(_)
-                | op::Op::MarkGitTracked(_) => {}
+                op::Op::CreateDir(_) | op::Op::CreateFile(_) | op::Op::Restore(_) => {
+                    trees.record_placed_here(&op_node(op), None, &sent, seq);
+                }
+                op::Op::UpdateContent(_) | op::Op::MarkGitTracked(_) => {}
             }
         }
     }

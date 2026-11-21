@@ -8567,7 +8567,8 @@ fn edit_f(trees: &mut Trees) {
 #[test]
 fn an_edit_in_a_held_folder_a_discard_dropped_inside_a_trashed_server_folder_is_sent_there_and_the_outer_folder_stays_discarded()
  {
-    for restart in [false, true] {
+    for (restart, own_record_first) in [(false, false), (false, true), (true, false), (true, true)]
+    {
         let (mut trees, mut commits, mut ids) =
             a_held_folder_in_a_trashed_server_folder_a_discard_takes_along(true);
         if restart {
@@ -8596,6 +8597,9 @@ fn an_edit_in_a_held_folder_a_discard_dropped_inside_a_trashed_server_folder_is_
             ],
             "{restart}"
         );
+        if own_record_first {
+            commits.own_record(3, &commit.commit_id, NOW as i64);
+        }
         let mut revived = trees.remote().get(&"p".into()).unwrap().clone();
         (revived.trashed, revived.meta_rev) = (false, 3);
         trees.set_remote_made_here("p".into(), revived.clone());
@@ -8610,6 +8614,10 @@ fn an_edit_in_a_held_folder_a_discard_dropped_inside_a_trashed_server_folder_is_
         let mut edited = trees.remote().get(&"f".into()).unwrap().clone();
         (edited.shape.content, edited.content_rev, edited.edit_rev) = (Some(content(9)), 3, 3);
         trees.set_remote_edited_here("f".into(), edited);
+        if own_record_first {
+            assert!(!commits.acknowledge(&mut trees, 3));
+            trees.settle(commits.aliases());
+        }
         let results = vec![
             OpResult {
                 code: op_result::Code::Applied as i32,
@@ -9324,20 +9332,23 @@ fn the_server_confirms_the_move(
         results: vec![result],
         ..Default::default()
     };
-    if !from_the_log {
-        commits.received(received.clone()).unwrap();
+    match from_the_log {
+        true => {
+            let commit_id = commits.in_flight().unwrap().commit.commit_id.clone();
+            commits.own_record(seq, &commit_id, NOW as i64);
+        }
+        false => commits.received(received.clone()).unwrap(),
     }
     let mut remote = trees.remote().get(&id.into()).unwrap().clone();
     (remote.shape, remote.meta_rev, remote.meta_edit_rev) = (shape, seq, seq);
-    trees.set_remote_made_here(id.into(), remote);
+    trees.apply_batch(|trees| trees.set_remote_made_here(id.into(), remote));
     if from_the_log {
-        let commit_id = commits.in_flight().unwrap().commit.commit_id.clone();
-        commits.own_record(seq, &commit_id, NOW as i64);
-        commits.acknowledge(trees, seq);
+        assert!(!commits.acknowledge(trees, seq));
         assert_eq!(
             (trees.state().moved_here.get(&id.into())).map(|moved| moved.seq),
             Some(seq)
         );
+        trees.settle(commits.aliases());
         commits.received(received).unwrap();
     }
     assert!(commits.acknowledge(trees, seq));
@@ -10053,55 +10064,72 @@ fn changing_an_entry_another_device_moves_out_between_the_answer_and_the_build_c
 #[test]
 fn deleting_an_entry_another_device_brings_in_with_its_folder_in_the_answer_window_after_this_device_moves_it_within_changes_that_entry_alone()
  {
-    for (moved_in_window, restart) in [(false, false), (false, true), (true, false), (true, true)] {
-        let case = format!("moved in window {moved_in_window} restart {restart}");
-        let moved = file("xd", "e", 8);
-        let (mut trees, mut commits, mut ids, sent) = a_server_folder_this_device_discards(
-            &[("a", dir(ROOT, "a")), ("e", file("a", "e", 8))],
-            |_, _, _| {},
-            |trees, commits| {
-                another_device_places(trees, commits, "a", dir("x", "a"), 2);
-                if moved_in_window {
-                    let mut record = trees.remote().get(&"e".into()).unwrap().clone();
-                    (record.shape, record.meta_rev, record.meta_edit_rev) = (moved.clone(), 3, 3);
-                    trees.set_remote_made_here("e".into(), record);
-                    let node = trees.local().get(&"e".into()).unwrap().clone();
-                    trees.set_local(
-                        "e".into(),
-                        LocalNode {
-                            shape: moved.clone(),
-                            ..node
-                        },
-                    );
-                    trees.set_synced("e".into(), Some(moved.clone()));
-                    trees.settle(commits.aliases());
-                }
-            },
-        );
-        assert_eq!(sent, [], "{case}");
-        if !moved_in_window {
-            let sent =
-                this_device_sends_a_move(&mut trees, &mut commits, &mut ids, "e", moved.clone());
-            assert_eq!(sent, [("move", "e".to_owned())], "{case}");
-            the_server_confirms_the_move(&mut trees, &mut commits, "e", moved.clone(), 3, false);
+    for from_the_log in [false, true] {
+        for (moved_in_window, restart) in
+            [(false, false), (false, true), (true, false), (true, true)]
+        {
+            let case = format!("moved in window {moved_in_window} restart {restart}");
+            let moved = file("xd", "e", 8);
+            let (mut trees, mut commits, mut ids, sent) = a_server_folder_this_device_discards(
+                &[("a", dir(ROOT, "a")), ("e", file("a", "e", 8))],
+                |_, _, _| {},
+                |trees, commits| {
+                    another_device_places(trees, commits, "a", dir("x", "a"), 2);
+                    if moved_in_window {
+                        let mut record = trees.remote().get(&"e".into()).unwrap().clone();
+                        (record.shape, record.meta_rev, record.meta_edit_rev) =
+                            (moved.clone(), 3, 3);
+                        trees.set_remote_made_here("e".into(), record);
+                        let node = trees.local().get(&"e".into()).unwrap().clone();
+                        trees.set_local(
+                            "e".into(),
+                            LocalNode {
+                                shape: moved.clone(),
+                                ..node
+                            },
+                        );
+                        trees.set_synced("e".into(), Some(moved.clone()));
+                        trees.settle(commits.aliases());
+                    }
+                },
+            );
+            assert_eq!(sent, [], "{case}");
+            if !moved_in_window {
+                let sent = this_device_sends_a_move(
+                    &mut trees,
+                    &mut commits,
+                    &mut ids,
+                    "e",
+                    moved.clone(),
+                );
+                assert_eq!(sent, [("move", "e".to_owned())], "{case}");
+                the_server_confirms_the_move(
+                    &mut trees,
+                    &mut commits,
+                    "e",
+                    moved.clone(),
+                    3,
+                    from_the_log,
+                );
+            }
+            assert!(
+                !trees.state().discard_members.contains_key(&"e".into()),
+                "{case}"
+            );
+            if restart {
+                trees = restarted(&trees);
+                commits = Commits::from_state(commits.state()).unwrap();
+            }
+            trees.listed(&["x".into(), "xd".into()], Pending::default());
+            trees.remove_local(&"e".into());
+            let sent = quiet(&mut trees, &mut commits, &mut ids);
+            assert_eq!(
+                sent,
+                [("delete", "e".to_owned())],
+                "{case}: {:?}",
+                local(&trees)
+            );
         }
-        assert!(
-            !trees.state().discard_members.contains_key(&"e".into()),
-            "{case}"
-        );
-        if restart {
-            trees = restarted(&trees);
-            commits = Commits::from_state(commits.state()).unwrap();
-        }
-        trees.listed(&["x".into(), "xd".into()], Pending::default());
-        trees.remove_local(&"e".into());
-        let sent = quiet(&mut trees, &mut commits, &mut ids);
-        assert_eq!(
-            sent,
-            [("delete", "e".to_owned())],
-            "{case}: {:?}",
-            local(&trees)
-        );
     }
 }
 
@@ -10231,8 +10259,16 @@ fn an_entry_a_server_commit_moves_within_a_folder_it_brings_in_is_an_arrival_in_
 #[test]
 fn editing_an_entry_this_device_moved_in_that_another_device_moves_out_before_the_answer_keeps_the_folder()
  {
-    for (from_the_log, restart) in [(false, false), (false, true), (true, false), (true, true)] {
-        let case = format!("from the log {from_the_log} restart {restart}");
+    for (from_the_log, restart, result_last) in [
+        (false, false, false),
+        (false, true, false),
+        (true, false, false),
+        (true, true, false),
+        (true, false, true),
+        (true, true, true),
+    ] {
+        let case =
+            format!("from the log {from_the_log} restart {restart} result last {result_last}");
         let moved_in = file("x", "m", 7);
         let (mut trees, mut commits, mut ids, sent) = a_server_folder_this_device_discards(
             &[],
@@ -10241,18 +10277,38 @@ fn editing_an_entry_this_device_moved_in_that_another_device_moves_out_before_th
                     this_device_sends_a_move(trees, commits, ids, "m", moved_in.clone()),
                     [("move", "m".into())]
                 );
-                the_server_confirms_the_move(
-                    trees,
-                    commits,
-                    "m",
-                    moved_in.clone(),
-                    2,
-                    from_the_log,
-                );
+                if result_last {
+                    let commit_id = commits.in_flight().unwrap().commit.commit_id.clone();
+                    commits.own_record(2, &commit_id, NOW as i64);
+                    let mut own = trees.remote().get(&"m".into()).unwrap().clone();
+                    (own.shape, own.meta_rev, own.meta_edit_rev) = (moved_in.clone(), 2, 2);
+                    trees.apply_batch(|trees| trees.set_remote_made_here("m".into(), own));
+                    assert!(!commits.acknowledge(trees, 2));
+                    trees.settle(commits.aliases());
+                } else {
+                    let confirmed = moved_in.clone();
+                    the_server_confirms_the_move(trees, commits, "m", confirmed, 2, from_the_log);
+                }
                 let mut record = trees.remote().get(&"m".into()).unwrap().clone();
                 (record.shape, record.meta_rev, record.meta_edit_rev) = (file(ROOT, "m", 7), 3, 3);
-                trees.set_remote("m".into(), record);
+                trees.apply_batch(|trees| trees.set_remote("m".into(), record));
                 trees.settle(commits.aliases());
+                if result_last {
+                    assert!(!commits.acknowledge(trees, 3));
+                    let result = OpResult {
+                        code: op_result::Code::Applied as i32,
+                        node_id: "m".into(),
+                        ..Default::default()
+                    };
+                    let result = CommitResult {
+                        seq: 2,
+                        results: vec![result],
+                        ..Default::default()
+                    };
+                    commits.received(result).unwrap();
+                    assert!(commits.acknowledge(trees, 3));
+                    trees.settle(commits.aliases());
+                }
             },
             |trees, _| {
                 assert_eq!(trees.synced().get(&"m".into()).unwrap().parent, "x");
@@ -10432,64 +10488,66 @@ fn a_folder_asked_about_again_after_its_discard_records_stays_from_the_new_quest
 
 #[test]
 fn stays_end_with_the_last_first_link_question_and_a_later_question_starts_with_none() {
-    for restart in [false, true] {
-        let both = [
-            ("x", dir(ROOT, "server")),
-            ("c", file("x", "child", 3)),
-            ("m", file(ROOT, "m", 7)),
-        ];
-        let mut local = vec![("f", dir(ROOT, "new"))];
-        local.extend(both.iter().cloned());
-        let mut trees = trees(&local, &both);
-        let (mut commits, mut ids) = (Commits::default(), IdGen::new(7));
-        commits.first_link(&mut trees, &mut ids, NOW, PriorSync::Shown);
-        trees.settle(commits.aliases());
-        let asked = question(&commits);
-        let moved_in = file("x", "m", 7);
-        assert_eq!(
-            this_device_sends_a_move(&mut trees, &mut commits, &mut ids, "m", moved_in.clone()),
-            [("move", "m".into())]
-        );
-        the_server_confirms_the_move(&mut trees, &mut commits, "m", moved_in, 2, false);
-        let open = trees.state();
-        assert_eq!(
-            open.discard_stays,
-            [("m".into(), "x".into())].into(),
-            "restart {restart}"
-        );
-        assert_eq!(open.first_link_open, [("f".into(), true)].into());
-        if restart {
-            trees = restarted(&trees);
-            commits = Commits::from_state(commits.state()).unwrap();
-            commits.hold(&mut trees);
-            let reopened = trees.state();
-            assert_eq!(reopened.discard_stays, open.discard_stays);
-            assert_eq!(reopened.first_link_open, open.first_link_open);
+    for from_the_log in [false, true] {
+        for restart in [false, true] {
+            let both = [
+                ("x", dir(ROOT, "server")),
+                ("c", file("x", "child", 3)),
+                ("m", file(ROOT, "m", 7)),
+            ];
+            let mut local = vec![("f", dir(ROOT, "new"))];
+            local.extend(both.iter().cloned());
+            let mut trees = trees(&local, &both);
+            let (mut commits, mut ids) = (Commits::default(), IdGen::new(7));
+            commits.first_link(&mut trees, &mut ids, NOW, PriorSync::Shown);
+            trees.settle(commits.aliases());
+            let asked = question(&commits);
+            let moved_in = file("x", "m", 7);
+            assert_eq!(
+                this_device_sends_a_move(&mut trees, &mut commits, &mut ids, "m", moved_in.clone()),
+                [("move", "m".into())]
+            );
+            the_server_confirms_the_move(&mut trees, &mut commits, "m", moved_in, 2, from_the_log);
+            let open = trees.state();
+            assert_eq!(
+                open.discard_stays,
+                [("m".into(), "x".into())].into(),
+                "restart {restart}"
+            );
+            assert_eq!(open.first_link_open, [("f".into(), true)].into());
+            if restart {
+                trees = restarted(&trees);
+                commits = Commits::from_state(commits.state()).unwrap();
+                commits.hold(&mut trees);
+                let reopened = trees.state();
+                assert_eq!(reopened.discard_stays, open.discard_stays);
+                assert_eq!(reopened.first_link_open, open.first_link_open);
+            }
+            assert!(commits.decide(&mut trees, &asked.id, Answer::Publish));
+            quiet(&mut trees, &mut commits, &mut ids);
+            assert!(commits.questions().is_empty(), "restart {restart}");
+            let closed = trees.state();
+            assert!(closed.first_link_open.is_empty(), "restart {restart}");
+            assert!(closed.discard_stays.is_empty(), "restart {restart}");
+            if restart {
+                trees = restarted(&trees);
+                commits = Commits::from_state(commits.state()).unwrap();
+                commits.hold(&mut trees);
+            }
+            another_device_places(&mut trees, &commits, "m", file(ROOT, "m", 7), 3);
+            assert!(trees.state().discard_stays.is_empty(), "restart {restart}");
+            trees.set_local("g".into(), local_node(dir(ROOT, "other"), 400));
+            trees.settle(commits.aliases());
+            commits.first_link(&mut trees, &mut ids, NOW, PriorSync::Shown);
+            trees.settle(commits.aliases());
+            let later = trees.state();
+            assert_eq!(
+                later.first_link_open.get(&"g".into()),
+                Some(&true),
+                "restart {restart}"
+            );
+            assert!(later.discard_stays.is_empty(), "restart {restart}");
         }
-        assert!(commits.decide(&mut trees, &asked.id, Answer::Publish));
-        quiet(&mut trees, &mut commits, &mut ids);
-        assert!(commits.questions().is_empty(), "restart {restart}");
-        let closed = trees.state();
-        assert!(closed.first_link_open.is_empty(), "restart {restart}");
-        assert!(closed.discard_stays.is_empty(), "restart {restart}");
-        if restart {
-            trees = restarted(&trees);
-            commits = Commits::from_state(commits.state()).unwrap();
-            commits.hold(&mut trees);
-        }
-        another_device_places(&mut trees, &commits, "m", file(ROOT, "m", 7), 3);
-        assert!(trees.state().discard_stays.is_empty(), "restart {restart}");
-        trees.set_local("g".into(), local_node(dir(ROOT, "other"), 400));
-        trees.settle(commits.aliases());
-        commits.first_link(&mut trees, &mut ids, NOW, PriorSync::Shown);
-        trees.settle(commits.aliases());
-        let later = trees.state();
-        assert_eq!(
-            later.first_link_open.get(&"g".into()),
-            Some(&true),
-            "restart {restart}"
-        );
-        assert!(later.discard_stays.is_empty(), "restart {restart}");
     }
 }
 
@@ -10526,8 +10584,17 @@ fn a_store_upgraded_while_a_first_link_question_is_open_counts_no_entry_as_anoth
 #[test]
 fn an_entry_this_device_creates_in_the_folder_before_the_answer_counts_as_this_devices_once_acknowledged()
  {
-    for (from_the_log, crash) in [(false, false), (true, false), (false, true), (true, true)] {
-        let case = format!("from the log {from_the_log} crash {crash}");
+    for (from_the_log, crash, own_record_first) in [
+        (false, false, false),
+        (true, false, false),
+        (false, true, false),
+        (true, true, false),
+        (false, false, true),
+        (false, true, true),
+    ] {
+        let case = format!(
+            "from the log {from_the_log} crash {crash} own record first {own_record_first}"
+        );
         let created = file("xd", "n", 5);
         let confirm = |trees: &mut Trees, commits: &mut Commits| {
             let result = OpResult {
@@ -10535,18 +10602,19 @@ fn an_entry_this_device_creates_in_the_folder_before_the_answer_counts_as_this_d
                 node_id: "n".into(),
                 ..Default::default()
             };
-            (commits.received(CommitResult {
+            let result = CommitResult {
                 seq: 2,
                 results: vec![result],
                 ..Default::default()
-            }))
-            .unwrap();
+            };
             let mut remote = remote_node(created.clone());
             (remote.meta_rev, remote.meta_edit_rev) = (2, 2);
-            match from_the_log {
-                true => trees.set_remote("n".into(), remote),
-                false => trees.set_remote_made_here("n".into(), remote),
+            if !from_the_log {
+                let records = vec![("n".into(), remote)];
+                return the_server_answers(trees, commits, result, records, own_record_first);
             }
+            commits.received(result).unwrap();
+            trees.set_remote("n".into(), remote);
             assert!(commits.acknowledge(trees, 2));
             trees.settle(commits.aliases());
         };
@@ -10628,82 +10696,91 @@ fn another_devices_creates_in_an_unrelated_folder_record_no_stays_while_first_li
 #[test]
 fn an_entry_this_device_moved_in_counts_as_another_devices_once_another_device_brings_it_in_again()
 {
-    for (moved, edited, restart, moved_within) in [
-        ("m", "m", false, false),
-        ("m", "m", true, false),
-        ("g", "gm", false, false),
-        ("g", "gm", true, false),
-        ("g", "gm", false, true),
-    ] {
-        let case = format!("{moved} restart {restart} moved within {moved_within}");
-        let into_x = match moved {
-            "m" => file("x", "m", 7),
-            _ => dir("x", "g"),
-        };
-        let back = match moved {
-            "m" => file(ROOT, "m", 7),
-            _ => dir(ROOT, "g"),
-        };
-        let extra = [
-            ("g", dir(ROOT, "g")),
-            ("gm", file("g", "gm", 8)),
-            ("gh", dir("g", "h")),
-        ];
-        let recorded: [(NodeId, NodeId); 2] =
-            [(moved.into(), "x".into()), (edited.into(), "x".into())];
-        let (mut trees, mut commits, mut ids, sent) = a_server_folder_this_device_discards(
-            &extra,
-            |trees, commits, ids| {
-                assert_eq!(
-                    this_device_sends_a_move(trees, commits, ids, moved, into_x.clone()),
-                    [("move", moved.into())]
-                );
-                the_server_confirms_the_move(trees, commits, moved, into_x.clone(), 2, false);
-                let stays = trees.state().discard_stays;
-                assert!(
-                    recorded.iter().all(|stay| stays.contains(stay)),
-                    "{case}: {stays:?}"
-                );
-                if restart {
-                    *trees = restarted(trees);
-                    *commits = Commits::from_state(commits.state()).unwrap();
-                    commits.hold(trees);
-                    assert_eq!(trees.state().discard_stays, stays, "{case}");
-                }
-                another_device_places(trees, commits, moved, back.clone(), 3);
-                assert_eq!(trees.state().discard_stays, stays, "{case}");
-            },
-            |trees, commits| {
-                let (id, child): (NodeId, NodeId) = (moved.into(), edited.into());
-                match moved_within {
-                    true => another_device_commits_moves(
+    for from_the_log in [false, true] {
+        for (moved, edited, restart, moved_within) in [
+            ("m", "m", false, false),
+            ("m", "m", true, false),
+            ("g", "gm", false, false),
+            ("g", "gm", true, false),
+            ("g", "gm", false, true),
+        ] {
+            let case = format!("{moved} restart {restart} moved within {moved_within}");
+            let into_x = match moved {
+                "m" => file("x", "m", 7),
+                _ => dir("x", "g"),
+            };
+            let back = match moved {
+                "m" => file(ROOT, "m", 7),
+                _ => dir(ROOT, "g"),
+            };
+            let extra = [
+                ("g", dir(ROOT, "g")),
+                ("gm", file("g", "gm", 8)),
+                ("gh", dir("g", "h")),
+            ];
+            let recorded: [(NodeId, NodeId); 2] =
+                [(moved.into(), "x".into()), (edited.into(), "x".into())];
+            let (mut trees, mut commits, mut ids, sent) = a_server_folder_this_device_discards(
+                &extra,
+                |trees, commits, ids| {
+                    assert_eq!(
+                        this_device_sends_a_move(trees, commits, ids, moved, into_x.clone()),
+                        [("move", moved.into())]
+                    );
+                    the_server_confirms_the_move(
                         trees,
                         commits,
-                        &[(&id, into_x.clone()), (&child, file("gh", "gm", 8))],
-                        4,
-                    ),
-                    false => another_device_places(trees, commits, moved, into_x.clone(), 4),
-                }
-                if restart {
-                    *trees = restarted(trees);
-                    *commits = Commits::from_state(commits.state()).unwrap();
-                    commits.hold(trees);
-                }
-                let left = trees.state().discard_stays;
-                assert!(
-                    recorded.iter().all(|stay| !left.contains(stay)),
-                    "{case}: {left:?}"
-                );
-            },
-        );
-        assert_eq!(sent, [], "{case}");
-        let sends = change_as_the_user(&mut trees, &edited.into(), UserChange::Edit);
-        assert_eq!(
-            quiet(&mut trees, &mut commits, &mut ids),
-            [(sends, edited.to_string())],
-            "{case}: {:?}",
-            local(&trees)
-        );
+                        moved,
+                        into_x.clone(),
+                        2,
+                        from_the_log,
+                    );
+                    let stays = trees.state().discard_stays;
+                    assert!(
+                        recorded.iter().all(|stay| stays.contains(stay)),
+                        "{case}: {stays:?}"
+                    );
+                    if restart {
+                        *trees = restarted(trees);
+                        *commits = Commits::from_state(commits.state()).unwrap();
+                        commits.hold(trees);
+                        assert_eq!(trees.state().discard_stays, stays, "{case}");
+                    }
+                    another_device_places(trees, commits, moved, back.clone(), 3);
+                    assert_eq!(trees.state().discard_stays, stays, "{case}");
+                },
+                |trees, commits| {
+                    let (id, child): (NodeId, NodeId) = (moved.into(), edited.into());
+                    match moved_within {
+                        true => another_device_commits_moves(
+                            trees,
+                            commits,
+                            &[(&id, into_x.clone()), (&child, file("gh", "gm", 8))],
+                            4,
+                        ),
+                        false => another_device_places(trees, commits, moved, into_x.clone(), 4),
+                    }
+                    if restart {
+                        *trees = restarted(trees);
+                        *commits = Commits::from_state(commits.state()).unwrap();
+                        commits.hold(trees);
+                    }
+                    let left = trees.state().discard_stays;
+                    assert!(
+                        recorded.iter().all(|stay| !left.contains(stay)),
+                        "{case}: {left:?}"
+                    );
+                },
+            );
+            assert_eq!(sent, [], "{case}");
+            let sends = change_as_the_user(&mut trees, &edited.into(), UserChange::Edit);
+            assert_eq!(
+                quiet(&mut trees, &mut commits, &mut ids),
+                [(sends, edited.to_string())],
+                "{case}: {:?}",
+                local(&trees)
+            );
+        }
     }
 }
 
@@ -10734,8 +10811,16 @@ fn an_entry_another_device_creates_in_the_folder_after_the_answer_counts_as_anot
 
 #[test]
 fn a_folder_this_device_moves_in_that_the_server_renames_counts_as_this_devices_with_its_child() {
-    for (from_the_log, edited) in [(false, "g"), (false, "gm"), (true, "g"), (true, "gm")] {
-        let case = format!("from the log {from_the_log} {edited}");
+    for (from_the_log, edited, own_record_first) in [
+        (false, "g", false),
+        (false, "gm", false),
+        (true, "g", false),
+        (true, "gm", false),
+        (false, "g", true),
+        (false, "gm", true),
+    ] {
+        let case =
+            format!("from the log {from_the_log} {edited} own record first {own_record_first}");
         let extra = [("g", dir(ROOT, "g")), ("gm", file("g", "gm", 8))];
         let (mut trees, mut commits, mut ids, sent) = a_server_folder_this_device_discards(
             &extra,
@@ -10752,20 +10837,25 @@ fn a_folder_this_device_moves_in_that_the_server_renames_counts_as_this_devices_
                     name: "g 2".into(),
                     ..Default::default()
                 };
-                (commits.received(CommitResult {
+                let result = CommitResult {
                     seq: 2,
                     results: vec![result],
                     ..Default::default()
-                }))
-                .unwrap();
+                };
                 let mut remote = trees.remote().get(&"g".into()).unwrap().clone();
                 (remote.shape, remote.meta_rev, remote.meta_edit_rev) = (dir("x", "g 2"), 2, 2);
                 match from_the_log {
-                    true => trees.set_remote("g".into(), remote),
-                    false => trees.set_remote_made_here("g".into(), remote),
+                    true => {
+                        commits.received(result).unwrap();
+                        trees.set_remote("g".into(), remote);
+                        assert!(commits.acknowledge(trees, 2));
+                        trees.settle(commits.aliases());
+                    }
+                    false => {
+                        let records = vec![("g".into(), remote)];
+                        the_server_answers(trees, commits, result, records, own_record_first);
+                    }
                 }
-                assert!(commits.acknowledge(trees, 2));
-                trees.settle(commits.aliases());
                 let stays = trees.state().discard_stays;
                 assert!(
                     stays.contains(&("g".into(), "x".into())),
@@ -10800,7 +10890,7 @@ fn a_folder_this_device_moves_in_that_the_server_renames_counts_as_this_devices_
 #[test]
 fn a_restore_this_device_sends_into_the_folder_counts_as_this_devices_once_acknowledged() {
     const RESTORED: &str = "01a1eab7-d941-7d6a-9e0d-576a24408e70";
-    for from_the_log in [false, true] {
+    for (from_the_log, own_record_first) in [(false, false), (true, false), (false, true)] {
         let restored = file("x", "t", 11);
         let (mut trees, mut commits, mut ids, sent) = a_server_folder_this_device_discards(
             &[],
@@ -10819,20 +10909,25 @@ fn a_restore_this_device_sends_into_the_folder_counts_as_this_devices_once_ackno
                     node_id: RESTORED.into(),
                     ..Default::default()
                 };
-                (commits.received(CommitResult {
+                let result = CommitResult {
                     seq: 2,
                     results: vec![result],
                     ..Default::default()
-                }))
-                .unwrap();
+                };
                 let mut remote = remote_node(restored.clone());
                 (remote.meta_rev, remote.meta_edit_rev) = (2, 2);
                 match from_the_log {
-                    true => trees.set_remote(RESTORED.into(), remote),
-                    false => trees.set_remote_made_here(RESTORED.into(), remote),
+                    true => {
+                        commits.received(result).unwrap();
+                        trees.set_remote(RESTORED.into(), remote);
+                        assert!(commits.acknowledge(trees, 2));
+                        trees.settle(commits.aliases());
+                    }
+                    false => {
+                        let records = vec![(RESTORED.into(), remote)];
+                        the_server_answers(trees, commits, result, records, own_record_first);
+                    }
                 }
-                assert!(commits.acknowledge(trees, 2));
-                trees.settle(commits.aliases());
                 let stays = trees.state().discard_stays;
                 assert!(
                     stays.contains(&(RESTORED.into(), "x".into())),
@@ -10857,8 +10952,110 @@ fn a_restore_this_device_sends_into_the_folder_counts_as_this_devices_once_ackno
 #[test]
 fn a_store_upgraded_while_a_first_link_question_is_open_counts_no_entry_as_another_devices_after_a_second_question_opens()
  {
-    for (restart, second_first) in [(false, false), (true, false), (false, true)] {
-        let case = format!("restart {restart} second first {second_first}");
+    for from_the_log in [false, true] {
+        for (restart, second_first) in [(false, false), (true, false), (false, true)] {
+            let case = format!("restart {restart} second first {second_first}");
+            let both = [
+                ("x", dir(ROOT, "server")),
+                ("xd", dir("x", "inner")),
+                ("m", file(ROOT, "m", 7)),
+            ];
+            let mut local_tree = vec![("f", dir(ROOT, "new"))];
+            local_tree.extend(both.iter().cloned());
+            let mut trees = trees(&local_tree, &both);
+            let (mut commits, mut ids) = (Commits::default(), IdGen::new(7));
+            commits.first_link(&mut trees, &mut ids, NOW, PriorSync::Shown);
+            trees.settle(commits.aliases());
+            let moved_in = file("x", "m", 7);
+            assert_eq!(
+                this_device_sends_a_move(&mut trees, &mut commits, &mut ids, "m", moved_in.clone()),
+                [("move", "m".into())]
+            );
+            the_server_confirms_the_move(&mut trees, &mut commits, "m", moved_in, 2, from_the_log);
+            let mut record = trees.remote().get(&"m".into()).unwrap().clone();
+            (record.shape, record.meta_rev, record.meta_edit_rev) = (file(ROOT, "m", 7), 3, 3);
+            trees.set_remote("m".into(), record);
+            trees.settle(commits.aliases());
+            let mut state = trees.state();
+            state.discard_stays.clear();
+            state.first_link_open.clear();
+            trees = restarted_from(&trees, &[], state);
+            commits = Commits::from_state(commits.state()).unwrap();
+            commits.hold(&mut trees);
+            let ignored = Some(RuleFile::parse(b"ignored\n"));
+            trees.set_rules(&[] as &[&str], Source::Koiignore, ignored);
+            let mut x = trees.local().get(&"x".into()).unwrap().clone();
+            (x.shape.parent, x.shape.name) = ("f".into(), "ignored".into());
+            trees.set_local_changed("x".into(), x);
+            trees.settle(commits.aliases());
+            let open_second = |trees: &mut Trees, commits: &mut Commits, ids: &mut IdGen| {
+                trees.set_local("g".into(), local_node(dir(ROOT, "other"), 400));
+                trees.settle(commits.aliases());
+                commits.first_link(trees, ids, NOW, PriorSync::Shown);
+                trees.settle(commits.aliases());
+            };
+            if second_first {
+                open_second(&mut trees, &mut commits, &mut ids);
+            }
+            let asked = (commits.questions().iter())
+                .find(|open| !open.shown.contains_key(&"g".into()))
+                .unwrap()
+                .id
+                .clone();
+            assert!(commits.decide(&mut trees, &asked, Answer::Discard));
+            if !second_first {
+                open_second(&mut trees, &mut commits, &mut ids);
+            }
+            trees.set_rules(&[] as &[&str], Source::Koiignore, None);
+            trees.settle(commits.aliases());
+            assert_eq!(ops(&mut commits, &mut trees, &mut ids), [], "{case}");
+            let second = (commits.questions().iter())
+                .find(|open| open.answer.is_none())
+                .expect("the second question waits")
+                .clone();
+            assert!(second.shown.contains_key(&"g".into()), "{case}");
+            assert!(trees.state().first_link_open.is_empty(), "{case}");
+            let mut after = restarted(&trees);
+            let mut after_commits = Commits::from_state(commits.state()).unwrap();
+            after_commits.hold(&mut after);
+            assert!(
+                after_commits.decide(&mut after, &second.id, Answer::Discard),
+                "{case}"
+            );
+            assert_eq!(ops(&mut after_commits, &mut after, &mut ids), [], "{case}");
+            assert!(after_commits.questions().is_empty(), "{case}");
+            assert!(!after.state().discard_members.is_empty(), "{case}");
+            change_as_the_user(&mut after, &"xd".into(), UserChange::Rename);
+            quiet(&mut after, &mut after_commits, &mut ids);
+            let closed = after.state();
+            assert!(closed.discard_members.is_empty() && closed.discard_answered.is_empty());
+            assert!(closed.first_link_open.is_empty(), "{case}");
+            after.set_local("h".into(), local_node(dir(ROOT, "later"), 401));
+            after.settle(after_commits.aliases());
+            after_commits.first_link(&mut after, &mut ids, NOW, PriorSync::Shown);
+            after.settle(after_commits.aliases());
+            let later = after.state().first_link_open;
+            assert_eq!(later.get(&"h".into()), Some(&true), "{case}: {later:?}");
+            if restart {
+                trees = restarted(&trees);
+                commits = Commits::from_state(commits.state()).unwrap();
+                commits.hold(&mut trees);
+            }
+            change_as_the_user(&mut trees, &"m".into(), UserChange::Edit);
+            let sent = quiet(&mut trees, &mut commits, &mut ids);
+            assert!(
+                sent.contains(&("create dir", "f".into())),
+                "{case}: {sent:?} {:?}",
+                local(&trees)
+            );
+        }
+    }
+}
+
+#[test]
+fn closing_the_inner_of_two_nested_first_link_questions_keeps_this_devices_stays_until_the_outer_closes()
+ {
+    for from_the_log in [false, true] {
         let both = [
             ("x", dir(ROOT, "server")),
             ("xd", dir("x", "inner")),
@@ -10870,209 +11067,120 @@ fn a_store_upgraded_while_a_first_link_question_is_open_counts_no_entry_as_anoth
         let (mut commits, mut ids) = (Commits::default(), IdGen::new(7));
         commits.first_link(&mut trees, &mut ids, NOW, PriorSync::Shown);
         trees.settle(commits.aliases());
-        let moved_in = file("x", "m", 7);
+        trees.set_local("g".into(), local_node(dir("f", "other"), 400));
+        trees.settle(commits.aliases());
+        commits.first_link(&mut trees, &mut ids, NOW, PriorSync::Shown);
+        trees.settle(commits.aliases());
+        let moved_in = file("xd", "m", 7);
         assert_eq!(
             this_device_sends_a_move(&mut trees, &mut commits, &mut ids, "m", moved_in.clone()),
             [("move", "m".into())]
         );
-        the_server_confirms_the_move(&mut trees, &mut commits, "m", moved_in, 2, false);
-        let mut record = trees.remote().get(&"m".into()).unwrap().clone();
-        (record.shape, record.meta_rev, record.meta_edit_rev) = (file(ROOT, "m", 7), 3, 3);
-        trees.set_remote("m".into(), record);
-        trees.settle(commits.aliases());
-        let mut state = trees.state();
-        state.discard_stays.clear();
-        state.first_link_open.clear();
-        trees = restarted_from(&trees, &[], state);
-        commits = Commits::from_state(commits.state()).unwrap();
-        commits.hold(&mut trees);
-        let ignored = Some(RuleFile::parse(b"ignored\n"));
-        trees.set_rules(&[] as &[&str], Source::Koiignore, ignored);
-        let mut x = trees.local().get(&"x".into()).unwrap().clone();
-        (x.shape.parent, x.shape.name) = ("f".into(), "ignored".into());
-        trees.set_local_changed("x".into(), x);
-        trees.settle(commits.aliases());
-        let open_second = |trees: &mut Trees, commits: &mut Commits, ids: &mut IdGen| {
-            trees.set_local("g".into(), local_node(dir(ROOT, "other"), 400));
-            trees.settle(commits.aliases());
-            commits.first_link(trees, ids, NOW, PriorSync::Shown);
-            trees.settle(commits.aliases());
-        };
-        if second_first {
-            open_second(&mut trees, &mut commits, &mut ids);
-        }
-        let asked = (commits.questions().iter())
-            .find(|open| !open.shown.contains_key(&"g".into()))
+        the_server_confirms_the_move(&mut trees, &mut commits, "m", moved_in, 2, from_the_log);
+        let stays: BTreeSet<(NodeId, NodeId)> =
+            [("m".into(), "x".into()), ("m".into(), "xd".into())].into();
+        assert_eq!(trees.state().discard_stays, stays);
+        let inner = (commits.questions().iter())
+            .find(|asked| asked.shown.contains_key(&"g".into()))
             .unwrap()
             .id
             .clone();
-        assert!(commits.decide(&mut trees, &asked, Answer::Discard));
-        if !second_first {
-            open_second(&mut trees, &mut commits, &mut ids);
-        }
-        trees.set_rules(&[] as &[&str], Source::Koiignore, None);
-        trees.settle(commits.aliases());
-        assert_eq!(ops(&mut commits, &mut trees, &mut ids), [], "{case}");
-        let second = (commits.questions().iter())
-            .find(|open| open.answer.is_none())
-            .expect("the second question waits")
-            .clone();
-        assert!(second.shown.contains_key(&"g".into()), "{case}");
-        assert!(trees.state().first_link_open.is_empty(), "{case}");
-        let mut after = restarted(&trees);
-        let mut after_commits = Commits::from_state(commits.state()).unwrap();
-        after_commits.hold(&mut after);
-        assert!(
-            after_commits.decide(&mut after, &second.id, Answer::Discard),
-            "{case}"
-        );
-        assert_eq!(ops(&mut after_commits, &mut after, &mut ids), [], "{case}");
-        assert!(after_commits.questions().is_empty(), "{case}");
-        assert!(!after.state().discard_members.is_empty(), "{case}");
-        change_as_the_user(&mut after, &"xd".into(), UserChange::Rename);
-        quiet(&mut after, &mut after_commits, &mut ids);
-        let closed = after.state();
-        assert!(closed.discard_members.is_empty() && closed.discard_answered.is_empty());
-        assert!(closed.first_link_open.is_empty(), "{case}");
-        after.set_local("h".into(), local_node(dir(ROOT, "later"), 401));
-        after.settle(after_commits.aliases());
-        after_commits.first_link(&mut after, &mut ids, NOW, PriorSync::Shown);
-        after.settle(after_commits.aliases());
-        let later = after.state().first_link_open;
-        assert_eq!(later.get(&"h".into()), Some(&true), "{case}: {later:?}");
-        if restart {
-            trees = restarted(&trees);
-            commits = Commits::from_state(commits.state()).unwrap();
-            commits.hold(&mut trees);
-        }
-        change_as_the_user(&mut trees, &"m".into(), UserChange::Edit);
-        let sent = quiet(&mut trees, &mut commits, &mut ids);
-        assert!(
-            sent.contains(&("create dir", "f".into())),
-            "{case}: {sent:?} {:?}",
-            local(&trees)
-        );
+        assert!(commits.decide(&mut trees, &inner, Answer::Publish));
+        quiet(&mut trees, &mut commits, &mut ids);
+        assert_eq!(commits.questions().len(), 1);
+        assert_eq!(trees.state().discard_stays, stays);
+        let outer = question(&commits).id;
+        assert!(commits.decide(&mut trees, &outer, Answer::Publish));
+        quiet(&mut trees, &mut commits, &mut ids);
+        assert!(commits.questions().is_empty());
+        assert!(trees.state().discard_stays.is_empty());
+        assert!(trees.state().first_link_open.is_empty());
     }
-}
-
-#[test]
-fn closing_the_inner_of_two_nested_first_link_questions_keeps_this_devices_stays_until_the_outer_closes()
- {
-    let both = [
-        ("x", dir(ROOT, "server")),
-        ("xd", dir("x", "inner")),
-        ("m", file(ROOT, "m", 7)),
-    ];
-    let mut local_tree = vec![("f", dir(ROOT, "new"))];
-    local_tree.extend(both.iter().cloned());
-    let mut trees = trees(&local_tree, &both);
-    let (mut commits, mut ids) = (Commits::default(), IdGen::new(7));
-    commits.first_link(&mut trees, &mut ids, NOW, PriorSync::Shown);
-    trees.settle(commits.aliases());
-    trees.set_local("g".into(), local_node(dir("f", "other"), 400));
-    trees.settle(commits.aliases());
-    commits.first_link(&mut trees, &mut ids, NOW, PriorSync::Shown);
-    trees.settle(commits.aliases());
-    let moved_in = file("xd", "m", 7);
-    assert_eq!(
-        this_device_sends_a_move(&mut trees, &mut commits, &mut ids, "m", moved_in.clone()),
-        [("move", "m".into())]
-    );
-    the_server_confirms_the_move(&mut trees, &mut commits, "m", moved_in, 2, false);
-    let stays: BTreeSet<(NodeId, NodeId)> =
-        [("m".into(), "x".into()), ("m".into(), "xd".into())].into();
-    assert_eq!(trees.state().discard_stays, stays);
-    let inner = (commits.questions().iter())
-        .find(|asked| asked.shown.contains_key(&"g".into()))
-        .unwrap()
-        .id
-        .clone();
-    assert!(commits.decide(&mut trees, &inner, Answer::Publish));
-    quiet(&mut trees, &mut commits, &mut ids);
-    assert_eq!(commits.questions().len(), 1);
-    assert_eq!(trees.state().discard_stays, stays);
-    let outer = question(&commits).id;
-    assert!(commits.decide(&mut trees, &outer, Answer::Publish));
-    quiet(&mut trees, &mut commits, &mut ids);
-    assert!(commits.questions().is_empty());
-    assert!(trees.state().discard_stays.is_empty());
-    assert!(trees.state().first_link_open.is_empty());
 }
 
 #[test]
 fn this_devices_stays_keep_a_folder_taken_again_after_its_own_question_closes_while_another_is_open()
  {
-    for restart in [false, true] {
-        let both = [
-            ("x", dir(ROOT, "server")),
-            ("c", file("x", "child", 3)),
-            ("m", file(ROOT, "m", 7)),
-        ];
-        let mut local_tree = vec![("f", dir(ROOT, "new"))];
-        local_tree.extend(both.iter().cloned());
-        let mut trees = trees(&local_tree, &both);
-        let (mut commits, mut ids) = (Commits::default(), IdGen::new(7));
-        commits.first_link(&mut trees, &mut ids, NOW, PriorSync::Shown);
-        trees.settle(commits.aliases());
-        let moved_in = file("x", "m", 7);
-        assert_eq!(
-            this_device_sends_a_move(&mut trees, &mut commits, &mut ids, "m", moved_in.clone()),
-            [("move", "m".into())]
-        );
-        the_server_confirms_the_move(&mut trees, &mut commits, "m", moved_in, 2, false);
-        let take_into = |trees: &mut Trees, commits: &Commits, holder: &str| {
-            let ignored = Some(RuleFile::parse(b"ignored\n"));
-            trees.set_rules(&[] as &[&str], Source::Koiignore, ignored);
-            let mut x = trees.local().get(&"x".into()).unwrap().clone();
-            (x.shape.parent, x.shape.name) = (holder.into(), "ignored".into());
-            trees.set_local_changed("x".into(), x);
+    for from_the_log in [false, true] {
+        for restart in [false, true] {
+            let both = [
+                ("x", dir(ROOT, "server")),
+                ("c", file("x", "child", 3)),
+                ("m", file(ROOT, "m", 7)),
+            ];
+            let mut local_tree = vec![("f", dir(ROOT, "new"))];
+            local_tree.extend(both.iter().cloned());
+            let mut trees = trees(&local_tree, &both);
+            let (mut commits, mut ids) = (Commits::default(), IdGen::new(7));
+            commits.first_link(&mut trees, &mut ids, NOW, PriorSync::Shown);
             trees.settle(commits.aliases());
-        };
-        take_into(&mut trees, &commits, "f");
-        let own = question(&commits).id;
-        assert!(commits.decide(&mut trees, &own, Answer::Discard));
-        trees.set_local("g".into(), local_node(dir(ROOT, "other"), 400));
-        trees.settle(commits.aliases());
-        commits.first_link(&mut trees, &mut ids, NOW, PriorSync::Shown);
-        trees.set_rules(&[] as &[&str], Source::Koiignore, None);
-        trees.settle(commits.aliases());
-        assert_eq!(quiet(&mut trees, &mut commits, &mut ids), [], "{restart}");
-        let other = question(&commits);
-        assert_eq!(other.shown.keys().collect::<Vec<_>>(), [&NodeId::from("g")]);
-        let stays: BTreeSet<(NodeId, NodeId)> = [("m".into(), "x".into())].into();
-        assert_eq!(trees.state().discard_stays, stays, "{restart}");
-        if restart {
-            trees = restarted(&trees);
-            commits = Commits::from_state(commits.state()).unwrap();
-            commits.hold(&mut trees);
+            let moved_in = file("x", "m", 7);
+            assert_eq!(
+                this_device_sends_a_move(&mut trees, &mut commits, &mut ids, "m", moved_in.clone()),
+                [("move", "m".into())]
+            );
+            the_server_confirms_the_move(&mut trees, &mut commits, "m", moved_in, 2, from_the_log);
+            let take_into = |trees: &mut Trees, commits: &Commits, holder: &str| {
+                let ignored = Some(RuleFile::parse(b"ignored\n"));
+                trees.set_rules(&[] as &[&str], Source::Koiignore, ignored);
+                let mut x = trees.local().get(&"x".into()).unwrap().clone();
+                (x.shape.parent, x.shape.name) = (holder.into(), "ignored".into());
+                trees.set_local_changed("x".into(), x);
+                trees.settle(commits.aliases());
+            };
+            take_into(&mut trees, &commits, "f");
+            let own = question(&commits).id;
+            assert!(commits.decide(&mut trees, &own, Answer::Discard));
+            trees.set_local("g".into(), local_node(dir(ROOT, "other"), 400));
+            trees.settle(commits.aliases());
+            commits.first_link(&mut trees, &mut ids, NOW, PriorSync::Shown);
+            trees.set_rules(&[] as &[&str], Source::Koiignore, None);
+            trees.settle(commits.aliases());
+            assert_eq!(quiet(&mut trees, &mut commits, &mut ids), [], "{restart}");
+            let other = question(&commits);
+            assert_eq!(other.shown.keys().collect::<Vec<_>>(), [&NodeId::from("g")]);
+            let stays: BTreeSet<(NodeId, NodeId)> = [("m".into(), "x".into())].into();
+            assert_eq!(trees.state().discard_stays, stays, "{restart}");
+            if restart {
+                trees = restarted(&trees);
+                commits = Commits::from_state(commits.state()).unwrap();
+                commits.hold(&mut trees);
+            }
+            take_into(&mut trees, &commits, "g");
+            assert!(commits.decide(&mut trees, &other.id, Answer::Discard));
+            trees.set_rules(&[] as &[&str], Source::Koiignore, None);
+            trees.settle(commits.aliases());
+            assert_eq!(ops(&mut commits, &mut trees, &mut ids), [], "{restart}");
+            assert_eq!(trees.state().discard_stays, stays, "{restart}");
+            change_as_the_user(&mut trees, &"m".into(), UserChange::Edit);
+            let mut sent = quiet(&mut trees, &mut commits, &mut ids);
+            sent.sort();
+            assert_eq!(
+                sent,
+                [
+                    ("create dir", "g".into()),
+                    ("move", "x".into()),
+                    ("update", "m".into())
+                ],
+                "{restart}: {:?}",
+                local(&trees)
+            );
         }
-        take_into(&mut trees, &commits, "g");
-        assert!(commits.decide(&mut trees, &other.id, Answer::Discard));
-        trees.set_rules(&[] as &[&str], Source::Koiignore, None);
-        trees.settle(commits.aliases());
-        assert_eq!(ops(&mut commits, &mut trees, &mut ids), [], "{restart}");
-        assert_eq!(trees.state().discard_stays, stays, "{restart}");
-        change_as_the_user(&mut trees, &"m".into(), UserChange::Edit);
-        let mut sent = quiet(&mut trees, &mut commits, &mut ids);
-        sent.sort();
-        assert_eq!(
-            sent,
-            [
-                ("create dir", "g".into()),
-                ("move", "x".into()),
-                ("update", "m".into())
-            ],
-            "{restart}: {:?}",
-            local(&trees)
-        );
     }
 }
 
 #[test]
 fn entries_this_device_puts_in_a_folder_it_creates_that_the_server_merges_into_another_count_as_this_devices()
  {
-    for (edited, restart) in [("m", false), ("m", true), ("n", false), ("n", true)] {
-        let case = format!("{edited} restart {restart}");
+    for (edited, restart, own_record_first) in [
+        ("m", false, false),
+        ("m", true, false),
+        ("n", false, false),
+        ("n", true, false),
+        ("m", false, true),
+        ("n", false, true),
+    ] {
+        let case = format!("{edited} restart {restart} own record first {own_record_first}");
         let (mut trees, mut commits, mut ids, sent) = a_server_folder_this_device_discards(
             &[],
             |trees, commits, ids| {
@@ -11114,24 +11222,27 @@ fn entries_this_device_puts_in_a_folder_it_creates_that_the_server_merges_into_a
                         },
                     })
                     .collect();
-                (commits.received(CommitResult {
+                let result = CommitResult {
                     seq: 2,
                     results,
                     ..Default::default()
-                }))
-                .unwrap();
+                };
                 let mut moved = trees.remote().get(&"m".into()).unwrap().clone();
                 (moved.shape, moved.meta_rev, moved.meta_edit_rev) = (file("b", "m", 7), 2, 2);
                 let mut created = remote_node(file("b", "n", 5));
                 (created.meta_rev, created.meta_edit_rev) = (2, 2);
-                for (id, remote) in [("m", moved), ("n", created)] {
-                    match restart {
-                        true => trees.set_remote(id.into(), remote),
-                        false => trees.set_remote_made_here(id.into(), remote),
+                let records = vec![("m".into(), moved), ("n".into(), created)];
+                match restart {
+                    true => {
+                        commits.received(result).unwrap();
+                        for (id, remote) in records {
+                            trees.set_remote(id, remote);
+                        }
+                        assert!(commits.acknowledge(trees, 2));
+                        trees.settle(commits.aliases());
                     }
+                    false => the_server_answers(trees, commits, result, records, own_record_first),
                 }
-                assert!(commits.acknowledge(trees, 2));
-                trees.settle(commits.aliases());
                 let stays = trees.state().discard_stays;
                 for id in ["m", "n"] {
                     assert!(
@@ -11165,11 +11276,41 @@ fn another_device_moves_ahead_of_the_disk(trees: &mut Trees, commits: &Commits) 
     trees.settle(commits.aliases());
 }
 
+fn the_server_answers(
+    trees: &mut Trees,
+    commits: &mut Commits,
+    result: CommitResult,
+    records: Vec<(NodeId, RemoteNode)>,
+    own_record_first: bool,
+) {
+    let seq = result.seq;
+    match own_record_first {
+        true => {
+            let commit_id = commits.in_flight().unwrap().commit.commit_id.clone();
+            commits.own_record(seq, &commit_id, NOW as i64);
+        }
+        false => commits.received(result.clone()).unwrap(),
+    }
+    trees.apply_batch(|trees| {
+        for (id, record) in records {
+            trees.set_remote_made_here(id, record);
+        }
+    });
+    if own_record_first {
+        assert!(!commits.acknowledge(trees, seq));
+        trees.settle(commits.aliases());
+        commits.received(result).unwrap();
+    }
+    assert!(commits.acknowledge(trees, seq));
+    trees.settle(commits.aliases());
+}
+
 fn the_server_applies(
     trees: &mut Trees,
     commits: &mut Commits,
     applied: &[(&str, Option<Shape>)],
     seq: u64,
+    own_record_first: bool,
 ) {
     let results = (applied.iter())
         .map(|(id, _)| OpResult {
@@ -11178,12 +11319,7 @@ fn the_server_applies(
             ..Default::default()
         })
         .collect();
-    (commits.received(CommitResult {
-        seq,
-        results,
-        ..Default::default()
-    }))
-    .unwrap();
+    let mut records = Vec::new();
     for (id, shape) in applied {
         let held = trees.remote().get(&(*id).into()).cloned();
         let remote = match shape {
@@ -11200,10 +11336,14 @@ fn the_server_applies(
                 ..held.unwrap()
             },
         };
-        trees.set_remote_made_here((*id).into(), remote);
+        records.push(((*id).into(), remote));
     }
-    assert!(commits.acknowledge(trees, seq));
-    trees.settle(commits.aliases());
+    let result = CommitResult {
+        seq,
+        results,
+        ..Default::default()
+    };
+    the_server_answers(trees, commits, result, records, own_record_first);
 }
 
 fn the_next_effect(trees: &mut Trees, commits: &Commits, ids: &mut IdGen) -> NodeId {
@@ -11274,7 +11414,8 @@ fn changing_an_entry_another_device_moved_in_whose_copy_the_user_deleted_where_i
 #[test]
 fn changing_an_entry_another_device_moved_in_whose_copy_the_user_edited_where_it_was_before_the_answer_makes_the_discarded_folder_the_users()
  {
-    for restart in [false, true] {
+    for (restart, own_record_first) in [(false, false), (false, true), (true, false), (true, true)]
+    {
         let (mut trees, mut commits, mut ids, sent) = a_server_folder_this_device_discards(
             &[("e", file(ROOT, "e", 5))],
             |trees, commits, ids| {
@@ -11285,7 +11426,7 @@ fn changing_an_entry_another_device_moved_in_whose_copy_the_user_edited_where_it
                     content: Some(content(9)),
                     ..file("x", "e", 5)
                 };
-                the_server_applies(trees, commits, &[("e", Some(edited))], 3);
+                the_server_applies(trees, commits, &[("e", Some(edited))], 3, own_record_first);
             },
             |_, _| {},
         );
@@ -11301,7 +11442,8 @@ fn changing_an_entry_another_device_moved_in_whose_copy_the_user_edited_where_it
 #[test]
 fn an_entry_the_user_deleted_in_the_folder_before_the_answer_is_not_one_of_its_entries_and_its_delete_syncs()
  {
-    for restart in [false, true] {
+    for (restart, own_record_first) in [(false, false), (false, true), (true, false), (true, true)]
+    {
         let (mut trees, mut commits, mut ids, sent) = a_server_folder_this_device_discards(
             &[("e", file(ROOT, "e", 5))],
             |trees, commits, ids| {
@@ -11309,7 +11451,7 @@ fn an_entry_the_user_deleted_in_the_folder_before_the_answer_is_not_one_of_its_e
                 trees.remove_local(&"e".into());
                 trees.settle(commits.aliases());
                 assert_eq!(ops(commits, trees, ids), [("delete", "e".into())]);
-                the_server_applies(trees, commits, &[("e", None)], 3);
+                the_server_applies(trees, commits, &[("e", None)], 3, own_record_first);
             },
             |_, _| {},
         );
@@ -11327,7 +11469,14 @@ fn an_entry_the_user_deleted_in_the_folder_before_the_answer_is_not_one_of_its_e
 
 #[test]
 fn an_entry_the_user_moved_out_of_the_folder_before_the_answer_is_not_one_of_its_entries() {
-    for (deleted, restart) in [(false, false), (false, true), (true, false), (true, true)] {
+    for (deleted, restart, own_record_first) in [
+        (false, false, false),
+        (false, true, true),
+        (true, false, true),
+        (true, true, false),
+        (false, false, true),
+        (true, false, false),
+    ] {
         let out = file(ROOT, "child", 3);
         let (mut trees, mut commits, mut ids, sent) = a_server_folder_this_device_discards(
             &[],
@@ -11341,7 +11490,15 @@ fn an_entry_the_user_moved_out_of_the_folder_before_the_answer_is_not_one_of_its
                     trees.settle(commits.aliases());
                 }
             },
-            |trees, commits| the_server_applies(trees, commits, &[("c", Some(out.clone()))], 2),
+            |trees, commits| {
+                the_server_applies(
+                    trees,
+                    commits,
+                    &[("c", Some(out.clone()))],
+                    2,
+                    own_record_first,
+                )
+            },
         );
         let delete: &[(&str, String)] = &[("delete", "c".into())];
         assert_eq!(sent, if deleted { delete } else { &[] });
@@ -11460,7 +11617,8 @@ fn changing_an_entry_a_later_discard_takes_back_into_the_folder_the_user_moved_i
 #[test]
 fn an_entry_the_user_moved_out_of_the_folder_into_a_held_folder_the_person_publishes_is_not_one_of_its_entries()
  {
-    for restart in [false, true] {
+    for (restart, own_record_first) in [(false, false), (false, true), (true, false), (true, true)]
+    {
         let (mut trees, mut commits, mut ids, sent) =
             a_server_entry_the_user_moved_into_another_held_folder(Some(Answer::Publish), "c");
         assert_eq!(sent, [("create dir", "g".into()), ("move", "c".into())]);
@@ -11469,7 +11627,7 @@ fn an_entry_the_user_moved_out_of_the_folder_into_a_held_folder_the_person_publi
             ("g", Some(dir(ROOT, "other"))),
             ("c", Some(file("g", "ignored", 3))),
         ];
-        the_server_applies(&mut trees, &mut commits, &published, 2);
+        the_server_applies(&mut trees, &mut commits, &published, 2, own_record_first);
         restarted_if(restart, &mut trees, &mut commits);
         let sends = change_as_the_user(&mut trees, &"c".into(), UserChange::Edit);
         assert_eq!(
@@ -11548,14 +11706,18 @@ fn a_late_acknowledgement_of_this_devices_move_keeps_an_entry_another_device_the
             this_device_sends_a_move(&mut trees, &mut commits, &mut ids, "m", file("a", "m", 7));
         assert_eq!(moved, [("move", "m".to_owned())]);
         if own_record_first {
+            let commit_id = commits.in_flight().unwrap().commit.commit_id.clone();
+            commits.own_record(10, &commit_id, NOW as i64);
             let mut own = trees.remote().get(&"m".into()).unwrap().clone();
             (own.shape, own.meta_rev, own.meta_edit_rev) = (file("a", "m", 7), 10, 10);
-            trees.set_remote_made_here("m".into(), own);
+            trees.apply_batch(|trees| trees.set_remote_made_here("m".into(), own));
+            assert!(!commits.acknowledge(&mut trees, 10));
             trees.settle(commits.aliases());
         }
         let mut other = trees.remote().get(&"m".into()).unwrap().clone();
         (other.shape, other.meta_rev, other.meta_edit_rev) = (file("x", "m", 7), 11, 11);
-        trees.set_remote("m".into(), other);
+        trees.apply_batch(|trees| trees.set_remote("m".into(), other));
+        assert!(!commits.acknowledge(&mut trees, 11));
         trees.settle(commits.aliases());
         let result = OpResult {
             code: op_result::Code::Applied as i32,
@@ -11586,81 +11748,94 @@ fn a_late_acknowledgement_of_this_devices_move_keeps_an_entry_another_device_the
 
 #[test]
 fn an_entry_this_device_moves_from_folder_to_folder_keeps_only_the_stays_of_the_folders_it_is_in() {
-    let extra = [
-        ("p1", dir(ROOT, "p1")),
-        ("p2", dir("p1", "p2")),
-        ("p3", dir(ROOT, "p3")),
-    ];
-    let (mut trees, mut commits, mut ids, sent) =
-        a_server_folder_this_device_discards(&extra, |_, _, _| {}, |_, _| {});
-    assert_eq!(sent, []);
-    for (seq, folder, stays) in [
-        (3, "p1", &["p1"][..]),
-        (4, "p2", &["p1", "p2"]),
-        (5, "p3", &["p3"]),
-    ] {
-        let moved = this_device_sends_a_move(
-            &mut trees,
-            &mut commits,
-            &mut ids,
-            "m",
-            file(folder, "m", 7),
-        );
-        assert_eq!(moved, [("move", "m".to_owned())]);
-        the_server_confirms_the_move(
-            &mut trees,
-            &mut commits,
-            "m",
-            file(folder, "m", 7),
-            seq,
-            false,
-        );
-        let kept: Vec<String> = (trees.state().discard_stays.iter())
-            .filter(|(id, _)| *id == "m")
-            .map(|(_, folder)| folder.to_string())
-            .collect();
-        assert_eq!(kept, stays, "into {folder}");
+    for from_the_log in [false, true] {
+        let extra = [
+            ("p1", dir(ROOT, "p1")),
+            ("p2", dir("p1", "p2")),
+            ("p3", dir(ROOT, "p3")),
+        ];
+        let (mut trees, mut commits, mut ids, sent) =
+            a_server_folder_this_device_discards(&extra, |_, _, _| {}, |_, _| {});
+        assert_eq!(sent, []);
+        for (seq, folder, stays) in [
+            (3, "p1", &["p1"][..]),
+            (4, "p2", &["p1", "p2"]),
+            (5, "p3", &["p3"]),
+        ] {
+            let moved = this_device_sends_a_move(
+                &mut trees,
+                &mut commits,
+                &mut ids,
+                "m",
+                file(folder, "m", 7),
+            );
+            assert_eq!(moved, [("move", "m".to_owned())]);
+            the_server_confirms_the_move(
+                &mut trees,
+                &mut commits,
+                "m",
+                file(folder, "m", 7),
+                seq,
+                from_the_log,
+            );
+            let kept: Vec<String> = (trees.state().discard_stays.iter())
+                .filter(|(id, _)| *id == "m")
+                .map(|(_, folder)| folder.to_string())
+                .collect();
+            assert_eq!(kept, stays, "into {folder}");
+        }
     }
 }
 
 #[test]
 fn an_entry_whose_move_out_the_server_refuses_keeps_this_devices_stay_in_the_folder() {
-    for restart in [false, true] {
-        let moved_in = file("x", "m", 7);
-        let (mut trees, mut commits, mut ids, sent) = a_server_folder_this_device_discards(
-            &[],
-            |trees, commits, ids| {
-                let into_x = this_device_sends_a_move(trees, commits, ids, "m", moved_in.clone());
-                assert_eq!(into_x, [("move", "m".into())]);
-                the_server_confirms_the_move(trees, commits, "m", moved_in.clone(), 2, false);
-                let out = this_device_sends_a_move(trees, commits, ids, "m", file(ROOT, "m", 7));
-                assert_eq!(out, [("move", "m".into())]);
-                let refused = OpResult {
-                    code: op_result::Code::Rejected as i32,
-                    reject_reason: "CYCLE".into(),
-                    ..Default::default()
-                };
-                (commits.received(CommitResult {
-                    seq: 3,
-                    results: vec![refused],
-                    ..Default::default()
-                }))
-                .unwrap();
-                assert!(commits.acknowledge(trees, 3));
-                trees.settle(commits.aliases());
-                while trees.local().get(&"m".into()).unwrap().shape.parent != "x" {
-                    the_next_effect(trees, commits, ids);
-                }
-            },
-            |_, _| {},
-        );
-        assert_eq!(sent, [], "{restart}");
-        restarted_if(restart, &mut trees, &mut commits);
-        let stay = (NodeId::from("m"), NodeId::from("x"));
-        assert!(trees.state().discard_stays.contains(&stay), "{restart}");
-        let sends = change_as_the_user(&mut trees, &"m".into(), UserChange::Edit);
-        let mut sent = quiet(&mut trees, &mut commits, &mut ids);
-        assert_the_users(&mut sent, (sends, "m"), &trees);
+    for from_the_log in [false, true] {
+        for restart in [false, true] {
+            let moved_in = file("x", "m", 7);
+            let (mut trees, mut commits, mut ids, sent) = a_server_folder_this_device_discards(
+                &[],
+                |trees, commits, ids| {
+                    let into_x =
+                        this_device_sends_a_move(trees, commits, ids, "m", moved_in.clone());
+                    assert_eq!(into_x, [("move", "m".into())]);
+                    the_server_confirms_the_move(
+                        trees,
+                        commits,
+                        "m",
+                        moved_in.clone(),
+                        2,
+                        from_the_log,
+                    );
+                    let out =
+                        this_device_sends_a_move(trees, commits, ids, "m", file(ROOT, "m", 7));
+                    assert_eq!(out, [("move", "m".into())]);
+                    let refused = OpResult {
+                        code: op_result::Code::Rejected as i32,
+                        reject_reason: "CYCLE".into(),
+                        ..Default::default()
+                    };
+                    (commits.received(CommitResult {
+                        seq: 3,
+                        results: vec![refused],
+                        ..Default::default()
+                    }))
+                    .unwrap();
+                    assert!(commits.acknowledge(trees, 3));
+                    trees.settle(commits.aliases());
+                    while trees.local().get(&"m".into()).unwrap().shape.parent != "x" {
+                        the_next_effect(trees, commits, ids);
+                    }
+                },
+                |_, _| {},
+            );
+            assert_eq!(sent, [], "{restart}");
+            restarted_if(restart, &mut trees, &mut commits);
+            let stay = (NodeId::from("m"), NodeId::from("x"));
+            assert!(trees.state().discard_stays.contains(&stay), "{restart}");
+            let sends = change_as_the_user(&mut trees, &"m".into(), UserChange::Edit);
+            let mut sent = quiet(&mut trees, &mut commits, &mut ids);
+            assert_the_users(&mut sent, (sends, "m"), &trees);
+        }
     }
 }
 
@@ -11719,42 +11894,44 @@ fn an_entry_another_device_moves_out_before_this_devices_move_in_is_acknowledged
 #[test]
 fn a_commit_that_moves_an_outside_folder_in_with_an_arrival_moved_into_it_makes_the_discarded_folder_the_users()
  {
-    let extra = [("y", dir(ROOT, "y"))];
-    let (mut trees, mut commits, mut ids, sent) =
-        a_server_folder_this_device_discards(&extra, |_, _, _| {}, |_, _| {});
-    assert_eq!(sent, []);
-    another_device_places(&mut trees, &commits, "m", file("x", "m", 7), 2);
-    for (id, shape) in [("y", dir("x", "y")), ("m", file("y", "m", 7))] {
-        let node = trees.local().get(&id.into()).unwrap().clone();
-        trees.set_local_changed(id.into(), LocalNode { shape, ..node });
+    for own_record_first in [false, true] {
+        let extra = [("y", dir(ROOT, "y"))];
+        let (mut trees, mut commits, mut ids, sent) =
+            a_server_folder_this_device_discards(&extra, |_, _, _| {}, |_, _| {});
+        assert_eq!(sent, []);
+        another_device_places(&mut trees, &commits, "m", file("x", "m", 7), 2);
+        for (id, shape) in [("y", dir("x", "y")), ("m", file("y", "m", 7))] {
+            let node = trees.local().get(&id.into()).unwrap().clone();
+            trees.set_local_changed(id.into(), LocalNode { shape, ..node });
+        }
+        trees.settle(commits.aliases());
+        assert_eq!(
+            ops(&mut commits, &mut trees, &mut ids),
+            [
+                ("create dir", "f".to_owned()),
+                ("move", "x".to_owned()),
+                ("move", "y".to_owned()),
+                ("move", "m".to_owned())
+            ]
+        );
+        let applied = [
+            ("f", Some(dir(ROOT, "new"))),
+            ("x", Some(dir("f", "ignored"))),
+            ("y", Some(dir("x", "y"))),
+            ("m", Some(file("y", "m", 7))),
+        ];
+        the_server_applies(&mut trees, &mut commits, &applied, 3, own_record_first);
+        restarted_if(true, &mut trees, &mut commits);
+        let sends = change_as_the_user(&mut trees, &"m".into(), UserChange::Edit);
+        assert_eq!(
+            quiet(&mut trees, &mut commits, &mut ids),
+            [(sends, "m".to_owned())]
+        );
+        assert_eq!(
+            trees.local().get(&"x".into()).unwrap().shape,
+            dir("f", "ignored")
+        );
     }
-    trees.settle(commits.aliases());
-    assert_eq!(
-        ops(&mut commits, &mut trees, &mut ids),
-        [
-            ("create dir", "f".to_owned()),
-            ("move", "x".to_owned()),
-            ("move", "y".to_owned()),
-            ("move", "m".to_owned())
-        ]
-    );
-    let applied = [
-        ("f", Some(dir(ROOT, "new"))),
-        ("x", Some(dir("f", "ignored"))),
-        ("y", Some(dir("x", "y"))),
-        ("m", Some(file("y", "m", 7))),
-    ];
-    the_server_applies(&mut trees, &mut commits, &applied, 3);
-    restarted_if(true, &mut trees, &mut commits);
-    let sends = change_as_the_user(&mut trees, &"m".into(), UserChange::Edit);
-    assert_eq!(
-        quiet(&mut trees, &mut commits, &mut ids),
-        [(sends, "m".to_owned())]
-    );
-    assert_eq!(
-        trees.local().get(&"x".into()).unwrap().shape,
-        dir("f", "ignored")
-    );
 }
 
 #[test]
@@ -11776,8 +11953,28 @@ fn an_entry_the_user_moves_into_the_folder_while_its_rename_waits_stays_an_addit
             trees.set_local_changed("yc".into(), LocalNode { shape, ..node });
             trees.settle(commits.aliases());
         }
+        let commit_id = commits.in_flight().unwrap().commit.commit_id.clone();
+        commits.own_record(2, &commit_id, NOW as i64);
+        let mut own = trees.remote().get(&"yc".into()).unwrap().clone();
+        (own.shape, own.meta_rev, own.meta_edit_rev) = (renamed, 2, 2);
+        trees.set_remote_made_here("yc".into(), own);
+        commits.acknowledge(&mut trees, 2);
+        trees.settle(commits.aliases());
         another_device_commits_moves(&mut trees, &commits, &[(&"y".into(), dir("x", "y"))], 3);
-        the_server_confirms_the_move(&mut trees, &mut commits, "yc", renamed, 2, false);
+        commits.acknowledge(&mut trees, 3);
+        let result = OpResult {
+            code: op_result::Code::Applied as i32,
+            node_id: "yc".into(),
+            ..Default::default()
+        };
+        (commits.received(CommitResult {
+            seq: 2,
+            results: vec![result],
+            ..Default::default()
+        }))
+        .unwrap();
+        assert!(commits.acknowledge(&mut trees, 3), "{case}");
+        trees.settle(commits.aliases());
         restarted_if(restart, &mut trees, &mut commits);
         let sent = quiet(&mut trees, &mut commits, &mut ids);
         if moved_in {
@@ -11808,7 +12005,8 @@ fn an_entry_the_user_moves_into_the_folder_while_its_rename_waits_stays_an_addit
 
 #[test]
 fn a_change_to_the_conflict_copy_of_an_edit_to_an_arrival_changes_that_copy_alone() {
-    for restart in [false, true] {
+    for (restart, own_record_first) in [(false, false), (false, true), (true, false), (true, true)]
+    {
         let (mut trees, mut commits, mut ids, sent) =
             a_server_folder_this_device_discards(&[], |_, _, _| {}, |_, _| {});
         assert_eq!(sent, [], "{restart}");
@@ -11829,17 +12027,15 @@ fn a_change_to_the_conflict_copy_of_an_edit_to_an_arrival_changes_that_copy_alon
             node_id: "mc".into(),
             ..Default::default()
         };
-        (commits.received(CommitResult {
+        let result = CommitResult {
             seq: 4,
             results: vec![result],
             ..Default::default()
-        }))
-        .unwrap();
+        };
         let mut copy = remote_node(file("x", "m (conflict from me)", 9));
         (copy.meta_rev, copy.meta_edit_rev) = (4, 4);
-        trees.set_remote_made_here("mc".into(), copy);
-        assert!(commits.acknowledge(&mut trees, 4), "{restart}");
-        trees.settle(commits.aliases());
+        let records = vec![("mc".into(), copy)];
+        the_server_answers(&mut trees, &mut commits, result, records, own_record_first);
         restarted_if(restart, &mut trees, &mut commits);
         assert_eq!(quiet(&mut trees, &mut commits, &mut ids), [], "{restart}");
         let node = trees.local().get(&"mc".into()).unwrap().clone();
@@ -11876,12 +12072,16 @@ fn an_entry_this_device_creates_before_the_answer_stays_one_of_its_entries_after
             |trees, commits| {
                 let mut remote = remote_node(created.clone());
                 if own_record_first {
+                    let commit_id = commits.in_flight().unwrap().commit.commit_id.clone();
+                    commits.own_record(2, &commit_id, NOW as i64);
                     (remote.meta_rev, remote.meta_edit_rev) = (2, 2);
-                    trees.set_remote("n".into(), remote.clone());
+                    trees.set_remote_made_here("n".into(), remote.clone());
+                    commits.acknowledge(trees, 2);
                     trees.settle(commits.aliases());
                 }
                 (remote.shape, remote.meta_rev, remote.meta_edit_rev) = (file("x", "n", 5), 3, 3);
                 trees.set_remote("n".into(), remote);
+                commits.acknowledge(trees, 3);
                 trees.settle(commits.aliases());
                 let result = OpResult {
                     code: op_result::Code::Applied as i32,
@@ -11894,7 +12094,7 @@ fn an_entry_this_device_creates_before_the_answer_stays_one_of_its_entries_after
                     ..Default::default()
                 }))
                 .unwrap();
-                assert!(commits.acknowledge(trees, 2));
+                assert!(commits.acknowledge(trees, 3));
                 trees.settle(commits.aliases());
             },
         );
