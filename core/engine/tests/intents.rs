@@ -3008,3 +3008,46 @@ fn zz_cr_4648946595_a_relist_keeps_a_delete_of_another_trash_group_apart() {
     trees.take_listed_intents(&listed);
     assert!(history(&trees).contains(&first), "{:?}", history(&trees));
 }
+
+// zz_cr 4651326485
+#[test]
+fn zz_cr_4651326485_a_folder_held_elsewhere_is_not_resent_while_its_child_waits() {
+    let mut device = PurgedFolder::new(|trees| {
+        trees.set_local_changed("z".into(), local(file("x", "z", 1)));
+    });
+    let mut rounds = Vec::new();
+    for round in 0..6 {
+        let ops = match round {
+            0 => device.build_one(),
+            _ => match device.build() {
+                Some(ops) => ops,
+                None => {
+                    rounds.push(format!("{round}: no commit"));
+                    break;
+                }
+            },
+        };
+        rounds.push(format!("{round}: {ops:?}"));
+        if !ops.iter().any(|(id, _)| id == "x") {
+            break;
+        }
+        let held = |field| Some(wire(sent(&device.trees, "x", field), 1_800 + round));
+        let intents = proto::FieldIntents {
+            place: held(Field::Place),
+            status: held(Field::Status),
+            content: None,
+        };
+        let holder = node_state("y", &dir("a", "x"), 2 + round as u64, Some(intents));
+        let outcomes: Vec<_> = ops.iter().map(|(id, _)| match id.as_str() {
+            "x" => proto::OpResult { node_id: id.clone(), ..outcome(op_result::Code::Superseded) },
+            _ => proto::OpResult { node_id: String::new(), reject_reason: "NOT_FOUND".into(), ..outcome(op_result::Code::Rejected) },
+        }).collect();
+        device.seq += 1;
+        let (id, node) = RemoteNode::from_state(&holder).unwrap();
+        device.trees.set_remote_made_here(id, node);
+        let result = proto::CommitResult { seq: device.seq, ..answered(outcomes, vec![holder]) };
+        device.commits.received(result).unwrap();
+        device.commits.acknowledge(&mut device.trees, device.seq);
+    }
+    assert!(rounds.len() < 4, "{rounds:#?}");
+}
