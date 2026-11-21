@@ -35,7 +35,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-pub use engine::{EngineChanges, EngineState};
+pub use engine::{EffectCounter, EngineChanges, EngineState};
 use koidrive_engine::commit::Base;
 use koidrive_engine::tree::NodeId;
 use koidrive_fs::{FileId, Minted, Mount, RootAt, RootTokens, VolumeId};
@@ -133,6 +133,8 @@ pub enum Error {
     NotDurable(Durability),
     #[error("the stored engine state is invalid: {0}")]
     InvalidEngineState(String),
+    #[error("the database was replaced while this connection wrote to it")]
+    Replaced,
 }
 
 /// The connection settings that make a returned commit durable.
@@ -269,6 +271,7 @@ pub struct CachedChunk {
 
 pub struct Store {
     conn: Connection,
+    stamp: Option<u64>,
 }
 
 impl Store {
@@ -301,7 +304,7 @@ impl Store {
         conn.pragma_update(None, "synchronous", "FULL")?;
         #[cfg(target_os = "macos")]
         conn.pragma_update(None, "fullfsync", true)?;
-        let mut store = Self { conn };
+        let mut store = Self { conn, stamp: None };
         let durability = store.durability()?;
         if durability != Durability::required() {
             return Err(Error::NotDurable(durability));
@@ -348,7 +351,7 @@ impl Store {
                 missing: missing.name.to_owned(),
             });
         }
-        Ok(Self { conn })
+        Ok(Self { conn, stamp: None })
     }
 
     /// The durability settings in effect on this connection.
@@ -382,9 +385,55 @@ impl Store {
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(Error::from)?);
+        if let Some(stamp) = self.stamp
+            && tx.write_stamp()? != stamp
+        {
+            return Err(Error::Replaced.into());
+        }
+        let unchanged = tx.0.total_changes();
         let value = f(&tx)?;
+        let advanced = match self.stamp {
+            Some(_) if tx.0.total_changes() != unchanged => {
+                let fresh = loop {
+                    let drawn =
+                        getrandom::u64().expect("the operating system provides random bytes") >> 1;
+                    if drawn != 0 {
+                        break drawn;
+                    }
+                };
+                (tx.0)
+                    .execute(
+                        "INSERT OR REPLACE INTO write_stamp (id, stamp) VALUES (1, ?1)",
+                        [fresh],
+                    )
+                    .map_err(Error::from)?;
+                Some(fresh)
+            }
+            stamp => stamp,
+        };
         tx.0.commit().map_err(Error::from)?;
+        self.stamp = advanced;
         Ok(value)
+    }
+
+    /// Makes every later [`Store::transaction`] on this connection that writes replace the store's write stamp with a
+    /// fresh random one, starting from `stamp`, the one the caller read with the state it holds ([`Tx::write_stamp`]). A
+    /// transaction that finds another stamp than the one this connection last wrote refuses with [`Error::Replaced`] and
+    /// writes nothing: another file took the database's place, or another connection that stamps its writes wrote to it.
+    pub fn stamp_writes(&mut self, stamp: u64) {
+        self.stamp = Some(stamp);
+    }
+
+    /// Fails with [`Error::Replaced`] when this connection stamps its writes ([`Store::stamp_writes`]) and the store
+    /// holds another write stamp than the one it last wrote.
+    pub fn check_stamp(&mut self) -> Result<()> {
+        let Some(stamp) = self.stamp else {
+            return Ok(());
+        };
+        match self.read(|tx| tx.write_stamp())? == stamp {
+            true => Ok(()),
+            false => Err(Error::Replaced),
+        }
     }
 
     /// Runs `f` in one read transaction. It sees the store as the last commit left it and waits for no writer, and
@@ -479,6 +528,24 @@ impl Drop for QueryOnly<'_> {
 pub struct Tx<'a>(rusqlite::Transaction<'a>);
 
 impl Tx<'_> {
+    /// The store's write stamp ([`Store::stamp_writes`]), 0 before any connection that stamps its writes wrote.
+    pub fn write_stamp(&self) -> Result<u64> {
+        let stamp = (self.0)
+            .query_row("SELECT stamp FROM write_stamp WHERE id = 1", [], |row| {
+                row.get(0)
+            })
+            .optional();
+        match stamp {
+            Ok(stamp) => Ok(stamp.unwrap_or_default()),
+            Err(rusqlite::Error::SqliteFailure(_, Some(message)))
+                if message == "no such table: write_stamp" =>
+            {
+                Err(Error::Replaced)
+            }
+            Err(error) => Err(error.into()),
+        }
+    }
+
     pub fn cursor(&self) -> Result<Option<Cursor>> {
         Ok(self
             .0
@@ -967,9 +1034,9 @@ impl Tx<'_> {
     }
 
     /// Empties the sync state to what a first link starts from, keeping the link with its root tokens, the volume
-    /// mounts, the chunk cache, the ID generator and the restores a person asked for.
+    /// mounts, the chunk cache, the ID generator, the write stamp and the restores a person asked for.
     pub fn forget_sync_state(&self) -> Result<()> {
-        const KEPT: [&str; 8] = [
+        const KEPT: [&str; 9] = [
             "migrations",
             "link",
             "volume_mounts",
@@ -978,6 +1045,7 @@ impl Tx<'_> {
             "restore_intents",
             "restore_asked",
             "split_restores",
+            "write_stamp",
         ];
         let ids = self.id_generator()?;
         let tables: Vec<String> = self

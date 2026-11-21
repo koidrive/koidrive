@@ -49,13 +49,13 @@ pub(crate) fn group(
     };
     let remote = trees.remote().get(id);
     let live = trees.remote().live(id);
+    if (live.is_some() || synced.is_some()) && agreed(trees, id).is_some() {
+        return None;
+    }
     let server_lost_it = || {
         cause.is_some_and(|cause| cause.trigger == RecoveryTrigger::StoreRolledBack)
             && trees.made_over_remote(id)
     };
-    if live.is_some() && same(local, live) {
-        return None;
-    }
     let pending = |local: &Shape| {
         remote.is_some_and(|r| {
             !r.trashed
@@ -96,6 +96,19 @@ pub(crate) fn group(
         (Some(_), None) => Some(RecoveryGroup::ChangedOnThisDevice),
         (None, Some(_)) => live.is_some().then_some(RecoveryGroup::DeletedOnThisDevice),
         (None, None) => None,
+    }
+}
+
+pub(crate) fn agreed<'a>(trees: &'a Trees, id: &NodeId) -> Option<Option<&'a Shape>> {
+    let local = trees.local().get(id).map(|node| &node.shape);
+    let live = trees.remote().live(id);
+    let last = trees.remote().get(id).map(|node| &node.shape);
+    if same(local, live) {
+        Some(live)
+    } else if local.is_some() && same(local, last) {
+        Some(last)
+    } else {
+        None
     }
 }
 

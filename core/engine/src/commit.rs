@@ -1036,31 +1036,12 @@ impl Commits {
             .retain(|question| matches!(question.kind, QuestionKind::RemoteMassDelete { .. }));
         self.hold(trees);
         first_link::adopt_by_marks_first(trees, &log.history, marks, ids, now_ms);
-        let agreed: Vec<(NodeId, Option<Shape>)> = (trees.local().iter().map(|(id, _)| id))
+        let all: BTreeSet<NodeId> = (trees.local().iter().map(|(id, _)| id))
             .chain(trees.synced().iter().map(|(id, _)| id))
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .filter_map(|id| {
-                let local = trees.local().get(id).map(|node| &node.shape);
-                let live = trees.remote().live(id);
-                let last = trees.remote().get(id).map(|node| &node.shape);
-                let shape = if same(local, live) {
-                    live
-                } else if local.is_some() && same(local, last) {
-                    last
-                } else {
-                    return None;
-                };
-                Some((id.clone(), shape.cloned()))
-            })
+            .cloned()
             .collect();
-        for (id, shape) in &agreed {
-            trees.sent_edit(id, shape.as_ref().and_then(|shape| shape.content.as_ref()));
-        }
-        let agreed = (agreed.into_iter()).filter(|(id, shape)| {
-            !same(trees.synced().live(id), shape.as_ref()) && trees.waiting().get(id).is_none()
-        });
-        for (id, shape) in update_synced(trees, agreed.collect()) {
+        let agreed = agreed_with_remote(trees, all);
+        for (id, shape) in update_synced(trees, agreed) {
             trees.wait(id, shape, Origin::Other);
         }
         let mut groups = recovery::classify(trees, &held, cause);
@@ -1399,6 +1380,7 @@ impl Commits {
         let mut groups = recovery::regroup(trees, left, &BTreeMap::new(), cause.as_ref());
         groups.remove(&RecoveryGroup::CreatedOnThisDevice);
         let mut intents = None;
+        let mut certain = Vec::new();
         for mut question in std::mem::take(self.questions.get_mut()) {
             let QuestionKind::Recovery { group, sent_in, .. } = &mut question.kind else {
                 self.questions.get_mut().push(question);
@@ -1418,6 +1400,9 @@ impl Commits {
             }
             for id in question.holds() {
                 let Some(now) = recovery::group(trees, id, Some(group), cause.as_ref()) else {
+                    if trees.remote().get(id).is_some_and(|remote| remote.trashed) {
+                        certain.push(id.clone());
+                    }
                     continue;
                 };
                 let now = match now {
@@ -1436,7 +1421,7 @@ impl Commits {
         for nodes in groups.values_mut() {
             nodes.retain(|id| !owned.contains(id));
         }
-        let mut updates = Vec::new();
+        let mut updates = agreed_with_remote(trees, certain);
         let mut released = Vec::new();
         for (group, nodes) in groups {
             let Some(question) = recovery::ask(
@@ -3657,6 +3642,24 @@ fn built_in_below(trees: &Trees, problems: &TrackedSet<NodeId>, deleted: &mut BT
 /// when they fit together, otherwise those left once each update that a node outside the batch
 /// blocks is taken out ([`blocked`]), otherwise each that fits on its own and then the rest together
 /// again, while any is made. Returns the rest.
+fn agreed_with_remote(
+    trees: &mut Trees,
+    ids: impl IntoIterator<Item = NodeId>,
+) -> Vec<(NodeId, Option<Shape>)> {
+    let agreed: Vec<(NodeId, Option<Shape>)> = (ids.into_iter())
+        .filter_map(|id| {
+            let shape = recovery::agreed(trees, &id)?.cloned();
+            Some((id, shape))
+        })
+        .collect();
+    for (id, shape) in &agreed {
+        trees.sent_edit(id, shape.as_ref().and_then(|shape| shape.content.as_ref()));
+    }
+    (agreed.into_iter())
+        .filter(|(id, shape)| !same(trees.acknowledged(id), shape.as_ref()))
+        .collect()
+}
+
 fn update_synced(
     trees: &mut Trees,
     updates: Vec<(NodeId, Option<Shape>)>,

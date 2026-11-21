@@ -32,7 +32,7 @@ use super::*;
 
 use crate::config::SyncRules;
 
-use crate::disk::tests::{Server, ready};
+use crate::disk::tests::{Server, copy_store_while_open, ready};
 
 use crate::driver::{DriverError, lift_halt};
 
@@ -330,6 +330,7 @@ impl Site {
             caller: self.caller.clone(),
             work: VecDeque::new(),
             sent: Vec::new(),
+            compares_store: true,
             _lock: lock,
         }
     }
@@ -347,6 +348,7 @@ struct Device {
     work: VecDeque<Work>,
     /// Every commit handed to `Session::commit`, in order.
     sent: Vec<Commit>,
+    compares_store: bool,
     _lock: koidrive_state_file::Flock,
 }
 
@@ -358,6 +360,9 @@ impl Device {
         folder.track_progress(folder.view().state);
         if folder.timing.is_on() || folder.timing.has_first() {
             folder.record_status(folder.view().state);
+        }
+        if !self.compares_store {
+            return Ok(());
         }
         let stored = folder
             .store

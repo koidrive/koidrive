@@ -63,7 +63,7 @@ use koidrive_fs::{
 use koidrive_net::{CallError, ChunkError, Session, StopReason, Transfer};
 use koidrive_proto::v1::error::Code;
 use koidrive_proto::v1::{ChunkRef, Commit, VersionInfo, op};
-use koidrive_store::{Link, Store, Tx};
+use koidrive_store::{EffectCounter, Link, Store, Tx};
 use prost::Message;
 use rustix::fs::{Mode, OFlags};
 
@@ -101,6 +101,10 @@ pub(crate) enum Stop {
          from an older state"
     )]
     DiskBehind { marker: u64, cleared: u64 },
+    #[error(
+        "the folder's sync state is older than the folder: it was replaced while the folder synced"
+    )]
+    StoreBehind,
     #[error("an observation was scanned from another folder than the one this task locked")]
     OtherRoot,
     #[error("effect {effect_id} cannot be carried out: {what}")]
@@ -125,7 +129,11 @@ impl Stop {
     pub(crate) fn remedy(&self) -> Remedy {
         match self {
             Stop::Root(RootProblem::Copy) | Stop::DiskBehind { .. } => Remedy::Relink,
-            Stop::Withdrawn(_) | Stop::Root(_) | Stop::OtherRoot => Remedy::Root,
+            Stop::Withdrawn(_)
+            | Stop::Root(_)
+            | Stop::OtherRoot
+            | Stop::StoreBehind
+            | Stop::Store(koidrive_store::Error::Replaced) => Remedy::Root,
             Stop::Session(StopReason::CredentialsRefused | StopReason::DeviceRevoked) => {
                 Remedy::SetUpAgain
             }
@@ -372,8 +380,7 @@ type Hook = Box<dyn FnMut(Cut) + Send>;
 /// The locked folder, as effects and observations reach it.
 pub(crate) struct Disk {
     space: Arc<Space>,
-    path: PathBuf,
-    space_id: String,
+    link: Link,
     sections: Arc<Sections>,
     recorded: BTreeMap<PathBuf, Known>,
     found: BTreeMap<PathBuf, PathBuf>,
@@ -521,8 +528,7 @@ impl Disk {
         });
         let mut disk = Disk {
             space: Arc::new(space),
-            path: link.root.clone(),
-            space_id: link.space_id.clone(),
+            link: link.clone(),
             sections,
             recorded: BTreeMap::new(),
             found: BTreeMap::new(),
@@ -541,7 +547,9 @@ impl Disk {
             #[cfg(test)]
             flush_fails: false,
         };
-        let (found, opened) = marker_standing(&disk.space, link, &engine.effects, store)?;
+        let counter = counted(&engine.effects);
+        store.check_stamp()?;
+        let (found, opened) = store.read(|tx| marker_standing(&disk.space, link, tx, counter))?;
         let recovered = matches!(opened, Standing::StoreOlder);
         if recovered {
             tracing::warn!(
@@ -596,9 +604,12 @@ impl Disk {
                 hook,
             )?;
             disk.finish_rotation(store)?;
-            if let Standing::StoreOlder =
-                standing(&disk.marker()?, &disk.tokens(), &engine.effects, || false)?
-            {
+            if let Standing::StoreOlder = standing(
+                &disk.marker()?,
+                &disk.tokens(),
+                counted(&engine.effects),
+                || false,
+            )? {
                 return Err(Stop::Root(RootProblem::BadMarker(io::Error::other(
                     "it changed while the folder's effects were recovered",
                 ))));
@@ -641,12 +652,15 @@ impl Disk {
     /// Plans the next batch of effects ([`BATCH`]) and records it, with the ID generator, in one store transaction.
     /// Returns `None` when nothing is planned, including while a batch is in flight. The nodes planning unblocks are
     /// stored unblocked also then. A batch with a record that cannot become a `core/fs` effect (a name that is not a
-    /// single file name) is never committed, and stops the task.
+    /// single file name) is never committed, and stops the task. Before planning, it compares the store with the root
+    /// marker as [`Disk::start`] does: a store older than the folder stops the task with [`Stop::StoreBehind`], and
+    /// a marker below the store's effect counter with [`Stop::DiskBehind`].
     pub fn next(
         &mut self,
         engine: &mut Engine,
         store: &mut Store,
     ) -> Result<Option<Pending>, Stop> {
+        self.still_current(store)?;
         let now_ms = crate::clock::unix_ms();
         let (space, batch) = (&self.space, self.batch);
         self.merge_residue = observe_merge_residue(space, engine)?;
@@ -706,10 +720,10 @@ impl Disk {
         }
     }
 
-    /// The effect section, which has no await. It checks that `staged` is the batch in flight and that the root is
-    /// held, applies every effect of the batch in one `core/fs` section with a marker holding the batch's counter,
-    /// acknowledges the outcomes in one transaction, and asks the observer to reset the paths the effects acted on to
-    /// L as acknowledged. Returns how each effect ended, with its node, in the order of the batch. A write whose
+    /// The effect section, which has no await. It checks that `staged` is the batch in flight, compares the store
+    /// with the root marker as [`Disk::next`] does, applies every effect of the batch in one `core/fs` section with a
+    /// marker holding the batch's counter, acknowledges the outcomes in one transaction, and asks the observer to reset
+    /// the paths the effects acted on to L as acknowledged. Returns how each effect ended, with its node, in the order of the batch. A write whose
     /// content could not be fetched only drops its staged file, and fails. So does an effect that L no longer takes
     /// ([`EffectRecord::applies`]), because a batch changed L after the plan. Nothing else under the root is touched
     /// for them.
@@ -732,9 +746,7 @@ impl Disk {
         let Some(counter) = effects.first().map(|(planned, _)| planned.record.counter) else {
             return Ok(Vec::new());
         };
-        if !self.space.held()? {
-            return Err(Stop::Withdrawn(self.path.clone()));
-        }
+        self.still_current(store)?;
         self.merge_residue = observe_merge_residue(&self.space, engine)?;
         let staged: Vec<_> = (effects.iter())
             .filter_map(|(planned, _)| match planned.effect.action {
@@ -814,7 +826,7 @@ impl Disk {
         let settled = acknowledge(
             &outcomes,
             false,
-            &self.space_id,
+            &self.link.space_id,
             pending,
             engine,
             store,
@@ -888,7 +900,7 @@ impl Disk {
             return Err(Stop::OtherRoot);
         }
         if !self.space.held()? {
-            return Err(Stop::Withdrawn(self.path.clone()));
+            return Err(Stop::Withdrawn(self.link.root.clone()));
         }
         observation.root.map_err(Stop::Root)?;
         engine.rules(
@@ -901,7 +913,7 @@ impl Disk {
         answered.narrow(&mut self.unscanned.dropped);
         if stamp.0 < self.forgotten {
             tracing::debug!(
-                space_id = self.space_id.as_str(),
+                space_id = self.link.space_id.as_str(),
                 changes = observation.changes.len(),
                 "dropped an observation older than the effects the folder remembers, and reset the whole folder"
             );
@@ -997,7 +1009,7 @@ impl Disk {
         self.request_relist(engine);
         if !dropped.is_empty() {
             tracing::debug!(
-                space_id = self.space_id.as_str(),
+                space_id = self.link.space_id.as_str(),
                 ?dropped,
                 "dropped the changes an effect made after the observation began, and reset their paths"
             );
@@ -1077,7 +1089,7 @@ impl Disk {
                 match self.space.mark_of(&at, expected) {
                     Ok(node) => Some((id.clone(), NodeId::from(node?))),
                     Err(err) => {
-                        tracing::warn!(space_id = self.space_id, %id, %err, "could not read a node mark");
+                        tracing::warn!(space_id = self.link.space_id, %id, %err, "could not read a node mark");
                         None
                     }
                 }
@@ -1091,7 +1103,7 @@ impl Disk {
                 continue;
             };
             if let Err(err) = self.space.mark(&at, expected, &node.to_string()) {
-                tracing::warn!(space_id = self.space_id, %node, %err, "could not mark an entry");
+                tracing::warn!(space_id = self.link.space_id, %node, %err, "could not mark an entry");
             }
         }
     }
@@ -1151,7 +1163,7 @@ impl Disk {
 
     fn counter(&self, effects: u64) -> Marker {
         let marker = Marker {
-            space_id: self.space_id.clone(),
+            space_id: self.link.space_id.clone(),
             effects,
             token: self.current.clone(),
         };
@@ -1187,7 +1199,7 @@ impl Disk {
     }
 
     pub fn rotate_before_build(&mut self, store: &mut Store) -> Result<Option<Minted>, Stop> {
-        let marker = self.marker()?;
+        let marker = self.still_current(store)?;
         let next = match &mut self.next {
             Some(next) if next.for_build => next,
             unbuilt => {
@@ -1217,7 +1229,7 @@ impl Disk {
             });
             if let Err(error) = written {
                 if self.unwritable.is_none() {
-                    tracing::warn!(space_id = self.space_id, %error, "nothing is uploaded until the folder's marker can be written");
+                    tracing::warn!(space_id = self.link.space_id, %error, "nothing is uploaded until the folder's marker can be written");
                 }
                 self.unwritable = Some(error.to_string());
                 return Ok(None);
@@ -1288,7 +1300,17 @@ impl Disk {
     }
 
     fn marker(&self) -> Result<Marker, Stop> {
-        marker_of(&self.space, &self.space_id)
+        marker_of(&self.space, &self.link.space_id)
+    }
+
+    fn still_current(&self, store: &mut Store) -> Result<Marker, Stop> {
+        store.check_stamp()?;
+        let (found, standing) =
+            store.read(|tx| marker_standing(&self.space, &self.link, tx, tx.effect_counter()?))?;
+        match standing {
+            Standing::Current => Ok(found),
+            Standing::StoreOlder => Err(Stop::StoreBehind),
+        }
     }
 }
 
@@ -1297,14 +1319,21 @@ enum Standing {
     StoreOlder,
 }
 
+fn counted(effects: &Effects) -> EffectCounter {
+    EffectCounter {
+        cleared: effects.cleared(),
+        in_flight: effects.in_flight().len() as u64,
+    }
+}
+
 fn standing(
     found: &Marker,
     tokens: &RootTokens,
-    effects: &Effects,
+    counter: EffectCounter,
     descends: impl FnOnce() -> bool,
 ) -> Result<Standing, Stop> {
-    let (marker, cleared) = (found.effects, effects.cleared());
-    if marker > cleared + effects.in_flight().len() as u64 {
+    let (marker, cleared) = (found.effects, counter.cleared);
+    if marker > cleared + counter.in_flight {
         return Ok(Standing::StoreOlder);
     }
     match tokens.admits(found) {
@@ -1318,8 +1347,8 @@ fn standing(
 fn marker_standing(
     space: &Space,
     link: &Link,
-    effects: &Effects,
-    store: &mut Store,
+    tx: &Tx<'_>,
+    counter: EffectCounter,
 ) -> Result<(Marker, Standing), Stop> {
     if !space.held()? {
         return Err(Stop::Withdrawn(link.root.clone()));
@@ -1327,11 +1356,10 @@ fn marker_standing(
     link.root_at()
         .admits(&space.root_at()?)
         .map_err(Stop::Root)?;
-    let (tokens, minted) =
-        store.read(|tx| Ok::<_, Stop>((tx.root_tokens()?, tx.root_minted()?)))?;
+    let (tokens, minted) = (tx.root_tokens()?, tx.root_minted()?);
     let found = marker_of(space, &link.space_id)?;
     let own = [minted.as_deref(), tokens.pending.as_deref()];
-    let standing = standing(&found, &tokens, effects, || descends(space, &own, &found))?;
+    let standing = standing(&found, &tokens, counter, || descends(space, &own, &found))?;
     Ok((found, standing))
 }
 
@@ -1395,7 +1423,7 @@ pub(crate) fn relink_with_hook(
         .map_err(Stop::Root)?;
     let marker = marker_of(&space, &link.space_id)?;
     let own = [minted.as_deref(), tokens.pending.as_deref()];
-    if standing(&marker, &tokens, &before.effects, || {
+    if standing(&marker, &tokens, counted(&before.effects), || {
         descends(&space, &own, &marker)
     })
     .is_ok()
@@ -1803,8 +1831,7 @@ fn find_root(link: &mut Link, store: &mut Store) -> Result<FoundRoot, Stop> {
 pub(crate) fn admitted(link: &Link, store: &mut Store) -> Result<Space, Stop> {
     let mut link = link.clone();
     let FoundRoot { space, .. } = find_root(&mut link, store)?;
-    let effects = store.read(|tx| crate::engine::effects_of(tx.engine_state()?.effects))?;
-    marker_standing(&space, &link, &effects, store)?;
+    store.read(|tx| marker_standing(&space, &link, tx, tx.effect_counter()?))?;
     Ok(space)
 }
 

@@ -644,7 +644,7 @@ fn driver_human(error: &DriverError) -> Option<String> {
             koidrive_store::Error::Unopenable { source, .. } => {
                 return local_io_human(source).map(str::to_owned);
             }
-            koidrive_store::Error::Sqlite(_) => return None,
+            koidrive_store::Error::Sqlite(_) | koidrive_store::Error::Replaced => return None,
         },
         DriverError::PausedUnsaved { error, .. } => {
             let unsaved = "Sync is paused, but Koidrive could not finish saving the pause, so it may not survive a crash.";

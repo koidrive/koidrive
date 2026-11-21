@@ -120,6 +120,7 @@ const OTHER_FOLDER: &str = "the folder at this path is not the one this device s
 pub(crate) struct Loaded {
     timing: Timing,
     store: PathBuf,
+    stamp: u64,
     engine: Engine,
     snapshot: Snapshot,
 }
@@ -358,7 +359,8 @@ impl Folder {
                 if let Some(parked) = parked {
                     parked(abandoned);
                 }
-                stored.read_unless(tx, &link.space_id, abandoned)
+                let read = stored.read_unless(tx, &link.space_id, abandoned)?;
+                Ok((read, tx.write_stamp()?))
             })
         });
         released();
@@ -368,7 +370,8 @@ impl Folder {
         if let Some(parked) = parked {
             parked(abandoned);
         }
-        if !read? {
+        let (read, stamp) = read?;
+        if !read {
             return Ok(None);
         }
         let Some(mut engine) = stored.engine_unless(abandoned)? else {
@@ -390,6 +393,7 @@ impl Folder {
         Ok(Some(Loaded {
             timing,
             store: store.to_owned(),
+            stamp,
             snapshot,
             engine,
         }))
@@ -405,10 +409,12 @@ impl Folder {
         let Loaded {
             timing,
             store,
+            stamp,
             mut engine,
             snapshot,
         } = loaded;
         let mut store = Store::open_existing(store)?;
+        store.stamp_writes(stamp);
         let disk = Disk::start(lock, &link, &mut engine, &mut store)?;
         for node in engine.effects.blocked().to_map().into_keys() {
             engine.effects.unblock(&node);
