@@ -1,0 +1,10 @@
+class = "N"
+issue = "GUN-1504"
+tests = ["devices_with_rules_converge_once_the_faults_stop"]
+message = '''after phase <n>: device <n> is quiet, but node <id> is parked\. not recorded: devices::devices_with_rules_converge_once_the_faults_stop \S+ NameLeftOut device <n> is quiet, but the effects for \["<id>"(, "<id>")*\] wait for names that entries its rules leave out hold'''
+examples = [
+  "after phase 0: device 1 is quiet, but node 01a1c2c0-39a0-7510-83bc-38d6c6b89fe4 is parked.\nnot recorded: devices::devices_with_rules_converge_once_the_faults_stop\tcc-2885e9901e26528e51d8f8aec54dc3be9a7b6e895597990ab8dd52bc5b2d6bbb\tNameLeftOut\tdevice 1 is quiet, but the effects for [\"01a1c2c0-39a0-7510-83bc-38d6c6b89fe4\"] wait for names that entries its rules leave out hold",
+]
+cases = [
+  "2885e9901e26528e51d8f8aec54dc3be9a7b6e895597990ab8dd52bc5b2d6bbb",
+]
