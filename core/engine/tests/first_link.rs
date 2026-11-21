@@ -10990,6 +10990,96 @@ fn this_devices_stays_keep_a_folder_taken_again_after_its_own_question_closes_wh
     }
 }
 
+#[test]
+fn entries_this_device_puts_in_a_folder_it_creates_that_the_server_merges_into_another_count_as_this_devices()
+ {
+    for (edited, restart) in [("m", false), ("m", true), ("n", false), ("n", true)] {
+        let case = format!("{edited} restart {restart}");
+        let (mut trees, mut commits, mut ids, sent) = a_server_folder_this_device_discards(
+            &[],
+            |trees, commits, ids| {
+                trees.set_local("a".into(), local_node(dir("x", "box"), 410));
+                trees.set_local("n".into(), local_node(file("a", "n", 5), 411));
+                let node = trees.local().get(&"m".into()).unwrap().clone();
+                trees.set_local_changed(
+                    "m".into(),
+                    LocalNode {
+                        shape: file("a", "m", 7),
+                        ..node
+                    },
+                );
+                trees.settle(commits.aliases());
+                let mut sent = ops(commits, trees, ids);
+                sent.sort();
+                assert_eq!(
+                    sent,
+                    [
+                        ("create dir", "a".into()),
+                        ("create file", "n".into()),
+                        ("move", "m".into())
+                    ],
+                    "{case}"
+                );
+            },
+            |trees, commits| {
+                trees.set_remote("b".into(), remote_node(dir("x", "box")));
+                let results = (commits.in_flight().unwrap().commit.ops.iter())
+                    .map(|op| match &op.op {
+                        Some(op::Op::CreateDir(_)) => OpResult {
+                            code: op_result::Code::MergedInto as i32,
+                            node_id: "b".into(),
+                            ..Default::default()
+                        },
+                        _ => OpResult {
+                            code: op_result::Code::Applied as i32,
+                            ..Default::default()
+                        },
+                    })
+                    .collect();
+                (commits.received(CommitResult {
+                    seq: 2,
+                    results,
+                    ..Default::default()
+                }))
+                .unwrap();
+                let mut moved = trees.remote().get(&"m".into()).unwrap().clone();
+                (moved.shape, moved.meta_rev, moved.meta_edit_rev) = (file("b", "m", 7), 2, 2);
+                let mut created = remote_node(file("b", "n", 5));
+                (created.meta_rev, created.meta_edit_rev) = (2, 2);
+                for (id, remote) in [("m", moved), ("n", created)] {
+                    match restart {
+                        true => trees.set_remote(id.into(), remote),
+                        false => trees.set_remote_made_here(id.into(), remote),
+                    }
+                }
+                assert!(commits.acknowledge(trees, 2));
+                trees.settle(commits.aliases());
+                let stays = trees.state().discard_stays;
+                for id in ["m", "n"] {
+                    assert!(
+                        stays.contains(&(id.into(), "x".into())),
+                        "{case}: {stays:?}"
+                    );
+                }
+                assert_eq!(trees.local().get(&"m".into()).unwrap().shape.parent, "b");
+            },
+        );
+        assert_eq!(sent, [], "{case}");
+        if restart {
+            trees = restarted(&trees);
+            commits = Commits::from_state(commits.state()).unwrap();
+            commits.hold(&mut trees);
+        }
+        change_as_the_user(&mut trees, &edited.into(), UserChange::Edit);
+        let sent = quiet(&mut trees, &mut commits, &mut ids);
+        assert!(
+            sent.contains(&("create dir", "f".into())),
+            "{case}: {sent:?} {:?}",
+            local(&trees)
+        );
+    }
+}
+
 fn another_device_moves_ahead_of_the_disk(trees: &mut Trees, commits: &Commits) {
     let mut record = trees.remote().get(&"e".into()).unwrap().clone();
     (record.shape, record.meta_rev, record.meta_edit_rev) = (file("x", "e", 5), 2, 2);
