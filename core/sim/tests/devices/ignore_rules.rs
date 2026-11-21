@@ -2741,6 +2741,15 @@ fn changed_here(world: &World) -> Vec<usize> {
 
 fn answered(mut world: World, answer: usize) -> World {
     world.run(3, &[(1, Step::Answer(answer))]).unwrap();
+    for _ in 0..30 {
+        if world.devices[1].engine.commits.questions().is_empty() {
+            break;
+        }
+        world
+            .run(3, &[(1, Step::Connect), (1, Step::Work(0))])
+            .unwrap();
+    }
+    assert!(world.devices[1].engine.commits.questions().is_empty());
     world.phase(3, &[]).unwrap();
     world
 }
@@ -2760,13 +2769,22 @@ fn a_node_moved_out_of_a_displaced_folder_is_asked_about_after_a_rewind_and_publ
                 );
                 let members = if folder_moved { 2 } else { 1 };
                 assert_eq!(changed_here(&world), vec![members], "{case}");
+                let moved = if folder_moved { "\u{c9}" } else { "b" };
+                let published = live_node_at(&world, &["\u{df}", moved]).unwrap();
                 let world = answered(world, 0);
                 assert!(
                     world.devices.iter().all(|device| device.disk.shows(2)),
                     "{case}"
                 );
-                let moved = if folder_moved { "\u{c9}" } else { "b" };
-                assert_eq!(live_node_at(&world, &["\u{df}", moved]), None, "{case}");
+                let node = world.space().node(&published).unwrap();
+                assert_eq!(node.status, NodeStatus::Live as i32, "{case}");
+                assert_ne!(
+                    Some(node.parent_id),
+                    live_node_at(&world, &["\u{df}"]),
+                    "{case}"
+                );
+                let kept = live_node_at(&world, &["\u{df}", moved]);
+                assert_ne!(kept, Some(published), "{case}");
             }
         }
     }

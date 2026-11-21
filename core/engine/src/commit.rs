@@ -1484,7 +1484,7 @@ impl Commits {
     /// Keeps each answered question of `answered` for the members no acknowledged commit carried
     /// out yet: a node a group still holds, or a restore still queued. Its answer stays bound to
     /// what the person was shown, so the next build sends them only while that still holds.
-    fn keep_unsent(&mut self, trees: &Trees, answered: Vec<Question>) {
+    fn keep_unsent(&mut self, trees: &Trees, answered: Vec<Question>, carried: &BTreeSet<NodeId>) {
         for question in answered {
             let intents = matches!(
                 question.kind,
@@ -1494,9 +1494,13 @@ impl Commits {
                 }
             );
             let cause = question.cause().copied();
+            let publish = question.answer == Some(Answer::Publish);
             let kept = |id: &NodeId| match intents {
                 true => self.restores.contains_key(&id.to_string()),
-                false => recovery::group(trees, id, None, cause.as_ref()).is_some(),
+                false => {
+                    !(publish && carried.contains(id))
+                        && recovery::group(trees, id, None, cause.as_ref()).is_some()
+                }
             };
             let kept = recovery::narrow(trees, question, kept);
             self.questions.get_mut().extend(kept);
@@ -2054,7 +2058,7 @@ impl Commits {
             }
         }
         if ops.is_empty() {
-            self.keep_unsent(trees, released);
+            self.keep_unsent(trees, released, &BTreeSet::new());
             return None;
         }
         let finishing: Vec<NodeId> = ops.iter().filter_map(|op| finish(trees, op)).collect();
@@ -3185,7 +3189,11 @@ impl Commits {
             })
             .collect();
         self.given_up_nodes.extend(bumped);
-        self.keep_unsent(trees, sent);
+        let carried: BTreeSet<NodeId> = (flight.commit.ops.iter().zip(&result.results))
+            .filter(|(_, outcome)| outcome.code == op_result::Code::AppliedRenamed as i32)
+            .filter_map(|(sent, _)| Some(op_node(sent.op.as_ref()?)))
+            .collect();
+        self.keep_unsent(trees, sent, &carried);
         self.accepted.set(flight.commit.device_seq);
         let made = Slot {
             seq: result.seq,
