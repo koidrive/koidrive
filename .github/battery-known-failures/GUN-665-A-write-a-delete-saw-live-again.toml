@@ -13,5 +13,7 @@ examples = [
 ]
 cases = [
   "161f03129158",
+  "21aece05ada9",
+  "41ef8e85eb93",
   "48aab6ccc23f",
 ]

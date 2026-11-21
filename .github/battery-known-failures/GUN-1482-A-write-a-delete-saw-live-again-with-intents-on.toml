@@ -1,0 +1,16 @@
+class = "A"
+issue = "GUN-1482"
+tests = [
+  "devices_converge_across_server_restores",
+  "devices_converge_across_server_restores_on_the_oracle_reds",
+  "devices_lose_no_write_across_server_restores",
+  "devices_lose_no_write_across_server_restores_on_the_oracle_reds",
+]
+message = '''(after phase <n>: write <n> that the delete of node <id> on device <n> saw is live again on node <id>, and no user copied it\.|not recorded: devices::\S+ \S+ (?:on )?DeleteUndone write <n> that the delete of node <id> on device <n> saw is live again on node <id>, and no user copied it)'''
+examples = [
+  "after phase 2: write 5 that the delete of node 01a1c2c0-39a0-76b6-8f17-7744bb83aba9 on device 2 saw is live again on node 01a1c2c0-3a27-75dd-b48a-1465dedff0d8, and no user copied it.",
+  "not recorded: devices::devices_converge_across_server_restores_on_the_oracle_reds\tcc-9018ed88183f499e1fb5a9368e992031895c0a0a31ced1166653fe334d2a5755\ton\tDeleteUndone\twrite 5 that the delete of node 01a1c2c0-39a0-76b6-8f17-7744bb83aba9 on device 2 saw is live again on node 01a1c2c0-3a27-75dd-b48a-1465dedff0d8, and no user copied it",
+]
+cases = [
+  "9018ed88183f",
+]
