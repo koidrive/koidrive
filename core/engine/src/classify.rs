@@ -5079,7 +5079,7 @@ impl Trees {
             }
             self.mark(&id);
         }
-        folders.sort_by(|a, b| b.0.cmp(&a.0));
+        folders.sort_by_key(|folder| std::cmp::Reverse(folder.0));
         for (_, id) in folders {
             let children: Vec<NodeId> = (self.local_children_placed_or_parked(&id))
                 .cloned()
