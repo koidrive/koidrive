@@ -951,7 +951,7 @@ impl Commits {
         now_ms: u64,
         prior: PriorSync,
     ) {
-        trees.give_back_kept_paths();
+        trees.give_back_kept_paths(true);
         let tops = first_link::adopt(trees, None);
         let (held, sent): (Vec<NodeId>, Vec<NodeId>) = match prior {
             PriorSync::Shown => (tops, Vec::new()),

@@ -115,6 +115,8 @@ pub struct KeptAtPath {
     pub kept_folders: bool,
     pub kept_entries: Option<KeptEntries>,
     pub kept_nodes: Option<KeptNode>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub waits_for_scan: bool,
 }
 
 /// See [`TreesState::kept_nodes`].
@@ -390,8 +392,9 @@ pub struct TreesState {
     /// until the person changes the rules so that rules that excluded it there include it. Each carries its
     /// [`KeptCause`], or none while no rule left it out at its place.
     pub kept_nodes: BTreeMap<NodeId, Option<KeptCause>>,
-    /// The kept state a relink carried by path, until the first link gives it to the nodes L holds there and ends
-    /// every record, found or not.
+    /// The kept state a relink carried by path. The first link gives each record to the node L holds at its path, and
+    /// ends it when a scan listed the path and found nothing there. A record whose path no scan has listed, because the
+    /// rules leave it out or its folder's rules are unknown, waits for a scan that lists it.
     pub kept_paths: BTreeMap<Vec<String>, KeptAtPath>,
     /// The nodes S holds for which R took a record of another device's commit that moved `edit_rev` or
     /// `meta_edit_rev` since S took its shape, a change undone by a later record included. S does not take such a

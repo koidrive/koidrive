@@ -1486,6 +1486,7 @@ fn engine_state() -> EngineState {
                             ..Default::default()
                         }),
                         kept_nodes: None,
+                        waits_for_scan: true,
                     },
                 ),
                 (
