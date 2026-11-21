@@ -5,6 +5,8 @@ tests = [
 ]
 message = '''<id> was discarded and is created on the server with no later answer to publish it, and below it the user kept back an entry at \S+\.rs:<line>\.'''
 examples = [
-  "01a1c2c0-39a0-775c-844c-3cd7f43c661c was discarded and is created on the server with no later answer to publish it, and below it the user kept back an entry at core/sim/tests/engine_sync/common.rs:2907.",
-  "01a1c2c0-39a0-780a-953a-eb70673e29cb was discarded and is created on the server with no later answer to publish it, and below it the user kept back an entry at core/sim/tests/engine_sync/common.rs:2907.",
+  "01a1c2c0-39a0-780a-953a-eb70673e29cb was discarded and is created on the server with no later answer to publish it, and below it the user kept back an entry at core/sim/tests/engine_sync/common.rs:2918.",
+]
+cases = [
+  "fa085ebe4f4f3525e5d3354907361638e644cf945ae5d16858b6d68dd21c0ba4",
 ]

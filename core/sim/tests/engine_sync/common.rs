@@ -1929,12 +1929,18 @@ fn what_the_user_did_below(device: &Device, folder: &NodeId) -> &'static str {
     let arrived = |entry: &NodeId| {
         (device.stays.get(entry)).is_some_and(|stays| stays.values().any(|(by_other, _)| *by_other))
     };
+    let below = |entry: &NodeId| reaches(trees.local().get(entry).map(|local| &local.shape.parent));
     let taken_out: Vec<&NodeId> = (device.removed_from.iter())
         .filter(|(_, from)| reaches(Some(from)))
         .map(|(entry, _)| entry)
+        .chain(
+            (device.relocated.iter())
+                .filter(|(entry, moved)| reaches(Some(&moved.from.parent)) && !below(entry))
+                .map(|(entry, _)| entry),
+        )
         .collect();
     let changed: Vec<&NodeId> = (device.acted.iter())
-        .filter(|entry| reaches(trees.local().get(entry).map(|local| &local.shape.parent)))
+        .filter(|entry| below(entry))
         .chain(taken_out.iter().copied())
         .collect();
     if taken_out
