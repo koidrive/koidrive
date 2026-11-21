@@ -2147,3 +2147,23 @@ fn renaming_an_entry_this_device_brought_in_after_another_device_moves_it_out_un
         assert!(acted_below(&device, &s, &kept, &discarded), "{later:?}");
     }
 }
+
+#[test]
+fn renaming_an_entry_the_user_moved_in_that_another_device_moved_elsewhere_in_the_folder_first_changes_the_folder()
+ {
+    let (mut device, kept, discarded) = a_file_in_a_taken_along_server_folder();
+    let (s, e): (NodeId, NodeId) = ("s".into(), "e".into());
+    for id in ["a", "b"] {
+        place_dir(&mut device, id, Some(("s", id)), Some(("s", id)));
+    }
+    place_dir(&mut device, "e", Some(("root", "e")), Some(("root", "e")));
+    device.note_taken_along([&s]);
+    let before = device.trees.local().get(&e).unwrap().shape.clone();
+    place_dir(&mut device, "e", Some(("a", "e")), None);
+    let after = device.trees.local().get(&e).unwrap().shape.clone();
+    device.relocate(&e, &before, &after);
+    device.receive(&[a_dir_record("e", "b", 2)], false);
+    device.receive(&[a_dir_record("e", "a", 3)], true);
+    renames_after_sync(&mut device, "e", "a");
+    assert!(acted_below(&device, &s, &kept, &discarded));
+}

@@ -728,13 +728,14 @@ impl Device {
                 self.removed_from.remove(&node);
                 continue;
             };
-            let users_move =
-                (self.relocated.get(&node)).is_some_and(|moved| remote.same_position(&moved.to));
+            let users_origin = (self.relocated.get(&node))
+                .filter(|moved| remote.same_position(&moved.to))
+                .map(|moved| moved.from.parent.clone());
             self.placements += 1;
             (self.placed.entry(node.clone()).or_default()).push(Placement {
-                by_other: !answered && !users_move,
+                by_other: !answered && users_origin.is_none(),
                 order: self.placements,
-                from,
+                from: users_origin.map_or(from, |origin| ancestors(&self.trees, Some(origin))),
                 to: ancestors(&self.trees, Some(remote.parent.clone())),
             });
             let Some(moved) = self.relocated.get_mut(&node) else {
