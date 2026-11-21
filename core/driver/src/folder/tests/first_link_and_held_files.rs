@@ -969,3 +969,60 @@ fn a_discard_takes_along_a_server_file_moved_into_an_excluded_folder_inside_the_
         assert!(!site.root.join("new").exists(), "{adopted}");
     }
 }
+#[test]
+fn discarding_a_rules_file_a_first_link_holds_asks_about_what_it_left_out_before_anything_uploads()
+{
+    let mut remote = Remote::new();
+    let (site_a, mut a) = linked(&mut remote, "a");
+    fs::create_dir(site_a.root.join("app")).unwrap();
+    a.create(&mut remote, &site_a.root.join("app/README.md"), b"synced");
+    let site = Site::new(&remote, "b");
+    let link = Link {
+        found_marker: true,
+        ..site.link.clone()
+    };
+    Store::open(&site.db)
+        .unwrap()
+        .transaction(|tx| tx.set_link(&link))
+        .unwrap();
+    let site = Site { link, ..site };
+    let left_out = [".env", "node_modules/pkg/index.js"];
+    fs::create_dir(site.root.join("app")).unwrap();
+    fs::write(site.root.join("app/README.md"), b"synced").unwrap();
+    fs::write(site.root.join("app/.koiignore"), b".env\nnode_modules/\n").unwrap();
+    for path in left_out {
+        let path = site.root.join("app").join(path);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, path.to_str().unwrap()).unwrap();
+    }
+    let mut b = restarted(&site, &mut remote);
+    b.rest(&mut remote);
+    let asked = |site: &Site| -> Vec<String> {
+        (shown(site).iter())
+            .flat_map(|question| question.items.iter())
+            .map(|item| item.path.unquoted().to_owned())
+            .collect()
+    };
+    assert_eq!(asked(&site), ["app/.koiignore"]);
+    drop(b);
+
+    answer(&site, Answer::Discard);
+    let mut b = restarted(&site, &mut remote);
+    for _ in 0..3 {
+        b.settle();
+        b.run(&mut remote);
+    }
+
+    let asked = asked(&site);
+    let unasked: Vec<&str> = (["app/.env", "app/node_modules"].into_iter())
+        .filter(|path| !asked.iter().any(|item| item == path))
+        .collect();
+    assert_eq!(
+        (unasked, remote.tree().keys().cloned().collect::<Vec<_>>()),
+        (vec![], vec!["app".to_owned(), "app/README.md".to_owned()])
+    );
+    for path in left_out {
+        let path = site.root.join("app").join(path);
+        assert_eq!(fs::read_to_string(&path).unwrap(), path.to_str().unwrap());
+    }
+}

@@ -2213,3 +2213,62 @@ fn a_rules_file_edited_while_its_emptied_kept_folder_waits_to_go_survives_a_purg
         assert_eq!(fs::read(&file).unwrap(), b".env\n*.log\n", "{rules}");
     }
 }
+#[test]
+fn discarding_the_rules_file_a_relinked_copy_of_a_kept_folder_holds_asks_about_its_kept_entries() {
+    let ignored = [".env", "node_modules/pkg/index.js"];
+    let (mut remote, site_a, mut a, site, b, _) = deleted_with_rules_files(
+        &[(".koiignore", ".env\nnode_modules/\n")],
+        &["README.md"],
+        &ignored,
+    );
+    drop(b);
+    let copy = site.root.with_file_name("copy");
+    copy_folder(&site.root, &copy);
+    fs::create_dir(site_a.root.join("app")).unwrap();
+    a.create(
+        &mut remote,
+        &site_a.root.join("app/README.md"),
+        b"cloned again",
+    );
+    let mut b = restarted(&site, &mut remote);
+    for _ in 0..3 {
+        b.pull(&remote);
+        b.run(&mut remote);
+        b.settle();
+    }
+    drop(b);
+    fs::rename(&site.root, site.root.with_file_name("original")).unwrap();
+    fs::rename(&copy, &site.root).unwrap();
+    assert!(halts_as_a_copy(&site));
+
+    relink(&site).unwrap();
+    let mut b = restarted(&site, &mut remote);
+    b.rest(&mut remote);
+    let asked = |site: &Site| -> Vec<String> {
+        (shown(site).iter())
+            .flat_map(|question| question.items.iter())
+            .map(|item| item.path.unquoted().to_owned())
+            .collect()
+    };
+    assert_eq!(asked(&site), ["app/.koiignore"]);
+    drop(b);
+    answer(&site, Answer::Discard);
+    let mut b = restarted(&site, &mut remote);
+    for _ in 0..3 {
+        b.settle();
+        b.run(&mut remote);
+    }
+
+    let asked = asked(&site);
+    let unasked: Vec<&str> = (["app/.env", "app/node_modules"].into_iter())
+        .filter(|path| !asked.iter().any(|item| item == path))
+        .collect();
+    assert_eq!(
+        (unasked, remote.tree().keys().cloned().collect::<Vec<_>>()),
+        (vec![], vec!["app".to_owned(), "app/README.md".to_owned()])
+    );
+    for path in ignored {
+        let path = site.root.join("app").join(path);
+        assert_eq!(fs::read_to_string(&path).unwrap(), local_only(&path));
+    }
+}
