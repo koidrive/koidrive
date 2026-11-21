@@ -1284,6 +1284,124 @@ fn a_relink_of_a_moved_folder_or_one_whose_marker_write_fails_keeps_the_folder_h
     assert_eq!(remote.tree(), served);
 }
 
+fn swap_in_a_copy_from_before(site: &Site, between: impl FnOnce()) {
+    let copy = site.root.with_file_name("copy");
+    copy_folder(&site.root, &copy);
+    between();
+    fs::rename(&site.root, site.root.with_file_name("original")).unwrap();
+    fs::rename(&copy, &site.root).unwrap();
+    assert!(halts_as_a_copy(site));
+}
+
+#[test]
+fn a_relinked_copy_keeps_its_policy_halt_until_the_person_lifts_it() {
+    for code in [Code::Forbidden, Code::ConfirmationRequired] {
+        let mut remote = Remote::new();
+        let (site, _, _) = refused_first_commit(&mut remote, code);
+        let halt = Some(CommitHalt::Policy { code: code as i32 });
+        swap_in_a_copy_from_before(&site, || drop(site.start()));
+        relink(&site).unwrap();
+        let mut a = restarted(&site, &mut remote);
+        a.rest(&mut remote);
+        drop(a);
+        answer(&site, Answer::Publish);
+
+        let mut a = restarted(&site, &mut remote);
+        let (site_b, mut b) = linked(&mut remote, "b");
+        b.create(&mut remote, &site_b.root.join("theirs.txt"), b"written on b");
+        a.pull(&remote);
+        a.rest(&mut remote);
+        assert_eq!(a.folder.engine.commits.halted(), halt, "{code:?}");
+        assert!(a.sent.is_empty(), "{code:?}");
+        assert_eq!(remote.names(), ["theirs.txt"], "{code:?}");
+        assert_eq!(names(&site.root), ["notes.txt", "theirs.txt"], "{code:?}");
+        drop(a);
+
+        for lift in [Lift::Resend, Lift::Replan] {
+            let lifted = lift_halt(&site.db, &site.link.space_id, lift);
+            if code == Code::Forbidden {
+                lifted.unwrap();
+                break;
+            }
+            assert!(matches!(lifted, Err(DriverError::NeedsConfirmation)), "{lifted:?}");
+        }
+        let mut a = restarted(&site, &mut remote);
+        a.rest(&mut remote);
+        let lifted = code == Code::Forbidden;
+        assert_eq!(a.folder.engine.commits.halted().is_none(), lifted, "{code:?}");
+        assert_eq!(remote.names().contains(&"notes.txt".to_owned()), lifted, "{code:?}");
+    }
+}
+
+#[test]
+fn a_relink_keeps_only_the_policy_halt_a_recovery_interrupted() {
+    for (policy, read_only) in [(None, false), (Some(Code::Forbidden), false), (None, true)] {
+        let mut remote = Remote::new();
+        let mut site = match policy {
+            Some(code) => refused_first_commit(&mut remote, code).0,
+            None => linked(&mut remote, "a").0,
+        };
+        let policy = policy.map(|code| code as i32);
+        if read_only {
+            site.caller.role = Role::Viewer;
+        } else {
+            let backup = remote.space.clone();
+            remote.space.rewind(&backup, NOW);
+        }
+        swap_in_a_copy_from_before(&site, || site.start().connect(&remote));
+        let halted = site.stored().commits.halted();
+        if read_only {
+            assert_eq!(halted, Some(CommitHalt::ReadOnly));
+        } else {
+            assert!(matches!(halted, Some(CommitHalt::Recovery { policy: p, .. }) if p == policy), "{halted:?}");
+        }
+        relink(&site).unwrap();
+        let kept = policy.map(|code| CommitHalt::Policy { code });
+        assert_eq!(site.stored().commits.halted(), kept, "{halted:?}");
+    }
+}
+
+#[test]
+fn a_relink_that_crashes_or_fails_keeps_the_policy_halt() {
+    for cut in [
+        None,
+        Some(disk::Cut::TokenPended),
+        Some(disk::Cut::TokenWritten),
+        Some(disk::Cut::TokenCommitted),
+    ] {
+        let mut remote = Remote::new();
+        let (site, _, _) = refused_first_commit(&mut remote, Code::Forbidden);
+        let halt = Some(CommitHalt::Policy {
+            code: Code::Forbidden as i32,
+        });
+        swap_in_a_copy_from_before(&site, || drop(site.start()));
+        let Some(cut) = cut else {
+            let db = rusqlite::Connection::open(&site.db).unwrap();
+            let refuse = "CREATE TRIGGER refuse BEFORE UPDATE ON link BEGIN SELECT RAISE(ABORT, 'refused'); END";
+            db.execute_batch(refuse).unwrap();
+            assert!(relink(&site).is_err());
+            db.execute_batch("DROP TRIGGER refuse").unwrap();
+            assert!(site.stored().cursor.is_some());
+            assert_eq!(site.stored().commits.halted(), halt);
+            assert!(halts_as_a_copy(&site));
+            continue;
+        };
+        let crashed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            relink_until(&site, crash_at(cut))
+        }));
+        assert!(crashed.is_err(), "{cut:?}");
+        assert_eq!(site.stored().commits.halted(), halt, "{cut:?}");
+        if cut == disk::Cut::TokenPended {
+            assert!(halts_as_a_copy(&site));
+            relink(&site).unwrap();
+        }
+        let mut a = restarted(&site, &mut remote);
+        a.rest(&mut remote);
+        assert_eq!(a.folder.engine.commits.halted(), halt, "{cut:?}");
+        assert!(a.sent.is_empty(), "{cut:?}");
+    }
+}
+
 #[test]
 fn a_link_that_adopted_a_token_and_failed_its_write_does_not_hand_it_back() {
     let mut remote = Remote::new();

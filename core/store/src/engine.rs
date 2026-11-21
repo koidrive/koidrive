@@ -102,6 +102,25 @@ impl Tx<'_> {
         Ok(EffectCounter { cleared, in_flight })
     }
 
+    pub(crate) fn kept_policy_halt(&self) -> Result<Option<Halt>> {
+        let row = (self.0)
+            .query_row(
+                "SELECT halt, policy_code, recovery_trigger, restore_seq, restore_point_ms,
+                        recovery_policy_code
+                 FROM commit_state WHERE id = 1",
+                [],
+                HaltRow::read,
+            )
+            .optional()?;
+        Ok(match row.map(HaltRow::halt).transpose()?.flatten() {
+            Some(Halt::Policy { code }) => Some(Halt::Policy { code }),
+            Some(Halt::Recovery {
+                policy: Some(code), ..
+            }) => Some(Halt::Policy { code }),
+            Some(Halt::ReadOnly | Halt::Recovery { policy: None, .. }) | None => None,
+        })
+    }
+
     /// The stored engine state, or the default state of a space that never stored one.
     pub fn engine_state(&self) -> Result<EngineState> {
         let mut state = EngineState::default();
@@ -685,14 +704,7 @@ impl Tx<'_> {
                  FROM commit_state WHERE id = 1",
                 [],
                 |row| {
-                    let halt = HaltRow {
-                        halt: row.get(1)?,
-                        policy_code: row.get(2)?,
-                        recovery_trigger: row.get(3)?,
-                        restore_seq: row.get(4)?,
-                        restore_point_ms: row.get(5)?,
-                        recovery_policy_code: row.get(7)?,
-                    };
+                    let halt = HaltRow::read(row)?;
                     Ok((row.get::<_, u64>(0)?, halt, row.get::<_, Option<usize>>(6)?))
                 },
             )
@@ -1655,6 +1667,17 @@ struct HaltRow {
 }
 
 impl HaltRow {
+    fn read(row: &rusqlite::Row<'_>) -> rusqlite::Result<HaltRow> {
+        Ok(HaltRow {
+            halt: row.get("halt")?,
+            policy_code: row.get("policy_code")?,
+            recovery_trigger: row.get("recovery_trigger")?,
+            restore_seq: row.get("restore_seq")?,
+            restore_point_ms: row.get("restore_point_ms")?,
+            recovery_policy_code: row.get("recovery_policy_code")?,
+        })
+    }
+
     fn of(halt: Option<Halt>) -> HaltRow {
         let named = |name: &str| Some(name.to_owned());
         match halt {
