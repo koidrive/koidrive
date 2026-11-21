@@ -1182,7 +1182,23 @@ impl Folder {
         work.push(Work::List);
     }
 
+    fn retry_when_due(&mut self, due: Option<u64>, now_ms: u64, work: &mut Vec<Work>) {
+        let Some(due) = due else {
+            return;
+        };
+        let wait = Duration::from_millis(due.saturating_sub(now_ms));
+        let at = clock::instant() + wait;
+        if self.retry_at.is_none_or(|out| at < out) {
+            self.retry_at = Some(at);
+            work.push(Work::RetryAfter(wait));
+        }
+    }
+
     fn drive(&mut self, work: &mut Vec<Work>) -> Result<(), Stop> {
+        let now_ms = crate::clock::unix_ms();
+        let disk = &self.disk;
+        (self.engine).end_backup_waits(now_ms, |trees, shape| disk.owed_name_absent(trees, shape));
+        self.retry_when_due(self.engine.holds_due(now_ms), now_ms, work);
         self.publish_remote()?;
         let staging = !self.engine.effects.in_flight().is_empty();
         let held = !self.scanned || staging;
@@ -1203,7 +1219,6 @@ impl Folder {
         if !may_build {
             return Ok(());
         }
-        let now_ms = crate::clock::unix_ms();
         let engine = &mut self.engine;
         if (engine.commits).settle_merge_residue(
             &mut engine.trees,
@@ -1254,14 +1269,7 @@ impl Folder {
             }
             tried.get_or_insert_default().extend(owed);
         };
-        if let Some(due) = self.engine.deletes_due() {
-            let wait = Duration::from_millis(due.saturating_sub(now_ms));
-            let at = clock::instant() + wait;
-            if self.retry_at.is_none_or(|out| at < out) {
-                self.retry_at = Some(at);
-                work.push(Work::RetryAfter(wait));
-            }
-        }
+        self.retry_when_due(self.engine.deletes_due(now_ms), now_ms, work);
         match built {
             Some(commit) => {
                 self.disk.built(token);

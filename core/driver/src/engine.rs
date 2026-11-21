@@ -60,11 +60,15 @@ pub(crate) struct Engine {
     removed_at: BTreeMap<NodeId, u64>,
     renamed_away: BTreeMap<NodeId, (NodeId, String, u64)>,
     took_slot: BTreeMap<(NodeId, String), (NodeId, u64, bool)>,
+    backup_gone: BTreeMap<NodeId, bool>,
+    backup_removed: BTreeMap<NodeId, u64>,
     owed: BTreeSet<NodeId>,
     stored_owed: BTreeSet<NodeId>,
 }
 
 const DELETE_WAIT_MS: u64 = 2_000;
+
+const BACKUP_CHECK_SLACK_MS: u64 = 250;
 
 /// What applying a batch of the log did.
 #[derive(Debug, PartialEq)]
@@ -941,6 +945,9 @@ impl Engine {
         let wait = 2 * DELETE_WAIT_MS;
         (self.renamed_away).retain(|_, (_, _, at)| now_ms < at.saturating_add(wait));
         (self.took_slot).retain(|_, (_, at, _)| now_ms < at.saturating_add(wait));
+        let away = &self.renamed_away;
+        (self.backup_gone).retain(|id, _| away.contains_key(id));
+        (self.backup_removed).retain(|id, _| away.contains_key(id));
         let mut before: Vec<Option<NodeId>> = changes
             .iter()
             .map(|change| match change {
@@ -1133,14 +1140,16 @@ impl Engine {
                 Observed::Removed { path, .. } | Observed::Missing { path, .. } => {
                     if let Some(id) = before {
                         let missing = matches!(change, Observed::Missing { .. });
-                        if !missing
+                        let file = !missing
                             && (self.trees.local().get(&id))
-                                .is_some_and(|node| node.shape.kind == Kind::File)
-                            && names(path)
-                                .is_some_and(|names| !self.trees.ignores(&names, Kind::File))
-                        {
+                                .is_some_and(|node| node.shape.kind == Kind::File);
+                        let excluded =
+                            names(path).is_none_or(|names| self.trees.ignores(&names, Kind::File));
+                        if file && !excluded {
                             self.removed_at.insert(id.clone(), now_ms);
                             self.owed.insert(id.clone());
+                        } else if file && self.renamed_away.contains_key(&id) {
+                            self.backup_removed.insert(id.clone(), now_ms);
                         }
                         self.remove(&id, &moving, true, missing, &mut touched, &mut gone);
                     }
@@ -1371,11 +1380,12 @@ impl Engine {
         );
         let mut saves: Vec<Save> = (self.renamed_away.iter())
             .filter_map(|(id, (parent, name, renamed))| {
-                let removed = *self.removed_at.get(id)?;
+                let removed = *(self.removed_at.get(id)).or_else(|| self.backup_removed.get(id))?;
                 let (taker, took, staged) = self.took_slot.get(&(parent.clone(), name.clone()))?;
                 let saved = self.trees.local().get(taker)?;
                 let continues = self.trees.local_child(parent, name) == Some(taker)
-                    && removed < renamed.saturating_add(DELETE_WAIT_MS)
+                    && (removed < renamed.saturating_add(DELETE_WAIT_MS)
+                        || self.backup_gone.get(id) == Some(&true))
                     && now_ms < removed.saturating_add(DELETE_WAIT_MS)
                     && took >= renamed
                     && *staged
@@ -1440,7 +1450,8 @@ impl Engine {
                             .is_none()
                 })
         });
-        self.removed_at.keys().cloned().collect()
+        let held: Vec<NodeId> = self.held_takers(now_ms).map(|(taker, _)| taker).collect();
+        self.removed_at.keys().cloned().chain(held).collect()
     }
 
     pub fn forget_removals(&mut self) {
@@ -1476,8 +1487,54 @@ impl Engine {
         ready
     }
 
-    pub fn deletes_due(&self) -> Option<u64> {
-        (self.removed_at.values().min()).map(|at| at + DELETE_WAIT_MS)
+    pub fn deletes_due(&self, now_ms: u64) -> Option<u64> {
+        (self.removed_at.values().map(|at| at + DELETE_WAIT_MS))
+            .chain(self.holds_due(now_ms))
+            .min()
+    }
+
+    pub fn holds_due(&self, now_ms: u64) -> Option<u64> {
+        self.held_takers(now_ms).map(|(_, until)| until).min()
+    }
+
+    pub(super) fn end_backup_waits(
+        &mut self,
+        now_ms: u64,
+        name_absent: impl Fn(&Trees, &Shape) -> Option<bool>,
+    ) {
+        for (id, (parent, name, renamed)) in &self.renamed_away {
+            if now_ms < renamed.saturating_add(DELETE_WAIT_MS)
+                || self.backup_gone.contains_key(id)
+                || !self.took_slot.contains_key(&(parent.clone(), name.clone()))
+                || !self.excluded_backup(id)
+            {
+                continue;
+            }
+            let Some(node) = self.trees.local().get(id) else {
+                continue;
+            };
+            let on_time = now_ms < renamed.saturating_add(DELETE_WAIT_MS + BACKUP_CHECK_SLACK_MS);
+            let gone = on_time && name_absent(&self.trees, &node.shape) == Some(true);
+            self.backup_gone.insert(id.clone(), gone);
+        }
+    }
+
+    fn excluded_backup(&self, id: &NodeId) -> bool {
+        (self.trees.local().path(id)).is_some_and(|path| {
+            names(&path).is_some_and(|names| self.trees.ignores(&names, Kind::File))
+        })
+    }
+
+    fn held_takers(&self, now_ms: u64) -> impl Iterator<Item = (NodeId, u64)> {
+        (self.renamed_away.iter()).filter_map(move |(id, (parent, name, renamed))| {
+            let until = match self.backup_gone.get(id) {
+                None => renamed.saturating_add(DELETE_WAIT_MS),
+                Some(true) => renamed.saturating_add(2 * DELETE_WAIT_MS),
+                Some(false) => return None,
+            };
+            let (taker, _, _) = self.took_slot.get(&(parent.clone(), name.clone()))?;
+            (now_ms < until && self.excluded_backup(id)).then(|| (taker.clone(), until))
+        })
     }
 
     fn scanned(&self, id: &NodeId) -> bool {
@@ -1714,6 +1771,7 @@ impl Engine {
                     .insert(slot, (id.clone(), now_ms, tmp(&from.1) && !own_identity));
                 self.renamed_away
                     .insert(id.clone(), (from.0, from.1, now_ms));
+                self.backup_gone.remove(&id);
             } else if !held {
                 let new_entry = !self.trees.displaced_local().contains_key(&id);
                 self.took_slot.insert(slot, (id.clone(), now_ms, new_entry));
@@ -2002,6 +2060,8 @@ impl Stored {
             removed_at: BTreeMap::new(),
             renamed_away: BTreeMap::new(),
             took_slot: BTreeMap::new(),
+            backup_gone: BTreeMap::new(),
+            backup_removed: BTreeMap::new(),
             owed: owed.clone(),
             stored_owed: owed,
         }))
@@ -2929,6 +2989,8 @@ mod tests {
             removed_at: BTreeMap::new(),
             renamed_away: BTreeMap::new(),
             took_slot: BTreeMap::new(),
+            backup_gone: BTreeMap::new(),
+            backup_removed: BTreeMap::new(),
             owed: BTreeSet::new(),
             stored_owed: BTreeSet::new(),
         };
