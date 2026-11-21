@@ -1464,6 +1464,33 @@ fn a_parked_file_whose_own_name_the_rules_leave_out_takes_a_conflict_name_when_t
 }
 
 #[test]
+fn a_parked_file_whose_place_a_left_out_folder_took_goes_where_another_device_moved_it() {
+    for name in [2, 3] {
+        let ran = run_ignoring(
+            &[act(1, 0, 0, 0, 0)],
+            &[act(0, 0, 0, 6, 0)],
+            &[act(3, 0, 0, 6, 0), act(3, 0, 0, 1, 0)],
+            MAX_OPS,
+            false,
+            &[
+                (true, vec![act(0, 0, 0, 0, 0)]),
+                (false, vec![act(3, 0, 0, name, 0)]),
+            ],
+            Cut::None,
+            &[Ruling::Exclude(vec!["ss/"]), Ruling::File(vec!["a"])],
+            Answer::Delete,
+            None,
+        )
+        .unwrap();
+        let names: Vec<String> = (ran.space.nodes().into_iter())
+            .filter(|node| node.status == 1 && node.kind == 2)
+            .map(|node| node.name)
+            .collect();
+        assert_eq!(names, [NAMES[name]]);
+    }
+}
+
+#[test]
 fn a_parked_file_is_reported_when_the_rules_leave_out_every_conflict_name() {
     assert_eq!(
         parked_file_beside_left_out_folder(Some("* (conflict from unknown device *")),

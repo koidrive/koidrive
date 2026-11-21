@@ -741,6 +741,7 @@ impl Effects {
     /// fails it as [`Effects::failed`] does. When that entry is a folder L does not hold that the rules leave out, and
     /// the effect writes or moves a file R holds there, the place stays the folder's and the commits give the file a conflict
     /// name (RFC 0001 section 5).
+    /// When the effect moves a parked node there and R holds the node, the node is reverted, so it goes to its R position.
     pub fn taken(
         &mut self,
         trees: &mut Trees,
@@ -750,24 +751,35 @@ impl Effects {
         let record = self
             .flight(effect_id)
             .ok_or_else(|| EffectError::NotInFlight(effect_id.to_owned()))?;
-        let left_out = holder == Some(Kind::Dir)
-            && matches!(
-                record.effect,
-                Effect::WriteFile { .. } | Effect::Move { .. }
-            )
-            && (record.after.as_ref()).is_some_and(|after| {
-                trees
+        let left_out_place = (record.after.as_ref()).filter(|after| {
+            holder == Some(Kind::Dir)
+                && trees
                     .local_holders(&after.parent, &after.name)
                     .next()
                     .is_none()
-                    && (trees.remote().live(&record.node)).is_some_and(|remote| {
-                        remote.same_position(after) && trees.rules_leave_out_folder_at(remote)
-                    })
-            });
+                && trees.rules_leave_out_folder_at(after)
+        });
+        let remote = trees.remote().live(&record.node);
+        let left_out = matches!(
+            record.effect,
+            Effect::WriteFile { .. } | Effect::Move { .. }
+        ) && left_out_place
+            .is_some_and(|after| remote.is_some_and(|remote| remote.same_position(after)));
+        let home_lost = matches!(
+            record.effect,
+            Effect::Move {
+                from: Location::Parked(_),
+                ..
+            }
+        ) && left_out_place.is_some()
+            && remote.is_some();
         let node = record.node.clone();
         self.failed(trees, effect_id)?;
         if left_out {
             trees.leave_name_out(&node);
+        }
+        if home_lost {
+            trees.revert(node);
         }
         Ok(())
     }

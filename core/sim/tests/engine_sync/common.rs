@@ -582,6 +582,17 @@ fn local_path(trees: &Trees, id: &NodeId) -> Vec<String> {
     names
 }
 
+fn remote_path(trees: &Trees, id: &NodeId) -> Vec<String> {
+    let mut names = Vec::new();
+    let mut current = id;
+    while let Some(node) = trees.remote().get(current) {
+        names.push(node.shape.name.clone());
+        current = &node.shape.parent;
+    }
+    names.reverse();
+    names
+}
+
 struct Device {
     trees: Trees,
     ids: IdGen,
@@ -2969,11 +2980,11 @@ fn run_ignoring_answering_after(
         failed_here(id).is_some_and(|at| {
             at.parent != device.trees.remote().root
                 || !device.left_out_root_holds(&at.name)
-                || device
-                    .trees
-                    .remote()
-                    .live(id)
-                    .is_none_or(|remote| !remote.same_position(at))
+                || device.trees.remote().live(id).is_none_or(|remote| {
+                    !remote.same_position(at)
+                        && (device.disk_name_taken(&remote.parent, &[], &remote.name)
+                            || device.trees.ignores(&remote_path(&device.trees, id), remote.kind))
+                })
                 || waits_on_left_out(&device, id)
         })
     };
