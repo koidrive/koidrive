@@ -22,9 +22,11 @@ export interface Namespace {
 
 export class ApiError extends Error {
   readonly status: number;
-  constructor(message: string, status: number) {
+  readonly summary: string;
+  constructor(message: string, status: number, summary = message) {
     super(message);
     this.status = status;
+    this.summary = summary;
   }
 }
 
@@ -80,6 +82,7 @@ function keyPath(key: string): string {
 
 async function send(account: Account, method: string, path: string, init: { body?: unknown; allowMissing?: boolean; deadline?: Deadline } = {}): Promise<Response | undefined> {
   const what = method + " " + path.split("?")[0];
+  const label = method + " " + path.split("?")[0]!.split("/").map((segment, at) => (at === 2 ? "{account}" : /^[a-z_0-9]*$/.test(segment) || /^koidrive-test-[1-9]\d*-[1-9]\d*$/.test(segment) ? segment : "{name}")).join("/");
   for (let attempt = 1; ; attempt++) {
     const remaining = init.deadline === undefined ? REQUEST_MS : init.deadline.atMs - Date.now();
     if (remaining <= 0) throw new DeadlineError(init.deadline!.what);
@@ -93,7 +96,7 @@ async function send(account: Account, method: string, path: string, init: { body
       });
     } catch (error) {
       if (init.deadline && Date.now() >= init.deadline.atMs) throw new DeadlineError(init.deadline.what);
-      if (attempt >= ATTEMPTS) throw new ApiError(what + " failed: " + (error instanceof Error ? error.message : String(error)), 0);
+      if (attempt >= ATTEMPTS) throw new ApiError(what + " failed: " + (error instanceof Error ? error.message : String(error)), 0, label + " failed");
       await sleep(Math.max(0, Math.min(2000 * attempt, init.deadline === undefined ? Infinity : init.deadline.atMs - Date.now())));
       continue;
     }
@@ -114,7 +117,7 @@ async function send(account: Account, method: string, path: string, init: { body
       if (errors.length > 0) detail = errors.map((error) => error.code + " " + error.message).join("; ");
     } catch {}
     const hint = response.status === 403 ? " (the token lacks a permission this call needs; see docs/deploy-test.md)" : "";
-    throw new ApiError(what + " returned HTTP " + response.status + ": " + detail + hint, response.status);
+    throw new ApiError(what + " returned HTTP " + response.status + ": " + detail + hint, response.status, label + " returned HTTP " + response.status + hint);
   }
 }
 
@@ -157,8 +160,8 @@ export async function listBuckets(account: Account, prefix: string, deadline?: D
       if (typeof bucket.name === "string" && bucket.name.startsWith(prefix)) buckets.set(bucket.name, { name: bucket.name, creationDate: typeof bucket.creation_date === "string" ? bucket.creation_date : undefined });
     }
     const next = page.result_info?.cursor ?? "";
-    if (!next || (page.result?.buckets ?? []).length === 0) return [...buckets.values()];
-    if (seen.has(next)) throw new ApiError("the R2 bucket list repeated the cursor " + next + ", so it cannot be read in full", 200);
+    if (!next) return [...buckets.values()];
+    if (seen.has(next)) throw new ApiError("the R2 bucket list repeated a cursor, so it cannot be read in full", 200);
     seen.add(next);
     cursor = next;
   }
@@ -172,10 +175,10 @@ export async function expireAllObjects(account: Account, bucket: string, deadlin
   await call(account, "PUT", `/accounts/${account.id}/r2/buckets/${bucket}/lifecycle`, { rules: [rule] }, deadline);
 }
 
-export async function getBucket(account: Account, name: string): Promise<{ creationDate: string } | undefined> {
-  const response = await send(account, "GET", `/accounts/${account.id}/r2/buckets/${name}`, { allowMissing: true });
+export async function getBucket(account: Account, name: string, deadline?: Deadline): Promise<{ creationDate: string } | undefined> {
+  const response = await send(account, "GET", `/accounts/${account.id}/r2/buckets/${name}`, { allowMissing: true, deadline });
   if (!response) return undefined;
-  const bucket = ((await response.json()) as Envelope<{ creation_date?: string }>).result;
+  const bucket = (await json<Envelope<{ creation_date?: string }>>(response, deadline)).result;
   if (!bucket?.creation_date) throw new ApiError("GET /accounts/{id}/r2/buckets/" + name + " returned no creation_date", 200);
   return { creationDate: bucket.creation_date };
 }
@@ -247,20 +250,21 @@ export async function deleteWorker(account: Account, name: string, deadline?: De
   return (await send(account, "DELETE", `/accounts/${account.id}/workers/scripts/${name}?force=true`, { allowMissing: true, deadline })) !== undefined;
 }
 
-export async function listNamespaces(account: Account, deadline?: Deadline): Promise<Namespace[]> {
-  const found: Namespace[] = [];
+export async function listNamespaces(account: Account, deadline?: Deadline): Promise<{ namespaces: Namespace[]; malformed: number }> {
+  const namespaces: Namespace[] = [];
+  let malformed = 0;
   for (let page = 1; ; page++) {
     const listed = await call<{ id?: unknown; class?: unknown; script?: unknown }[]>(account, "GET", `/accounts/${account.id}/workers/durable_objects/namespaces?per_page=1000&page=${page}`, undefined, deadline);
     for (const namespace of listed.result ?? []) {
-      if (typeof namespace.id !== "string" || typeof namespace.class !== "string") continue;
-      found.push({ id: namespace.id, class: namespace.class, ...(typeof namespace.script === "string" ? { script: namespace.script } : {}) });
+      if (typeof namespace.id !== "string" || !namespace.id || typeof namespace.class !== "string" || !namespace.class) malformed++;
+      else namespaces.push({ id: namespace.id, class: namespace.class, ...(typeof namespace.script === "string" && namespace.script ? { script: namespace.script } : {}) });
     }
-    if (!listed.result_info?.total_pages || page >= listed.result_info.total_pages) return found;
+    if (!listed.result_info?.total_pages || page >= listed.result_info.total_pages) return { namespaces, malformed };
   }
 }
 
 export async function namespacesOf(account: Account, script: string): Promise<Namespace[]> {
-  return (await listNamespaces(account)).filter((namespace) => namespace.script === script);
+  return (await listNamespaces(account)).namespaces.filter((namespace) => namespace.script === script);
 }
 
 export async function deleteNamespace(account: Account, id: string, deadline?: Deadline): Promise<boolean> {
