@@ -8240,3 +8240,152 @@ fn a_server_file_another_device_moves_into_a_taken_along_folder_goes_to_the_loca
         Some("s".into())
     );
 }
+
+struct ChangedWhileLeftOut {
+    sent_left_out: Vec<(&'static str, String)>,
+    held_left_out: Vec<NodeId>,
+    sent_let_in: Vec<(&'static str, String)>,
+    asked_let_in: Question,
+    done: Vec<NodeId>,
+    trees: Trees,
+    published: Vec<(&'static str, String)>,
+}
+
+fn changed_while_left_out(
+    change: impl Fn(&mut LocalNode, bool),
+    changed: &str,
+    left_out: &'static str,
+) -> ChangedWhileLeftOut {
+    let mut trees = trees(
+        &[("l-dir", dir(ROOT, "ß")), ("l-f", file("l-dir", "ss", 1))],
+        &[("r-ss", dir(ROOT, "ss")), ("r-c", file("r-ss", "c.txt", 2))],
+    );
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(7));
+    commits.first_link(&mut trees, &mut ids, NOW, PriorSync::Shown);
+    trees.settle(commits.aliases());
+    assert!(commits.decide(&mut trees, &question(&commits).id, Answer::Discard));
+    assert!(ops(&mut commits, &mut trees, &mut ids).is_empty());
+    let write = |trees: &mut Trees, commits: &Commits, back: bool| {
+        let mut node = trees.local().get(&changed.into()).unwrap().clone();
+        change(&mut node, back);
+        trees.set_local_changed(changed.into(), node);
+        trees.settle(commits.aliases());
+    };
+    write(&mut trees, &commits, false);
+    assert!(trees.reclaimed(&"l-dir".into()));
+    let mut effects = Effects::default();
+    if changed == "l-f" {
+        let park = (effects.plan(&trees, commits.in_flight(), &mut ids, NOW, BatchLimit::ONE))
+            .first()
+            .cloned()
+            .unwrap();
+        assert!(
+            matches!(
+                park.effect,
+                Effect::Move {
+                    to: Location::Parked(_),
+                    ..
+                }
+            ),
+            "{park:?}"
+        );
+        (effects.done(&mut trees, commits.in_flight(), &park.effect_id, None)).unwrap();
+    }
+    let root: [&str; 0] = [];
+    let rules = RuleFile::parse(format!("{left_out}\n").as_bytes());
+    let with_rules = |mut trees: Trees| {
+        trees.set_rules(&root, Source::Koiignore, Some(rules.clone()));
+        trees
+    };
+    trees = with_rules(trees);
+    trees.settle(commits.aliases());
+    assert!(trees.synced().get(&"l-dir".into()).is_none());
+    trees = with_rules(restarted(&trees));
+    commits = Commits::from_state(commits.state()).unwrap();
+    trees.settle(commits.aliases());
+    let sent_left_out = ops(&mut commits, &mut trees, &mut ids);
+    let held_left_out = question(&commits).holds().cloned().collect();
+    write(&mut trees, &commits, true);
+    trees = restarted(&trees);
+    commits = Commits::from_state(commits.state()).unwrap();
+    trees.settle(commits.aliases());
+    let sent_let_in = ops(&mut commits, &mut trees, &mut ids);
+    let asked_let_in = question(&commits);
+    let done = run_effects(&mut effects, &mut commits, &mut trees, &mut ids, 100);
+    assert!(commits.decide(&mut trees, &asked_let_in.id, Answer::Publish));
+    let published = ops(&mut commits, &mut trees, &mut ids);
+    ChangedWhileLeftOut {
+        sent_left_out,
+        held_left_out,
+        sent_let_in,
+        asked_let_in,
+        done: done.into_iter().map(|(node, _)| node).collect(),
+        trees,
+        published,
+    }
+}
+
+fn written_back_while_left_out() -> ChangedWhileLeftOut {
+    changed_while_left_out(
+        |node, back| node.shape.content = Some(content(if back { 1 } else { 3 })),
+        "l-f",
+        "ß",
+    )
+}
+
+#[test]
+fn a_first_link_discard_holds_a_file_the_user_changed_under_a_new_question_while_the_rules_leave_it_out()
+ {
+    let changed = written_back_while_left_out();
+    assert_eq!(changed.sent_left_out, []);
+    assert_eq!(changed.held_left_out, [NodeId::from("l-f")]);
+}
+
+#[test]
+fn a_first_link_discard_asks_again_about_a_file_the_user_writes_back_to_its_shown_bytes_once_the_rules_let_it_in()
+ {
+    let changed = written_back_while_left_out();
+    assert_eq!(changed.sent_let_in, []);
+    assert_eq!(
+        changed.asked_let_in.shown.get(&"l-f".into()),
+        Some(&file("l-dir", "ss", 1))
+    );
+    assert!(
+        !changed
+            .done
+            .iter()
+            .any(|node| node == "l-f" || node == "l-dir"),
+        "{:?}",
+        changed.done
+    );
+    assert_eq!(
+        changed.trees.local().get(&"l-f".into()).unwrap().shape,
+        file("l-dir", "ss", 1)
+    );
+    assert_eq!(
+        changed.published,
+        [
+            ("create dir", "l-dir".into()),
+            ("create file", "l-f".into())
+        ]
+    );
+}
+
+#[test]
+fn a_first_link_discard_asks_again_about_a_folder_the_user_renames_back_to_its_shown_name_once_the_rules_let_it_in()
+ {
+    let changed = changed_while_left_out(
+        |node, back| node.shape.name = if back { "ß".into() } else { "x".into() },
+        "l-dir",
+        "x",
+    );
+    assert_eq!(changed.sent_left_out, []);
+    assert_eq!(changed.held_left_out, [NodeId::from("l-dir")]);
+    assert_eq!(changed.sent_let_in, []);
+    assert_eq!(
+        changed.asked_let_in.shown.get(&"l-dir".into()),
+        Some(&dir(ROOT, "ß"))
+    );
+    assert!(changed.done.is_empty(), "{:?}", changed.done);
+    assert!(changed.published.contains(&("create dir", "l-dir".into())));
+}

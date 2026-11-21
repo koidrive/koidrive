@@ -3396,7 +3396,10 @@ impl Trees {
 
     pub(crate) fn reclaim(&mut self, among: impl Fn(&NodeId) -> bool) -> Vec<NodeId> {
         let reclaimed: BTreeSet<NodeId> = (self.discarded.keys())
-            .filter(|id| among(id) && self.reclaimed(id))
+            .filter(|id| {
+                among(id)
+                    && (self.reclaimed(id) || self.s.get(id).is_none() && self.the_users_again(id))
+            })
             .cloned()
             .collect();
         let below_reclaimed = |id: &NodeId| {
