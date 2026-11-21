@@ -842,6 +842,8 @@ jobs:
         run: core/driver/scripts/integration-test.sh
       - name: Make room for a first sync of two million entries
         run: sudo mkdir -p /mnt/koidrive-scale && sudo chown "$USER" /mnt/koidrive-scale
+      - name: Let inotify watch every folder of two million entries
+        run: sudo sysctl -w fs.inotify.max_user_watches=1048576
       - name: Test that a first sync of two million entries never stands still
         env:
           KOIDRIVE_DRIVER_TEST: first_sync_bench
