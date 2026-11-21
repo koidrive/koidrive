@@ -314,6 +314,23 @@ describe("RFC 0026 edit ancestry", () => {
     for (const { version } of restored.previous.values()) expect(version.madeOver.length).toBeLessThanOrEqual(64);
   });
 
+  it("supersedes a resend of a version that 65 later edits pushed out of the current chain", { timeout: 30_000 }, async () => {
+    const { a, file, first, values } = await setup();
+    let previous = first.versionId;
+    for (let index = 0; index < 65; index++) {
+      const result = await a.commit([update(file, values[1 + (index % 3)]!, { madeOver: [previous] })]);
+      const change = result.changes[0]!.change;
+      if (change.case !== "node") throw new Error("missing node change");
+      previous = change.value.current!.versionId;
+    }
+    const before = (await a.tree()).get(file)!;
+    expect(before.current!.madeOver).not.toContain(first.versionId);
+    const resend = await a.commit([update(file, values[0]!, { resend: true, sourceVersionId: first.versionId })]);
+    expect(resend.results[0]!.code).toBe(OpResult_Code.SUPERSEDED);
+    expect(resend.changes).toEqual([]);
+    expect((await a.tree()).get(file)).toEqual(before);
+  });
+
   it("caps oversized input after first-occurrence dedup without growing the stored chain", async () => {
     const { a, file, values } = await setup();
     const ids = Array.from({ length: 90 }, () => uuidv7());

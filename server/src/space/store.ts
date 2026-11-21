@@ -161,7 +161,7 @@ export function boundMadeOver(ids: readonly string[]): string[] {
   return [...new Set(ids.filter((id) => id !== ""))].slice(0, MAX_MADE_OVER);
 }
 
-export function versionMadeOver(version: VersionRow): string[] {
+export function versionMadeOver(version: Pick<VersionRow, "made_over">): string[] {
   return boundMadeOver(version.made_over.split(","));
 }
 

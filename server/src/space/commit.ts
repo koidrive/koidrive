@@ -56,6 +56,7 @@ import {
   versionChain,
   versionContent,
   versionMadeOver,
+  type VersionRow,
 } from "./store";
 
 export const MAX_DEPTH = 256;
@@ -755,7 +756,8 @@ export class CommitApplier {
       if (resend) return superseded();
     }
     const current = found.cur_version_id ? getVersion(this.sql, found.cur_version_id) : undefined;
-    if (source && current && versionMadeOver(current).includes(source)) {
+    const retained = source ? rows<Pick<VersionRow, "version_id" | "made_over">>(this.sql.exec("SELECT version_id, made_over FROM versions WHERE node_id = ?", found.node_id)) : [];
+    if (current && retained.some((version) => (version.version_id === source && version.version_id !== current.version_id) || versionMadeOver(version).includes(source))) {
       return superseded();
     }
     const bases = expandMadeOver(this.sql, found.node_id, ancestry?.madeOver ?? []);
