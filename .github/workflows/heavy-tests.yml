@@ -230,6 +230,9 @@ jobs:
           profile=()
           [ "$RELEASE" != "true" ] || profile=(--release)
           cargo test --locked --no-run ${profile[@]+"${profile[@]}"} -p "$CRATE" ${FEATURES:+--features "$FEATURES"} ${TEST:+--test "$TEST"}
+      - name: Let inotify watch every folder of a large tree
+        if: runner.os == 'Linux'
+        run: sudo sysctl -w fs.inotify.max_user_watches=1048576
       - name: Run parallel or Worker repetitions
         if: env.MODE == 'worker' || env.PARALLEL != '1'
         run: |
