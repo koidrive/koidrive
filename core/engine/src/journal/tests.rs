@@ -2,6 +2,10 @@
 
 use super::*;
 
+thread_local! {
+    pub(super) static CLOCK_VISITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 fn content(size: u64) -> Value {
     Value::Content {
         version_id: None,
@@ -616,4 +620,22 @@ fn a_delete_that_saw_nothing_keeps_no_delete_view() {
     let mut restored = Journal::new(&IdGen::new(0));
     restored.restore(state);
     assert!(!restored.state(whole).seen.contains_key(&f));
+}
+
+#[test]
+fn the_clock_visits_no_absent_node_before_its_deadline() {
+    let mut journal = Journal::new(&IdGen::new(0));
+    for i in 0..128 {
+        journal.r_lacks(&NodeId::from(format!("gone{i}")));
+    }
+    CLOCK_VISITS.with(|visits| visits.set(0));
+    journal.set_clock(1);
+    assert!(CLOCK_VISITS.with(std::cell::Cell::get) <= 1);
+    let mut restored = Journal::new(&IdGen::new(0));
+    restored.restore(journal.state(whole));
+    CLOCK_VISITS.with(|visits| visits.set(0));
+    restored.set_clock(2);
+    assert!(CLOCK_VISITS.with(std::cell::Cell::get) <= 1);
+    restored.set_clock(ABSENT_FOR_MS as u64);
+    assert!(restored.state(whole).absent.is_empty());
 }
