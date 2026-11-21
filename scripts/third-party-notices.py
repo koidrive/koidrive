@@ -36,8 +36,8 @@ NOTICE_MARKERS = {
     "ISC": (("permission to use, copy, modify, and/or distribute", "provided \"as is\""), ("permission to use, copy, modify, and distribute", "provided \"as is\"")),
     "BSD-2-Clause": (("redistribution and use in source and binary forms", "any express or implied warranties"),),
     "BSD-3-Clause": (("redistribution and use in source and binary forms", "neither the name", "any express or implied warranties"),),
-    "Apache-2.0": (("apache license version 2.0", "end of terms and conditions"),),
-    "Unicode-3.0": (("unicode license v3", "without warranty of any kind"),),
+    "Apache-2.0": (("apache license version 2.0", "grant of copyright license", "end of terms and conditions"),),
+    "Unicode-3.0": (("unicode license v3", "permission is hereby granted, free of charge", "without warranty of any kind"),),
 }
 PREFERENCE = ("MIT", "ISC", "BSD-2-Clause", "BSD-3-Clause", "Apache-2.0", "Unicode-3.0")
 LICENCE_FILE = re.compile(r"^(LICEN[CS]E|COPYING|COPYRIGHT|UNLICENSE)", re.IGNORECASE)

@@ -15,7 +15,7 @@ notices = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(notices)
 
 MIT = "Copyright (c) 2020 Someone\n\nPermission is hereby granted, free of charge, to any person obtaining a copy\nTHE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND"
-APACHE = "                                 Apache License\n                           Version 2.0, January 2004\n\n   END OF TERMS AND CONDITIONS"
+APACHE = "                                 Apache License\n                           Version 2.0, January 2004\n\n   2. Grant of Copyright License. Subject to the terms and conditions of\n\n   END OF TERMS AND CONDITIONS"
 ISC = "Copyright 2015 Brian Smith.\n\nPermission to use, copy, modify, and/or distribute this software for any purpose\nTHE SOFTWARE IS PROVIDED \"AS IS\""
 
 
@@ -116,9 +116,14 @@ class Choice(unittest.TestCase):
             notices.resolve(component, [], [("vendored", "apache", pinned), ("lines", "src.js", 1, 3)])
 
     def test_a_truncated_licence_file_is_not_that_licence_text(self):
-        crate = Crate(self, {"LICENSE-APACHE": "\n".join(APACHE.splitlines()[:2])})
-        with self.assertRaisesRegex(notices.Unresolved, "used under Apache-2.0, but none of its licence files"):
-            notices.resolve(crate.component("Apache-2.0"), [crate.dir])
+        lines = APACHE.splitlines()
+        for truncated in ("\n".join(lines[:2]), "\n".join(lines[:2] + lines[-1:])):
+            crate = Crate(self, {"LICENSE-APACHE": truncated})
+            with self.assertRaisesRegex(notices.Unresolved, "used under Apache-2.0, but none of its licence files"):
+                notices.resolve(crate.component("Apache-2.0"), [crate.dir])
+        unicode = Crate(self, {"LICENSE": "UNICODE LICENSE V3\nWITHOUT WARRANTY OF ANY KIND"})
+        with self.assertRaisesRegex(notices.Unresolved, "used under Unicode-3.0, but none of its licence files"):
+            notices.resolve(unicode.component("Unicode-3.0"), [unicode.dir])
 
 
 class BundledSources(unittest.TestCase):
