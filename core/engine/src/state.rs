@@ -266,8 +266,10 @@ pub struct TreesState {
     pub discarded: BTreeMap<NodeId, Shape>,
     /// The nodes this device's user removed from the disk while R held them and the rules let
     /// them sync, each with the folder L held it in, until L holds the node again or R no longer
-    /// holds it live. A server folder the user removed an entry from is the user's, so a Discard
-    /// does not take it along (section 6.4).
+    /// holds it live. A taken-along folder's member that L held anywhere inside that folder,
+    /// outside a held folder of the same first link, is recorded with the folder R holds it in.
+    /// A server folder the user removed an entry from is the user's, so a Discard does not take
+    /// it along (section 6.4).
     pub removed_from: BTreeMap<NodeId, NodeId>,
     /// The files S forgot after a server loss while L, S and R held their content alike, each with
     /// the shape S held, until L's content changes, S takes the node again or L no longer holds it.
