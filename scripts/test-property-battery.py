@@ -717,6 +717,42 @@ cases = ["{1:064}"]
                          " right: `[]` at core/sim/tests/engine_sync/common.rs:2008.")
         m1a5a = "1a5a26e7e993648c79095e1fce614f8ffc3b38e5f2fc3209dc93c33d625070ed"
         purged = next(entry for entry in entries if entry["file"] == "GUN-1393-M-purged-entry-reclaims-discarded-folder.toml")["examples"][0]
+        keeps = "a_first_link_discard_keeps_a_folder_the_user_changes_after_the_server_drops_part_of_it"
+        changed_nothing = ("01a1c2c0-39a0-775c-844c-3cd7f43c661c was discarded and is created on the server with no later answer "
+                           "to publish it, and below it the user changed nothing at core/sim/tests/engine_sync/common.rs:2960.")
+        q_cases = [
+            "2655546c45ea2c24d4f2bbbb5c3dffa5cd6d3e431e4c20ba23c2643c63945d0c",
+        ]
+        v_cases = [
+            "0b0701b9ccf94132986f099b88f7459e94fb07418e475d205a3261db2a197865",
+            "0b495ebbbce1f912a9fe4cbd7120f26c81a8416f6ca5261dcef270bdff8f1b00",
+            "0e35ee39becb5984a7c6605230499dd72062698a5e9bb5187d4a6f33008b2b2b",
+            "2b1e70ed6d9293888e6d671e69caaf476b3cb5c79116cafc559f1d5da907599c",
+            "2c831308bf8b749d3ca7456e1e1dee91eeaeb87a58f4534d7726d9687b303333",
+            "35b1aae51da25a01c3ee1d8137593c4ffe32f497bad36a9a16d51f0af05ac6a3",
+            "59418606e1048fde347c2ad88863fbf3e06305f1a2fcf2c8bd247b15a60e9a40",
+            "5aa7ebcfa8e815d8dd6068ca6b394067c40b7b7644cca94791603368338f568a",
+            "5d05ca1a54efc7c9908daa86cf03e65685324241f07936c8187a7b76ac6b8aef",
+            "67120e7e7e313bc44a313c70cd0e470a7361bcee1149ad42c21d2a3466d0dad8",
+            "8d8f4d0cd69b85e80b93852560e74875c9665408e7b723ec1679ec878b17b1c6",
+            "95ced69bf0ba10a2ef33584c2435338aa1649a04342bc98f04bb9997ca60a6e5",
+            "98c83f2b50096b3a91915af2eb7b10c0ef6a351fb7017ad1305117f7d5bcfea3",
+            "9f1e0104e733bcacda5c6837d6871b52ecf08cd418795dc267297ec43c5d58d3",
+            "a2ed034a1ae94e72368dc4c0b1e8e949a7385f4b92d656faa855a3d46d5b6b17",
+            "b630d7683baf088fc0a06bd90786a88ce3b19635a2923b33a2cd05ca7b14ee98",
+            "fa4963197174392fcb3d01c49830ee30e1eee52af31edaa5dc9377851aa67831",
+        ]
+        f_cases = [
+            "1b41de2a79416ca48096fd1d788ab1492ea737dc6491298008672eb2c00d6bab",
+            "25ce70d3713be05a0eb0f1d66ba64775151f7fa20b5a2f4a2f8b570ab93f2bd1",
+            "3ed737e670564b1311d6d10a8f78eda3d419457fe41d80837394b6e8f26e7105",
+            "68aec668f283752ccd5588dabd8914c376d3313dccbf27a5a3f2d2215ee3e205",
+            "749ab952250b1b2bff6a20979f4f9aa7ed5638a4280be2450814ff06c7351112",
+            "83bb9e563993dc71ee2139bef247e3a02a62a8f50fbf0682d839db53ad19f3b2",
+        ]
+        settles = "a_node_another_device_moves_onto_a_folder_the_rules_leave_out_here_settles"
+        n812f = "812f80a55f271edd88172ef1fcd1ced1ec88d3bcd8cfd8aed455c8f842181ebe"
+        no_convergence = "no convergence within 400 steps at core/sim/tests/engine_sync/common.rs:2454."
         def replayed(case):
             return next(text for entry in entries for text in entry["examples"] if f"\tcc-{case}\t" in text)
         coarse_once = "devices_on_coarse_volumes_converge_once_the_faults_stop"
@@ -873,6 +909,13 @@ cases = ["{1:064}"]
             (lose_coarse, replayed(a0fe7), a0fe7[:12] + "0" * 52, []),
             (takes_along, purged, m1a5a, [("M", "GUN-1393", [m1a5a])]),
             (takes_along, purged, "53195fc36ab56c3514afc3fdfa7a52b5d1192f6a75a240b901e4604d04525f82", []),
+            *((keeps, changed_nothing, case, [(class_, issue, listed)])
+              for class_, issue, listed in (("Q", "GUN-1437", q_cases), ("V", "GUN-1459", v_cases), ("F", "GUN-1487", f_cases))
+              for case in listed),
+            *((keeps, changed_nothing, listed[0][:12] + "0" * 52, []) for listed in (q_cases, v_cases, f_cases)),
+            (keeps, changed_nothing, other, []),
+            (settles, no_convergence, n812f, [("O", "GUN-1450", [n812f])]),
+            (settles, no_convergence, other, []),
         ]:
             with self.subTest(test=test, message=message[:40], case=case[:12]):
                 found = triage.matches(entries, test, message, case)

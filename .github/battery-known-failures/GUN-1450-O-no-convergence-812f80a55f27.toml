@@ -1,0 +1,10 @@
+class = "O"
+issue = "GUN-1450"
+tests = ["a_node_another_device_moves_onto_a_folder_the_rules_leave_out_here_settles"]
+message = '''no convergence within <n> steps at \S+\.rs:<line>\.'''
+examples = [
+  "no convergence within 400 steps at core/sim/tests/engine_sync/common.rs:2454.",
+]
+cases = [
+  "812f80a55f271edd88172ef1fcd1ced1ec88d3bcd8cfd8aed455c8f842181ebe",
+]
