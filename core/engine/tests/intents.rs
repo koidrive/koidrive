@@ -2871,3 +2871,140 @@ fn zz_cr_4641230689_a_finish_names_the_marks_intent_and_leaves_a_later_rename_to
     let row = trees.journal_row(&"d".into(), Field::Place).unwrap();
     assert!(matches!(row.state, RowState::Local { .. }));
 }
+
+#[test]
+fn zz_cr_4650066677_a_mark_only_change_keeps_s_s_content_intent() {
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
+    let f = NodeId::from("f");
+    synced(&mut trees, "f", file(ROOT, "a", 1), 1);
+    trees.set_remote(f.clone(), remote(file(ROOT, "a", 1), 2));
+    let kept = trees.synced_intents(&f).unwrap().content.unwrap().id;
+    assert_eq!(kept, IntentId::legacy_content("f", "v1"));
+    let mut marked = trees.remote().get(&f).unwrap().clone();
+    marked.pending_for = Some("wanted".into());
+    trees.set_remote(f.clone(), marked);
+    assert_eq!(trees.synced_mark(&f), Some("wanted"));
+    assert_eq!(trees.synced_intents(&f).unwrap().content.unwrap().id, kept);
+}
+
+#[test]
+fn zz_cr_4650066677_a_mark_only_change_leaves_the_delete_and_edit_evidence_alone() {
+    let run = |marked: bool, edit: bool| {
+        let mut trees = Trees::new(ROOT, &IdGen::new(0));
+        let f = NodeId::from("f");
+        synced(&mut trees, "f", file(ROOT, "a", 1), 1);
+        trees.set_remote(f.clone(), remote(file(ROOT, "a", 1), 2));
+        if marked {
+            let mut node = trees.remote().get(&f).unwrap().clone();
+            node.pending_for = Some("wanted".into());
+            trees.set_remote(f.clone(), node);
+        }
+        let mut moved_on = remote(file(ROOT, "a", 3), 3);
+        moved_on.pending_for = marked.then(|| "wanted".into());
+        trees.set_remote(f.clone(), moved_on);
+        let mut ids: Vec<IntentId> = match edit {
+            true => {
+                trees.set_local_changed(f.clone(), local(file(ROOT, "a", 4)));
+                let row = trees.journal_row(&f, Field::Content).unwrap();
+                row.base.into_iter().collect()
+            }
+            false => {
+                trees.remove_local_by_user(&f);
+                (trees.journal().seen(&f).iter())
+                    .map(|seen| seen.intent)
+                    .collect()
+            }
+        };
+        ids.sort();
+        ids.dedup();
+        ids
+    };
+    for edit in [false, true] {
+        assert_eq!(run(true, edit), run(false, edit), "edit {edit}");
+    }
+}
+
+#[test]
+fn zz_cr_4650066663_intents_read_before_the_announcement_leave_no_computed_id_on_the_wire() {
+    let server = NodeIntents {
+        place: Some(FieldIntent::legacy(id(10))),
+        content: Some(FieldIntent::legacy(IntentId::legacy_content("f", "v1"))),
+        status: Some(FieldIntent::legacy(IntentId::legacy_live("f", 7))),
+        ..Default::default()
+    };
+    let run = |read_before: bool, announced: bool| {
+        let mut trees = Trees::new(ROOT, &IdGen::new(0));
+        let f = NodeId::from("f");
+        synced(&mut trees, "f", file(ROOT, "a", 1), 1);
+        let renamed = file(ROOT, "b", 1);
+        let node = |intents: Option<NodeIntents>| RemoteNode {
+            meta_rev: 2,
+            meta_edit_rev: 2,
+            intents,
+            ..remote(renamed.clone(), 1)
+        };
+        trees.set_remote(f.clone(), node(read_before.then(|| server.clone())));
+        trees.set_synced(f.clone(), Some(renamed.clone()));
+        trees.set_local(f.clone(), local(renamed.clone()));
+        if announced {
+            let mut listed: Tree<RemoteNode> = Tree::new(ROOT);
+            listed.insert(f.clone(), node(Some(server.clone())));
+            trees.take_listed_intents(&listed);
+            trees.set_listed_remote(f.clone(), node(Some(server.clone())));
+        }
+        trees.remove_local_by_user(&f);
+        let mut ops = vec![proto::Op {
+            op: Some(op::Op::Delete(proto::Delete {
+                node_id: "f".into(),
+                ..Default::default()
+            })),
+            ..Default::default()
+        }];
+        let wire = match announced {
+            true => Wire::WithIntents,
+            false => Wire::WithoutIntents,
+        };
+        trees.stamp_intents(&mut ops, "me", 0, wire);
+        ops
+    };
+    for announced in [false, true] {
+        assert_eq!(
+            run(true, announced),
+            run(false, announced),
+            "announced {announced}"
+        );
+    }
+}
+
+#[test]
+fn zz_cr_4648946595_a_relist_keeps_a_delete_of_another_trash_group_apart() {
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
+    let f = NodeId::from("f");
+    synced(&mut trees, "f", file(ROOT, "a", 1), 1);
+    let trashed = |group: &str, rev: u64| RemoteNode {
+        trashed: true,
+        trash_group: group.into(),
+        meta_rev: rev,
+        meta_edit_rev: rev,
+        ..remote(file(ROOT, "a", 1), 1)
+    };
+    trees.set_remote(f.clone(), trashed("g1", 2));
+    let first = IntentId::legacy_trashed("f", "g1");
+    let history = |trees: &Trees| -> Vec<IntentId> {
+        (trees.journal().history(&f, Field::Status).iter())
+            .map(|entry| entry.intent)
+            .collect()
+    };
+    assert!(history(&trees).contains(&first));
+    let mut listed: Tree<RemoteNode> = Tree::new(ROOT);
+    let relisted = RemoteNode {
+        intents: Some(NodeIntents {
+            status: Some(FieldIntent::legacy(id(9))),
+            ..Default::default()
+        }),
+        ..trashed("g2", 4)
+    };
+    listed.insert(f.clone(), relisted);
+    trees.take_listed_intents(&listed);
+    assert!(history(&trees).contains(&first), "{:?}", history(&trees));
+}
