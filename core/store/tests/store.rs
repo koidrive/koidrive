@@ -782,7 +782,11 @@ fn store_before(path: &Path, migration: &str) {
         rewind(path, position);
         return;
     }
-    let mut skipped = BTreeSet::from([migration]);
+    store_without(path, &[migration]);
+}
+
+fn store_without(path: &Path, migrations: &[&str]) {
+    let mut skipped: BTreeSet<&str> = migrations.iter().copied().collect();
     for m in MIGRATIONS {
         if m.requires.iter().any(|r| skipped.contains(r)) {
             skipped.insert(m.name);

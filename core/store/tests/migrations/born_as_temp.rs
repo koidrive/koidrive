@@ -28,6 +28,33 @@ fn a_store_from_before_nodes_born_as_temporary_files_were_recorded_opens_with_no
 }
 
 #[test]
+fn a_store_from_before_temp_marks_and_the_journal_gets_both_when_it_opens() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.db");
+    let temp = LocalNode {
+        left_out_when_placed: false,
+        content_from_server: false,
+        node_id: "temp".into(),
+        shape: file_shape("root", "~WRD0000.tmp"),
+        identity: FileId::stored(1u64.into(), None, None),
+        parked: false,
+    };
+    Store::open(&path)
+        .unwrap()
+        .transaction(|tx| tx.put_local_node(&temp))
+        .unwrap();
+    store_without(&path, &["born_as_temp", "journal"]);
+
+    let mut store = Store::open(&path).unwrap();
+    assert_eq!(applied(&path), all_migrations());
+    let (state, owed) = store
+        .transaction(|tx| Ok::<_, Error>((tx.engine_state()?, tx.journal_backfill_owed()?)))
+        .unwrap();
+    let upgraded = BTreeMap::from([(NodeId::from("temp"), TempBirth::Upgraded)]);
+    assert_eq!((state.trees.born_as_temp, owed), (upgraded, true));
+}
+
+#[test]
 fn a_store_from_before_temp_marks_marks_each_file_at_a_tmp_name_as_upgraded() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("state.db");
