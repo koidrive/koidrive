@@ -9922,6 +9922,11 @@ fn editing_an_entry_another_device_moved_out_before_the_answer_that_this_device_
             "restart {restart}: {:?}",
             local(&trees)
         );
+        assert_eq!(
+            trees.local().get(&"x".into()).unwrap().shape,
+            dir(ROOT, "server"),
+            "restart {restart}"
+        );
     }
 }
 
