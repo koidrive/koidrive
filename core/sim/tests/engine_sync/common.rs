@@ -539,7 +539,6 @@ struct Placement {
     by_other: bool,
     order: u64,
     from: Vec<NodeId>,
-    to: Vec<NodeId>,
 }
 
 fn ancestors(trees: &Trees, parent: Option<NodeId>) -> Vec<NodeId> {
@@ -728,17 +727,14 @@ impl Device {
                 self.removed_from.remove(&node);
                 continue;
             };
-            if parent_before.as_ref() != Some(&remote.parent) {
-                let users_move = (self.relocated.get(&node))
-                    .is_some_and(|moved| remote.same_position(&moved.to));
-                self.placements += 1;
-                (self.placed.entry(node.clone()).or_default()).push(Placement {
-                    by_other: !answered && !users_move,
-                    order: self.placements,
-                    from,
-                    to: ancestors(&self.trees, Some(remote.parent.clone())),
-                });
-            }
+            let users_move =
+                (self.relocated.get(&node)).is_some_and(|moved| remote.same_position(&moved.to));
+            self.placements += 1;
+            (self.placed.entry(node.clone()).or_default()).push(Placement {
+                by_other: !answered && !users_move,
+                order: self.placements,
+                from,
+            });
             let Some(moved) = self.relocated.get_mut(&node) else {
                 continue;
             };
@@ -2098,39 +2094,20 @@ fn acted_below(
             .or_else(|| trees.remote().live(at).map(|remote| remote.parent.clone()))
     };
     let arrived = |entry: &NodeId| {
-        if !device.on_server_when_taken_along.contains_key(id) {
+        if !reaches(entry, &agreed) {
             return false;
         }
-        let history = |at: &NodeId| device.placed.get(at).map_or(&[][..], Vec::as_slice);
-        let mut seen = BTreeSet::from([entry.to_owned()]);
-        let (mut at, mut parent) = (entry.to_owned(), agreed(entry));
-        let mut placements = history(&at);
-        while at != *id {
-            match placements.split_last() {
-                Some((last, earlier))
-                    if !last.by_other && last.from.contains(id) && last.to.contains(id) =>
-                {
-                    parent = last.from.first().cloned();
-                    placements = earlier;
-                }
-                Some((last, earlier)) if !last.to.contains(id) => {
-                    placements = if parent == last.to.first().cloned() {
-                        &[]
-                    } else {
-                        earlier
-                    };
-                }
-                Some((last, _)) => return last.by_other,
-                None => {
-                    let Some(next) = parent.filter(|next| seen.insert(next.clone())) else {
-                        return false;
-                    };
-                    (at, parent) = (next.clone(), agreed(&next));
-                    placements = history(&at);
-                }
-            }
+        let mut chain = vec![entry.to_owned()];
+        while let Some(parent) =
+            agreed(chain.last().unwrap()).filter(|at| at != id && !chain.contains(at))
+        {
+            chain.push(parent);
         }
-        false
+        (chain.iter())
+            .flat_map(|at| device.placed.get(at).into_iter().flatten())
+            .filter(|placement| !placement.from.contains(id))
+            .max_by_key(|placement| placement.order)
+            .is_some_and(|placement| placement.by_other)
     };
     let as_agreed = |entry: &NodeId| {
         let Some(local) = trees.local().get(entry) else {
