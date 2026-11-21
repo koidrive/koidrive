@@ -735,23 +735,20 @@ impl Device {
                 .cloned()
                 .collect();
             self.placements += 1;
-            if by_other {
-                self.last_other.insert(node.clone(), self.placements);
-            }
-            if !entered.is_empty() {
-                let moved_in: Vec<NodeId> = (self.trees.remote().iter())
-                    .filter(|(id, remote)| {
-                        **id == node
-                            || ancestors(&self.trees, Some(remote.shape.parent.clone()))
-                                .contains(&node)
-                    })
-                    .map(|(id, _)| id.clone())
-                    .collect();
-                for id in moved_in {
-                    let stays = self.stays.entry(id).or_default();
-                    for folder in &entered {
-                        stays.insert(folder.clone(), (by_other, self.placements));
-                    }
+            let subtree: Vec<NodeId> = (self.trees.remote().iter())
+                .filter(|(id, remote)| {
+                    **id == node
+                        || ancestors(&self.trees, Some(remote.shape.parent.clone())).contains(&node)
+                })
+                .map(|(id, _)| id.clone())
+                .collect();
+            for id in subtree {
+                if by_other {
+                    self.last_other.insert(id.clone(), self.placements);
+                }
+                let stays = self.stays.entry(id).or_default();
+                for folder in &entered {
+                    stays.insert(folder.clone(), (by_other, self.placements));
                 }
             }
             let Some(moved) = self.relocated.get_mut(&node) else {

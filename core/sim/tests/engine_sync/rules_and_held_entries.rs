@@ -2212,6 +2212,25 @@ fn deleting_an_entry_another_device_moves_out_between_the_answer_and_the_build_c
 }
 
 #[test]
+fn deleting_an_entry_another_device_brings_in_with_its_folder_in_the_answer_window_after_this_device_moves_it_within_changes_that_entry_alone()
+ {
+    let (mut device, kept, discarded) = a_file_in_a_taken_along_server_folder();
+    let (s, e): (NodeId, NodeId) = ("s".into(), "e".into());
+    place_dir(&mut device, "a", Some(("root", "a")), Some(("root", "a")));
+    place_dir(&mut device, "e", Some(("a", "e")), Some(("a", "e")));
+    place_dir(&mut device, "m", Some(("s", "m")), Some(("s", "m")));
+    let answered = (device.on_server(), device.placements);
+    device.receive(&[a_dir_record("a", "s", 2)], false);
+    place_dir(&mut device, "e", Some(("m", "e")), None);
+    device.receive(&[a_dir_record("e", "m", 2)], true);
+    device.note_taken_along_at_answer([&s], &answered);
+    device.trees.remove_local(&e);
+    device.removed_from.insert(e.clone(), "m".into());
+    device.acted_on(e);
+    assert!(!acted_below(&device, &s, &kept, &discarded));
+}
+
+#[test]
 fn renaming_an_entry_the_user_moved_in_from_a_folder_another_device_then_brings_in_changes_the_folder()
  {
     let (mut device, kept, discarded) = a_file_in_a_taken_along_server_folder();
