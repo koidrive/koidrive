@@ -6,7 +6,7 @@ Watcher events are hints about where to look, never facts about what changed. A 
 
 The fs layer turns these patterns into the right observation:
 
-- A rename over an existing file, as in an editor's atomic save, is a modification of the original, so the node keeps its ID and version history.
+- A rename over an existing file, as in an editor's atomic save, is a modification of the original, so the node keeps its ID and version history, unless the file carries a valid node mark that names another node (mass-deletion §6.4): the original is then deleted, and the file never takes its node.
 - A delete and re-create at the same path within the debounce window, with the same kind, is a modification.
 - A swap or rotation through a third name (`mv a tmp; mv b a; mv tmp b`), of files or folders, is reported as renames: an entry whose identity was at another path before the rescan, while the identity its path held is at another path after it. The planner sends them through a pending name (§2.6).
 - Ignored names (`.koidrive/`, the fixed platform files, and paths matched by `.koiignore`, §5.10) are invisible to the engine but still occupy names on disk. An effect that needs such a name fails its check and is reported as a problem. Platform files do not keep a folder from being removed (§5.2).

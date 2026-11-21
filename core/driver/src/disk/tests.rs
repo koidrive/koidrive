@@ -3859,3 +3859,38 @@ fn a_store_copied_mid_download_that_only_the_token_tells_apart_enters_recovery()
     let downloaded = BTreeMap::from([(PathBuf::from("report.txt"), Some(REMOTE.to_vec()))]);
     assert_eq!(visible(&folder), downloaded);
 }
+#[test]
+fn a_download_seen_before_its_effect_is_recorded_does_not_delete_the_file_it_moved() {
+    let folder = Folder::new();
+    let mut server = Server::default();
+    fs::write(folder.root.join("report.txt"), SYNCED).unwrap();
+    let moved = disk_content(&folder.root.join("report.txt"));
+    let placed = server.hold(REMOTE, ChunkerConfig::V0);
+    folder.seed(
+        &[
+            remote(NODE, "renamed.txt", Some(moved)),
+            remote(OTHER, "report.txt", Some(placed)),
+        ],
+        &[(NODE, SPACE, "report.txt")],
+        0,
+    );
+    let mut running = folder.start(no_hook()).unwrap();
+    let mut watching = observer(&folder.root, Snapshot::scan(&folder.root).unwrap());
+    let stamp = running.disk.sections().stamp();
+    while running.step(&server).is_some() {}
+    assert_eq!(fs::read(folder.root.join("report.txt")).unwrap(), REMOTE);
+    let echo = observe_until(&mut watching, stamp, |seen| !seen.is_empty());
+    running
+        .disk
+        .observed(echo, &mut running.engine, &mut running.store)
+        .unwrap();
+    let engine = &running.engine;
+    assert_eq!(
+        engine.path_of(&NodeId::from(NODE)),
+        Some(PathBuf::from("renamed.txt"))
+    );
+    assert_eq!(
+        engine.path_of(&NodeId::from(OTHER)),
+        Some(PathBuf::from("report.txt"))
+    );
+}

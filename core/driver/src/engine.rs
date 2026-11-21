@@ -60,18 +60,77 @@ pub(crate) struct Engine {
     pub local_written_since_load: bool,
     removed_at: BTreeMap<NodeId, u64>,
     renamed_away: BTreeMap<NodeId, (NodeId, String, u64, Option<u64>)>,
-    took_slot: BTreeMap<(NodeId, String), SlotTaker>,
+    occupants: BTreeMap<(NodeId, String), Vec<Occupant>>,
     backup_gone: BTreeMap<NodeId, bool>,
     owed: BTreeSet<NodeId>,
     stored_owed: BTreeSet<NodeId>,
 }
 
-struct SlotTaker {
-    node: NodeId,
+struct Occupant {
     at: u64,
-    staged: bool,
+    node: Option<NodeId>,
+    identity: FileIdentity,
+    admitted: bool,
     mark: Option<NodeId>,
 }
+
+mod bound {
+    use koidrive_engine::ids::IdGen;
+    use koidrive_engine::tree::NodeId;
+
+    pub(super) struct Bound(NodeId);
+
+    #[derive(Debug)]
+    pub(super) enum Binding {
+        Identity,
+        TempMove(NodeId),
+        Mark,
+        Path,
+        Gone,
+        WrittenAgain,
+        Vanished,
+        Holder,
+        Save,
+    }
+
+    pub(super) fn may_become(mark: Option<&NodeId>, node: &NodeId) -> bool {
+        mark.is_none_or(|mark| mark == node)
+    }
+
+    pub(super) fn bind<'a>(
+        candidate: NodeId,
+        how: Binding,
+        marks: impl IntoIterator<Item = Option<&'a NodeId>>,
+    ) -> Option<Bound> {
+        let mut marks = marks.into_iter();
+        let allowed = |mark: Option<&NodeId>| match &how {
+            Binding::Identity => true,
+            Binding::TempMove(moved) => may_become(mark, &candidate) || mark == Some(moved),
+            _ => may_become(mark, &candidate),
+        };
+        if !marks.all(allowed) {
+            tracing::debug!(node = %candidate, ?how, "a file whose mark names another node does not become the node");
+            return None;
+        }
+        Some(Bound(candidate))
+    }
+
+    impl Bound {
+        pub(super) fn fresh(ids: &mut IdGen, now_ms: u64) -> Self {
+            Bound(NodeId::from(ids.uuid_v7(now_ms)))
+        }
+
+        pub(super) fn id(&self) -> &NodeId {
+            &self.0
+        }
+
+        pub(super) fn into_id(self) -> NodeId {
+            self.0
+        }
+    }
+}
+
+use bound::{Binding, Bound, bind, may_become};
 
 const DELETE_WAIT_MS: u64 = 2_000;
 
@@ -951,20 +1010,25 @@ impl Engine {
         let unscanned = self.unscanned.take();
         let wait = 2 * DELETE_WAIT_MS;
         (self.renamed_away).retain(|_, (_, _, at, _)| now_ms < at.saturating_add(wait));
-        (self.took_slot).retain(|_, taker| now_ms < taker.at.saturating_add(wait));
         let away = &self.renamed_away;
+        self.occupants.retain(|(parent, name), occupants| {
+            let waiting = (away.values())
+                .filter(|(at_parent, at_name, _, _)| at_parent == parent && at_name == name)
+                .map(|(_, _, renamed, _)| *renamed)
+                .min();
+            waiting
+                .inspect(|oldest| occupants.retain(|occupant| occupant.at >= *oldest))
+                .is_some()
+        });
         (self.backup_gone).retain(|id, _| away.contains_key(id));
-        let mut before: Vec<Option<NodeId>> = changes
-            .iter()
+        let mut resolved: Vec<Result<Option<Bound>, NodeId>> = (changes.iter())
             .map(|change| match change {
-                Observed::Removed { path, .. } | Observed::Missing { path, .. } => {
-                    local_at(&self.trees, path)
-                }
                 Observed::Renamed {
                     from,
                     id,
                     linked,
                     kind,
+                    marked_node,
                     ..
                 } => resolve(
                     &self.trees,
@@ -973,11 +1037,24 @@ impl Engine {
                     *kind,
                     &file_identity(*id),
                     *linked,
+                    marked_node.as_deref().map(NodeId::from).as_ref(),
                 ),
-                Observed::Created { .. }
+                Observed::Removed { .. }
+                | Observed::Missing { .. }
+                | Observed::Created { .. }
                 | Observed::Modified { .. }
                 | Observed::Reidentified { .. }
-                | Observed::Found { .. } => None,
+                | Observed::Found { .. } => Ok(None),
+            })
+            .collect();
+        let mut before: Vec<Option<NodeId>> = (changes.iter().zip(&resolved))
+            .map(|(change, resolved)| match change {
+                Observed::Removed { path, .. } | Observed::Missing { path, .. } => {
+                    local_at(&self.trees, path)
+                }
+                _ => (resolved.as_ref().ok())
+                    .and_then(Option::as_ref)
+                    .map(|bound| bound.id().clone()),
             })
             .collect();
         let left: Vec<&Path> = (changes.iter())
@@ -1146,19 +1223,16 @@ impl Engine {
                 Observed::Removed { path, .. } | Observed::Missing { path, .. } => {
                     if let Some(id) = before {
                         let missing = matches!(change, Observed::Missing { .. });
-                        let file = !missing
-                            && (self.trees.local().get(&id))
-                                .is_some_and(|node| node.shape.kind == Kind::File);
-                        let excluded =
-                            names(path).is_none_or(|names| self.trees.ignores(&names, Kind::File));
-                        if file && !excluded {
-                            self.removed_at.insert(id.clone(), now_ms);
-                            self.owed.insert(id.clone());
-                        }
-                        if file && let Some((_, _, _, removed)) = self.renamed_away.get_mut(&id) {
-                            *removed = Some(now_ms);
-                        }
-                        self.remove(&id, &moving, true, missing, &mut touched, &mut gone);
+                        self.lose(
+                            &id,
+                            path,
+                            true,
+                            missing,
+                            now_ms,
+                            &moving,
+                            &mut touched,
+                            &mut gone,
+                        );
                     }
                 }
                 Observed::Found { path, at } => {
@@ -1185,9 +1259,9 @@ impl Engine {
                         if let Some(at) = at {
                             self.trees.find_local(&node, at);
                         }
-                    } else if folder.is_some() {
+                    } else if let Some(folder) = folder {
                         self.place(
-                            folder,
+                            bind(folder, Binding::Path, []),
                             path,
                             EntryKind::Dir,
                             file_identity(*id),
@@ -1200,7 +1274,31 @@ impl Engine {
                         );
                     }
                 }
-                Observed::Renamed { to, kind, id, .. } => {
+                Observed::Renamed {
+                    from,
+                    to,
+                    kind,
+                    id,
+                    marked_node,
+                    ..
+                } => {
+                    let identity = file_identity(*id);
+                    let mark = marked_node.as_deref().map(NodeId::from);
+                    let bound = match std::mem::replace(&mut resolved[at], Ok(None)) {
+                        Ok(bound) => bound,
+                        Err(held) => self.refused(
+                            held,
+                            from,
+                            true,
+                            (identity, *kind),
+                            mark.as_ref(),
+                            now_ms,
+                            &moving,
+                            &mut touched,
+                            &mut gone,
+                        ),
+                    };
+                    let before = bound.as_ref().map(|bound| bound.id().clone());
                     let node_kind = match kind {
                         EntryKind::File => Kind::File,
                         EntryKind::Dir => Kind::Dir,
@@ -1216,18 +1314,17 @@ impl Engine {
                             continue;
                         }
                     }
-                    let identity = file_identity(*id);
                     let content = before
                         .as_ref()
                         .and_then(|id| self.trees.local().get(id))
                         .and_then(LocalNode::content);
                     self.place(
-                        before,
+                        bound,
                         to,
                         *kind,
                         identity,
                         content,
-                        None,
+                        mark.as_ref(),
                         now_ms,
                         &moving,
                         &mut touched,
@@ -1242,45 +1339,33 @@ impl Engine {
                     content,
                     marked_node,
                 } => {
+                    let identity = file_identity(*id);
+                    let mark = marked_node.as_deref().map(NodeId::from);
                     if *kind == EntryKind::File && content.is_none() {
+                        self.arrive_unread(path, identity, mark, now_ms);
                         continue;
                     }
-                    let identity = file_identity(*id);
-                    let takes = |node: &&NodeId| {
-                        holds_kind(&self.trees, node, *kind)
-                            && (!linked
-                                || self.trees.recorded_local(node)
-                                || self.trees.displaced_local().contains_key(*node))
-                    };
-                    let node = (self.trees.locals_with_identity(&identity).rev())
-                        .filter(|node| !staying.contains(*node))
-                        .filter(|node| same_volume(&self.trees, &self.mounts, node, path))
-                        .find(takes)
-                        .or_else(|| {
-                            (self
-                                .trees
-                                .displaced_with_identity(&identity, tree_kind(*kind)))
-                            .filter(takes)
-                        })
-                        .cloned()
+                    let node = (self.by_identity(&identity, *kind, *linked, path, &staying))
                         .or_else(|| {
                             (gone.get(path))
-                                .filter(|(node, held, held_kind)| {
+                                .filter(|(node, held, held_kind, _)| {
                                     held.same(&identity)
                                         && *held_kind == *kind
                                         && self.trees.local().get(node).is_none()
                                 })
-                                .map(|(node, _, _)| node.clone())
+                                .and_then(|(node, ..)| {
+                                    bind(node.clone(), Binding::Gone, [mark.as_ref()])
+                                })
                         })
-                        .or_else(|| self.unclaimed(marked_node.as_deref(), *linked))
-                        .or_else(|| self.written_again(path, *kind, *linked));
+                        .or_else(|| self.unclaimed(mark.as_ref(), *linked))
+                        .or_else(|| self.written_again(path, *kind, *linked, mark.as_ref()));
                     self.place(
                         node,
                         path,
                         *kind,
                         identity,
                         content.clone(),
-                        marked_node.as_deref(),
+                        mark.as_ref(),
                         now_ms,
                         &moving,
                         &mut touched,
@@ -1294,24 +1379,46 @@ impl Engine {
                     content,
                     marked_node,
                 } => {
-                    let Some(content) = content else { continue };
                     let identity = file_identity(*id);
-                    let node = resolve(
+                    let mark = marked_node.as_deref().map(NodeId::from);
+                    let Some(content) = content else {
+                        self.arrive_unread(path, identity, mark, now_ms);
+                        continue;
+                    };
+                    let resolved = resolve(
                         &self.trees,
                         &self.mounts,
                         path,
                         EntryKind::File,
                         &identity,
                         *linked,
-                    )
-                    .or_else(|| self.unclaimed(marked_node.as_deref(), *linked));
+                        mark.as_ref(),
+                    );
+                    let node = match resolved {
+                        Ok(node) => node,
+                        Err(held) => self.refused(
+                            held,
+                            path,
+                            false,
+                            (identity, EntryKind::File),
+                            mark.as_ref(),
+                            now_ms,
+                            &moving,
+                            &mut touched,
+                            &mut gone,
+                        ),
+                    }
+                    .or_else(|| {
+                        self.by_identity(&identity, EntryKind::File, *linked, path, &staying)
+                    })
+                    .or_else(|| self.unclaimed(mark.as_ref(), *linked));
                     self.place(
                         node,
                         path,
                         EntryKind::File,
                         identity,
                         Some(content.clone()),
-                        marked_node.as_deref(),
+                        mark.as_ref(),
                         now_ms,
                         &moving,
                         &mut touched,
@@ -1338,19 +1445,53 @@ impl Engine {
         touched
     }
 
-    fn unclaimed(&self, marked_node: Option<&str>, linked: bool) -> Option<NodeId> {
+    fn unclaimed(&self, mark: Option<&NodeId>, linked: bool) -> Option<Bound> {
         let recovering = matches!(self.commits.halted(), Some(Halt::Recovery { .. }));
-        marked_node.map(NodeId::from).filter(|node| {
+        let node = mark.filter(|node| {
             !linked
                 && !recovering
                 && self.cursor.is_some()
                 && self.trees.local().get(node).is_none()
                 && self.trees.synced().get(node).is_none()
                 && self.trees.remote().get(node).is_none()
-        })
+        })?;
+        bind(node.clone(), Binding::Mark, [mark])
     }
 
-    fn written_again(&self, path: &Path, kind: EntryKind, linked: bool) -> Option<NodeId> {
+    fn by_identity(
+        &self,
+        identity: &FileIdentity,
+        kind: EntryKind,
+        linked: bool,
+        path: &Path,
+        staying: &BTreeSet<NodeId>,
+    ) -> Option<Bound> {
+        let takes = |node: &&NodeId| {
+            holds_kind(&self.trees, node, kind)
+                && (!linked
+                    || self.trees.recorded_local(node)
+                    || self.trees.displaced_local().contains_key(*node))
+        };
+        let node = (self.trees.locals_with_identity(identity).rev())
+            .filter(|node| !staying.contains(*node))
+            .filter(|node| same_volume(&self.trees, &self.mounts, node, path))
+            .find(takes)
+            .or_else(|| {
+                (self
+                    .trees
+                    .displaced_with_identity(identity, tree_kind(kind)))
+                .filter(takes)
+            })?;
+        bind(node.clone(), Binding::Identity, [])
+    }
+
+    fn written_again(
+        &self,
+        path: &Path,
+        kind: EntryKind,
+        linked: bool,
+        mark: Option<&NodeId>,
+    ) -> Option<Bound> {
         let parent = local_at(&self.trees, path.parent()?)?;
         let name = path.file_name()?.to_str()?;
         if kind != EntryKind::File
@@ -1362,14 +1503,51 @@ impl Engine {
         let sent =
             |id: &NodeId| (self.commits.in_flight()).is_some_and(|flight| flight.deletes_node(id));
         (self.trees.synced_holders(&parent, name))
-            .find(|id| {
+            .filter(|id| {
                 (self.trees.synced().live(id))
                     .is_some_and(|synced| synced.kind == Kind::File && synced.name == name)
                     && self.trees.local().get(id).is_none()
                     && !self.trees.displaced_local().contains_key(*id)
                     && !sent(id)
             })
-            .cloned()
+            .find_map(|id| bind(id.clone(), Binding::WrittenAgain, [mark]))
+    }
+
+    fn arrive_unread(
+        &mut self,
+        path: &Path,
+        identity: FileIdentity,
+        mark: Option<NodeId>,
+        now_ms: u64,
+    ) {
+        let (Some(parent), Some(name)) = (
+            path.parent()
+                .and_then(|parent| local_at(&self.trees, parent)),
+            path.file_name().and_then(|name| name.to_str()),
+        ) else {
+            return;
+        };
+        if let Some(occupants) = self.occupants.get_mut(&(parent, name.to_owned())) {
+            occupants.push(Occupant {
+                at: now_ms,
+                node: None,
+                identity,
+                admitted: false,
+                mark,
+            });
+        }
+    }
+
+    fn occupants_since(
+        &self,
+        parent: &NodeId,
+        name: &str,
+        renamed: u64,
+    ) -> impl Iterator<Item = &Occupant> {
+        (self.occupants.get(&(parent.clone(), name.to_owned())))
+            .map_or(&[][..], Vec::as_slice)
+            .iter()
+            .filter(move |occupant| occupant.at >= renamed)
     }
 
     fn continue_saves(
@@ -1384,7 +1562,7 @@ impl Engine {
         type Save = (
             NodeId,
             u64,
-            NodeId,
+            Bound,
             (NodeId, String),
             FileIdentity,
             Option<Content>,
@@ -1392,20 +1570,16 @@ impl Engine {
         let mut saves: Vec<Save> = (self.renamed_away.iter())
             .filter_map(|(id, (parent, name, renamed, removed))| {
                 let removed = (*removed)?;
-                let SlotTaker {
-                    node: taker,
-                    at: took,
-                    staged,
-                    mark,
-                } = self.took_slot.get(&(parent.clone(), name.clone()))?;
+                let since: Vec<&Occupant> = self.occupants_since(parent, name, *renamed).collect();
+                let last = since.last()?;
+                let taker = self.trees.local_child(parent, name)?;
                 let saved = self.trees.local().get(taker)?;
-                let continues = self.trees.local_child(parent, name) == Some(taker)
+                let continues = last.node.as_ref() == Some(taker)
+                    && last.identity == saved.identity
+                    && since.iter().all(|occupant| occupant.admitted)
                     && (removed < renamed.saturating_add(DELETE_WAIT_MS)
                         || self.backup_gone.get(id) == Some(&true))
                     && now_ms < removed.saturating_add(DELETE_WAIT_MS)
-                    && took >= renamed
-                    && *staged
-                    && mark.as_ref().is_none_or(|mark| mark == id)
                     && taker != id
                     && saved.shape.kind == Kind::File
                     && self.trees.local().get(id).is_none()
@@ -1414,10 +1588,11 @@ impl Engine {
                     && !self.trees.ignored_local().contains(taker)
                     && !self.trees.recorded_local(taker);
                 continues.then_some(())?;
+                let marks = since.iter().map(|occupant| occupant.mark.as_ref());
                 Some((
                     taker.clone(),
                     *renamed,
-                    id.clone(),
+                    bind(id.clone(), Binding::Save, marks)?,
                     (parent.clone(), name.clone()),
                     saved.identity,
                     saved.content(),
@@ -1426,7 +1601,8 @@ impl Engine {
             .collect();
         saves.sort_by(|a, b| (&a.0, a.1).cmp(&(&b.0, b.1)));
         let mut taken = BTreeSet::new();
-        for (taker, _, id, slot, identity, content) in saves {
+        for (taker, _, bound, slot, identity, content) in saves {
+            let id = bound.id().clone();
             self.renamed_away.remove(&id);
             if !taken.insert(taker.clone()) {
                 continue;
@@ -1435,7 +1611,7 @@ impl Engine {
                 continue;
             };
             self.place(
-                Some(id.clone()),
+                Some(bound),
                 &path,
                 EntryKind::File,
                 identity,
@@ -1446,12 +1622,81 @@ impl Engine {
                 touched,
                 gone,
             );
-            if let Some(holder) = self.took_slot.get_mut(&slot)
-                && holder.node == id
+            if let Some(last) = (self.occupants.get_mut(&slot)).and_then(|list| list.last_mut())
+                && last.node.as_ref() == Some(&id)
             {
-                holder.staged = false;
+                last.admitted = false;
             }
         }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn refused(
+        &mut self,
+        held: NodeId,
+        path: &Path,
+        outside: bool,
+        (identity, kind): (FileIdentity, EntryKind),
+        mark: Option<&NodeId>,
+        now_ms: u64,
+        moving: &BTreeSet<NodeId>,
+        touched: &mut BTreeSet<NodeId>,
+        gone: &mut Gone,
+    ) -> Option<Bound> {
+        let moved = (gone.values())
+            .find(|(node, left, left_kind, _)| {
+                Some(node) == mark
+                    && *left == identity
+                    && *left_kind == kind
+                    && self.trees.local().get(node).is_none()
+            })
+            .map(|(node, _, _, temp)| (node.clone(), *temp));
+        if let Some((moved, true)) = moved {
+            return bind(held, Binding::TempMove(moved), [mark]);
+        }
+        if !moving.contains(&held) {
+            self.lose(&held, path, outside, false, now_ms, moving, touched, gone);
+        }
+        bind(moved?.0, Binding::Gone, [mark])
+    }
+
+    fn temp_born(&self, id: &NodeId) -> bool {
+        match self.trees.born_as_temp(id) {
+            Some(TempBirth::Seen) => true,
+            Some(TempBirth::Upgraded) => {
+                self.trees.synced().get(id).is_none()
+                    && self.trees.remote().get(id).is_none()
+                    && !(self.commits.in_flight())
+                        .and_then(|flight| flight.created_file_name(id))
+                        .is_some_and(|born| !temp_name(born))
+            }
+            None => false,
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn lose(
+        &mut self,
+        id: &NodeId,
+        path: &Path,
+        outside: bool,
+        missing: bool,
+        now_ms: u64,
+        moving: &BTreeSet<NodeId>,
+        touched: &mut BTreeSet<NodeId>,
+        gone: &mut Gone,
+    ) {
+        let file = !missing
+            && (self.trees.local().get(id)).is_some_and(|node| node.shape.kind == Kind::File);
+        let excluded = names(path).is_none_or(|names| self.trees.ignores(&names, Kind::File));
+        if file && !excluded {
+            self.removed_at.insert(id.clone(), now_ms);
+            self.owed.insert(id.clone());
+        }
+        if file && let Some((_, _, _, removed)) = self.renamed_away.get_mut(id) {
+            *removed = Some(now_ms);
+        }
+        self.remove(id, moving, outside, missing, touched, gone);
     }
 
     pub fn deferred_deletes(&mut self, now_ms: u64) -> BTreeSet<NodeId> {
@@ -1523,7 +1768,10 @@ impl Engine {
         for (id, (parent, name, renamed, _)) in &self.renamed_away {
             if now_ms < renamed.saturating_add(DELETE_WAIT_MS)
                 || self.backup_gone.contains_key(id)
-                || !self.took_slot.contains_key(&(parent.clone(), name.clone()))
+                || self
+                    .occupants_since(parent, name, *renamed)
+                    .next()
+                    .is_none()
                 || !self.excluded_backup(id)
             {
                 continue;
@@ -1551,8 +1799,12 @@ impl Engine {
                 Some(true) => renamed.saturating_add(2 * DELETE_WAIT_MS),
                 Some(false) => return None,
             };
-            let taker = self.took_slot.get(&(parent.clone(), name.clone()))?;
-            (now_ms < until && self.excluded_backup(id)).then(|| (taker.node.clone(), until))
+            let taker = self
+                .occupants_since(parent, name, *renamed)
+                .last()?
+                .node
+                .clone()?;
+            (now_ms < until && self.excluded_backup(id)).then_some((taker, until))
         })
     }
 
@@ -1657,12 +1909,12 @@ impl Engine {
     #[allow(clippy::too_many_arguments)]
     fn place(
         &mut self,
-        node: Option<NodeId>,
+        node: Option<Bound>,
         path: &Path,
         kind: EntryKind,
         identity: FileIdentity,
         content: Option<Content>,
-        mark: Option<&str>,
+        mark: Option<&NodeId>,
         now_ms: u64,
         moving: &BTreeSet<NodeId>,
         touched: &mut BTreeSet<NodeId>,
@@ -1694,18 +1946,23 @@ impl Engine {
             content,
         };
         let node = node
-            .filter(|id| {
-                !(self.trees.recorded_local(id)
-                    && (self.trees.local().get(id))
+            .filter(|bound| {
+                !(self.trees.recorded_local(bound.id())
+                    && (self.trees.local().get(bound.id()))
                         .is_some_and(|held| !held.identity.same(&identity)))
             })
-            .or_else(|| self.trees.vanished_at(&parent, name, kind).cloned());
-        let existing = node.as_ref().and_then(|id| self.trees.local().get(id));
-        let given = node.clone();
+            .or_else(|| {
+                let vanished = self.trees.vanished_at(&parent, name, kind)?;
+                bind(vanished.clone(), Binding::Vanished, [mark])
+            });
+        let existing = node
+            .as_ref()
+            .and_then(|bound| self.trees.local().get(bound.id()));
+        let given = node.as_ref().map(|bound| bound.id().clone());
         let previous = existing.map(|old| (old.shape.parent.clone(), old.shape.name.clone()));
         let unchanged = existing.is_some_and(|old| {
             !old.parked
-                && node
+                && given
                     .as_ref()
                     .is_some_and(|id| !self.trees.ignored_local().contains(id))
                 && old.identity == identity
@@ -1718,7 +1975,7 @@ impl Engine {
                 }
         });
         if unchanged {
-            if let (Some(id), Some(content)) = (&node, &shape.content) {
+            if let (Some(id), Some(content)) = (&given, &shape.content) {
                 self.trees.restamp_local(id, content.mtime_ns);
             }
             return;
@@ -1736,34 +1993,37 @@ impl Engine {
         if kind == Kind::File && shape.content.is_none() {
             return;
         }
-        let mut id = node.unwrap_or_else(|| NodeId::from(self.ids.uuid_v7(now_ms)));
+        let mut bound = node.unwrap_or_else(|| Bound::fresh(&mut self.ids, now_ms));
         if let Some(holder) =
-            (self.trees.local_child(&parent, name)).filter(|holder| **holder != id)
+            (self.trees.local_child(&parent, name)).filter(|holder| *holder != bound.id())
         {
             let holder = holder.clone();
+            let id = bound.id();
             let replaced = self.trees.local().get(&holder).map(|node| node.shape.kind);
             let synced =
-                self.trees.synced().get(&id).is_some() || self.trees.remote().get(&id).is_some();
+                self.trees.synced().get(id).is_some() || self.trees.remote().get(id).is_some();
             let kept = (self.trees.ignored_local().contains(&holder)
                 || self.trees.unobserved(&holder))
                 && self.trees.remote().live(&holder).is_some();
             let recorded = self.trees.recorded_local(&holder);
-            if kind == Kind::File && replaced == Some(Kind::File) && !synced && !recorded {
-                if self.trees.local().get(&id).is_some() {
-                    self.remove(&id, moving, false, false, touched, gone);
+            let swap = (kind == Kind::File && replaced == Some(Kind::File) && !synced && !recorded)
+                || (kind == Kind::Dir
+                    && replaced == Some(Kind::Dir)
+                    && kept
+                    && !synced
+                    && self.trees.local().get(id).is_none());
+            match swap.then(|| bind(holder.clone(), Binding::Holder, [mark])) {
+                Some(Some(held)) => {
+                    if self.trees.local().get(bound.id()).is_some() {
+                        self.remove(bound.id(), moving, false, false, touched, gone);
+                    }
+                    bound = held;
                 }
-                id = holder;
-            } else if kind == Kind::Dir
-                && replaced == Some(Kind::Dir)
-                && kept
-                && !synced
-                && self.trees.local().get(&id).is_none()
-            {
-                id = holder;
-            } else {
-                self.remove(&holder, moving, false, false, touched, gone);
+                Some(None) => self.lose(&holder, path, false, false, now_ms, moving, touched, gone),
+                None => self.remove(&holder, moving, false, false, touched, gone),
             }
         }
+        let id = bound.into_id();
         let left = (self.trees.recorded_local(&id))
             .then(|| {
                 self.trees
@@ -1775,45 +2035,46 @@ impl Engine {
         if kind == Kind::File {
             let moved = (previous.filter(|_| given.as_ref() == Some(&id)))
                 .filter(|(parent, name)| (parent, name) != (&shape.parent, &shape.name));
-            let slot = (shape.parent.clone(), shape.name.clone());
-            let held = (self.took_slot.get(&slot)).is_some_and(|taker| taker.node == id);
-            if let Some(from) = moved {
-                let temp = temp_name(&from.1)
-                    && match self.trees.born_as_temp(&id) {
-                        Some(TempBirth::Seen) => true,
-                        Some(TempBirth::Upgraded) => {
-                            self.trees.synced().get(&id).is_none()
-                                && self.trees.remote().get(&id).is_none()
-                                && !(self.commits.in_flight())
-                                    .and_then(|flight| flight.created_file_name(&id))
-                                    .is_some_and(|born| !temp_name(born))
-                        }
-                        None => false,
-                    };
-                let taker = SlotTaker {
-                    node: id.clone(),
-                    at: now_ms,
-                    staged: temp,
-                    mark: None,
-                };
-                self.took_slot.insert(slot, taker);
+            let admitted = match &moved {
+                Some((_, from)) => temp_name(from) && self.temp_born(&id),
+                None => !self.trees.displaced_local().contains_key(&id),
+            };
+            let noted = mark.cloned().filter(|_| moved.is_none());
+            let here = self.trees.local_child(&shape.parent, &shape.name) == Some(&id);
+            if let Some((from_parent, from_name)) = moved {
+                (self.occupants)
+                    .entry((from_parent.clone(), from_name.clone()))
+                    .or_default();
                 self.renamed_away
-                    .insert(id.clone(), (from.0, from.1, now_ms, None));
+                    .insert(id.clone(), (from_parent, from_name, now_ms, None));
                 self.backup_gone.remove(&id);
-            } else if !held {
-                let taker = SlotTaker {
-                    node: id.clone(),
-                    at: now_ms,
-                    staged: !self.trees.displaced_local().contains_key(&id),
-                    mark: mark.map(NodeId::from),
-                };
-                self.took_slot.insert(slot, taker);
+            }
+            let slot = (shape.parent.clone(), shape.name.clone());
+            if let Some(occupants) = self.occupants.get_mut(&slot) {
+                let same = here
+                    && occupants.last().is_some_and(|last| {
+                        last.node.as_ref() == Some(&id)
+                            && last.identity == identity
+                            && last.mark.as_ref().filter(|mark| **mark != id)
+                                == noted.as_ref().filter(|mark| **mark != id)
+                    });
+                if !same {
+                    occupants.push(Occupant {
+                        at: now_ms,
+                        node: Some(id.clone()),
+                        identity,
+                        admitted,
+                        mark: noted,
+                    });
+                }
+            }
+            if temp_name(name) && !may_become(mark, &id) {
+                self.trees.forget_born_as_temp(&id);
             }
         }
         let born = given.is_none()
             && mark.is_none_or(|mark| {
-                (self.trees.local().get(&NodeId::from(mark)))
-                    .is_some_and(|node| node.identity.same(&identity))
+                (self.trees.local().get(mark)).is_some_and(|node| node.identity.same(&identity))
             })
             && self.trees.local().get(&id).is_none();
         self.trees.set_local_changed(
@@ -1897,7 +2158,8 @@ impl Engine {
                     Kind::File => EntryKind::File,
                     Kind::Dir => EntryKind::Dir,
                 };
-                gone.insert(path, (id.clone(), node.identity, kind));
+                let temp = temp_name(&node.shape.name) && self.temp_born(id);
+                gone.insert(path, (id.clone(), node.identity, kind, temp));
             }
         }
         for id in doomed.into_iter().rev() {
@@ -2101,7 +2363,7 @@ impl Stored {
             local_written_since_load: false,
             removed_at: BTreeMap::new(),
             renamed_away: BTreeMap::new(),
-            took_slot: BTreeMap::new(),
+            occupants: BTreeMap::new(),
             backup_gone: BTreeMap::new(),
             owed: owed.clone(),
             stored_owed: owed,
@@ -2110,7 +2372,7 @@ impl Stored {
 }
 
 /// The nodes a batch took out of L, by the path each had, with the identity it had.
-type Gone = BTreeMap<PathBuf, (NodeId, FileIdentity, EntryKind)>;
+type Gone = BTreeMap<PathBuf, (NodeId, FileIdentity, EntryKind, bool)>;
 
 /// The path of a node `tree` holds live, relative to the linked folder.
 fn path<N: Node>(tree: &Tree<N>, id: &NodeId) -> String {
@@ -2158,9 +2420,10 @@ fn resolve(
     kind: EntryKind,
     identity: &FileIdentity,
     linked: bool,
-) -> Option<NodeId> {
+    mark: Option<&NodeId>,
+) -> Result<Option<Bound>, NodeId> {
     let at = local_at(trees, path);
-    at.clone()
+    let proven = (at.as_ref())
         .filter(|id| (trees.local().get(id)).is_some_and(|node| node.identity.same(identity)))
         .or_else(|| {
             (trees.locals_with_identity(identity).rev())
@@ -2168,9 +2431,12 @@ fn resolve(
                 .find(|node| same_volume(trees, mounts, node, path))
                 .or_else(|| trees.displaced_with_identity(identity, tree_kind(kind)))
                 .filter(|_| !linked)
-                .cloned()
-        })
-        .or(at)
+        });
+    if let Some(node) = proven {
+        return Ok(bind(node.clone(), Binding::Identity, []));
+    }
+    let Some(at) = at else { return Ok(None) };
+    bind(at.clone(), Binding::Path, [mark]).map(Some).ok_or(at)
 }
 
 fn holds_kind(trees: &Trees, node: &NodeId, kind: EntryKind) -> bool {
@@ -3029,7 +3295,7 @@ mod tests {
             local_written_since_load: false,
             removed_at: BTreeMap::new(),
             renamed_away: BTreeMap::new(),
-            took_slot: BTreeMap::new(),
+            occupants: BTreeMap::new(),
             backup_gone: BTreeMap::new(),
             owed: BTreeSet::new(),
             stored_owed: BTreeSet::new(),
@@ -3549,6 +3815,7 @@ mod tests {
             kind: EntryKind::File,
             id,
             linked,
+            marked_node: None,
         }
     }
 
@@ -3602,6 +3869,7 @@ mod tests {
                 Change::Renamed { from, to, kind } => Observed::Renamed {
                     id: entry(&to).id,
                     linked: entry(&to).linked,
+                    marked_node: None,
                     from,
                     to,
                     kind,
@@ -3612,6 +3880,7 @@ mod tests {
                     kind,
                     id,
                     linked: false,
+                    marked_node: None,
                 },
                 Change::Removed { path, kind } => Observed::Removed { path, kind },
                 Change::Missing { path, kind, .. } => Observed::Missing { path, kind },
@@ -3991,7 +4260,7 @@ mod tests {
             let (taken, ..) = holding(&engine, "docs/report.txt").unwrap();
             assert_eq!(
                 taken == originals[saved].0,
-                named == saved,
+                (named, saved) == (1, 1),
                 "{named} {saved}"
             );
         }
@@ -4030,6 +4299,338 @@ mod tests {
         let (taken, ..) = holding(&engine, "docs/report.txt").unwrap();
         assert_ne!(taken, report);
         assert_eq!(taken, draft);
+    }
+
+    #[test]
+    fn a_file_that_replaces_the_new_file_at_a_saved_name_continues_the_save_only_without_another_mark()
+     {
+        for mark in [None, Some("notes")] {
+            let (_dir, mut engine) = mapper();
+            let (report, _) = saved_report(&mut engine);
+            let backup = renamed("docs/report.txt", "docs/~WRL0001.tmp", ino(2), false);
+            engine.observe(&[backup], 1_100);
+            engine.observe(&[created("docs/report.txt", ino(3), false, 1)], 1_200);
+            engine.observe(&[replaced("docs/report.txt", 9, mark)], 1_250);
+            engine.observe(&[removed_file("docs/~WRL0001.tmp")], 1_300);
+            let (taken, identity, _) = holding(&engine, "docs/report.txt").unwrap();
+            assert_eq!(identity, file_identity(ino(9)), "{mark:?}");
+            assert_eq!(taken == report, mark.is_none(), "{mark:?}");
+        }
+    }
+
+    #[test]
+    fn a_file_that_replaces_a_temp_file_is_born_as_a_temp_only_without_another_mark() {
+        for mark in [None, Some("notes")] {
+            let (_dir, mut engine) = mapper();
+            let (report, _) = saved_report(&mut engine);
+            engine.observe(&[created("docs/notes.tmp", ino(5), false, 5)], 1_000);
+            engine.observe(&[replaced("docs/notes.tmp", 8, mark)], 1_050);
+            let backup = renamed("docs/report.txt", "docs/~WRL0001.tmp", ino(2), false);
+            engine.observe(&[backup], 1_100);
+            engine.observe(
+                &[renamed("docs/notes.tmp", "docs/report.txt", ino(8), false)],
+                1_200,
+            );
+            engine.observe(&[removed_file("docs/~WRL0001.tmp")], 1_300);
+            let (taken, ..) = holding(&engine, "docs/report.txt").unwrap();
+            assert_eq!(taken == report, mark.is_none(), "{mark:?}");
+        }
+    }
+
+    #[test]
+    fn a_marked_file_that_reoccupies_a_saved_name_after_a_scan_gap_is_not_taken() {
+        let (_dir, mut engine) = mapper();
+        let (report, draft) = saved_report(&mut engine);
+        engine.observe(
+            &[renamed(
+                "docs/report.txt",
+                "docs/~WRL0001.tmp",
+                ino(2),
+                false,
+            )],
+            1_100,
+        );
+        engine.observe(&[created("docs/report.txt", ino(3), false, 3)], 1_200);
+        let taker = holding(&engine, "docs/report.txt").unwrap().0;
+        assert_ne!(taker, report);
+        synced_everywhere(&mut engine);
+
+        engine.observe(&[removed_file("docs/report.txt")], 1_250);
+        assert!(holding(&engine, "docs/report.txt").is_none());
+        engine.observe(&[marked("docs/report.txt", 7, &draft.to_string())], 1_300);
+        let (returned, identity, _) = holding(&engine, "docs/report.txt").unwrap();
+        assert_ne!(returned, taker);
+        assert_eq!(identity, file_identity(ino(7)));
+        engine.observe(&[removed_file("docs/~WRL0001.tmp")], 1_350);
+
+        let (held, ..) = holding(&engine, "docs/report.txt").unwrap();
+        assert_ne!(
+            held, report,
+            "the marked draft must not take the report's history"
+        );
+    }
+
+    #[test]
+    fn a_refused_file_deleted_and_written_again_at_the_saved_name_stays_refused() {
+        let (_dir, mut engine) = mapper();
+        let (report, _) = saved_report(&mut engine);
+        let backup = renamed("docs/report.txt", "docs/~WRL0001.tmp", ino(2), false);
+        engine.observe(&[backup], 1_100);
+        engine.observe(&[marked("docs/report.txt", 7, "notes")], 1_200);
+        engine.observe(&[removed_file("docs/report.txt")], 1_220);
+        engine.observe(&[created("docs/report.txt", ino(9), false, 9)], 1_250);
+        engine.observe(&[removed_file("docs/~WRL0001.tmp")], 1_300);
+        let (taken, identity, _) = holding(&engine, "docs/report.txt").unwrap();
+        assert_eq!(identity, file_identity(ino(9)));
+        assert_ne!(
+            taken, report,
+            "the report node took the bytes written over the refused file"
+        );
+    }
+
+    #[test]
+    fn a_refused_file_deleted_and_written_again_in_one_batch_stays_refused() {
+        let (_dir, mut engine) = mapper();
+        let (report, _) = saved_report(&mut engine);
+        let backup = renamed("docs/report.txt", "docs/~WRL0001.tmp", ino(2), false);
+        engine.observe(&[backup], 1_100);
+        engine.observe(&[marked("docs/report.txt", 7, "notes")], 1_200);
+        engine.observe(
+            &[
+                removed_file("docs/report.txt"),
+                created("docs/report.txt", ino(9), false, 9),
+            ],
+            1_250,
+        );
+        engine.observe(&[removed_file("docs/~WRL0001.tmp")], 1_300);
+        let (taken, ..) = holding(&engine, "docs/report.txt").unwrap();
+        assert_ne!(
+            taken, report,
+            "one batch: the report node took the bytes written over the refused file"
+        );
+    }
+
+    fn moved(from: &str, to: &str, id: u64, mark: &str) -> Observed {
+        Observed::Renamed {
+            from: from.into(),
+            to: to.into(),
+            kind: EntryKind::File,
+            id: ino(id),
+            linked: false,
+            marked_node: Some(mark.into()),
+        }
+    }
+
+    fn rewritten(path: &str, id: u64, size: u64, mark: Option<&str>) -> Observed {
+        Observed::Modified {
+            path: path.into(),
+            id: ino(id),
+            linked: false,
+            content: (size > 0).then(|| bytes(size)),
+            marked_node: mark.map(String::from),
+        }
+    }
+
+    fn saved_over_by_a_temp(engine: &mut Engine) -> NodeId {
+        engine.observe(&[created("docs/~WRD0001.tmp", ino(5), false, 5)], 1_000);
+        let backup = renamed("docs/report.txt", "docs/~WRL0001.tmp", ino(2), false);
+        engine.observe(&[backup], 1_100);
+        let taker = renamed("docs/~WRD0001.tmp", "docs/report.txt", ino(5), false);
+        engine.observe(&[taker], 1_150);
+        holding(engine, "docs/report.txt").unwrap().0
+    }
+
+    fn continued(engine: &mut Engine, report: &NodeId) -> bool {
+        engine.observe(&[removed_file("docs/~WRL0001.tmp")], 1_300);
+        holding(engine, "docs/report.txt").unwrap().0 == *report
+    }
+
+    #[test]
+    fn a_save_continues_for_a_temp_file_moved_onto_the_saved_name() {
+        let (_dir, mut engine) = mapper();
+        let (report, _) = saved_report(&mut engine);
+        saved_over_by_a_temp(&mut engine);
+        assert!(continued(&mut engine, &report));
+    }
+
+    #[test]
+    fn a_temp_file_that_leaves_a_saved_name_and_comes_back_does_not_continue_the_save() {
+        let (_dir, mut engine) = mapper();
+        let (report, _) = saved_report(&mut engine);
+        saved_over_by_a_temp(&mut engine);
+        engine.observe(
+            &[renamed("docs/report.txt", "docs/notes.txt", ino(5), false)],
+            1_200,
+        );
+        engine.observe(
+            &[renamed("docs/notes.txt", "docs/report.txt", ino(5), false)],
+            1_250,
+        );
+        assert!(!continued(&mut engine, &report));
+    }
+
+    #[test]
+    fn an_inode_a_marked_copy_reuses_in_one_batch_does_not_continue_the_save() {
+        let (_dir, mut engine) = mapper();
+        let (report, draft) = saved_report(&mut engine);
+        saved_over_by_a_temp(&mut engine);
+        let copy = marked("docs/report.txt", 5, &draft.to_string());
+        engine.observe(&[removed_file("docs/report.txt"), copy], 1_200);
+        assert_eq!(
+            holding(&engine, "docs/report.txt").unwrap().1,
+            file_identity(ino(5))
+        );
+        assert!(!continued(&mut engine, &report));
+    }
+
+    #[test]
+    fn a_temp_file_moved_into_a_name_a_refused_file_left_does_not_continue_the_save() {
+        let (_dir, mut engine) = mapper();
+        let (report, draft) = saved_report(&mut engine);
+        engine.observe(&[created("docs/draft.tmp", ino(5), false, 5)], 1_000);
+        let backup = renamed("docs/report.txt", "docs/~WRL0001.tmp", ino(2), false);
+        engine.observe(&[backup], 1_100);
+        engine.observe(&[marked("docs/report.txt", 7, &draft.to_string())], 1_150);
+        engine.observe(&[removed_file("docs/report.txt")], 1_200);
+        let taker = renamed("docs/draft.tmp", "docs/report.txt", ino(5), false);
+        engine.observe(&[taker], 1_250);
+        assert!(!continued(&mut engine, &report));
+    }
+
+    #[test]
+    fn an_unread_file_at_a_saved_name_does_not_continue_the_save() {
+        let (_dir, mut engine) = mapper();
+        let (report, _) = saved_report(&mut engine);
+        saved_over_by_a_temp(&mut engine);
+        engine.observe(&[rewritten("docs/report.txt", 9, 0, None)], 1_200);
+        assert!(!continued(&mut engine, &report));
+    }
+
+    #[test]
+    fn an_effect_that_replaces_the_file_at_a_saved_name_does_not_continue_the_save() {
+        let (_dir, mut engine) = mapper();
+        let (report, _) = saved_report(&mut engine);
+        let taker = saved_over_by_a_temp(&mut engine);
+        let mut node = engine.trees.local().get(&taker).unwrap().clone();
+        node.identity = file_identity(ino(10));
+        engine.trees.set_local(taker, node);
+        assert!(!continued(&mut engine, &report));
+    }
+
+    #[test]
+    fn a_temp_file_rewritten_under_another_nodes_mark_is_no_longer_born_as_a_temp() {
+        let (_dir, mut engine) = mapper();
+        let (report, draft) = saved_report(&mut engine);
+        engine.observe(&[created("docs/~WRD0001.tmp", ino(5), false, 5)], 1_000);
+        let mark = draft.to_string();
+        let rewrite = rewritten("docs/~WRD0001.tmp", 5, 6, Some(&mark));
+        engine.observe(&[rewrite], 1_050);
+        let backup = renamed("docs/report.txt", "docs/~WRL0001.tmp", ino(2), false);
+        engine.observe(&[backup], 1_100);
+        let taker = renamed("docs/~WRD0001.tmp", "docs/report.txt", ino(5), false);
+        engine.observe(&[taker], 1_150);
+        assert!(!continued(&mut engine, &report));
+    }
+
+    #[test]
+    fn a_file_moved_back_from_the_trash_over_another_never_takes_that_files_node() {
+        let (_dir, mut engine) = mapper();
+        let (report, draft) = saved_report(&mut engine);
+        engine.observe(&[removed_file("docs/draft.txt")], 1_000);
+        engine.observe(&[marked("docs/report.txt", 4, &draft.to_string())], 1_100);
+        let (held, identity, _) = holding(&engine, "docs/report.txt").unwrap();
+        assert_eq!(identity, file_identity(ino(4)));
+        assert_ne!(held, report);
+        assert!(engine.trees.local().get(&report).is_none());
+    }
+
+    #[test]
+    fn a_marked_file_renamed_over_another_never_takes_that_files_node() {
+        let (_dir, mut engine) = mapper();
+        let (report, _) = saved_report(&mut engine);
+        engine.cursor = Some(cursor(1));
+        engine.observe(&[marked("docs/found.txt", 7, "lost")], 1_000);
+        let found = holding(&engine, "docs/found.txt").unwrap().0;
+        assert_eq!(found.to_string(), "lost");
+        let over = moved("docs/found.txt", "docs/report.txt", 7, "lost");
+        engine.observe(&[over], 1_100);
+        assert_eq!(holding(&engine, "docs/report.txt").unwrap().0, found);
+        assert!(engine.trees.local().get(&report).is_none());
+    }
+
+    #[test]
+    fn a_rename_of_a_file_l_never_held_at_its_path_does_not_move_that_paths_node() {
+        let (_dir, mut engine) = mapper();
+        let (report, draft) = saved_report(&mut engine);
+        let mark = draft.to_string();
+        engine.observe(
+            &[moved("docs/report.txt", "docs/notes.txt", 9, &mark)],
+            1_000,
+        );
+        assert!(engine.trees.local().get(&report).is_none());
+        assert!(engine.deferred_deletes(1_000).contains(&report));
+        engine.observe(&[rewritten("docs/notes.txt", 9, 9, Some(&mark))], 1_100);
+        assert_ne!(holding(&engine, "docs/notes.txt").unwrap().0, report);
+    }
+
+    #[test]
+    fn a_modified_link_with_the_identity_of_a_recorded_node_is_that_node() {
+        let (_dir, mut engine) = mapper();
+        let (report, _) = saved_report(&mut engine);
+        engine.trees.ignore_local(&report);
+        let link = Observed::Modified {
+            path: "docs/copy.txt".into(),
+            id: ino(2),
+            linked: true,
+            content: Some(bytes(2)),
+            marked_node: None,
+        };
+        engine.observe(&[link], 1_000);
+        assert_eq!(holding(&engine, "docs/copy.txt").unwrap().0, report);
+    }
+
+    #[test]
+    fn a_word_save_keeps_the_documents_node_whether_seen_in_one_scan_or_step_by_step() {
+        for one_scan in [true, false] {
+            let (_dir, mut engine) = mapper();
+            let (report, _) = saved_report(&mut engine);
+            engine.observe(&[created("docs/~WRD0000.tmp", ino(5), false, 5)], 1_000);
+            synced_everywhere(&mut engine);
+            let temp = holding(&engine, "docs/~WRD0000.tmp").unwrap().0.to_string();
+            if one_scan {
+                let over = replaced("docs/report.txt", 5, Some(&temp));
+                engine.observe(&[removed_file("docs/~WRD0000.tmp"), over], 1_100);
+            } else {
+                let backup = renamed("docs/report.txt", "docs/~WRL0001.tmp", ino(2), false);
+                engine.observe(&[backup], 1_100);
+                let taker = renamed("docs/~WRD0000.tmp", "docs/report.txt", ino(5), false);
+                engine.observe(&[taker], 1_150);
+                engine.observe(&[removed_file("docs/~WRL0001.tmp")], 1_200);
+            }
+            let (held, identity, size) = holding(&engine, "docs/report.txt").unwrap();
+            assert_eq!(held, report, "{one_scan}");
+            assert_eq!((identity, size), (file_identity(ino(5)), 5), "{one_scan}");
+        }
+    }
+
+    #[test]
+    fn a_synced_file_moved_over_another_keeps_its_own_node_whether_seen_as_a_rename_or_a_rewrite() {
+        for rename in [true, false] {
+            let (_dir, mut engine) = mapper();
+            let (report, draft) = saved_report(&mut engine);
+            let mark = draft.to_string();
+            let changes = match rename {
+                true => vec![renamed("docs/draft.txt", "docs/report.txt", ino(4), false)],
+                false => vec![
+                    removed_file("docs/draft.txt"),
+                    replaced("docs/report.txt", 4, Some(&mark)),
+                ],
+            };
+            engine.observe(&changes, 1_000);
+            let (held, identity, _) = holding(&engine, "docs/report.txt").unwrap();
+            assert_eq!((held, identity), (draft, file_identity(ino(4))), "{rename}");
+            assert!(engine.trees.local().get(&report).is_none(), "{rename}");
+        }
     }
 
     fn marked(path: &str, id: u64, mark: &str) -> Observed {
@@ -4201,6 +4802,7 @@ mod tests {
                     kind: EntryKind::Dir,
                     id: ino(3),
                     linked: false,
+                    marked_node: None,
                 },
                 renamed("drafts/one.txt", "final/one.txt", ino(5), false),
             ],
@@ -4431,6 +5033,7 @@ mod tests {
                     to,
                     kind,
                     linked: false,
+                    marked_node: None,
                 },
                 koidrive_fs::Change::Created { path, kind } => Observed::Created {
                     id: snapshot.entries[&path].id,
@@ -4493,6 +5096,7 @@ mod tests {
                 kind: EntryKind::Dir,
                 id: ino(2),
                 linked: false,
+                marked_node: None,
             },
             folder("a", 1),
         ];
@@ -4899,6 +5503,7 @@ mod tests {
                 Change::Renamed { from, to, kind } => Some(Observed::Renamed {
                     id: entry(&to).id,
                     linked: false,
+                    marked_node: None,
                     from,
                     to,
                     kind,

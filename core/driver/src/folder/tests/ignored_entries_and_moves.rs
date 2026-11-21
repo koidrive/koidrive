@@ -25,6 +25,7 @@ fn a_file_moved_into_an_ignored_folder_stays_on_the_server_when_its_folder_is_re
             kind: EntryKind::File,
             id,
             linked: false,
+            marked_node: None,
         };
         let removed = Observed::Removed {
             path: "source".into(),

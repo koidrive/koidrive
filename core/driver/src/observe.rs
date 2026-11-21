@@ -128,6 +128,7 @@ pub enum Observed {
         kind: EntryKind,
         id: FileId,
         linked: bool,
+        marked_node: Option<String>,
     },
     Removed {
         path: PathBuf,
@@ -487,7 +488,7 @@ impl FsObserver {
                     .then(|| self.content(&path, &entry, reads, must))
                     .flatten();
                 let marked_node = (kind == EntryKind::Dir || content.is_some())
-                    .then(|| self.marked_node(&path, &entry))
+                    .then(|| self.marked_node(&path, &entry.id))
                     .flatten();
                 out.push(Observed::Created {
                     linked: self.linked(&path, kind),
@@ -506,7 +507,7 @@ impl FsObserver {
                 let content = self.content(&path, &entry, reads, false);
                 let marked_node = content
                     .is_some()
-                    .then(|| self.marked_node(&path, &entry))
+                    .then(|| self.marked_node(&path, &entry.id))
                     .flatten();
                 out.push(Observed::Modified {
                     content,
@@ -521,6 +522,7 @@ impl FsObserver {
                 out.push(Observed::Renamed {
                     from,
                     linked: self.linked(&to, kind),
+                    marked_node: self.marked_node(&to, &entry.id),
                     to,
                     kind,
                     id: entry.id,
@@ -529,6 +531,7 @@ impl FsObserver {
             Change::Ignored { from, to, kind, id } => {
                 let linked = self.linked(&to, kind);
                 out.push(Observed::Renamed {
+                    marked_node: self.marked_node(&to, &id),
                     from,
                     to,
                     kind,
@@ -616,7 +619,7 @@ impl FsObserver {
                     self.unread.remove(&path);
                     out.push(Observed::Modified {
                         linked: self.linked(&path, entry.kind),
-                        marked_node: self.marked_node(&path, &entry),
+                        marked_node: self.marked_node(&path, &entry.id),
                         path,
                         id: entry.id,
                         content: Some(content),
@@ -756,10 +759,10 @@ impl FsObserver {
         }
     }
 
-    fn marked_node(&self, path: &Path, entry: &Entry) -> Option<String> {
+    fn marked_node(&self, path: &Path, id: &FileId) -> Option<String> {
         let read = || -> io::Result<Option<String>> {
             let opened = open_beneath(&self.root, path)?;
-            if !koidrive_fs::id_of(opened.as_fd())?.same(&entry.id) {
+            if !koidrive_fs::id_of(opened.as_fd())?.same(id) {
                 return Ok(None);
             }
             koidrive_fs::node_mark(opened.as_fd())
@@ -2193,6 +2196,123 @@ mod tests {
         assert!(
             seen.iter()
                 .all(|change| !matches!(change, Observed::Removed { .. })),
+            "{seen:?}"
+        );
+    }
+
+    #[test]
+    fn a_marked_file_moved_from_an_excluded_folder_over_a_file_is_a_modification_with_its_mark() {
+        struct IgnoredFolder;
+        impl Matcher for IgnoredFolder {
+            fn is_excluded(&self, path: &Path, _dir: bool) -> bool {
+                path.starts_with("ignored")
+            }
+        }
+        let dir = marked();
+        let root = dir.path();
+        fs::create_dir(root.join("ignored")).unwrap();
+        fs::write(root.join("notes.docx"), b"notes").unwrap();
+        let space = koidrive_fs::Space::bind(fs::File::open(root).unwrap().into(), root).unwrap();
+        let at = koidrive_fs::Location::At {
+            base: koidrive_fs::Base::Root,
+            dirs: Vec::new(),
+            name: "notes.docx".into(),
+        };
+        let notes = koidrive_fs::id_of(fs::File::open(root.join("notes.docx")).unwrap().as_fd());
+        space.mark(&at, notes.unwrap(), "node-notes").unwrap();
+        fs::rename(root.join("notes.docx"), root.join("ignored/notes.docx")).unwrap();
+        fs::write(root.join("report.docx"), b"report").unwrap();
+        let notes = u128::from(fs::metadata(root.join("ignored/notes.docx")).unwrap().ino());
+        let dev = RootAt {
+            dev: fs::metadata(root).unwrap().dev(),
+            volume: None,
+        };
+        let mut observer = FsObserver::start(
+            root,
+            SPACE,
+            dev,
+            Snapshot::default(),
+            MarkLog::default(),
+            Arc::new(IgnoredFolder),
+            || false,
+            |_| {},
+        )
+        .unwrap();
+        observe_until(&mut observer, |seen| !seen.is_empty());
+
+        fs::rename(root.join("ignored/notes.docx"), root.join("report.docx")).unwrap();
+        let at_report = |seen: &[Observed]| {
+            (seen.iter()).find_map(|change| match change {
+                Observed::Modified {
+                    path,
+                    id,
+                    content: Some(_),
+                    marked_node,
+                    ..
+                } if path == Path::new("report.docx") => Some((id.ino, marked_node.clone())),
+                _ => None,
+            })
+        };
+        let (seen, _) = observe_until(&mut observer, |seen| at_report(seen).is_some());
+        assert_eq!(
+            at_report(&seen),
+            Some((notes, Some("node-notes".into()))),
+            "{seen:?}"
+        );
+    }
+
+    #[test]
+    fn a_marked_file_moved_from_an_excluded_folder_to_a_free_name_is_created_with_its_mark() {
+        struct IgnoredFolder;
+        impl Matcher for IgnoredFolder {
+            fn is_excluded(&self, path: &Path, _dir: bool) -> bool {
+                path.starts_with("ignored")
+            }
+        }
+        let dir = marked();
+        let root = dir.path();
+        fs::create_dir(root.join("ignored")).unwrap();
+        fs::write(root.join("notes.docx"), b"notes").unwrap();
+        let space = koidrive_fs::Space::bind(fs::File::open(root).unwrap().into(), root).unwrap();
+        let at = koidrive_fs::Location::At {
+            base: koidrive_fs::Base::Root,
+            dirs: Vec::new(),
+            name: "notes.docx".into(),
+        };
+        let notes = koidrive_fs::id_of(fs::File::open(root.join("notes.docx")).unwrap().as_fd());
+        space.mark(&at, notes.unwrap(), "node-notes").unwrap();
+        fs::rename(root.join("notes.docx"), root.join("ignored/notes.docx")).unwrap();
+        fs::write(root.join("report.docx"), b"report").unwrap();
+        let dev = RootAt {
+            dev: fs::metadata(root).unwrap().dev(),
+            volume: None,
+        };
+        let mut observer = FsObserver::start(
+            root,
+            SPACE,
+            dev,
+            Snapshot::default(),
+            MarkLog::default(),
+            Arc::new(IgnoredFolder),
+            || false,
+            |_| {},
+        )
+        .unwrap();
+        observe_until(&mut observer, |seen| !seen.is_empty());
+
+        fs::rename(root.join("ignored/notes.docx"), root.join("fresh.docx")).unwrap();
+        let fresh = |seen: &[Observed]| {
+            (seen.iter()).find_map(|change| match change {
+                Observed::Created {
+                    path, marked_node, ..
+                } if path == Path::new("fresh.docx") => Some(marked_node.clone()),
+                _ => None,
+            })
+        };
+        let (seen, _) = observe_until(&mut observer, |seen| fresh(seen).is_some());
+        assert_eq!(fresh(&seen), Some(Some("node-notes".into())), "{seen:?}");
+        assert!(
+            !(seen.iter()).any(|change| matches!(change, Observed::Renamed { .. })),
             "{seen:?}"
         );
     }

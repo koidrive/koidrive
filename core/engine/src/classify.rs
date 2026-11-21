@@ -4622,6 +4622,11 @@ impl Trees {
         }
     }
 
+    /// Forgets that `id` was born at a temporary file name, as when a file that names another node replaced it there.
+    pub fn forget_born_as_temp(&mut self, id: &NodeId) {
+        self.born_as_temp.remove(id);
+    }
+
     fn held_as_temp_file(&self, id: &NodeId) -> bool {
         (self.l.get(id))
             .is_some_and(|node| node.shape.kind == Kind::File && temp_name(&node.shape.name))
