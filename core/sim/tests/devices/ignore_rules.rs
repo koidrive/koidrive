@@ -1935,3 +1935,290 @@ fn a_takeover_of_a_live_folder_below_a_merged_folder_converges_after_a_crash_at_
         taken_over(&mut world, &live, file);
     }
 }
+
+#[test]
+fn the_merged_folder_named_like_the_live_folder_takes_it_over_from_below_another_at_its_key_which_stays_reported()
+ {
+    let phases = [vec![
+        (0, folder("b")),
+        (0, user(0, 0, 1, "ß")),
+        (0, user(1, 0, 2, "ß")),
+    ]];
+    let mut world = converge_excluding(&[vec!["*.txt"], vec![]], &phases).unwrap();
+    let live = held_at(&world, 0, &["b", "ß"]).unwrap();
+    let file = ino_at(&world, 0, &["b", "ß", "ß"]);
+    let b = target(&world, 0, &["b"]);
+    let moved = target(&world, 1, &["b", "ß"]);
+    let offline = [
+        (0, Step::Drop),
+        (0, folder("ss")),
+        (0, rename(b, 3, "b")),
+        (0, folder("ß")),
+    ];
+    world.run(2, &offline).unwrap();
+    let containing = folder_number(&world, 0, &["ss"]);
+    let preferred = folder_number(&world, 0, &["ß"]);
+    let mut steps = vec![
+        (0, user(1, 0, containing, "c.txt")),
+        (0, user(1, 0, preferred, "c.txt")),
+        (1, rename(moved, 0, "ß")),
+    ];
+    steps.extend(commit(1));
+    world.run(2, &steps).unwrap();
+    world.phase(3, &[(0, Step::Connect)]).unwrap();
+    assert_eq!(live_node_at(&world, &["ß"]), Some(live.to_string()));
+    assert_eq!(held_at(&world, 0, &["ß"]), Some(live.clone()));
+    assert_eq!(ino_at(&world, 0, &["ß", "ß"]), file);
+    ino_at(&world, 0, &["ss", "c.txt"]);
+    ino_at(&world, 0, &["ß", "c.txt"]);
+    assert!(live_children(&world, &["ss", "b"]).is_empty());
+    let held = held_at(&world, 0, &["ss"]).unwrap();
+    assert_eq!(
+        world.reported_problems(0),
+        [(held, Stuck::MergedInto(live))].into()
+    );
+    sends_nothing_more(&mut world, 4);
+}
+
+fn nested_with_two_files(swap: bool) -> (World, NodeId, [NodeId; 3], [u128; 2]) {
+    let phases = [vec![
+        (0, folder("b")),
+        (0, user(0, 0, 1, "ß")),
+        (0, user(0, 0, 2, "É")),
+        (0, user(1, 0, 3, "ß")),
+        (0, user(1, 0, 3, "a")),
+    ]];
+    let mut world = converge_excluding(&[vec!["/ss/c.txt"], vec![]], &phases).unwrap();
+    let live = held_at(&world, 0, &["b", "ß"]).unwrap();
+    let nodes = [["É"].as_slice(), &["É", "ß"], &["É", "a"]]
+        .map(|path| held_at(&world, 0, &[&["b", "ß"], path].concat()).unwrap());
+    let files =
+        [["É", "ß"], ["É", "a"]].map(|path| ino_at(&world, 0, &[&["b", "ß"], &path[..]].concat()));
+    let b = target(&world, 0, &["b"]);
+    let moved = target(&world, 1, &["b", "ß"]);
+    let mut steps = vec![
+        (0, Step::Drop),
+        (0, folder("ss")),
+        (0, user(1, 0, 4, "c.txt")),
+        (0, rename(b, 4, "b")),
+    ];
+    if swap {
+        let [a, s] = [["É", "a"], ["É", "ß"]]
+            .map(|path| target(&world, 1, &[&["b", "ß"], &path[..]].concat()));
+        let folder = folder_number(&world, 1, &["b", "ß", "É"]);
+        steps.extend([
+            (1, rename(a, folder, "b")),
+            (1, rename(s, folder, "a")),
+            (1, rename(a, folder, "ß")),
+        ]);
+    }
+    steps.push((1, rename(moved, 0, "ss")));
+    steps.extend(commit(1));
+    world.run(2, &steps).unwrap();
+    (world, live, nodes, files)
+}
+
+fn merged_and_unsettled(world: &mut World) {
+    world.run(3, &[(0, Step::Connect)]).unwrap();
+    for _ in 0..200 {
+        if !world.devices[0].engine.commits.aliases().is_empty() {
+            break;
+        }
+        world.run(3, &[(0, Step::Work(0))]).unwrap();
+    }
+    assert!(!world.devices[0].engine.commits.aliases().is_empty());
+}
+
+fn lost(
+    world: &World,
+    live: &NodeId,
+    nodes: &[NodeId; 3],
+    files: [u128; 2],
+    deleted: &[usize],
+) -> Vec<String> {
+    let mut lost = Vec::new();
+    if held_at(world, 0, &["ss"]).as_ref() != Some(live) {
+        lost.push("the live ID is not at ss".to_string());
+    }
+    let server = world.space().nodes();
+    for (i, id) in nodes.iter().enumerate() {
+        let on_server = (server.iter())
+            .any(|node| node.node_id == *id && node.status == NodeStatus::Live as i32);
+        if on_server == deleted.contains(&i) {
+            lost.push(format!("node {i} live on the server: {on_server}"));
+        }
+    }
+    for (i, ino) in files.into_iter().enumerate() {
+        let on_disk = (world.devices[0].disk.entries().keys()).any(|at| *at == ino);
+        if !on_disk && !deleted.contains(&(i + 1)) {
+            lost.push(format!("file {i} is gone from the disk"));
+        }
+    }
+    lost
+}
+
+fn after_a_pending_change(change: &str, after: bool) -> Vec<String> {
+    let (mut world, live, nodes, files) = nested_with_two_files(false);
+    if after {
+        merged_and_unsettled(&mut world);
+    }
+    let a = target(&world, 0, &["ss", "b", "ß", "É", "a"]);
+    let folder = target(&world, 0, &["ss", "b", "ß", "É"]);
+    let [copy, inside, merged] = [&["ss", "b", "ß"][..], &["ss", "b", "ß", "É"], &["ss"]]
+        .map(|path| folder_number(&world, 0, path));
+    let moved = match after {
+        true => vec!["ss", "b", "ß", "a"],
+        false => vec!["ss", "a"],
+    };
+    let (step, deleted, at) = match change {
+        "file deleted" => (delete(a), &[2][..], None),
+        "file edited" => (overwrite(a), &[][..], None),
+        "file moved within the copy" => (rename(a, copy, "a"), &[][..], Some((moved, 2))),
+        "file moved out of the copy" => (rename(a, 0, "a"), &[][..], Some((vec!["a"], 2))),
+        "file moved into the merged folder" => {
+            (rename(a, merged, "a"), &[][..], Some((vec!["ss", "a"], 2)))
+        }
+        "file created" => (user(1, 0, inside, "b"), &[][..], None),
+        "folder deleted" => (delete(folder), &[0, 1, 2][..], None),
+        "folder renamed" => (rename(folder, copy, "a"), &[][..], Some((moved, 0))),
+        "folder moved out of the copy" => (rename(folder, 0, "É"), &[][..], Some((vec!["É"], 0))),
+        "folder moved into the merged folder" => (
+            rename(folder, merged, "a"),
+            &[][..],
+            Some((vec!["ss", "a"], 0)),
+        ),
+        _ => unreachable!(),
+    };
+    let quiet = match after {
+        true => world.phase(4, &[(0, step)]),
+        false => {
+            world.run(2, &[(0, step)]).unwrap();
+            world.phase(3, &[(0, Step::Connect)])
+        }
+    };
+    let mut failed = lost(&world, &live, &nodes, files, deleted);
+    if let Err(failure) = quiet {
+        failed.push(format!("{failure:?}"));
+    }
+    if let Some((path, node)) = at
+        && live_node_at(&world, &path) != Some(nodes[node].to_string())
+    {
+        failed.push(format!(
+            "{path:?} on the server is {:?}",
+            live_node_at(&world, &path)
+        ));
+    }
+    let folder_b = held_at(&world, 0, &["ss", "b"]).map(|id| id.to_string());
+    let uploaded = (world.space().nodes().into_iter()).any(|node| {
+        node.name == "b" && Some(node.node_id) != folder_b && node.status == NodeStatus::Live as i32
+    });
+    if change == "file created" && !uploaded {
+        failed.push("the new file was not uploaded".to_string());
+    }
+    failed
+}
+
+#[test]
+fn a_change_pending_in_the_nested_copy_before_or_after_the_merge_result_survives_the_takeover() {
+    let mut failed = Vec::new();
+    for change in [
+        "file deleted",
+        "file edited",
+        "file moved within the copy",
+        "file moved out of the copy",
+        "file moved into the merged folder",
+        "file created",
+        "folder deleted",
+        "folder renamed",
+        "folder moved out of the copy",
+        "folder moved into the merged folder",
+    ] {
+        for after in [false, true] {
+            let cell = after_a_pending_change(change, after);
+            if !cell.is_empty() {
+                failed.push(format!(
+                    "{change}, after the merge result: {after}: {cell:?}"
+                ));
+            }
+        }
+    }
+    assert!(failed.is_empty(), "{failed:#?}");
+}
+
+#[test]
+fn a_takeover_loses_nothing_when_the_nested_copy_is_parked_rejected_or_left_out_by_a_rule_change() {
+    for state in ["parked", "rejected", "excluded", "edited, then excluded"] {
+        let (mut world, live, nodes, files) = nested_with_two_files(state == "parked");
+        if state == "parked" {
+            world.run(3, &[(0, Step::Connect)]).unwrap();
+        } else {
+            merged_and_unsettled(&mut world);
+            let a = target(&world, 0, &["ss", "b", "ß", "É", "a"]);
+            let refused = Step::Commit(Reply::Refused(error::Code::LimitExceeded));
+            match state {
+                "rejected" => world.run(
+                    4,
+                    &[(0, overwrite(a)), (0, SCAN), (0, refused), (0, refused)],
+                ),
+                "edited, then excluded" => world.run(4, &[(0, overwrite(a))]),
+                _ => Ok(()),
+            }
+            .unwrap();
+            if state.ends_with("excluded") {
+                world
+                    .rule(0, &Ruling::Exclude(vec!["/ss/c.txt", "a"]))
+                    .unwrap();
+            }
+        }
+        for _ in 0..400 {
+            if held_at(&world, 0, &["ss"]).as_ref() == Some(&live) {
+                break;
+            }
+            world.run(5, &[(0, Step::Work(0))]).unwrap();
+        }
+        world
+            .phase(6, &[(0, Step::Work(0))])
+            .unwrap_or_else(|failure| panic!("{state}: {failure:?}"));
+        assert_eq!(
+            lost(&world, &live, &nodes, files, &[]),
+            Vec::<String>::new(),
+            "{state}"
+        );
+    }
+}
+
+#[test]
+fn a_takeover_goes_ahead_while_an_edit_below_the_nested_copy_is_refused_and_loses_nothing_once_the_refusals_stop()
+ {
+    let (mut world, live, nodes, files) = nested_with_two_files(false);
+    merged_and_unsettled(&mut world);
+    let a = target(&world, 0, &["ss", "b", "ß", "É", "a"]);
+    world.run(4, &[(0, overwrite(a))]).unwrap();
+    let refused = Step::Commit(Reply::Refused(error::Code::LimitExceeded));
+    world
+        .run(
+            4,
+            &[
+                (0, SCAN),
+                (0, refused),
+                (0, refused),
+                (0, refused),
+                (0, refused),
+            ],
+        )
+        .unwrap();
+    assert_eq!(held_at(&world, 0, &["ss"]), Some(live.clone()));
+    assert!(world.devices[0].engine.commits.in_flight().is_some());
+    world.phase(5, &[(0, Step::Work(0))]).unwrap();
+    assert_eq!(
+        lost(&world, &live, &nodes, files, &[]),
+        Vec::<String>::new()
+    );
+    let content = |device: usize| {
+        let disk = &world.devices[device].disk;
+        disk.entries()[&ino_at(&world, device, &["ss", "É", "a"])]
+            .content
+            .clone()
+    };
+    assert_eq!(content(0), content(1));
+}

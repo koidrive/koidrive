@@ -713,7 +713,9 @@ impl Commits {
                             let below_merged = |node: &LocalNode| {
                                 let mut parent = &node.shape.parent;
                                 for _ in 0..trees.local().len() {
-                                    if parent == id {
+                                    if (trees.local_holders(&local.shape.parent, &local.shape.name))
+                                        .any(|other| other == parent)
+                                    {
                                         return true;
                                     }
                                     match trees.local().get(parent) {
