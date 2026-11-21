@@ -2808,6 +2808,57 @@ fn a_node_moved_out_of_a_displaced_folder_goes_to_the_local_trash_when_discarded
 }
 
 #[test]
+fn a_node_discarded_after_a_rewind_downloads_once_the_rules_let_its_place_in() {
+    for folder_moved in [false, true] {
+        for renamed in [false, true] {
+            for restart in [false, true] {
+                let case = format!("folder {folder_moved}, renamed {renamed}, restart {restart}");
+                let world =
+                    moved_out_of_a_displaced_folder(folder_moved, false, false, vec!["*.txt"]);
+                let mut world = answered(world, 1);
+                world.run(4, &[(1, Step::Crash)]).unwrap();
+                world.phase(4, &[]).unwrap();
+                let path: &[&str] = match folder_moved {
+                    true => &["\u{df}", "\u{c9}", "b"],
+                    false => &["\u{df}", "b"],
+                };
+                let discarded = live_node_at(&world, path).unwrap();
+                let before = world.space().node(&discarded).unwrap();
+                let write = tag(&before.current.clone().unwrap().content.unwrap());
+                assert!(
+                    world.devices[1].engine.commits.questions().is_empty(),
+                    "{case}"
+                );
+                assert!(world.devices[1].disk.binned(2), "{case}");
+                assert!(!world.devices[1].disk.shows(write), "{case}");
+                let mut steps = Vec::new();
+                if renamed {
+                    steps.push((1, rename(target(&world, 1, &["c.txt"]), 0, "b")));
+                } else {
+                    world.rule(1, &Ruling::Exclude(vec![])).unwrap();
+                }
+                steps.push((1, SCAN));
+                if restart {
+                    steps.push((1, Step::Crash));
+                }
+                world.phase(5, &steps).unwrap();
+                let after = world.space().node(&discarded).unwrap();
+                assert_eq!(after.status, NodeStatus::Live as i32, "{case}");
+                assert_eq!(after.current, before.current, "{case}");
+                assert_eq!(after.name, before.name, "{case}");
+                assert_eq!(after.parent_id, before.parent_id, "{case}");
+                assert!(world.devices[1].disk.shows(write), "{case}");
+                assert!(
+                    world.devices.iter().all(|device| !device.disk.shows(2)),
+                    "{case}"
+                );
+                assert!(!live_writes(&world).contains(&2), "{case}");
+            }
+        }
+    }
+}
+
+#[test]
 fn a_file_deleted_here_that_the_rules_leave_out_through_a_rewind_is_deleted_only_once_answered() {
     for deleted_while_left_out in [false, true] {
         for restart in [false, true] {
@@ -2862,6 +2913,59 @@ fn a_file_deleted_here_that_the_rules_leave_out_through_a_rewind_is_deleted_only
             );
         }
     }
+}
+
+#[test]
+fn a_discard_after_rewind_does_not_trash_a_write_the_answer_never_saw() {
+    let mut world = moved_out_of_a_displaced_folder(false, false, false, vec!["*.txt"]);
+    assert_eq!(changed_here(&world), vec![1]);
+    let file = target(&world, 1, &["ss"]);
+    let before = tag(&content_on(&world, 1, "ss"));
+    world.run(3, &[(1, Step::Answer(1)), (1, COMMIT)]).unwrap();
+    {
+        let engine = &world.devices[1].engine;
+        let question = engine
+            .commits
+            .questions()
+            .iter()
+            .find(|question| question.answer == Some(Answer::Discard))
+            .unwrap();
+        let node = question.holds().next().unwrap();
+        assert!(
+            engine
+                .trees
+                .synced()
+                .live(node)
+                .unwrap()
+                .same(engine.trees.remote().live(node).unwrap())
+        );
+    }
+    world.run(3, &[(1, overwrite(file)), (1, SCAN)]).unwrap();
+    let written = tag(&content_on(&world, 1, "ss"));
+    assert_ne!(written, before);
+    assert!(
+        world.devices[1]
+            .engine
+            .trees
+            .local()
+            .iter()
+            .any(|(_, local)| {
+                local.shape.name == "ss" && local.shape.content.as_ref().map(tag) == Some(written)
+            })
+    );
+    for _ in 0..20 {
+        world
+            .run(3, &[(1, Step::Connect), (1, Step::Work(0))])
+            .unwrap();
+        assert!(
+            !world.devices[1].disk.binned(written),
+            "the earlier Discard trashed write {written}"
+        );
+        if changed_here(&world) == vec![1] {
+            return;
+        }
+    }
+    panic!("the newly edited copy wasn't asked about");
 }
 
 #[test]

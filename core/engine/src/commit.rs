@@ -1514,8 +1514,10 @@ impl Commits {
             let held = recovery::asks(question).then(|| question.holds());
             question.shown.keys().chain(held.into_iter().flatten())
         });
-        let discarding = discarding.into_iter().flat_map(Question::holds);
-        trees.set_asked(shown.cloned().collect(), discarding.cloned().collect());
+        let discarding = discarding.into_iter().flat_map(|question| {
+            (question.holds()).filter_map(|id| Some((id.clone(), question.shown.get(id)?.clone())))
+        });
+        trees.set_asked(shown.cloned().collect(), discarding.collect());
     }
 
     fn given_up_files(&self, trees: &Trees) -> u64 {

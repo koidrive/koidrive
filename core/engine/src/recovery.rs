@@ -122,7 +122,8 @@ pub(crate) fn discarding(trees: &Trees, question: &Question) -> bool {
         && !question.holds().all(gone)
         && question.holds().all(|id| {
             gone(id)
-                || (same(trees.synced().live(id), trees.remote().live(id))
+                || (trees.local().get(id).map(|node| &node.shape) == question.shown.get(id)
+                    && same(trees.synced().live(id), trees.remote().live(id))
                     && below_a_move_out_of_an_excluded_copy(trees, id))
         })
 }

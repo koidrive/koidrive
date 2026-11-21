@@ -702,7 +702,7 @@ pub struct Trees {
     unknown_rules: CountedSet<NodeId>,
     /// The local entries the open questions hold ([`Trees::set_asked`]).
     asked: BTreeSet<NodeId>,
-    discarding: BTreeSet<NodeId>,
+    discarding: BTreeMap<NodeId, Shape>,
     /// Dirty nodes marked since the last settle, the only ones whose class can have changed.
     unsettled: BTreeSet<NodeId>,
     relink: bool,
@@ -832,7 +832,7 @@ impl Trees {
             rules_known: true,
             unknown_rules: CountedSet::default(),
             asked: BTreeSet::new(),
-            discarding: BTreeSet::new(),
+            discarding: BTreeMap::new(),
             unsettled: BTreeSet::new(),
             relink: false,
             unwatched: BTreeSet::new(),
@@ -2674,7 +2674,7 @@ impl Trees {
         }
     }
 
-    pub fn set_asked(&mut self, asked: BTreeSet<NodeId>, discarding: BTreeSet<NodeId>) {
+    pub fn set_asked(&mut self, asked: BTreeSet<NodeId>, discarding: BTreeMap<NodeId, Shape>) {
         self.forget_reclaims();
         self.relink |= !self.asked.is_subset(&asked);
         self.asked = asked;
@@ -2682,7 +2682,8 @@ impl Trees {
     }
 
     pub(crate) fn discarding(&self, id: &NodeId) -> bool {
-        self.discarding.contains(id)
+        (self.discarding.get(id))
+            .is_some_and(|shown| self.l.get(id).is_none_or(|node| node.shape == *shown))
     }
 
     /// Whether the node is set aside ([`Trees::set_aside`]), or L, S or R places it at or below a node that awaits a
