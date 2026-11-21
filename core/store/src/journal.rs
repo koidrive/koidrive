@@ -35,15 +35,18 @@ fn parse<T: serde::de::DeserializeOwned>(text: &str) -> Result<T> {
 }
 
 impl Tx<'_> {
-    pub(crate) fn journal_state(&self) -> Result<JournalState> {
-        let mut state = JournalState::default();
+    pub(crate) fn journal_state_unless(
+        &self,
+        state: &mut JournalState,
+        abandoned: &mut dyn FnMut() -> bool,
+    ) -> Result<bool> {
         let mut stmt = self.0.prepare_cached(
             "SELECT node_id, field, intent, author, base, value, wire_base, state, flight, held_as,
                     held_version_id, time_ms, replay
              FROM journal",
         )?;
         let mut rows = stmt.query([])?;
-        while let Some(row) = rows.next()? {
+        while let Some(row) = next_row!(rows, abandoned) {
             let node = NodeId::from(row.get::<_, String>(0)?);
             let field = field(&row.get::<_, String>(1)?)?;
             let state_name: String = row.get(7)?;
@@ -89,7 +92,7 @@ impl Tx<'_> {
             "SELECT node_id, field, intent, applied_at_ms, in_local FROM intent_history ORDER BY node_id, field, ord",
         )?;
         let mut rows = stmt.query([])?;
-        while let Some(row) = rows.next()? {
+        while let Some(row) = next_row!(rows, abandoned) {
             let key = (
                 NodeId::from(row.get::<_, String>(0)?),
                 field(&row.get::<_, String>(1)?)?,
@@ -104,7 +107,7 @@ impl Tx<'_> {
             "SELECT node_id, view_node_id, field, intent, value FROM delete_views ORDER BY node_id, ord",
         )?;
         let mut rows = stmt.query([])?;
-        while let Some(row) = rows.next()? {
+        while let Some(row) = next_row!(rows, abandoned) {
             let node = NodeId::from(row.get::<_, String>(0)?);
             state.seen.entry(node).or_default().push(Seen {
                 node: NodeId::from(row.get::<_, String>(1)?),
@@ -119,7 +122,7 @@ impl Tx<'_> {
             .0
             .prepare_cached("SELECT node_id, since_ms, purged FROM journal_absent")?;
         let mut rows = stmt.query([])?;
-        while let Some(row) = rows.next()? {
+        while let Some(row) = next_row!(rows, abandoned) {
             let absent = Absent {
                 since_ms: row.get(1)?,
                 purged: row.get(2)?,
@@ -137,7 +140,7 @@ impl Tx<'_> {
         {
             state.listed = listed;
         }
-        Ok(state)
+        Ok(true)
     }
 
     pub(crate) fn write_journal_changes(&self, changes: &JournalChanges) -> Result<()> {

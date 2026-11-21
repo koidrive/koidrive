@@ -3848,3 +3848,24 @@ fn a_purged_mark_on_an_absent_node_survives_an_update_and_a_reopen() {
     let loaded = store.transaction(|tx| tx.engine_state()).unwrap();
     assert_eq!(loaded.trees.journal.absent, before.trees.journal.absent);
 }
+
+#[test]
+fn an_abandoned_read_stops_while_reading_the_journal() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::open(dir.path().join("state.db")).unwrap();
+    store
+        .transaction(|tx| {
+            let mut state = EngineState::default();
+            state.trees.journal.absent.insert(
+                NodeId::from("gone"),
+                Absent {
+                    since_ms: 1,
+                    purged: false,
+                },
+            );
+            tx.set_engine_state(&state)?;
+            assert!(!tx.engine_state_unless(&mut EngineState::default(), &mut || true)?);
+            Ok::<_, Error>(())
+        })
+        .unwrap();
+}

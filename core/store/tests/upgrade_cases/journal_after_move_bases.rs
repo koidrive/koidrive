@@ -123,8 +123,15 @@ upgrade_case!(journal_after_move_bases, |store| {
         }
         let mut restored = trees.state();
         restored.moved_here.insert(report.clone(), moved.clone());
+        let edit_rev = trees.remote().get(&report).unwrap().edit_rev;
+        restored.edited_here.insert(report.clone(), edit_rev);
         trees.restore(restored).unwrap();
         trees.backfill(Some(&in_flight), false, 1_800_000_000_000);
+        let version = &trees.remote().get(&report).unwrap().version_id;
+        assert!(!version.is_empty(), "{variant}");
+        let edited = IntentId::legacy_content(&report.to_string(), version);
+        let content = trees.journal_row(&report, Field::Content).unwrap();
+        assert!(matches!(content.state, RowState::Held { held_as, .. } if held_as == edited), "{variant}");
         let held = trees.journal_row(&report, Field::Place).map(|row| row.into_owned());
         let sent = trees.journal_row(&deck, Field::Place).unwrap().into_owned();
         assert_eq!(sent.state, RowState::Sent, "{variant}");

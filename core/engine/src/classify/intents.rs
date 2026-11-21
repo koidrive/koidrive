@@ -405,19 +405,21 @@ impl Trees {
             let Some(remote) = self.r.get(&id) else {
                 continue;
             };
-            let (Some(value), Some(intent)) =
-                (remote_value(remote, field), remote_intent_of(remote, field))
-            else {
+            let Some(value) = remote_value(remote, field) else {
                 continue;
+            };
+            let (intent, applied_at_ms) = match remote_intent_of(remote, field) {
+                Some(intent) => (intent.id, intent.applied_at_ms),
+                None => (self.legacy_intent(&id, field, &value), 0),
             };
             let version_id = (field == Field::Content && !remote.version_id.is_empty())
                 .then(|| remote.version_id.clone());
             let state = RowState::Held {
-                held_as: intent.id,
+                held_as: intent,
                 version_id,
             };
-            let mut held = row(intent.id, Author::Own, base, value, state, lost);
-            held.time_ms = intent.applied_at_ms;
+            let mut held = row(intent, Author::Own, base, value, state, lost);
+            held.time_ms = applied_at_ms;
             self.journal.insert_if_absent(&id, held);
         }
         let past: Vec<(NodeId, Field, IntentId)> = (self.replaced_versions.iter())

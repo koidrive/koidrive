@@ -804,8 +804,7 @@ impl Tx<'_> {
                 Effect::try_from(effect)?,
             );
         }
-        state.trees.journal = self.journal_state()?;
-        Ok(true)
+        self.journal_state_unless(&mut state.trees.journal, abandoned)
     }
 
     /// Replaces the stored engine state with `state`.
