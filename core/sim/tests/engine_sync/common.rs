@@ -579,6 +579,7 @@ struct Device {
     acked: BTreeSet<NodeId>,
     removed_from: BTreeMap<NodeId, NodeId>,
     arrivals: BTreeMap<NodeId, BTreeSet<NodeId>>,
+    between: Option<BTreeSet<NodeId>>,
     on_server_when_taken_along: BTreeMap<NodeId, BTreeMap<NodeId, NodeId>>,
     kept_back: BTreeSet<NodeId>,
     relocated: BTreeMap<NodeId, Relocation>,
@@ -621,11 +622,27 @@ impl Device {
         folders: impl IntoIterator<Item = &'a NodeId>,
         on_server: &BTreeMap<NodeId, NodeId>,
     ) {
-        let folders: BTreeSet<NodeId> = folders.into_iter().cloned().collect();
-        for folder in &folders {
+        for folder in folders {
             (self.on_server_when_taken_along).insert(folder.clone(), on_server.clone());
         }
-        self.note_arrivals_in(self.on_server().into_keys().collect(), &folders);
+    }
+
+    fn note_taken_along_at_answer<'a>(
+        &mut self,
+        folders: impl IntoIterator<Item = &'a NodeId>,
+        at_answer: &BTreeMap<NodeId, NodeId>,
+    ) {
+        let between = self.between.take().unwrap_or_default();
+        let mut on_server = self.on_server();
+        for id in &between {
+            match at_answer.get(id) {
+                Some(parent) => on_server.insert(id.clone(), parent.clone()),
+                None => on_server.remove(id),
+            };
+        }
+        let folders: BTreeSet<NodeId> = folders.into_iter().cloned().collect();
+        self.note_taken_along_from(&folders, &on_server);
+        self.note_arrivals_in(between, &folders);
     }
 
     fn note_arrivals(&mut self, nodes: BTreeSet<NodeId>) {
@@ -691,6 +708,7 @@ impl Device {
             acked: BTreeSet::new(),
             removed_from: BTreeMap::new(),
             arrivals: BTreeMap::new(),
+            between: None,
             on_server_when_taken_along: BTreeMap::new(),
             kept_back: BTreeSet::new(),
             relocated: BTreeMap::new(),
@@ -734,6 +752,9 @@ impl Device {
             };
             if !answered {
                 brought.insert(node.clone());
+                if let Some(between) = &mut self.between {
+                    between.insert(node.clone());
+                }
             }
             let Some(moved) = self.relocated.get_mut(&node) else {
                 continue;
@@ -2728,8 +2749,10 @@ fn run_ignoring_answering_after(
             }
             std::mem::swap(&mut device.trees, &mut before.0);
             device.acted.retain(|id| !taken.contains_key(id));
-            let on_server = on_server.unwrap_or_else(|| device.on_server());
-            device.note_taken_along_from(taken.keys(), &on_server);
+            match on_server {
+                Some(at_answer) => device.note_taken_along_at_answer(taken.keys(), &at_answer),
+                None => device.note_taken_along(taken.keys()),
+            }
             kept_with.append(&mut taken);
             discarded.extend(shown);
         }
@@ -2774,6 +2797,7 @@ fn run_ignoring_answering_after(
                     let sets = (&from_server, &placed_left_out);
                     let (at_answer, on_server) = if frozen {
                         let at_answer = taken_along(&device, &question.shown, sets, &discarded);
+                        device.between = Some(BTreeSet::new());
                         (at_answer, Some(device.on_server()))
                     } else {
                         (BTreeMap::new(), None)

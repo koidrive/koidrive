@@ -1782,11 +1782,12 @@ fn renaming_an_entry_another_device_adds_between_the_answer_and_the_build_change
         let (mut device, kept, discarded) = a_file_in_a_taken_along_server_folder();
         let (s, arrival): (NodeId, NodeId) = ("s".into(), "arrival".into());
         let at_answer = device.on_server();
+        device.between = Some(BTreeSet::new());
         if between {
             an_arrival(&mut device, "s");
-            device.note_taken_along_from([&s], &at_answer);
+            device.note_taken_along_at_answer([&s], &at_answer);
         } else {
-            device.note_taken_along_from([&s], &at_answer);
+            device.note_taken_along_at_answer([&s], &at_answer);
             an_arrival(&mut device, "s");
         }
         place_dir(&mut device, "arrival", Some(("s", "arrival")), None);
@@ -1795,5 +1796,44 @@ fn renaming_an_entry_another_device_adds_between_the_answer_and_the_build_change
         place_dir(&mut device, "arrival", Some(("s", "renamed")), None);
         device.acted_on(arrival);
         assert!(!acted_below(&device, &s, &kept, &discarded), "{between}");
+    }
+}
+
+#[test]
+fn renaming_an_entry_this_device_moved_in_and_the_server_confirmed_after_the_answer_changes_the_folder()
+ {
+    for confirmed_after_answer in [true, false] {
+        let (mut device, kept, discarded) = a_file_in_a_taken_along_server_folder();
+        let (s, g): (NodeId, NodeId) = ("s".into(), "g".into());
+        place_dir(&mut device, "g", Some(("s", "g")), Some(("root", "g")));
+        let confirm = |device: &mut Device| {
+            let state = NodeState {
+                node_id: "g".into(),
+                parent_id: "s".into(),
+                name: "g".into(),
+                kind: 1,
+                status: 1,
+                ..Default::default()
+            };
+            let change = Some(change_record::Change::Node(state));
+            device.receive(&[ChangeRecord { change }], true);
+        };
+        if !confirmed_after_answer {
+            confirm(&mut device);
+        }
+        let at_answer = device.on_server();
+        device.between = Some(BTreeSet::new());
+        if confirmed_after_answer {
+            confirm(&mut device);
+        }
+        device.note_taken_along_at_answer([&s], &at_answer);
+        let synced = device.trees.remote().live(&g).cloned();
+        device.trees.set_synced(g.clone(), synced);
+        place_dir(&mut device, "g", Some(("s", "renamed")), None);
+        device.acted_on(g);
+        assert!(
+            acted_below(&device, &s, &kept, &discarded),
+            "{confirmed_after_answer}"
+        );
     }
 }
