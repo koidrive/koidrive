@@ -1674,3 +1674,80 @@ fn a_blocked_placement_is_excused_only_while_its_node_still_belongs_at_the_held_
         );
     }
 }
+
+#[test]
+fn a_discard_judges_an_entry_taken_out_by_the_place_the_server_last_took_its_move_to() {
+    let folder: NodeId = "folder".into();
+    let item: NodeId = "item".into();
+    let state = |parent: &str, name: &str| NodeState {
+        node_id: "item".into(),
+        parent_id: parent.into(),
+        name: name.into(),
+        kind: 1,
+        status: 1,
+        meta_rev: 2,
+        ..Default::default()
+    };
+    for (start, first, acknowledged, before, after) in [
+        (
+            "folder",
+            0,
+            "root",
+            "took out an entry it held",
+            "changed nothing",
+        ),
+        (
+            "root",
+            1,
+            "folder",
+            "changed nothing",
+            "took out an entry it held",
+        ),
+    ] {
+        let mut trees = Trees::new("root");
+        let folder_state = NodeState {
+            node_id: "folder".into(),
+            parent_id: "root".into(),
+            name: "folder".into(),
+            kind: 1,
+            status: 1,
+            ..Default::default()
+        };
+        for (node, ino) in [(folder_state, 1), (state(start, "item"), 2)] {
+            let (id, remote) = RemoteNode::from_state(&node).unwrap();
+            trees.set_synced(id.clone(), Some(remote.shape.clone()));
+            trees.set_local(
+                id.clone(),
+                LocalNode {
+                    shape: remote.shape.clone(),
+                    identity: identity(ino),
+                    parked: false,
+                    left_out_when_placed: false,
+                    content_from_server: false,
+                    chunks: Box::default(),
+                },
+            );
+            trees.set_remote(id, remote);
+        }
+        let mut device = Device::new(trees);
+        device.rules.read(&mut device.trees);
+        device.act(&act(3, 1, first, 2, 0));
+        device.act(&act(3, 1, 0, 3, 0));
+        assert_eq!(
+            device.trees.local().get(&item).unwrap().shape.parent,
+            NodeId::from("root")
+        );
+        assert_eq!(what_the_user_did_below(&device, &folder), before);
+        device.receive(
+            &[ChangeRecord {
+                change: Some(change_record::Change::Node(state(acknowledged, "b"))),
+            }],
+            true,
+        );
+        assert_eq!(
+            device.relocated.get(&item).unwrap().from.parent,
+            NodeId::from(acknowledged)
+        );
+        assert_eq!(what_the_user_did_below(&device, &folder), after);
+    }
+}

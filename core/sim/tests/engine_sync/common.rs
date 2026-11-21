@@ -790,8 +790,10 @@ impl Device {
             if remote.same_position(&moved.to) {
                 self.relocated.remove(&node);
             } else if answered {
+                let parent = remote.parent.clone();
                 moved.from = remote;
                 moved.origin = now;
+                self.leave(&node, &parent);
             }
         }
     }
