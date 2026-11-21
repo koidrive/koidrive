@@ -2150,3 +2150,35 @@ fn a_delete_fault_puts_its_copy_of_a_file_in_a_deleted_folder_under_the_nearest_
         .expect("the fault keeps a live copy of the deleted file");
     assert_eq!(copy.parent_id, root);
 }
+
+#[test]
+fn a_delete_fault_copies_the_version_the_delete_trashed() {
+    for intents in [false, true] {
+        let mut s = Space::new();
+        let mut a = s.client("A");
+        let root = s.root();
+        let file = s.id();
+        let tag = |op: Op, id: u8| match intents {
+            true => with_intent(op, intent(id, "dev-A")),
+            false => op,
+        };
+        let one = Space::content("one");
+        let receipts = s.upload(&a, &one);
+        let create = tag(create_file(&file, &root, "f", one.clone()), 1);
+        s.commit(&mut a, vec![create], receipts);
+        s.space.copy_each_deleted_file();
+        let two = Space::content("two");
+        let receipts = s.upload(&a, &two);
+        let ops = vec![tag(delete(&file), 2), tag(update(&file, two), 3)];
+        let result = s.commit(&mut a, ops, receipts);
+        let copies: Vec<Vec<u8>> = (s.space.nodes().into_iter())
+            .filter(|node| node.status == NodeStatus::Live as i32 && node.node_id != file)
+            .filter_map(|node| Some(node.current?.content?.manifest_digest))
+            .collect();
+        assert_eq!(
+            copies,
+            vec![one.manifest_digest.clone()],
+            "intents: {intents}, {result:?}"
+        );
+    }
+}

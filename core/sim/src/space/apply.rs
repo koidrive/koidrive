@@ -119,7 +119,7 @@ pub(super) struct Applier<'a> {
     purged: Vec<ChangeRecord>,
     intents: OpIntents,
     made_copies: BTreeSet<String>,
-    trashed_files: Vec<String>,
+    trashed_files: Vec<Node>,
 }
 
 impl<'a> Applier<'a> {
@@ -1394,14 +1394,13 @@ impl<'a> Applier<'a> {
         self.set_incoming(node_id, Field::Status);
         self.report(node_id);
         if self.ctx.copies_deleted_files {
-            self.trashed_files.push(node_id.to_owned());
+            self.trashed_files.push(self.st.nodes[node_id].clone());
         }
     }
 
     fn copy_trashed_files(&mut self) {
         let dev = self.dev().to_string();
-        for node_id in std::mem::take(&mut self.trashed_files) {
-            let node = self.st.nodes[&node_id].clone();
+        for node in std::mem::take(&mut self.trashed_files) {
             let (Some(parent_id), Some(version)) = (&node.parent_id, &node.cur_version_id) else {
                 continue;
             };
