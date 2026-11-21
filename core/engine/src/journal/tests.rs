@@ -151,6 +151,33 @@ fn a_value_returning_to_the_one_in_flight_takes_its_intent_back() {
 }
 
 #[test]
+fn a_value_returning_to_a_carried_flight_keeps_its_author_replay_and_time() {
+    let mut journal = Journal::new(&IdGen::new(0));
+    let f = NodeId::from("f");
+    let author = Author::Carried(None);
+    journal.replace(
+        &f,
+        Row {
+            intent: id(1),
+            author: author.clone(),
+            base: None,
+            value: content(1),
+            wire_base: WireBase::None,
+            state: RowState::Sent,
+            time_ms: 12,
+            replay: true,
+        },
+    );
+    journal.user_change(&f, content(2), WireBase::None, None);
+    assert_eq!(
+        journal.user_change(&f, content(1), WireBase::None, None),
+        id(1)
+    );
+    let row = journal.row(&f, Field::Content).unwrap();
+    assert_eq!((&row.author, row.replay, row.time_ms), (&author, true, 12));
+}
+
+#[test]
 fn a_change_after_a_held_row_is_made_over_held_as() {
     let mut journal = Journal::new(&IdGen::new(0));
     let first = journal.user_change(&"n".into(), content(1), WireBase::None, None);
@@ -161,6 +188,7 @@ fn a_change_after_a_held_row_is_made_over_held_as() {
         first,
         &held(7, 100),
         Some("v7".into()),
+        true,
     );
     journal.user_change(&"n".into(), content(2), WireBase::None, None);
     assert_eq!(
@@ -181,6 +209,7 @@ fn an_applied_result_holds_the_row_rebases_and_records_history() {
         first,
         &held(7, 100),
         Some("v7".into()),
+        true,
     );
     let row = journal.row(&"n".into(), Field::Content).unwrap();
     assert_eq!((row.intent, row.base), (second, Some(id(7))));
@@ -193,7 +222,14 @@ fn an_applied_result_holds_the_row_rebases_and_records_history() {
     assert_eq!(journal.history(&"n".into(), Field::Content), [entry]);
     let third = journal.user_change(&"m".into(), content(3), WireBase::None, None);
     journal.send(&"m".into(), Field::Content, 10);
-    journal.applied(&"m".into(), Field::Content, third, &held(6, 120), None);
+    journal.applied(
+        &"m".into(),
+        Field::Content,
+        third,
+        &held(6, 120),
+        None,
+        true,
+    );
     let row = journal.row(&"m".into(), Field::Content).unwrap();
     let state = RowState::Held {
         held_as: id(6),
@@ -242,7 +278,7 @@ fn results_visit_the_rows_they_answer_however_many_the_journal_holds() {
         for (n, sent) in sent.into_iter().enumerate() {
             let file = NodeId::from(format!("f{n}"));
             match n % 2 {
-                0 => journal.applied(&file, Field::Content, sent, &held(7, 100), None),
+                0 => journal.applied(&file, Field::Content, sent, &held(7, 100), None, true),
                 _ => journal.superseded(&file, Field::Content, sent, Some(id(8))),
             }
             journal.merged_into(&format!("d{n}").into(), &"target".into(), true);
@@ -265,7 +301,14 @@ fn a_held_row_ends_once_r_holds_a_later_intent() {
     let mut journal = Journal::new(&IdGen::new(0));
     let first = journal.user_change(&"n".into(), content(1), WireBase::None, None);
     journal.send(&"n".into(), Field::Content, 0);
-    journal.applied(&"n".into(), Field::Content, first, &held(7, 100), None);
+    journal.applied(
+        &"n".into(),
+        Field::Content,
+        first,
+        &held(7, 100),
+        None,
+        true,
+    );
     journal.remote_holds(&"n".into(), Field::Content, &held(7, 100), true);
     assert!(journal.row(&"n".into(), Field::Content).is_some());
     journal.remote_holds(&"n".into(), Field::Content, &held(8, 200), false);
@@ -318,13 +361,35 @@ fn a_loss_marks_sent_and_held_rows_as_replays() {
     let mut journal = Journal::new(&IdGen::new(0));
     let a = journal.user_change(&"a".into(), content(1), WireBase::None, None);
     journal.send(&"a".into(), Field::Content, 0);
-    journal.applied(&"a".into(), Field::Content, a, &held(1, 1), None);
+    journal.applied(&"a".into(), Field::Content, a, &held(1, 1), None, true);
     journal.user_change(&"b".into(), content(1), WireBase::None, None);
     journal.send(&"b".into(), Field::Content, 0);
     journal.user_change(&"c".into(), content(1), WireBase::None, None);
     journal.lose();
     let replay = |node: &str| journal.row(&node.into(), Field::Content).unwrap().replay;
     assert_eq!((replay("a"), replay("b"), replay("c")), (true, true, false));
+}
+
+#[test]
+fn sending_a_replay_again_keeps_its_original_time() {
+    let mut journal = Journal::new(&IdGen::new(0));
+    let f = NodeId::from("f");
+    journal.replace(
+        &f,
+        Row {
+            intent: id(1),
+            author: Author::Own,
+            base: None,
+            value: content(1),
+            wire_base: WireBase::None,
+            state: RowState::Sent,
+            time_ms: 12,
+            replay: true,
+        },
+    );
+    journal.unsend(&f, Field::Content);
+    let row = journal.send(&f, Field::Content, 34).unwrap();
+    assert_eq!(row.time_ms, 12);
 }
 
 #[test]
@@ -376,7 +441,7 @@ fn replacing_computed_ids_reaches_rows_history_and_seen_lists() {
     journal.remote_holds(&"n".into(), Field::Content, &held(1, 1), true);
     let sent = journal.user_change(&"n".into(), content(1), WireBase::None, Some(id(1)));
     journal.send(&"n".into(), Field::Content, 0);
-    journal.applied(&"n".into(), Field::Content, sent, &held(2, 2), None);
+    journal.applied(&"n".into(), Field::Content, sent, &held(2, 2), None, true);
     journal.user_delete(
         &"d".into(),
         vec![seen("d", Field::Place, 1, None)],
@@ -425,7 +490,7 @@ fn seen_ids(journal: &Journal) -> Vec<IntentId> {
 fn an_applied_result_adds_its_held_as_next_to_the_sent_intent_in_a_seen_list() {
     let mut journal = Journal::new(&IdGen::new(0));
     let sent = deleted_after_a_send(&mut journal);
-    journal.applied(&"n".into(), Field::Content, sent, &held(2, 2), None);
+    journal.applied(&"n".into(), Field::Content, sent, &held(2, 2), None, true);
     assert_eq!(seen_ids(&journal), [sent, id(2)]);
 }
 
@@ -490,7 +555,14 @@ fn a_compact_row_that_leaves_and_ends_before_a_take_reaches_the_store_as_ended()
         let mut journal = Journal::new(&IdGen::new(0));
         let first = journal.user_change(&"n".into(), content(1), WireBase::None, None);
         journal.send(&"n".into(), Field::Content, 0);
-        journal.applied(&"n".into(), Field::Content, first, &held(7, 100), None);
+        journal.applied(
+            &"n".into(),
+            Field::Content,
+            first,
+            &held(7, 100),
+            None,
+            true,
+        );
         let key = ("n".into(), Field::Content);
         let row = journal.row(&"n".into(), Field::Content).cloned().unwrap();
         journal.take_changes(whole);
@@ -519,12 +591,12 @@ fn a_result_that_keeps_the_intent_it_was_sent_leaves_compact_rows_based_on_it_un
         id: sent,
         ..held(0, 100)
     };
-    journal.applied(&"n".into(), Field::Content, sent, &kept, None);
+    journal.applied(&"n".into(), Field::Content, sent, &kept, None, true);
     assert!(journal.compact(("n".into(), Field::Content)));
     let full = |_: &RowKey, held: &HeldRow| held.full(content(1), 100, None);
     journal.take_changes(full);
     let before = journal.state(full);
-    journal.applied(&"m".into(), Field::Place, id(5), &held(5, 200), None);
+    journal.applied(&"m".into(), Field::Place, id(5), &held(5, 200), None, true);
     let changes = journal.take_changes(full);
     assert!(changes.rows.is_empty(), "{:?}", changes.rows);
     assert_eq!(

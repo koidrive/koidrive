@@ -1426,6 +1426,8 @@ fn journal_state() -> JournalState {
                             base: None,
                             wire_base: WireBase::None,
                             time_ms: 7,
+                            author: Author::Carried(Some("other".into())),
+                            replay: true,
                         }),
                     },
                 )
