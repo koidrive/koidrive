@@ -78,6 +78,8 @@ if 'KOIDRIVE_TEST_SERVER' in os.environ:
 import json, os, signal, socket, subprocess, sys, time
 from pathlib import Path
 result = Path(os.environ['RESULT'])
+if os.environ.get('WORKER_IGNORES_TERM') == '1':
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
 child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])
 record = {'argv': sys.argv[1:], 'pid': os.getpid(), 'child': child.pid}
 result.with_suffix('.worker').write_text(json.dumps(record))
@@ -90,7 +92,8 @@ def stop(*_):
             time.sleep(0.01)
     child.wait(timeout=5)
     sys.exit(0)
-signal.signal(signal.SIGTERM, stop)
+if os.environ.get('WORKER_IGNORES_TERM') != '1':
+    signal.signal(signal.SIGTERM, stop)
 mode = os.environ.get('WORKER_MODE', 'ready')
 if mode == 'exit':
     child.terminate()
@@ -123,6 +126,23 @@ if mode != 'silent':
 while True:
     time.sleep(1)
 """)
+
+        self.executable(self.bin / "mktemp", """
+import os, signal, subprocess, sys
+from pathlib import Path
+made = subprocess.check_output(['/usr/bin/mktemp', *sys.argv[1:]], text=True)
+if os.environ.get('MKTEMP_STOP') == '1':
+    Path(os.environ['RESULT']).with_suffix('.mktemp').write_text(made.strip())
+    os.kill(int(os.environ['LAUNCHER_PID']), signal.SIGTERM)
+print(made, end='')
+""")
+        (self.root / "hook.bash").write_text(
+            "export LAUNCHER_PID=$$\n"
+            "if [[ -n ${HOOK_COMMAND:-} ]]; then\n"
+            "  set -T\n"
+            "  trap '[[ $BASH_COMMAND == \"$HOOK_COMMAND\" && ! -e $HOOK_MARK ]] && { : > \"$HOOK_MARK\"; "
+            "while [[ -n ${HOOK_WAIT_FOR:-} && ! -e $HOOK_WAIT_FOR ]]; do sleep 0.01; done; kill -TERM $$; } || true' DEBUG\n"
+            "fi\n")
 
     def executable(self, path, code):
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -198,6 +218,28 @@ while True:
                         with self.assertRaises(ProcessLookupError):
                             os.killpg(tests, 0)
                         self.assert_cleaned(json.loads(result.with_suffix(".worker").read_text()))
+
+    def test_a_badly_timed_signal_or_a_stubborn_worker_leaves_nothing_behind(self):
+        mark, made = self.root / "hook.mark", self.root / "result.mktemp"
+        cases = {
+            "signal before the Worker's pid is recorded":
+                ({"HOOK_COMMAND": "server_pid=$!", "HOOK_WAIT_FOR": str(self.root / "result.worker")}, {143}),
+            "signal as cleanup starts": ({"HOOK_COMMAND": "trap '' HUP INT TERM", "CARGO_STATUS": "23"}, {23, 143}),
+            "signal while the temporary directory is made": ({"MKTEMP_STOP": "1"}, {143}),
+            "a Worker that ignores TERM": ({"WORKER_IGNORES_TERM": "1"}, {0}),
+        }
+        for launcher in LAUNCHERS:
+            for case, (overrides, codes) in cases.items():
+                with self.subTest(launcher=launcher, case=case):
+                    mark.unlink(missing_ok=True)
+                    made.unlink(missing_ok=True)
+                    run, _, worker = self.launch(launcher, BASH_ENV=str(self.root / "hook.bash"), HOOK_MARK=str(mark),
+                                                 **overrides)
+                    self.assertIn(run.returncode, codes, run.stderr)
+                    if "MKTEMP_STOP" in overrides:
+                        self.assertFalse(Path(made.read_text()).exists(), "Launcher left its temporary directory")
+                    else:
+                        self.assertIsNotNone(worker)
 
     def test_assigned_port_is_forwarded_and_process_group_is_cleaned(self):
         for launcher in LAUNCHERS:
