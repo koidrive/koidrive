@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import contextlib
+import hashlib
 import importlib.util
 import io
 from pathlib import Path
@@ -13,9 +14,9 @@ spec = importlib.util.spec_from_file_location("notices", Path(__file__).with_nam
 notices = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(notices)
 
-MIT = "Copyright (c) 2020 Someone\n\nPermission is hereby granted, free of charge, to any person obtaining a copy"
-APACHE = "                                 Apache License\n                           Version 2.0, January 2004"
-ISC = "Copyright 2015 Brian Smith.\n\nPermission to use, copy, modify, and/or distribute this software for any purpose"
+MIT = "Copyright (c) 2020 Someone\n\nPermission is hereby granted, free of charge, to any person obtaining a copy\nTHE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND"
+APACHE = "                                 Apache License\n                           Version 2.0, January 2004\n\n   END OF TERMS AND CONDITIONS"
+ISC = "Copyright 2015 Brian Smith.\n\nPermission to use, copy, modify, and/or distribute this software for any purpose\nTHE SOFTWARE IS PROVIDED \"AS IS\""
 
 
 class Crate:
@@ -83,15 +84,24 @@ class Choice(unittest.TestCase):
         self.assertEqual(component.texts, [notices.normalise(APACHE), "Demo\nCopyright 2024 Demo Inc."])
 
     def test_clarified_texts_must_hold_the_licence(self):
-        crate = Crate(self, {"src.js": "// Copyright 2008 Google Inc.\n// Redistribution and use in source and binary forms\ncode()"})
+        crate = Crate(self, {"src.js": "// Copyright 2008 Google Inc.\n// Redistribution and use in source and binary forms. Neither the name\n// ANY EXPRESS OR IMPLIED WARRANTIES\ncode()"})
         component = crate.component("Apache-2.0 AND BSD-3-Clause")
         with self.assertRaisesRegex(notices.Unresolved, "do not hold the Apache-2.0 text"):
-            notices.resolve(component, [], [("package", "src.js", 1, 2)])
+            notices.resolve(component, [], [("lines", "src.js", 1, 3)])
         notices.TEXTS, saved = crate.dir, notices.TEXTS
         self.addCleanup(setattr, notices, "TEXTS", saved)
         (crate.dir / "apache").write_text(APACHE, encoding="utf-8")
-        notices.resolve(component, [], [("vendored", "apache"), ("package", "src.js", 1, 2)])
-        self.assertEqual(component.texts[1], "Copyright 2008 Google Inc.\nRedistribution and use in source and binary forms")
+        pinned = hashlib.sha256(APACHE.encode()).hexdigest()
+        notices.resolve(component, [], [("vendored", "apache", pinned), ("lines", "src.js", 1, 3)])
+        self.assertEqual(component.texts[1], "Copyright 2008 Google Inc.\nRedistribution and use in source and binary forms. Neither the name\nANY EXPRESS OR IMPLIED WARRANTIES")
+        (crate.dir / "apache").write_text(APACHE.splitlines()[1], encoding="utf-8")
+        with self.assertRaisesRegex(notices.Unresolved, "does not have the SHA-256 CLARIFIED pins"):
+            notices.resolve(component, [], [("vendored", "apache", pinned), ("lines", "src.js", 1, 3)])
+
+    def test_a_truncated_licence_file_is_not_that_licence_text(self):
+        crate = Crate(self, {"LICENSE-APACHE": "\n".join(APACHE.splitlines()[:2])})
+        with self.assertRaisesRegex(notices.Unresolved, "used under Apache-2.0, but none of its licence files"):
+            notices.resolve(crate.component("Apache-2.0"), [crate.dir])
 
 
 class BundledSources(unittest.TestCase):
@@ -126,7 +136,7 @@ class BundledSources(unittest.TestCase):
 
 class Copyrights(unittest.TestCase):
     def test_source_copyright_lines_the_licence_file_lacks_are_shipped(self):
-        bare_mit = "Permission is hereby granted, free of charge, to any person obtaining a copy"
+        bare_mit = "Permission is hereby granted, free of charge, to any person obtaining a copy\nWITHOUT WARRANTY OF ANY KIND"
         crate = Crate(self, {
             "LICENSE-MIT": bare_mit,
             "src/lib.rs": "// Copyright 2016 lazy-static.rs Developers\n//\n// Licensed under MIT\nfn f() {}\n",

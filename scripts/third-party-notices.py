@@ -3,6 +3,7 @@
 
 import argparse
 import difflib
+import hashlib
 import importlib.metadata
 import importlib.util
 import json
@@ -31,12 +32,12 @@ NO_NOTICE = {
     "blessing",
 }
 NOTICE_MARKERS = {
-    "MIT": ("Permission is hereby granted, free of charge",),
-    "ISC": ("Permission to use, copy, modify, and/or distribute", "Permission to use, copy, modify, and distribute"),
-    "BSD-2-Clause": ("Redistribution and use in source and binary forms",),
-    "BSD-3-Clause": ("Redistribution and use in source and binary forms",),
-    "Apache-2.0": ("Apache License Version 2.0",),
-    "Unicode-3.0": ("UNICODE LICENSE V3",),
+    "MIT": (("permission is hereby granted, free of charge", "without warranty of any kind"),),
+    "ISC": (("permission to use, copy, modify, and/or distribute", "provided \"as is\""), ("permission to use, copy, modify, and distribute", "provided \"as is\"")),
+    "BSD-2-Clause": (("redistribution and use in source and binary forms", "any express or implied warranties"),),
+    "BSD-3-Clause": (("redistribution and use in source and binary forms", "neither the name", "any express or implied warranties"),),
+    "Apache-2.0": (("apache license version 2.0", "end of terms and conditions"),),
+    "Unicode-3.0": (("unicode license v3", "without warranty of any kind"),),
 }
 PREFERENCE = ("MIT", "ISC", "BSD-2-Clause", "BSD-3-Clause", "Apache-2.0", "Unicode-3.0")
 LICENCE_FILE = re.compile(r"^(LICEN[CS]E|COPYING|COPYRIGHT|UNLICENSE)", re.IGNORECASE)
@@ -64,10 +65,10 @@ BUNDLED = {
 }
 CLARIFIED = {
     ("@bufbuild/protobuf", "2.17.0"): [
-        ("vendored", "bufbuild-protobuf-2.17.0-LICENSE"),
+        ("vendored", "bufbuild-protobuf-2.17.0-LICENSE", "c04b4216f1cd4c5a4f7fb2f2a1b0ae70d847e9e0cac7c9dee9bf8cc03177c449"),
         ("lines", "dist/esm/wire/varint.js", 1, 32),
     ],
-    ("rust", "1.100.0"): [("vendored", "rust-1.100.0-LICENSE-MIT")],
+    ("rust", "1.100.0"): [("vendored", "rust-1.100.0-LICENSE-MIT", "b71bd43a069ca0641a9ecfe585ca7b3c53b5cc1608f8b68321168698e28b5ea1")],
 }
 
 
@@ -159,7 +160,8 @@ def flat(text):
 
 
 def holds(text, licence):
-    return any(marker in flat(text) for marker in NOTICE_MARKERS[licence])
+    lowered = flat(text).lower()
+    return any(all(marker in lowered for marker in markers) for markers in NOTICE_MARKERS[licence])
 
 
 def normalise(text):
@@ -221,7 +223,11 @@ def clarified_texts(component, sources):
     texts = []
     for source in sources:
         if source[0] == "vendored":
-            texts.append(read(TEXTS / source[1]))
+            _, name, sha256 = source
+            data = (TEXTS / name).read_bytes()
+            if hashlib.sha256(data).hexdigest() != sha256:
+                raise Unresolved(f"scripts/third-party-notices/{name} does not have the SHA-256 CLARIFIED pins for it; restore the upstream text or update the pin after checking it")
+            texts.append(normalise(data.decode("utf-8")))
             continue
         if source[0] == "file":
             texts.append(read(component.directory / source[1]))
