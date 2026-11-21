@@ -2882,7 +2882,10 @@ fn a_file_another_device_moves_back_before_its_removal_runs_stays() {
     let id = NodeId::from(live_id(&server_nodes(&remote), "keep.txt"));
     let trees = &b.folder.engine.trees;
     assert!(!trees.excluded(&id));
-    assert_eq!(trees.remote().live(&id).unwrap().parent, trees.remote().root);
+    assert_eq!(
+        trees.remote().live(&id).unwrap().parent,
+        trees.remote().root
+    );
     assert_eq!(fs::read(&keep).unwrap(), b"keep");
     b.perform(stage, &mut remote).unwrap();
 
