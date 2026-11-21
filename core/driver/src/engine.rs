@@ -58,10 +58,9 @@ pub(crate) struct Engine {
     unstored_ctimes: BTreeMap<NodeId, i64>,
     pub local_written_since_load: bool,
     removed_at: BTreeMap<NodeId, u64>,
-    renamed_away: BTreeMap<NodeId, (NodeId, String, u64)>,
+    renamed_away: BTreeMap<NodeId, (NodeId, String, u64, Option<u64>)>,
     took_slot: BTreeMap<(NodeId, String), (NodeId, u64, bool)>,
     backup_gone: BTreeMap<NodeId, bool>,
-    backup_removed: BTreeMap<NodeId, u64>,
     owed: BTreeSet<NodeId>,
     stored_owed: BTreeSet<NodeId>,
 }
@@ -943,11 +942,10 @@ impl Engine {
     pub fn observe(&mut self, changes: &[Observed], now_ms: u64) -> BTreeSet<NodeId> {
         let unscanned = self.unscanned.take();
         let wait = 2 * DELETE_WAIT_MS;
-        (self.renamed_away).retain(|_, (_, _, at)| now_ms < at.saturating_add(wait));
+        (self.renamed_away).retain(|_, (_, _, at, _)| now_ms < at.saturating_add(wait));
         (self.took_slot).retain(|_, (_, at, _)| now_ms < at.saturating_add(wait));
         let away = &self.renamed_away;
         (self.backup_gone).retain(|id, _| away.contains_key(id));
-        (self.backup_removed).retain(|id, _| away.contains_key(id));
         let mut before: Vec<Option<NodeId>> = changes
             .iter()
             .map(|change| match change {
@@ -1148,8 +1146,9 @@ impl Engine {
                         if file && !excluded {
                             self.removed_at.insert(id.clone(), now_ms);
                             self.owed.insert(id.clone());
-                        } else if file && self.renamed_away.contains_key(&id) {
-                            self.backup_removed.insert(id.clone(), now_ms);
+                        }
+                        if file && let Some((_, _, _, removed)) = self.renamed_away.get_mut(&id) {
+                            *removed = Some(now_ms);
                         }
                         self.remove(&id, &moving, true, missing, &mut touched, &mut gone);
                     }
@@ -1379,15 +1378,11 @@ impl Engine {
             Option<Content>,
         );
         let mut saves: Vec<Save> = (self.renamed_away.iter())
-            .filter_map(|(id, (parent, name, renamed))| {
-                let removed = (self.removed_at.get(id).into_iter())
-                    .chain(self.backup_removed.get(id))
-                    .max()
-                    .copied()?;
+            .filter_map(|(id, (parent, name, renamed, removed))| {
+                let removed = (*removed)?;
                 let (taker, took, staged) = self.took_slot.get(&(parent.clone(), name.clone()))?;
                 let saved = self.trees.local().get(taker)?;
                 let continues = self.trees.local_child(parent, name) == Some(taker)
-                    && removed >= *renamed
                     && (removed < renamed.saturating_add(DELETE_WAIT_MS)
                         || self.backup_gone.get(id) == Some(&true))
                     && now_ms < removed.saturating_add(DELETE_WAIT_MS)
@@ -1506,7 +1501,7 @@ impl Engine {
         now_ms: u64,
         name_absent: impl Fn(&Trees, &Shape) -> Option<bool>,
     ) {
-        for (id, (parent, name, renamed)) in &self.renamed_away {
+        for (id, (parent, name, renamed, _)) in &self.renamed_away {
             if now_ms < renamed.saturating_add(DELETE_WAIT_MS)
                 || self.backup_gone.contains_key(id)
                 || !self.took_slot.contains_key(&(parent.clone(), name.clone()))
@@ -1530,7 +1525,7 @@ impl Engine {
     }
 
     fn held_takers(&self, now_ms: u64) -> impl Iterator<Item = (NodeId, u64)> {
-        (self.renamed_away.iter()).filter_map(move |(id, (parent, name, renamed))| {
+        (self.renamed_away.iter()).filter_map(move |(id, (parent, name, renamed, _))| {
             let until = match self.backup_gone.get(id) {
                 None => renamed.saturating_add(DELETE_WAIT_MS),
                 Some(true) => renamed.saturating_add(2 * DELETE_WAIT_MS),
@@ -1774,7 +1769,7 @@ impl Engine {
                 self.took_slot
                     .insert(slot, (id.clone(), now_ms, tmp(&from.1) && !own_identity));
                 self.renamed_away
-                    .insert(id.clone(), (from.0, from.1, now_ms));
+                    .insert(id.clone(), (from.0, from.1, now_ms, None));
                 self.backup_gone.remove(&id);
             } else if !held {
                 let new_entry = !self.trees.displaced_local().contains_key(&id);
@@ -2065,7 +2060,6 @@ impl Stored {
             renamed_away: BTreeMap::new(),
             took_slot: BTreeMap::new(),
             backup_gone: BTreeMap::new(),
-            backup_removed: BTreeMap::new(),
             owed: owed.clone(),
             stored_owed: owed,
         }))
@@ -2994,7 +2988,6 @@ mod tests {
             renamed_away: BTreeMap::new(),
             took_slot: BTreeMap::new(),
             backup_gone: BTreeMap::new(),
-            backup_removed: BTreeMap::new(),
             owed: BTreeSet::new(),
             stored_owed: BTreeSet::new(),
         };
@@ -5352,7 +5345,7 @@ mod tests {
 
     #[test]
     fn current_backup_removal_decides_the_save() {
-        for missing in [false, true] {
+        for (missing, again, moved) in [(false, 0, 0), (true, 1_600, 1_700), (true, 1_500, 1_500)] {
             let (_dir, mut engine, report) = removed_report();
             let path = "docs/report.txt";
             engine.observe(&[created(path, ino(3), false, 1)], 1_100);
@@ -5370,11 +5363,11 @@ mod tests {
                 1_500,
             );
             assert_eq!(engine.removed_at.get(&report), Some(&1_000));
-            assert_eq!(engine.backup_removed.get(&report), Some(&1_500));
+            assert_eq!(engine.renamed_away[&report].3, Some(1_500));
             if missing {
-                engine.observe(&[created(path, ino(6), false, 1)], 1_600);
+                engine.observe(&[created(path, ino(6), false, 1)], again);
                 assert_eq!(holding(&engine, path).unwrap().0, report);
-                engine.observe(&[renamed(path, "docs/elsewhere.txt", ino(6), false)], 1_700);
+                engine.observe(&[renamed(path, "docs/elsewhere.txt", ino(6), false)], moved);
                 engine.observe(
                     &[Observed::Missing {
                         path: "docs/elsewhere.txt".into(),
