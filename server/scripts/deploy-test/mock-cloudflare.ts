@@ -39,6 +39,7 @@ export class MockCloudflare {
   readonly runAttempts = new Map<string, MockRunAttempt>();
   githubStatus = 200;
   workflowRunsStatus = 200;
+  missingWorkflow = "";
   githubDelayMs = 0;
   workerListDelayMs = 0;
   readonly stalledBodies: string[] = [];
@@ -151,6 +152,7 @@ export class MockCloudflare {
       }
       if ((match = /^\/github\/repos\/koidrive\/koidrive\/actions\/workflows\/([^/]+)\/runs$/.exec(path)) && method === "GET") {
         if (this.workflowRunsStatus !== 200) return send(this.workflowRunsStatus, { message: "Server Error" });
+        if (match[1] === this.missingWorkflow) return send(404, { message: "Not Found" });
         const latest = new Map<number, { attempt: number; run: MockRunAttempt }>();
         for (const [key, run] of this.runAttempts) {
           const [id, attempt] = key.split("/").map(Number) as [number, number];

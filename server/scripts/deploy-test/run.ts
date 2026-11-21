@@ -607,27 +607,39 @@ function runAttempt(repository: string, id: string, attempt: string, deadline: D
   return github<RunAttempt>("/repos/" + repository + "/actions/runs/" + id + "/attempts/" + attempt, "run " + id + " attempt " + attempt, deadline);
 }
 
-async function finishedRunNames(repository: string, deadline: Deadline): Promise<string[]> {
+async function finishedRunNames(repository: string, deadline: Deadline, unchecked: (what: string, error: unknown) => void): Promise<string[]> {
   const since = Date.now() - LOOKBACK_DAYS * 86_400_000;
   const created = ">=" + new Date(since - RERUN_DAYS * 86_400_000).toISOString().slice(0, 10);
   const names: string[] = [];
   for (const workflow of TEST_WORKFLOWS) {
     const file = workflow.slice(workflow.lastIndexOf("/") + 1);
-    for (let page = 1; ; page++) {
-      const query = new URLSearchParams({ status: "completed", created, per_page: "100", page: String(page) });
-      const what = "the finished " + file + " runs";
-      const listed = await github<{ workflow_runs?: { id?: unknown; run_attempt?: unknown; updated_at?: unknown }[] }>("/repos/" + repository + "/actions/workflows/" + file + "/runs?" + query, what, deadline);
-      if (!listed) throw new GitHubError("GitHub returned HTTP 404 for " + what);
-      const runs = listed.workflow_runs ?? [];
-      for (const run of runs) {
-        if (typeof run.id !== "number" || typeof run.run_attempt !== "number" || typeof run.updated_at !== "string" || !(Date.parse(run.updated_at) >= since)) continue;
-        names.push(NAME_PREFIX + run.id + "-" + run.run_attempt);
-        for (let attempt = 1; attempt < run.run_attempt; attempt++) {
-          const earlier = await runAttempt(repository, String(run.id), String(attempt), deadline);
-          if (earlier?.status === "completed" && Date.parse(earlier.updated_at) >= since) names.push(NAME_PREFIX + run.id + "-" + attempt);
+    const what = "the finished " + file + " runs";
+    try {
+      for (let page = 1; ; page++) {
+        const query = new URLSearchParams({ status: "completed", created, per_page: "100", page: String(page) });
+        const listed = await github<{ workflow_runs?: { id?: unknown; run_attempt?: unknown; updated_at?: unknown }[] }>("/repos/" + repository + "/actions/workflows/" + file + "/runs?" + query, what, deadline);
+        if (!listed) throw new GitHubError("GitHub returned HTTP 404 for " + what);
+        const runs = listed.workflow_runs ?? [];
+        for (const run of runs) {
+          if (typeof run.id !== "number" || typeof run.run_attempt !== "number" || typeof run.updated_at !== "string" || !(Date.parse(run.updated_at) >= since)) continue;
+          names.push(NAME_PREFIX + run.id + "-" + run.run_attempt);
+          for (let attempt = 1; attempt < run.run_attempt; attempt++) {
+            const label = "run " + run.id + " attempt " + attempt;
+            try {
+              const earlier = await runAttempt(repository, String(run.id), String(attempt), deadline);
+              if (!earlier) throw new GitHubError("GitHub returned HTTP 404 for " + label);
+              if (earlier.status === "completed" && Date.parse(earlier.updated_at) >= since) names.push(NAME_PREFIX + run.id + "-" + attempt);
+            } catch (error) {
+              if (error instanceof DeadlineError) throw error;
+              unchecked("reading " + label, error);
+            }
+          }
         }
+        if (runs.length < 100) break;
       }
-      if (runs.length < 100) break;
+    } catch (error) {
+      unchecked("listing " + what, error);
+      if (error instanceof DeadlineError) return names;
     }
   }
   return names;
@@ -775,7 +787,7 @@ async function sweep(account: Account): Promise<void> {
     if (error instanceof DeadlineError) unfinished = true;
     else say("::warning::The sweep could not check for leftovers the lists left out, " + what + ": " + reason(error));
   };
-  const recent = await finishedRunNames(repository, deadline).catch((error: unknown) => void unchecked("listing the finished test runs", error));
+  const recent = await finishedRunNames(repository, deadline, unchecked);
   if (recent && (testWorkers || buckets)) {
     const listedWorkers = new Set(testWorkers?.map((worker) => worker.name));
     const listedBuckets = new Set(buckets?.map((bucket) => bucket.name));
