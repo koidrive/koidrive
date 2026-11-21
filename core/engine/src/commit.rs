@@ -813,6 +813,12 @@ impl Commits {
         self.field_intents.0
     }
 
+    /// Builds ops the way a `Welcome` that lists the `field_intents` feature, or one that does not,
+    /// would have them built, without the rest of [`Commits::connected`].
+    pub fn set_field_intents(&mut self, on: bool) {
+        self.field_intents.0 = on;
+    }
+
     pub fn in_flight(&self) -> Option<&InFlight> {
         self.in_flight.as_ref()
     }

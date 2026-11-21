@@ -1523,7 +1523,8 @@ fn reload(
     loaded.restore(trees.state()).map_err(refused)?;
     prop_assert!(!loaded.rules_known());
     rules.read(&mut loaded);
-    let restored_commits = Commits::from_state(commits.state()).map_err(refused)?;
+    let mut restored_commits = Commits::from_state(commits.state()).map_err(refused)?;
+    restored_commits.set_field_intents(commits.field_intents());
     restored_commits.hold(&mut loaded);
     let restored_effects = Effects::from_state(effects.state()).map_err(refused)?;
     prop_assert_eq!(&loaded, trees);
@@ -2735,6 +2736,8 @@ fn run_ignoring_answering_after(
         let residue = observed_merge_residue(&device, &commits);
         commits.settle_merge_residue(&mut device.trees, &mut device.ids, NOW as u64, &residue);
         let mut before = (device.trees.clone(), commits.questions().to_vec());
+        let negotiated = space.welcome(&me).features.contains(&"field_intents".to_owned());
+        prop_assert_eq!(commits.field_intents(), negotiated);
         let built = commits.build(
             &mut device.trees,
             &mut device.ids,
