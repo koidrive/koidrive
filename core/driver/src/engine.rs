@@ -1700,14 +1700,23 @@ impl Engine {
                 .filter(|(parent, name)| (parent, name) != (&shape.parent, &shape.name));
             let slot = (shape.parent.clone(), shape.name.clone());
             let held = (self.took_slot.get(&slot)).is_some_and(|(taker, _, _)| *taker == id);
-            if let Some((parent, name)) = moved {
-                let staged = Path::new(&name)
-                    .extension()
-                    .is_some_and(|extension| extension.eq_ignore_ascii_case("tmp"));
-                self.renamed_away.insert(id.clone(), (parent, name, now_ms));
-                self.took_slot.insert(slot, (id.clone(), now_ms, staged));
+            if let Some(from) = moved {
+                let tmp = |name: &str| {
+                    (Path::new(name).extension())
+                        .is_some_and(|extension| extension.eq_ignore_ascii_case("tmp"))
+                };
+                let own_identity = self.trees.synced().get(&id).is_some()
+                    || self.trees.remote().get(&id).is_some()
+                    || (self.commits.in_flight())
+                        .and_then(|flight| flight.created_file_name(&id))
+                        .is_some_and(|born| !tmp(born));
+                self.took_slot
+                    .insert(slot, (id.clone(), now_ms, tmp(&from.1) && !own_identity));
+                self.renamed_away
+                    .insert(id.clone(), (from.0, from.1, now_ms));
             } else if !held {
-                self.took_slot.insert(slot, (id.clone(), now_ms, true));
+                let new_entry = !self.trees.displaced_local().contains_key(&id);
+                self.took_slot.insert(slot, (id.clone(), now_ms, new_entry));
             }
         }
         self.trees.set_local_changed(
