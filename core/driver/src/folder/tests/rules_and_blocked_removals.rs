@@ -3108,14 +3108,17 @@ fn a_top_level_file_renamed_back_rereads_only_itself_and_its_delete_is_sent() {
         a.scan_until(|a| !a.work.is_empty());
         a.run(&mut remote);
         b.pull(&remote);
+        if to == "blocked.txt" {
+            fs::write(site.root.join("f.txt"), b"edited").unwrap();
+            let local = |b: &Device| b.folder.engine.trees.local().get(&file).cloned();
+            b.scan_until(|b| local(b).is_some_and(|node| !node.content_from_server));
+        }
         b.run(&mut remote);
         assert!(b.folder.engine.trees.unobserved(&file), "{to}");
     }
-    let sections = b.folder.disk.sections();
-    let batch = sections
-        .observe(&mut b.observer, std::time::Duration::ZERO)
-        .unwrap()
-        .unwrap();
+    let observer = &mut b.observer;
+    let batch = b.folder.disk.sections().observe(observer, Duration::ZERO);
+    let batch = batch.unwrap().unwrap();
     let read: Vec<_> = (batch.observation.changes.iter())
         .filter_map(|change| match change {
             Observed::Modified {
