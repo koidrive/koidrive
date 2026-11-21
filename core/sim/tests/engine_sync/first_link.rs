@@ -1751,3 +1751,61 @@ fn a_discard_judges_an_entry_taken_out_by_the_place_the_server_last_took_its_mov
         assert_eq!(what_the_user_did_below(&device, &folder), after);
     }
 }
+
+#[test]
+fn a_discard_keeps_the_ancestry_an_entry_left_when_that_place_moves_before_the_server_answers() {
+    let folder: NodeId = "folder".into();
+    let item: NodeId = "item".into();
+    let parent: NodeId = "parent".into();
+    let state = |node: &str, parent: &str, name: &str| NodeState {
+        node_id: node.into(),
+        parent_id: parent.into(),
+        name: name.into(),
+        kind: 1,
+        status: 1,
+        meta_rev: 2,
+        ..Default::default()
+    };
+    let mut trees = Trees::new("root");
+    for (name, ino) in [("folder", 1), ("item", 2), ("parent", 3)] {
+        let (id, remote) = RemoteNode::from_state(&state(name, "root", name)).unwrap();
+        trees.set_synced(id.clone(), Some(remote.shape.clone()));
+        trees.set_local(
+            id.clone(),
+            LocalNode {
+                shape: remote.shape.clone(),
+                identity: identity(ino),
+                parked: false,
+                left_out_when_placed: false,
+                content_from_server: false,
+                chunks: Box::default(),
+            },
+        );
+        trees.set_remote(id, remote);
+    }
+    let mut device = Device::new(trees);
+    device.rules.read(&mut device.trees);
+    device.act(&act(3, 1, 3, 2, 0));
+    device.act(&act(3, 1, 0, 3, 0));
+    device.act(&act(3, 2, 1, 5, 0));
+    assert_eq!(
+        device.trees.local().get(&item).unwrap().shape.parent,
+        NodeId::from("root")
+    );
+    assert_eq!(device.trees.local().get(&parent).unwrap().shape.parent, folder);
+    assert_eq!(
+        what_the_user_did_below(&device, &folder),
+        "changed an entry it holds"
+    );
+    device.receive(
+        &[ChangeRecord {
+            change: Some(change_record::Change::Node(state("item", "parent", "b"))),
+        }],
+        true,
+    );
+    assert_eq!(device.relocated.get(&item).unwrap().from.parent, parent);
+    assert_eq!(
+        what_the_user_did_below(&device, &folder),
+        "changed an entry it holds"
+    );
+}

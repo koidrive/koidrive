@@ -644,6 +644,7 @@ struct Relocation {
     from: koidrive_engine::tree::Shape,
     to: koidrive_engine::tree::Shape,
     origin: Vec<NodeId>,
+    left: Vec<(koidrive_engine::tree::Shape, Vec<NodeId>)>,
 }
 
 impl Device {
@@ -717,22 +718,32 @@ impl Device {
         after: &koidrive_engine::tree::Shape,
     ) {
         let kept = (self.relocated.remove(id)).filter(|moved| moved.to.same_position(before));
+        let chain = self.chain_above(&before.parent);
         if kept.is_none() {
-            self.leave(id, &before.parent);
+            self.left_from.insert(id.to_owned(), chain.clone());
         }
-        let (from, origin) = kept.map_or_else(
+        let (from, origin, mut left) = kept.map_or_else(
             || {
                 (
                     before.clone(),
                     ancestors(&self.trees, Some(before.parent.clone())),
+                    Vec::new(),
                 )
             },
-            |moved| (moved.from, moved.origin),
+            |moved| (moved.from, moved.origin, moved.left),
         );
+        left.push((before.clone(), chain));
         if !from.same_position(after) {
             let to = after.clone();
-            self.relocated
-                .insert(id.to_owned(), Relocation { from, to, origin });
+            self.relocated.insert(
+                id.to_owned(),
+                Relocation {
+                    from,
+                    to,
+                    origin,
+                    left,
+                },
+            );
         }
     }
 
@@ -790,10 +801,14 @@ impl Device {
             if remote.same_position(&moved.to) {
                 self.relocated.remove(&node);
             } else if answered {
-                let parent = remote.parent.clone();
+                let place =
+                    (moved.left.iter().skip(1)).position(|(shape, _)| remote.same_position(shape));
+                if let Some(at) = place {
+                    moved.left.drain(..=at);
+                    self.left_from.insert(node.clone(), moved.left[0].1.clone());
+                }
                 moved.from = remote;
                 moved.origin = now;
-                self.leave(&node, &parent);
             }
         }
     }
@@ -963,13 +978,18 @@ impl Device {
     }
 
     fn leave(&mut self, id: &NodeId, parent: &NodeId) {
+        let chain = self.chain_above(parent);
+        self.left_from.insert(id.to_owned(), chain);
+    }
+
+    fn chain_above(&self, parent: &NodeId) -> Vec<NodeId> {
         let mut chain = Vec::new();
         let mut at = Some(parent.clone());
         while let Some(node) = at.filter(|node| !chain.contains(node)) {
             at = (self.trees.local().get(&node)).map(|local| local.shape.parent.clone());
             chain.push(node);
         }
-        self.left_from.insert(id.to_owned(), chain);
+        chain
     }
 
     fn acted_on(&mut self, id: NodeId) {
