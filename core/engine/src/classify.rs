@@ -3478,8 +3478,12 @@ impl Trees {
         for (id, base) in bases {
             self.wait(id, Some(base), Origin::Other);
         }
-        for id in released {
-            self.discarded.remove(id);
+        let retired: Vec<NodeId> = (dropped.iter())
+            .filter(|id| released.contains(id) || self.the_users_again(id))
+            .cloned()
+            .collect();
+        for id in retired {
+            self.discarded.remove(&id);
         }
         self.forget_reclaims();
         let (l, s, waiting) = (&self.l, &self.s, &self.waiting);

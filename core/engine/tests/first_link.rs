@@ -8389,3 +8389,75 @@ fn a_first_link_discard_asks_again_about_a_folder_the_user_renames_back_to_its_s
     assert!(changed.done.is_empty(), "{:?}", changed.done);
     assert!(changed.published.contains(&("create dir", "l-dir".into())));
 }
+
+#[test]
+fn a_first_link_discard_asks_once_about_a_file_the_rules_leave_out_inside_a_folder_the_user_changed()
+ {
+    let mut trees = trees(
+        &[("l-dir", dir(ROOT, "ß")), ("l-f", file("l-dir", "ss", 1))],
+        &[("r-ss", dir(ROOT, "ss")), ("r-c", file("r-ss", "c.txt", 2))],
+    );
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(7));
+    commits.first_link(&mut trees, &mut ids, NOW, PriorSync::Shown);
+    trees.settle(commits.aliases());
+    assert!(commits.decide(&mut trees, &question(&commits).id, Answer::Discard));
+    assert!(ops(&mut commits, &mut trees, &mut ids).is_empty());
+    let root: [&str; 0] = [];
+    let rules = RuleFile::parse(b"/x/ss\n");
+    trees.set_rules(&root, Source::Koiignore, Some(rules.clone()));
+    let change = |trees: &mut Trees, id: &str, change: &dyn Fn(&mut Shape)| {
+        let mut node = trees.local().get(&id.into()).unwrap().clone();
+        change(&mut node.shape);
+        trees.set_local_changed(id.into(), node);
+    };
+    change(&mut trees, "l-dir", &|shape| shape.name = "x".into());
+    change(&mut trees, "l-f", &|shape| shape.content = Some(content(3)));
+    trees.settle(commits.aliases());
+    assert!(trees.ignored(&"l-f".into()));
+    let holding = |commits: &Commits| -> Vec<Vec<NodeId>> {
+        (commits.questions().iter())
+            .filter(|question| question.holds().any(|id| id == "l-f"))
+            .map(|question| question.holds().cloned().collect())
+            .collect()
+    };
+    assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
+    assert_eq!(
+        holding(&commits),
+        [vec![NodeId::from("l-dir"), "l-f".into()]]
+    );
+    trees = restarted(&trees);
+    trees.set_rules(&root, Source::Koiignore, Some(rules));
+    commits = Commits::from_state(commits.state()).unwrap();
+    trees.settle(commits.aliases());
+    assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
+    assert_eq!(
+        holding(&commits),
+        [vec![NodeId::from("l-dir"), "l-f".into()]]
+    );
+    change(&mut trees, "l-f", &|shape| shape.content = Some(content(1)));
+    trees = restarted(&trees);
+    commits = Commits::from_state(commits.state()).unwrap();
+    trees.settle(commits.aliases());
+    assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
+    let done = run_effects(
+        &mut Effects::default(),
+        &mut commits,
+        &mut trees,
+        &mut ids,
+        100,
+    );
+    assert!(
+        !done
+            .iter()
+            .any(|(node, _)| node == "l-f" || node == "l-dir"),
+        "{done:?}"
+    );
+    assert_eq!(
+        holding(&commits),
+        [vec![NodeId::from("l-dir"), "l-f".into()]]
+    );
+    assert_eq!(
+        trees.local().get(&"l-f".into()).unwrap().shape,
+        file("l-dir", "ss", 1)
+    );
+}
