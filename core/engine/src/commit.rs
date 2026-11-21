@@ -2503,10 +2503,11 @@ impl Commits {
                 op::Op::Move(_) => {
                     let node = op_node(op);
                     trees.record_moved(&node, seq, flight.move_bases.get(&node).map(Vec::as_slice));
-                    trees.record_placed_here(&node, None, &sent, seq);
+                    trees.record_placed_here(&node, sent.get(&node).cloned(), &sent, seq);
                 }
                 op::Op::CreateDir(_) | op::Op::CreateFile(_) | op::Op::Restore(_) => {
-                    trees.record_placed_here(&op_node(op), None, &sent, seq);
+                    let node = op_node(op);
+                    trees.record_placed_here(&node, sent.get(&node).cloned(), &sent, seq);
                 }
                 op::Op::UpdateContent(_) | op::Op::MarkGitTracked(_) => {}
             }

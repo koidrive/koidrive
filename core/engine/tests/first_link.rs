@@ -11788,6 +11788,88 @@ fn an_entry_this_device_moves_from_folder_to_folder_keeps_only_the_stays_of_the_
 }
 
 #[test]
+fn this_devices_move_out_of_the_folder_ends_its_stay_there_whichever_of_its_record_and_result_comes_first()
+ {
+    for (restart, from_the_log, own_record_first) in [
+        (false, false, true),
+        (false, true, true),
+        (true, true, true),
+        (true, false, false),
+    ] {
+        let case = format!(
+            "restart {restart} from the log {from_the_log} own record first {own_record_first}"
+        );
+        let (moved_in, out) = (file("x", "m", 7), file(ROOT, "m", 7));
+        let stay = (NodeId::from("m"), NodeId::from("x"));
+        let (mut trees, mut commits, mut ids, sent) = a_server_folder_this_device_discards(
+            &[],
+            |trees, commits, ids| {
+                let into_x = this_device_sends_a_move(trees, commits, ids, "m", moved_in.clone());
+                assert_eq!(into_x, [("move", "m".into())]);
+                the_server_confirms_the_move(
+                    trees,
+                    commits,
+                    "m",
+                    moved_in.clone(),
+                    2,
+                    from_the_log,
+                );
+                assert!(trees.state().discard_stays.contains(&stay), "{case}");
+                let out_of_x = this_device_sends_a_move(trees, commits, ids, "m", out.clone());
+                assert_eq!(out_of_x, [("move", "m".into())]);
+                let applied = OpResult {
+                    code: op_result::Code::Applied as i32,
+                    node_id: "m".into(),
+                    ..Default::default()
+                };
+                let result = CommitResult {
+                    seq: 3,
+                    results: vec![applied],
+                    ..Default::default()
+                };
+                let mut record = trees.remote().get(&"m".into()).unwrap().clone();
+                (record.shape, record.meta_rev, record.meta_edit_rev) = (out.clone(), 3, 3);
+                match own_record_first {
+                    true => {
+                        let commit_id = commits.in_flight().unwrap().commit.commit_id.clone();
+                        commits.own_record(3, &commit_id, NOW as i64);
+                        trees.apply_batch(|trees| trees.set_remote_made_here("m".into(), record));
+                        assert!(!commits.acknowledge(trees, 3));
+                        assert!(!trees.state().discard_stays.contains(&stay), "{case}");
+                        trees.settle(commits.aliases());
+                        commits.received(result).unwrap();
+                    }
+                    false => {
+                        commits.received(result).unwrap();
+                        trees.apply_batch(|trees| trees.set_remote_made_here("m".into(), record));
+                    }
+                }
+                assert!(commits.acknowledge(trees, 3));
+                trees.settle(commits.aliases());
+                assert!(!trees.state().discard_stays.contains(&stay), "{case}");
+            },
+            |_, _| {},
+        );
+        assert_eq!(sent, [], "{case}");
+        restarted_if(restart, &mut trees, &mut commits);
+        assert!(!trees.state().discard_stays.contains(&stay), "{case}");
+        let sends = change_as_the_user(&mut trees, &"m".into(), UserChange::Edit);
+        assert_eq!(
+            quiet(&mut trees, &mut commits, &mut ids),
+            [(sends, "m".to_owned())],
+            "{case}: {:?}",
+            local(&trees)
+        );
+        assert_eq!(
+            trees.local().get(&"x".into()).unwrap().shape,
+            dir(ROOT, "server"),
+            "{case}"
+        );
+        assert!(trees.local().get(&"f".into()).is_none(), "{case}");
+    }
+}
+
+#[test]
 fn an_entry_whose_move_out_the_server_refuses_keeps_this_devices_stay_in_the_folder() {
     for from_the_log in [false, true] {
         for restart in [false, true] {
@@ -11809,6 +11891,15 @@ fn an_entry_whose_move_out_the_server_refuses_keeps_this_devices_stay_in_the_fol
                     let out =
                         this_device_sends_a_move(trees, commits, ids, "m", file(ROOT, "m", 7));
                     assert_eq!(out, [("move", "m".into())]);
+                    if from_the_log {
+                        let commit_id = commits.in_flight().unwrap().commit.commit_id.clone();
+                        commits.own_record(3, &commit_id, NOW as i64);
+                        trees.apply_batch(|_| {});
+                        assert!(!commits.acknowledge(trees, 3));
+                        let stay = (NodeId::from("m"), NodeId::from("x"));
+                        assert!(trees.state().discard_stays.contains(&stay), "{restart}");
+                        trees.settle(commits.aliases());
+                    }
                     let refused = OpResult {
                         code: op_result::Code::Rejected as i32,
                         reject_reason: "CYCLE".into(),
@@ -12114,6 +12205,70 @@ fn an_entry_this_device_creates_before_the_answer_stays_one_of_its_entries_after
                 (sends, "n".to_owned())
             ],
             "{case}"
+        );
+    }
+}
+
+#[test]
+fn an_entry_this_device_moves_in_stays_one_of_its_entries_when_a_listing_brings_another_devices_rename_within_the_folder_before_the_result()
+ {
+    for (renamed, restart) in [(false, false), (false, true), (true, false), (true, true)] {
+        let case = format!("renamed {renamed} restart {restart}");
+        let moved_in = file("x", "m", 7);
+        let (mut trees, mut commits, mut ids, sent) = a_server_folder_this_device_discards(
+            &[],
+            |trees, commits, ids| {
+                let sent = this_device_sends_a_move(trees, commits, ids, "m", moved_in.clone());
+                assert_eq!(sent, [("move", "m".to_owned())]);
+            },
+            |trees, commits| {
+                let commit_id = commits.in_flight().unwrap().commit.commit_id.clone();
+                commits.own_record(5, &commit_id, NOW as i64);
+                let mut remote = trees.remote().get(&"m".into()).unwrap().clone();
+                (remote.shape, remote.meta_rev, remote.meta_edit_rev) = (moved_in.clone(), 5, 5);
+                trees.apply_batch(|trees| trees.set_remote_made_here("m".into(), remote.clone()));
+                let last = match renamed {
+                    true => {
+                        (remote.shape, remote.meta_rev, remote.meta_edit_rev) =
+                            (file("x", "m2", 7), 6, 6);
+                        trees.apply_batch(|trees| trees.set_remote("m".into(), remote));
+                        6
+                    }
+                    false => 5,
+                };
+                assert!(!commits.acknowledge(trees, last), "{case}");
+                trees.settle(commits.aliases());
+                let result = OpResult {
+                    code: op_result::Code::Applied as i32,
+                    node_id: "m".into(),
+                    ..Default::default()
+                };
+                let result = CommitResult {
+                    seq: 5,
+                    results: vec![result],
+                    ..Default::default()
+                };
+                commits.received(result).unwrap();
+                assert!(commits.acknowledge(trees, last), "{case}");
+                trees.settle(commits.aliases());
+            },
+        );
+        assert_eq!(sent, [], "{case}");
+        let member = trees.state().discard_members.get(&"m".into()).cloned();
+        assert_eq!(member, Some("x".into()), "{case}");
+        restarted_if(restart, &mut trees, &mut commits);
+        let sends = change_as_the_user(&mut trees, &"m".into(), UserChange::Edit);
+        let mut sent = quiet(&mut trees, &mut commits, &mut ids);
+        sent.sort();
+        assert_eq!(
+            sent,
+            [
+                ("create dir", "f".to_owned()),
+                ("move", "x".to_owned()),
+                (sends, "m".to_owned())
+            ],
+            "{case}: {:?}",
+            local(&trees)
         );
     }
 }
