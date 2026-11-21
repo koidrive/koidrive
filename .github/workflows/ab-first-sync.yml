@@ -9,7 +9,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 350
     env:
-      REFS: "A=76eeac13cfa5778ac83eed27623a0ae617a25d3e B=fb53e1391e597ffce329054eb6e405873084c41d"
+      REFS: "A=faaba32058163a2d738cebb2aa246d738705753d B=6ad550f3815b71cf8c35d7b1c80b7a7c38af5f7b"
       REPS: "3"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
