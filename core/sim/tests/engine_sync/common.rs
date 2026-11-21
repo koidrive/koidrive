@@ -1579,44 +1579,91 @@ fn reload(
     Ok((loaded, restored_commits, restored_effects))
 }
 
-const FIELD_INTENTS: bool = true;
+thread_local! {
+    static FIELD_INTENTS: std::cell::Cell<bool> = const { std::cell::Cell::new(FIELD_INTENTS_BY_DEFAULT) };
+}
 
-const INTENTS_ON_REDS: [(&str, &str, &str); 3] = [
-    (
-        "removing_most_of_a_space_is_held_until_the_person_answers",
-        "GUN-1482",
-        "assertion failed: `(left == right)` \n  left: `0`,\n right: `12` at core/sim/tests/engine_sync.rs:<line>",
-    ),
-    (
-        "a_first_link_discard_keeps_a_folder_the_user_changes_after_the_server_drops_part_of_it",
-        "GUN-1482",
-        "01a1c2c0-39a0-7001-b241-9db23951df99 is where the user put it in a folder that is the user's again, but the effects move it out at core/sim/tests/engine_sync/common.rs:<line>",
-    ),
-    (
-        "a_first_link_discard_judges_a_taken_along_folder_against_what_it_held_at_the_discard",
-        "GUN-1482",
-        "assertion `left != right` failed\n  left: 1\n right: 1",
-    ),
+enum Where {
+    Test,
+    Case(&'static str),
+    AnyCase { witness: &'static str },
+}
+
+struct IntentsOnRed {
+    test: &'static str,
+    fails_in: Where,
+    issue: &'static str,
+    site: &'static str,
+}
+
+const INTENTS_ON_REDS: [IntentsOnRed; 8] = [
+    IntentsOnRed {
+        test: "removing_most_of_a_space_is_held_until_the_person_answers",
+        fails_in: Where::AnyCase {
+            witness: "cc-013c139c773a52791566f475cfeb9681c26f7035e2dad9117678ca4015725c56",
+        },
+        issue: "GUN-1482",
+        site: "a Delete answer trashes the folder and every file in it at core/sim/tests/engine_sync.rs:<line>",
+    },
+    IntentsOnRed {
+        test: "a_first_link_discard_keeps_a_folder_the_user_changes_after_the_server_drops_part_of_it",
+        fails_in: Where::AnyCase {
+            witness: "cc-844c642c9fdfc4dbf360fa3df56c7816a68740120cc2b667c72f44e4369c8166",
+        },
+        issue: "GUN-1482",
+        site: "is where the user put it in a folder that is the user's again, but the effects move it out at core/sim/tests/engine_sync/common.rs:<line>",
+    },
+    IntentsOnRed {
+        test: "a_first_link_discard_judges_a_taken_along_folder_against_what_it_held_at_the_discard",
+        fails_in: Where::Test,
+        issue: "GUN-1482",
+        site: "the Discard trashes the server folder it judged at core/sim/tests/engine_sync/rules_and_held_entries.rs:<line>",
+    },
+    IntentsOnRed {
+        test: "a_device_with_local_changes_converges_with_the_server_and_keeps_every_write",
+        fails_in: Where::Case(
+            "cc-a0e59dbd46366e057b781c820d7ec6f0c255feb9fbec00802aa50f9b45271e83",
+        ),
+        issue: "GUN-1482",
+        site: "no convergence within 400 steps; the last commit sent Delete of 01a1c2c0-39a0-75ee-831c-498d57bc0a70 answered CODE_SUPERSEDED at core/sim/tests/engine_sync/common.rs:<line>",
+    },
+    IntentsOnRed {
+        test: "a_device_with_local_changes_converges_with_the_server_and_keeps_every_write",
+        fails_in: Where::Case(
+            "cc-cd6f15873b750370ea8e3e9eafef1cd51fd5386d8da042aecd61038373d80065",
+        ),
+        issue: "GUN-1482",
+        site: "no convergence within 400 steps; the last commit sent Delete of 01a1c2c0-39a0-796f-a8a3-82c9a31d6efe answered CODE_SUPERSEDED at core/sim/tests/engine_sync/common.rs:<line>",
+    },
+    IntentsOnRed {
+        test: "a_device_with_local_changes_converges_with_the_server_and_keeps_every_write",
+        fails_in: Where::Case(
+            "cc-b391e3c8c35a92cb4a6d81b1e51e919f47835f7063cd8ee80e1ccc53be1e256c",
+        ),
+        issue: "GUN-1482",
+        site: "no convergence within 400 steps; the last commit sent Delete of 01a1c2c0-39a0-72d6-a4fd-bf2db1bb78a0 answered CODE_SUPERSEDED at core/sim/tests/engine_sync/common.rs:<line>",
+    },
+    IntentsOnRed {
+        test: "a_device_with_local_changes_converges_with_the_server_and_keeps_every_write",
+        fails_in: Where::Case(
+            "cc-c5a70021ee8e9f6eff9ff982939c4a0a9103b7f95565eac20c8d09e9823d6bb3",
+        ),
+        issue: "GUN-1482",
+        site: "no convergence within 400 steps; the last commit sent Delete of 01a1c2c0-39a0-7122-aa2f-19dfbfa03020 answered CODE_SUPERSEDED at core/sim/tests/engine_sync/common.rs:<line>",
+    },
+    IntentsOnRed {
+        test: "a_device_with_local_changes_converges_with_the_server_and_keeps_every_write",
+        fails_in: Where::Case(
+            "cc-6ad530a677fba14eb8aed45d62575495f6dd97ff029e72ef13a249945906f8e6",
+        ),
+        issue: "GUN-1482",
+        site: "no convergence within 400 steps; the last commit sent Delete of 01a1c2c0-39a0-7895-abc3-b3429e08873f answered CODE_SUPERSEDED at core/sim/tests/engine_sync/common.rs:<line>",
+    },
 ];
 
-fn fails_as_recorded(test: &str, run: impl FnOnce() + std::panic::UnwindSafe) {
-    let Some((_, issue, recorded)) = (INTENTS_ON_REDS.iter())
-        .find(|(name, _, _)| *name == test)
-        .filter(|_| FIELD_INTENTS)
-    else {
-        return run();
-    };
-    let Err(panic) = std::panic::catch_unwind(run) else {
-        panic!("{test} passes with field intents on, so its {issue} entry in INTENTS_ON_REDS goes");
-    };
-    let message = (panic.downcast_ref::<String>().cloned())
-        .or_else(|| panic.downcast_ref::<&str>().map(|text| text.to_string()))
-        .unwrap_or_default();
-    let reason = (message.strip_prefix("Test failed: "))
-        .and_then(|rest| rest.split_once(".\nminimal failing input"))
-        .map_or(message.as_str(), |(reason, _)| reason);
+fn recorded_red(test: &str, case: Option<&str>, failure: &str) -> Option<&'static IntentsOnRed> {
     let mut unlined = String::new();
-    let mut rest = reason;
+    let mut rest = failure;
     while let Some(at) = rest.find(".rs:") {
         unlined.push_str(&rest[..at + 4]);
         rest = &rest[at + 4..];
@@ -1627,10 +1674,50 @@ fn fails_as_recorded(test: &str, run: impl FnOnce() + std::panic::UnwindSafe) {
         rest = &rest[digits..];
     }
     unlined.push_str(rest);
-    assert_eq!(
-        unlined, *recorded,
-        "{test} fails with field intents on, but not as its {issue} entry records"
+    (INTENTS_ON_REDS.iter()).find(|red| {
+        let in_place = match red.fails_in {
+            Where::Test => case.is_none(),
+            Where::Case(pinned) => case == Some(pinned),
+            Where::AnyCase { .. } => true,
+        };
+        red.test == test && in_place && unlined.contains(red.site)
+    })
+}
+
+fn panic_message(panic: &(dyn std::any::Any + Send)) -> String {
+    (panic.downcast_ref::<String>().cloned())
+        .or_else(|| panic.downcast_ref::<&str>().map(|text| text.to_string()))
+        .unwrap_or_default()
+}
+
+fn fails_as_recorded(test: &str, run: impl FnOnce() + std::panic::UnwindSafe) {
+    if !FIELD_INTENTS.get() || !INTENTS_ON_REDS.iter().any(|red| red.test == test) {
+        return run();
+    }
+    let Err(panic) = std::panic::catch_unwind(run) else {
+        panic!("{test} passes with field intents on, so its entry in INTENTS_ON_REDS goes");
+    };
+    let message = panic_message(&*panic);
+    assert!(
+        recorded_red(test, None, &message).is_some(),
+        "{test} fails with field intents on, but not as its INTENTS_ON_REDS entry records: {message}"
     );
+}
+
+fn sent_op(op: &Op, outcome: &OpResult) -> String {
+    let (kind, node) = match &op.op {
+        Some(op::Op::CreateDir(create)) => ("CreateDir", &create.node_id),
+        Some(op::Op::CreateFile(create)) => ("CreateFile", &create.node_id),
+        Some(op::Op::UpdateContent(update)) => ("UpdateContent", &update.node_id),
+        Some(op::Op::Move(moved)) => ("Move", &moved.node_id),
+        Some(op::Op::Delete(delete)) => ("Delete", &delete.node_id),
+        Some(op::Op::Restore(restore)) => ("Restore", &restore.node_id),
+        Some(op::Op::MarkGitTracked(marked)) => ("MarkGitTracked", &marked.node_id),
+        None => return "an empty op".to_owned(),
+    };
+    let code = (op_result::Code::try_from(outcome.code))
+        .map_or("an unknown code", |code| code.as_str_name());
+    format!("{kind} of {node} answered {code}")
 }
 
 /// The server as [`run`] seeds it.
@@ -2592,7 +2679,7 @@ fn run_ignoring_answering_after(
     }
 
     let me = session("me");
-    space.announce_field_intents(FIELD_INTENTS);
+    space.announce_field_intents(FIELD_INTENTS.get());
     prop_assert_eq!(commits.connected(&space.welcome(&me)), Reconnect::Idle);
     let mut effects = Effects::default();
     let (mut steps, mut quiet, mut due, mut parked_reverted) = (0, false, false, 0);
@@ -2617,10 +2704,16 @@ fn run_ignoring_answering_after(
         Option<(BTreeMap<NodeId, NodeId>, u64)>,
     );
     let mut pending: Option<AtAnswer> = None;
+    let mut last_sent = String::from("nothing");
     let mut during = during.iter();
     while !quiet {
         steps += 1;
-        prop_assert!(steps <= STEPS, "no convergence within {} steps", STEPS);
+        prop_assert!(
+            steps <= STEPS,
+            "no convergence within {} steps; the last commit sent {}",
+            STEPS,
+            last_sent
+        );
         device.trees.settle(commits.aliases());
         prop_assert_eq!(device.trees.check(), Ok(()));
         device.follow_rekeys();
@@ -3184,6 +3277,10 @@ fn run_ignoring_answering_after(
         }
         let result = committed.result;
         prop_assert_eq!(result.seq, last_seq + 1);
+        last_sent = (commit.ops.iter().zip(&result.results))
+            .map(|(op, outcome)| sent_op(op, outcome))
+            .collect::<Vec<_>>()
+            .join(", ");
         for (op, outcome) in commit.ops.iter().zip(&result.results) {
             if let Some(op::Op::CreateDir(create)) = &op.op
                 && outcome.code == op_result::Code::MergedInto as i32

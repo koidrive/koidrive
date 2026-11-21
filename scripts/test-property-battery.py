@@ -754,7 +754,7 @@ cases = ["{1:064}"]
         ]
         settles = "a_node_another_device_moves_onto_a_folder_the_rules_leave_out_here_settles"
         n812f = "812f80a55f271edd88172ef1fcd1ced1ec88d3bcd8cfd8aed455c8f842181ebe"
-        no_convergence = "no convergence within 400 steps at core/sim/tests/engine_sync/common.rs:2454."
+        no_convergence = "no convergence within 400 steps; the last commit sent CreateDir of 01a1c2c0-39a0-7f7c-8b0a-00ad9bc6fff8 answered CODE_MERGED_INTO at core/sim/tests/engine_sync/common.rs:2686."
         def replayed(case):
             return next(text for entry in entries for text in entry["examples"] if f"\tcc-{case}\t" in text)
         coarse_once = "devices_on_coarse_volumes_converge_once_the_faults_stop"

@@ -1,0 +1,5 @@
+class = "B"
+issue = "GUN-1482"
+tests = ["every_property_holds_with_field_intents_on"]
+message = '''a_device_with_local_changes_converges_with_the_server_and_keeps_every_write with field intents on: no convergence within <n> steps; the last commit sent Delete of <id> answered CODE_SUPERSEDED at \S+\.rs:<line>'''
+examples = ["a_device_with_local_changes_converges_with_the_server_and_keeps_every_write with field intents on: no convergence within 400 steps; the last commit sent Delete of 01a1c2c0-39a0-75ee-831c-498d57bc0a70 answered CODE_SUPERSEDED at core/sim/tests/engine_sync/common.rs:3166"]

@@ -1083,7 +1083,13 @@ fn a_first_link_discard_judges_a_taken_along_folder_against_what_it_held_at_the_
     );
     assert!(!nodes.contains_key("01a1c2c0-39a0-7768-bfda-be86cbbeaa11"));
     assert!(!nodes.contains_key("01a1c2c0-39a0-78c3-b5d8-1f333a1fb9e9"));
-    assert_ne!(nodes["01a1c2c0-39a0-7c9f-92dd-37ded7172a70"].status, live);
+    assert_ne!(
+        nodes["01a1c2c0-39a0-7c9f-92dd-37ded7172a70"].status,
+        live,
+        "the Discard trashes the server folder it judged at {}:{}",
+        file!(),
+        line!()
+    );
     assert_eq!(ran.deletes, 1);
 }
 
